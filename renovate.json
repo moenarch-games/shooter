@@ -1,0 +1,19 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>moritzbrantner/coding-agent-conventions"
+  ],
+  "platformAutomerge": true,
+  "packageRules": [
+    {
+      "description": "Each foundation repository's git pin moves in its own PR, so one failing bump cannot hold the others back.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchUpdateTypes": [
+        "digest"
+      ],
+      "groupName": "{{depName}} revision"
+    }
+  ]
+}
