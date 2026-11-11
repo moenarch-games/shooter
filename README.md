@@ -9,14 +9,16 @@ Product intent lives in the [Decision Atlas](docs/decisions/atlas.md).
 ## What a player does
 
 Open the native client or the browser build on Pages and join a hosted deathmatch on one arena.
-Bots fill the empty slots. Move fast: sprint, slide, double jump, jump pads, rocket jumps and air
-control. Fight with energy guns, a grapple hook and melee weapons.
+Bots fill the empty slots. Move fast: sprint, slide, step up low ledges, double jump, jump pads,
+rocket jumps, the grapple hook and air control. Fight with energy guns, a grapple hook and melee
+weapons.
 
 ## Foundations
 
 | Need | Crate |
 | --- | --- |
-| Collision, character movement, rays, projectiles, grapple rope | physics-engine (Rapier A/B oracle in CI) |
+| Collision, character movement, rays, projectiles | physics-engine (Rapier A/B oracle in CI) |
+| Grapple rope on a character | shooter-sim stand-in until physics-engine has it (moritzbrantner/physics-engine#557) |
 | Lighting, particles (muzzle flashes, trims, impacts) | render-engine |
 | Positional gunfire and impacts, native and Web Audio | game-audio |
 | Mouse, keyboard, gamepad, pointer lock | input-bindings |
@@ -64,16 +66,24 @@ mouse. Steer in the air with WASD. The HUD (health, weapon, frags and place, the
 kill feed) is the page's overlay in the browser and the window title plus a health bar natively,
 until render-engine draws screen overlays.
 
-The left mouse button fires; 1, 2 and 3 pick the weapon:
+The left mouse button fires; 1 to 4 pick the weapon:
 
 | Key | Weapon | Shot |
 | --- | --- | --- |
 | 1 | Energy rifle | Hitscan bolts, 12 damage, 10 a second |
 | 2 | Rail gun | One hitscan beam, 85 damage, every 1.2 s |
 | 3 | Rocket launcher | A 24 m/s rocket, every 0.8 s: up to 100 splash damage within 3 m, and a push |
+| 4 | Grapple hook | A hook that holds on the arena while the trigger is down and reels you in |
 
 Rocket jump by firing at your feet as you jump: the blast throws you about 5 m up. Your own
 rocket hurts you at half damage (a rocket jump costs about 35 health).
+
+The grapple hook (4) sets on arena geometry within 30 m (not on fighters) while you hold the
+trigger: it reels you toward the hook at up to 24 m/s and the rope never lets you further away
+than you have come, so running or falling across it swings you round the hook. Let go to drop
+off; the next hook is ready 0.75 s after the last one fired. It is a deterministic stand-in in
+`shooter-sim` until physics-engine can pull a character on a rope
+(moritzbrantner/physics-engine#557).
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points,
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
@@ -82,9 +92,10 @@ gun far off.
 
 The movement and the weapons are checked against Rapier on a scripted tour of the arena and on
 scripted moves (sprint, slide, double jump, jump pad, ramp slides, a thin wall, a step, a rocket
-jump, a shooting range): `cargo test -p shooter-sim --features physics-ab --test physics_ab`.
+jump, a grapple onto a ledge, a shooting range):
+`cargo test -p shooter-sim --features physics-ab --test physics_ab`.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
-lag compensation, scoring and rounds; `cargo test -p shooter-client --test online` plays two
+lag compensation, scoring and rounds, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
 clients through a real game-server host on loopback.
 
 When a crate can't do something yet, the shooter files an issue on that crate and uses Rapier

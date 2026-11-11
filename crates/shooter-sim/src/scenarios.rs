@@ -1,7 +1,8 @@
 //! Scripted fast moves, each in a small arena of its own (or the greybox): sprint and slide,
 //! double jump onto a ledge, a jump pad onto the platform, slides up and down a ramp, a slide
-//! into a thin wall, a sprint up a step, a rocket jump and a shooting range. The movement and
-//! weapon tests check what each one does and the Rapier A/B test runs each on both backends.
+//! into a thin wall, a sprint up a step, a rocket jump, a grapple onto a ledge and a shooting
+//! range. The movement and weapon tests check what each one does and the Rapier A/B test runs
+//! each on both backends.
 
 use crate::arena::{Arena, Piece, Post};
 use crate::player::Intent;
@@ -218,6 +219,50 @@ pub const ROCKET_JUMP: Scenario = Scenario {
     ],
 };
 
+/// Pitch steps from the grapple scenario's eye (0, 165, -600) up to the pillar's face at
+/// (0, 500, 650): atan(335 / 1250) ≈ 15.0°.
+const PILLAR_PITCH: i16 = 2_731;
+
+/// A 3 m ledge 9 m south (beyond a double jump and a rocket jump) with an 8 m pillar on it.
+/// Take the grapple, hook the pillar's face 5 m up over the ledge's edge, get reeled up and over
+/// the edge, let go and step onto the ledge.
+pub const GRAPPLE: Scenario = Scenario {
+    name: "grapple onto a ledge",
+    arena: || {
+        open(
+            [0, 0, -600],
+            vec![
+                block([0, 150, 600], [300, 150, 300]),
+                block([0, 400, 700], [50, 400, 50]),
+            ],
+        )
+    },
+    legs: &[
+        hold(
+            "take the grapple",
+            Intent {
+                yaw: SOUTH,
+                pitch: PILLAR_PITCH,
+                select: Some(Weapon::Grapple),
+                ..Intent::IDLE
+            },
+            15,
+        ),
+        hold(
+            "hook and reel in",
+            Intent {
+                yaw: SOUTH,
+                pitch: PILLAR_PITCH,
+                fire: true,
+                ..Intent::IDLE
+            },
+            90,
+        ),
+        walk("let go onto the ledge", SOUTH, 40),
+        stand("on the ledge", 30),
+    ],
+};
+
 /// The yaw from the shooting range's spawn (0, 0, -600) toward a point on the floor.
 const fn yaw_to(x: i32, z: i32) -> u16 {
     match sim_foundation::trig::yaw_from_vector(x, z + 600) {
@@ -301,4 +346,5 @@ pub const ALL: &[Scenario] = &[
     STEP,
     ROCKET_JUMP,
     SHOOTING_RANGE,
+    GRAPPLE,
 ];

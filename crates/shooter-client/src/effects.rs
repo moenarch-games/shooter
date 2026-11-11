@@ -23,6 +23,7 @@ pub const fn tint(weapon: Weapon) -> Vec3 {
         Weapon::EnergyRifle => Vec3::new(0.25, 0.8, 1.0),
         Weapon::RailGun => Vec3::new(0.75, 0.35, 1.0),
         Weapon::RocketLauncher => Vec3::new(1.0, 0.55, 0.15),
+        Weapon::Grapple => Vec3::new(0.45, 1.0, 0.55),
     }
 }
 
@@ -199,8 +200,8 @@ struct Flash {
 }
 
 pub struct Effects {
-    muzzle: [EmitterId; 3],
-    trail: [EmitterId; 3],
+    muzzle: [EmitterId; 4],
+    trail: [EmitterId; 4],
     impact: EmitterId,
     fireball: EmitterId,
     exhaust: EmitterId,
@@ -212,12 +213,18 @@ fn index(weapon: Weapon) -> usize {
         Weapon::EnergyRifle => 0,
         Weapon::RailGun => 1,
         Weapon::RocketLauncher => 2,
+        Weapon::Grapple => 3,
     }
 }
 
 /// Spacing of trail motes along a beam (metres) and their size and life, per weapon (only
 /// hitscan weapons draw beams; the rocket's entry is unused).
-const TRAIL: [(f32, f32, f32); 3] = [(0.5, 0.05, 0.12), (0.12, 0.07, 0.7), (1.0, 0.05, 0.1)];
+const TRAIL: [(f32, f32, f32); 4] = [
+    (0.5, 0.05, 0.12),
+    (0.12, 0.07, 0.7),
+    (1.0, 0.05, 0.1),
+    (0.3, 0.035, 0.25),
+];
 
 impl Effects {
     /// Creates the emitters in `world`.

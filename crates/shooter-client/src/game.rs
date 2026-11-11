@@ -102,6 +102,16 @@ impl Game {
         }
     }
 
+    /// Where the local fighter's grapple hook holds (units), predicted online, while it is set.
+    #[must_use]
+    pub fn local_hook(&self) -> Option<[f32; 3]> {
+        match self {
+            Self::Practice { session, .. } => session.local().hook.map(|hook| hook.anchor_units()),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Online(online) => online.hook(),
+        }
+    }
+
     /// A line about the connection while there is something to say.
     #[must_use]
     pub fn status(&self) -> Option<&str> {
@@ -122,6 +132,7 @@ pub mod online {
 
     use super::Tick;
     use crate::net::{Connection, NetEvent};
+    use shooter_sim::grapple::Hook;
     use shooter_sim::player::Motion;
     use shooter_sim::session::MAX_HEALTH;
     use shooter_sim::wire::encode_input;
@@ -139,6 +150,7 @@ pub mod online {
         /// The predicted state after this input.
         position: [f32; 3],
         motion: Motion,
+        hook: Option<Hook>,
     }
 
     pub struct Online {
@@ -200,12 +212,19 @@ pub mod online {
                 .map_err(|error| error.to_string())
         }
 
-        fn state(&self) -> ([f32; 3], Motion) {
+        fn state(&self) -> ([f32; 3], Motion, Option<Hook>) {
             let local = self.predictor.local();
             (
                 local.player.center(&self.predictor.world),
                 local.player.motion,
+                local.hook,
             )
+        }
+
+        pub fn hook(&self) -> Option<[f32; 3]> {
+            self.predicting
+                .then(|| self.predictor.local().hook.map(|hook| hook.anchor_units()))
+                .flatten()
         }
 
         fn reconcile(&mut self, snapshot: &Snapshot) -> Result<(), String> {
@@ -219,7 +238,7 @@ pub mod online {
             }
             let place = |predictor: &mut Session| {
                 predictor
-                    .place(0, me.position, me.velocity, me.motion, me.held)
+                    .place(0, me.position, me.velocity, me.motion, me.held, me.hook)
                     .map_err(|error| error.to_string())
             };
             if !self.predicting {
@@ -246,13 +265,14 @@ pub mod online {
             self.pending.pop_front();
             let off = (0..3)
                 .any(|axis| (acked.position[axis] - me.position[axis]).abs() > TOLERANCE_UNITS)
-                || acked.motion != me.motion;
+                || acked.motion != me.motion
+                || acked.hook != me.hook;
             if off {
                 place(&mut self.predictor)?;
                 let replay: Vec<Pending> = self.pending.drain(..).collect();
                 for mut pending in replay {
                     self.predict(pending.intent)?;
-                    (pending.position, pending.motion) = self.state();
+                    (pending.position, pending.motion, pending.hook) = self.state();
                     self.pending.push_back(pending);
                 }
             }
@@ -292,12 +312,13 @@ pub mod online {
                     .send(self.sequence, &encode_input(intent, view_tick));
                 if self.predicting {
                     report = self.predict(intent)?;
-                    let (position, motion) = self.state();
+                    let (position, motion, hook) = self.state();
                     self.pending.push_back(Pending {
                         sequence: self.sequence,
                         intent,
                         position,
                         motion,
+                        hook,
                     });
                     while self.pending.len() > 120 {
                         self.pending.pop_front();

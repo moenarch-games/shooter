@@ -1,5 +1,6 @@
 //! The energy weapons: a hitscan energy rifle, a high-damage rail gun and a rocket launcher whose
-//! rockets fly as projectiles and explode with splash damage and knockback (rocket jumping).
+//! rockets fly as projectiles and explode with splash damage and knockback (rocket jumping), and
+//! the grapple hook in the same rotation ([`crate::grapple`]).
 //!
 //! Everything a shot decides is integer: the aim is a Q16 direction from the yaw and pitch
 //! steps, rockets fly in subunits per tick, splash distances are integer square roots. Rays and
@@ -19,6 +20,9 @@ pub enum Weapon {
     RailGun,
     /// A slow rocket that explodes on contact: splash damage and knockback.
     RocketLauncher,
+    /// A movement tool: hooks arena geometry and reels the player in while the trigger is held
+    /// ([`crate::grapple`]).
+    Grapple,
 }
 
 /// How a weapon's shot reaches its target.
@@ -28,18 +32,26 @@ pub enum Delivery {
     Hitscan { damage: i32, range_units: i32 },
     /// A [`Rocket`].
     Rocket,
+    /// A [`crate::grapple::Hook`].
+    Grapple,
 }
 
 impl Weapon {
-    pub const ALL: [Self; 3] = [Self::EnergyRifle, Self::RailGun, Self::RocketLauncher];
+    pub const ALL: [Self; 4] = [
+        Self::EnergyRifle,
+        Self::RailGun,
+        Self::RocketLauncher,
+        Self::Grapple,
+    ];
 
-    /// Its place in [`Weapon::ALL`] (the 1, 2, 3 keys and the wire).
+    /// Its place in [`Weapon::ALL`] (the 1 to 4 keys and the wire).
     #[must_use]
     pub const fn index(self) -> u8 {
         match self {
             Self::EnergyRifle => 0,
             Self::RailGun => 1,
             Self::RocketLauncher => 2,
+            Self::Grapple => 3,
         }
     }
 
@@ -50,6 +62,7 @@ impl Weapon {
             0 => Some(Self::EnergyRifle),
             1 => Some(Self::RailGun),
             2 => Some(Self::RocketLauncher),
+            3 => Some(Self::Grapple),
             _ => None,
         }
     }
@@ -64,6 +77,8 @@ impl Weapon {
             Self::RailGun => 72,
             // 0.8 s.
             Self::RocketLauncher => 48,
+            // 0.75 s from one hook to the next.
+            Self::Grapple => 45,
         }
     }
 
@@ -79,6 +94,7 @@ impl Weapon {
                 range_units: 10_000,
             },
             Self::RocketLauncher => Delivery::Rocket,
+            Self::Grapple => Delivery::Grapple,
         }
     }
 }

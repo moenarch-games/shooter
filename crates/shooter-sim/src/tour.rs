@@ -105,6 +105,8 @@ pub struct Sample {
     /// Damage dealt to dummies this tick.
     pub damage: i32,
     pub exploded: bool,
+    /// The grapple's hook was set after this tick.
+    pub hooked: bool,
 }
 
 /// Runs the tour's legs on `session`, sampling after each tick.
@@ -131,6 +133,7 @@ pub fn run_legs(session: &mut Session, legs: &[Leg]) -> Result<Vec<Sample>, Phys
                 fired: report.fired,
                 damage: report.damage,
                 exploded: report.exploded,
+                hooked: session.local().hook.is_some(),
             });
         }
     }

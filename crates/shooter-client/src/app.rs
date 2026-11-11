@@ -347,6 +347,9 @@ impl App {
                             health: fighter.health as f32 / MAX_HEALTH as f32,
                             glow: self.glows[slot],
                             held: fighter.held,
+                            hook: fighter
+                                .hook
+                                .map(|hook| Vec3::from(hook.anchor_units()) * METRES_PER_UNIT),
                         }
                     })
                     .collect()
@@ -380,6 +383,9 @@ impl App {
                 &rockets,
                 held,
                 text.health,
+                self.game
+                    .local_hook()
+                    .map(|hook| Vec3::from(hook) * METRES_PER_UNIT),
                 eye,
                 forward,
             );

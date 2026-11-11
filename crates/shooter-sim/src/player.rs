@@ -1,4 +1,5 @@
-//! How a player's body moves: walk, sprint, slide, step-up, jump, double jump, jump pads and air control.
+//! How a player's body moves: walk, sprint, slide, step-up, jump, double jump, jump pads, air
+//! control and the grapple's rope.
 //! The physics world (physics-engine, or the Rapier oracle under `physics-ab`) resolves contact,
 //! slopes and support; this module only turns the player's intent and the body's realized
 //! velocity into the velocity it asks for each tick.
@@ -250,17 +251,20 @@ impl Player {
     ///   and decays to walking speed. A jump keeps the horizontal velocity (slide jumps carry).
     /// - In the air: air control steers, and a fresh jump press spends the air jump, turning the
     ///   momentum toward the wished direction.
+    /// - On a grapple's rope (`hooked`), the player moves as in the air even on ground: the
+    ///   rope's pull drags it along instead of the feet stopping it.
     pub fn apply(
         &mut self,
         world: &mut World,
         arena: &Arena,
         intent: Intent,
+        hooked: bool,
     ) -> Result<Moves, PhysicsError> {
         let current = world
             .body(self.body)
             .map(RigidBody::velocity)
             .unwrap_or_default();
-        let grounded = world.grounded(self.body);
+        let grounded = world.grounded(self.body) && !hooked;
         let feet = self.feet_units(world);
         let motion = &mut self.motion;
         let jump_pressed = intent.jump && !motion.jump_held;

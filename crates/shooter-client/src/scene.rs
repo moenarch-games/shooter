@@ -244,6 +244,22 @@ pub struct FighterView {
     /// Hit glow, 1 just hit and fading to 0.
     pub glow: f32,
     pub held: Weapon,
+    /// Where its grapple hook holds (metres), while set.
+    pub hook: Option<Vec3>,
+}
+
+/// A grapple cable's thickness (metres).
+const CABLE_WIDTH: f32 = 0.025;
+
+/// A unit-length cable stretched from `from` to `to` (metres).
+fn cable_pose(from: Vec3, to: Vec3) -> Mat4 {
+    let span = to - from;
+    let rotation = Quat::from_rotation_arc(Vec3::Z, span.normalize_or(Vec3::Z));
+    Mat4::from_scale_rotation_translation(
+        Vec3::new(1.0, 1.0, span.length().max(0.001)),
+        rotation,
+        from + span / 2.0,
+    )
 }
 
 fn fighter_material(health: f32, glow: f32) -> StandardMaterial {
@@ -276,7 +292,11 @@ pub struct Actors {
     rockets: Vec<InstanceId>,
     gun: InstanceId,
     gun_mesh: MeshId,
-    gun_materials: [MaterialId; 3],
+    gun_materials: [MaterialId; 4],
+    cable_mesh: MeshId,
+    cable_material: MaterialId,
+    /// Grapple cables, reused frame to frame (hidden when unused).
+    cables: Vec<InstanceId>,
     crosshair: Option<InstanceId>,
     /// Natively: the health bar's mesh, material and instance (HUD stopgap).
     health_bar: Option<(MeshId, MaterialId, InstanceId)>,
@@ -291,7 +311,7 @@ fn glowing(rgb: Vec3, nits: f32) -> StandardMaterial {
     }
 }
 
-fn gun_material(materials: &[MaterialId; 3], held: Weapon) -> MaterialId {
+fn gun_material(materials: &[MaterialId; 4], held: Weapon) -> MaterialId {
     materials[usize::from(held.index())]
 }
 
@@ -355,6 +375,13 @@ impl Actors {
             gun,
             gun_mesh,
             gun_materials,
+            cable_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
+                CABLE_WIDTH,
+                CABLE_WIDTH,
+                1.0,
+            )))),
+            cable_material: world.add_material(&glowing(tint(Weapon::Grapple), 6_000.0)),
+            cables: Vec::new(),
             crosshair,
             health_bar,
         }
@@ -379,7 +406,8 @@ impl Actors {
     }
 
     /// Places everything for this frame. `eye`/`forward` is the local camera; `held` is `None`
-    /// while the local fighter is dead (no gun in view); `health` is its health (0..=1).
+    /// while the local fighter is dead (no gun in view); `health` is its health (0..=1);
+    /// `hook` is where its grapple holds (metres), while set.
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
@@ -388,9 +416,36 @@ impl Actors {
         rockets: &[Vec3],
         held: Option<Weapon>,
         health: Option<f32>,
+        hook: Option<Vec3>,
         eye: Vec3,
         forward: Vec3,
     ) {
+        let cables: Vec<(Vec3, Vec3)> = fighters
+            .iter()
+            .filter_map(|view| {
+                let fighter_eye = view.center? + Vec3::Y * 0.75;
+                Some((gun_pose(fighter_eye, view.forward).1, view.hook?))
+            })
+            .chain(
+                hook.filter(|_| held.is_some())
+                    .map(|hook| (gun_pose(eye, forward).1, hook)),
+            )
+            .collect();
+        while self.cables.len() < cables.len() {
+            let instance = world.add_instance(Instance {
+                mesh: self.cable_mesh,
+                material: self.cable_material,
+                world_from_local: HIDDEN,
+                skin: None,
+            });
+            self.cables.push(instance);
+        }
+        for (index, instance) in self.cables.iter().enumerate() {
+            let at = cables
+                .get(index)
+                .map_or(HIDDEN, |(from, to)| cable_pose(*from, *to));
+            Self::place(world, *instance, self.cable_mesh, self.cable_material, at);
+        }
         while self.fighters.len() < fighters.len() {
             let material = world.add_material(&fighter_material(1.0, 0.0));
             let body = world.add_instance(Instance {

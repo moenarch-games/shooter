@@ -110,6 +110,37 @@ fn a_sprint_climbs_a_step() {
 }
 
 #[test]
+fn the_grapple_reels_onto_a_ledge_no_jump_reaches() {
+    let samples = run(scenarios::GRAPPLE);
+    let reel = samples
+        .iter()
+        .filter(|sample| sample.leg == "hook and reel in")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        samples
+            .iter()
+            .find(|sample| sample.fired.is_some())
+            .unwrap()
+            .leg,
+        "hook and reel in"
+    );
+    assert!(reel.iter().all(|sample| sample.hooked), "the hook holds");
+    let peak = reel
+        .iter()
+        .map(|sample| sample.center[1])
+        .fold(0.0, f32::max);
+    assert!(peak > 300.0 + HALF, "reeled above the ledge's top: {peak}");
+    let landed = end_of(&samples, "on the ledge").unwrap();
+    assert!(!landed.hooked, "{landed:?}");
+    assert!(landed.grounded, "{landed:?}");
+    assert!(
+        (landed.center[1] - (300.0 + HALF)).abs() < 2.0,
+        "{landed:?}"
+    );
+    assert!(landed.center[2] > 300.0, "{landed:?}");
+}
+
+#[test]
 fn every_scenario_replays_exactly() {
     for scenario in scenarios::ALL {
         assert_eq!(run(*scenario), run(*scenario), "{}", scenario.name);

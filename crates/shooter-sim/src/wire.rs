@@ -6,12 +6,13 @@
 //! The in-process practice match builds the same [`Snapshot`], so both modes draw through one
 //! path.
 
+use crate::grapple::Hook;
 use crate::player::{Intent, Motion};
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 1;
+pub const WIRE_VERSION: u8 = 2;
 const NONE: u8 = u8::MAX;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +50,8 @@ pub struct FighterState {
     /// Exact velocity, units per tick.
     pub velocity: [f32; 3],
     pub motion: Motion,
+    /// Its grapple hook while set (exact, for prediction and the cable).
+    pub hook: Option<Hook>,
     /// Ticks until it respawns, while dead.
     pub respawn_in: u32,
     /// The last input sequence applied (people only).
@@ -110,6 +113,7 @@ fn state_of(session: &Session, fighter: &Fighter) -> Option<FighterState> {
         position: body.map_or([0.0; 3], |body| body.exact_position()),
         velocity: body.map_or([0.0; 3], |body| body.exact_velocity()),
         motion: fighter.player.motion,
+        hook: fighter.hook,
         respawn_in: fighter
             .respawn_at
             .map_or(0, |at| at.saturating_sub(session.ticks())),
@@ -446,6 +450,14 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         out.vec3(fighter.position);
         out.vec3(fighter.velocity);
         out.u8(fighter.motion.to_bits());
+        match fighter.hook {
+            Some(hook) => {
+                out.u8(1);
+                hook.anchor.into_iter().for_each(|axis| out.i32(axis));
+                out.i32(hook.length);
+            }
+            None => out.u8(0),
+        }
         out.u32(fighter.respawn_in);
         out.u32(fighter.ack);
     }
@@ -498,6 +510,14 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 position: input.vec3()?,
                 velocity: input.vec3()?,
                 motion: Motion::from_bits(input.u8()?),
+                hook: match input.u8()? {
+                    0 => None,
+                    1 => Some(Hook {
+                        anchor: [input.i32()?, input.i32()?, input.i32()?],
+                        length: input.i32()?,
+                    }),
+                    _ => return Err(WireError("unknown hook state")),
+                },
                 respawn_in: input.u32()?,
                 ack: input.u32()?,
             })
