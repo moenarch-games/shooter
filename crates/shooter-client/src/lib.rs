@@ -1,10 +1,12 @@
 //! The shooter's client: one crate for the native window (wgpu on Vulkan/Metal/DX12) and the
 //! browser (WebGPU, `wasm32`), rendered by render-engine, with input-bindings controls and
-//! game-audio footsteps over the shared `shooter-sim` simulation.
+//! game-audio footsteps and gunfire, render-engine weapon lights and particles over the shared
+//! `shooter-sim` simulation.
 
 pub mod app;
 pub mod audio;
 pub mod controls;
+pub mod effects;
 pub mod gpu;
 pub mod scene;
 

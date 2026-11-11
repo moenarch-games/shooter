@@ -1,17 +1,31 @@
-//! Footsteps and landings through game-audio's director: kira natively, Web Audio in the browser.
-//! The clips are generated noise bursts until asset-tooling provides real ones.
+//! Footsteps, landings and positional gunfire through game-audio's director: kira natively, Web
+//! Audio in the browser. Gunfire and explosions are spatial cues placed where they happen (the
+//! listener is the camera). The clips are generated tones and noise bursts until asset-tooling
+//! provides real ones.
 
+use crate::scene::METRES_PER_UNIT;
 use game_audio::{CueEvent, Director, DirectorConfig, SoundManifest};
-use shooter_sim::StepReport;
+use shooter_sim::{Event, StepReport, Weapon};
 
 const MANIFEST: &str = r#"{
+  "attenuation": { "min_distance": 2, "max_distance": 60 },
   "clips": [
     { "id": "step", "source": { "tone": { "frequency_hz": 140, "duration_ms": 55, "waveform": "noise", "amplitude": 0.35 } } },
-    { "id": "land", "source": { "tone": { "frequency_hz": 90, "duration_ms": 110, "waveform": "noise", "amplitude": 0.6 } } }
+    { "id": "land", "source": { "tone": { "frequency_hz": 90, "duration_ms": 110, "waveform": "noise", "amplitude": 0.6 } } },
+    { "id": "rifle", "source": { "tone": { "frequency_hz": 880, "duration_ms": 50, "waveform": "square", "amplitude": 0.25 } } },
+    { "id": "rail", "source": { "tone": { "frequency_hz": 220, "duration_ms": 280, "waveform": "saw", "amplitude": 0.45 } } },
+    { "id": "rocket", "source": { "tone": { "frequency_hz": 160, "duration_ms": 140, "waveform": "noise", "amplitude": 0.45 } } },
+    { "id": "boom", "source": { "tone": { "frequency_hz": 60, "duration_ms": 450, "waveform": "noise", "amplitude": 0.9 } } },
+    { "id": "hit", "source": { "tone": { "frequency_hz": 1400, "duration_ms": 35, "waveform": "sine", "amplitude": 0.3 } } }
   ],
   "cues": [
     { "kind": "player.step", "clips": ["step"], "max_voices": 2, "gain_db": -8, "pitch_jitter": 0.12 },
-    { "kind": "player.land", "clips": ["land"], "max_voices": 1, "gain_db": -4, "cooldown_ms": 150 }
+    { "kind": "player.land", "clips": ["land"], "max_voices": 1, "gain_db": -4, "cooldown_ms": 150 },
+    { "kind": "weapon.energyRifle", "clips": ["rifle"], "max_voices": 4, "gain_db": -6, "pitch_jitter": 0.05, "spatial": true },
+    { "kind": "weapon.railGun", "clips": ["rail"], "max_voices": 2, "gain_db": -2, "spatial": true },
+    { "kind": "weapon.rocketLauncher", "clips": ["rocket"], "max_voices": 2, "gain_db": -4, "spatial": true },
+    { "kind": "rocket.explode", "clips": ["boom"], "priority": 70, "max_voices": 4, "pitch_jitter": 0.08, "spatial": true },
+    { "kind": "target.hit", "clips": ["hit"], "max_voices": 2, "gain_db": -6, "cooldown_ms": 30 }
   ]
 }"#;
 
@@ -23,20 +37,32 @@ type Output = Option<game_audio::KiraBackend>;
 #[cfg(target_arch = "wasm32")]
 type Output = game_audio::WebAudioBackend;
 
-pub struct Footsteps {
+const fn fire_cue(weapon: Weapon) -> &'static str {
+    match weapon {
+        Weapon::EnergyRifle => "weapon.energyRifle",
+        Weapon::RailGun => "weapon.railGun",
+        Weapon::RocketLauncher => "weapon.rocketLauncher",
+    }
+}
+
+fn metres(units: [f32; 3]) -> [f32; 3] {
+    units.map(|axis| axis * METRES_PER_UNIT)
+}
+
+pub struct Sounds {
     director: Director,
     output: Output,
     walked: f32,
     cues: u64,
 }
 
-impl Footsteps {
+impl Sounds {
     /// # Panics
     ///
     /// If the built-in manifest does not parse.
     #[must_use]
     pub fn new() -> Self {
-        let manifest = SoundManifest::from_json(MANIFEST).expect("the footstep manifest parses");
+        let manifest = SoundManifest::from_json(MANIFEST).expect("the sound manifest parses");
         #[cfg(not(target_arch = "wasm32"))]
         let output = game_audio::KiraBackend::new()
             .inspect_err(|error| eprintln!("audio unavailable: {error}"))
@@ -57,22 +83,40 @@ impl Footsteps {
         self.output.unlock();
     }
 
-    fn cue(&mut self, kind: &str, now_ms: f64) {
+    fn cue(&mut self, kind: &str, at: Option<[f32; 3]>, now_ms: f64) {
         self.cues += 1;
-        let key = format!("{kind}:{}", self.cues);
-        self.director.trigger(&CueEvent::new(key, kind), now_ms);
+        let mut event = CueEvent::new(format!("{kind}:{}", self.cues), kind);
+        if let Some(at) = at {
+            event = event.at(at);
+        }
+        self.director.trigger(&event, now_ms);
+    }
+
+    /// The camera, in metres: where the listener stands and its right ear's direction.
+    pub fn listen(&mut self, eye: [f32; 3], right: [f32; 3]) {
+        self.director.set_listener(eye, right);
     }
 
     /// After a tick: `moved` is the horizontal distance (units) the player covered.
-    pub fn tick(&mut self, report: StepReport, moved: f32, now_ms: f64) {
+    pub fn tick(&mut self, report: StepReport, moved: f32, events: &[Event], now_ms: f64) {
         if report.landed {
             self.walked = 0.0;
-            self.cue("player.land", now_ms);
+            self.cue("player.land", None, now_ms);
         } else if report.grounded && moved > 0.5 {
             self.walked += moved;
             if self.walked >= STRIDE_UNITS {
                 self.walked -= STRIDE_UNITS;
-                self.cue("player.step", now_ms);
+                self.cue("player.step", None, now_ms);
+            }
+        }
+        for event in events {
+            match *event {
+                Event::Fired { weapon, eye, .. } => {
+                    self.cue(fire_cue(weapon), Some(metres(eye)), now_ms);
+                }
+                Event::Exploded { at } => self.cue("rocket.explode", Some(metres(at)), now_ms),
+                Event::Damaged { .. } => self.cue("target.hit", None, now_ms),
+                Event::Beam { .. } => {}
             }
         }
     }
@@ -90,8 +134,16 @@ impl Footsteps {
     }
 }
 
-impl Default for Footsteps {
+impl Default for Sounds {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_manifest_parses() {
+        game_audio::SoundManifest::from_json(super::MANIFEST).unwrap();
     }
 }

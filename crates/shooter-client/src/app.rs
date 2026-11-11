@@ -1,12 +1,14 @@
 //! The window, the fixed-tick loop and the frame: input in, simulation ticks, render out.
 
-use crate::audio::Footsteps;
-use crate::controls::{Controls, Look, PadState, standard};
+use crate::audio::Sounds;
+use crate::controls::{Controls, Look, PRIMARY_BUTTON, PadState, standard};
+use crate::effects::Effects;
 use crate::gpu::Gpu;
-use crate::scene::{self, METRES_PER_UNIT};
+use crate::scene::{self, Actors, DummyView, METRES_PER_UNIT};
 use render_engine::glam::Vec3;
+use shooter_sim::dummies::DUMMY_HEALTH;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
-use shooter_sim::{Arena, Intent, Session, TICK_HZ};
+use shooter_sim::{Arena, Event, Intent, Session, TICK_HZ};
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -35,7 +37,12 @@ pub struct App {
     controls: Controls,
     look: Look,
     pads: Option<gilrs::Gilrs>,
-    footsteps: Footsteps,
+    sounds: Sounds,
+    /// Weapon effects and the moving actors, once the GPU is up.
+    effects: Option<Effects>,
+    actors: Option<Actors>,
+    /// Each dummy's hit glow, 1 when just hit.
+    glows: Vec<f32>,
     started: Instant,
     last_frame: Instant,
     /// Seconds not yet simulated.
@@ -59,6 +66,7 @@ impl App {
         let yaw = f32::from(arena.spawn_yaw) / 65_536.0 * std::f32::consts::TAU;
         let session = Session::new(arena).expect("the greybox arena builds");
         let center = session.player.center(&session.world);
+        let dummies = session.dummies.len();
         let now = Instant::now();
         Self {
             proxy,
@@ -70,7 +78,10 @@ impl App {
             pads: gilrs::Gilrs::new()
                 .inspect_err(|error| crate::log(&format!("gamepads unavailable: {error}")))
                 .ok(),
-            footsteps: Footsteps::new(),
+            sounds: Sounds::new(),
+            effects: None,
+            actors: None,
+            glows: vec![0.0; dummies],
             started: now,
             last_frame: now,
             accumulator: 0.0,
@@ -95,7 +106,7 @@ impl App {
                 return;
             }
             window.set_cursor_visible(false);
-            self.footsteps.unlock();
+            self.sounds.unlock();
         } else {
             let _ = window.set_cursor_grab(CursorGrabMode::None);
             window.set_cursor_visible(true);
@@ -184,6 +195,10 @@ impl App {
                 jump: self.controls.jump_held(),
                 sprint: self.controls.sprint_held(),
                 crouch: self.controls.crouch_held(),
+                pitch: self.look.sim_pitch(),
+                // Only a captured mouse shoots: the click that captures it does not.
+                fire: self.captured && self.controls.fire_held(),
+                select: self.controls.selected(),
             };
             let report = match self.session.tick(intent) {
                 Ok(report) => report,
@@ -207,9 +222,22 @@ impl App {
             let moved = (self.center[0] - self.previous_center[0])
                 .hypot(self.center[2] - self.previous_center[2]);
             let elapsed_ms = (now - self.started).as_secs_f64() * 1_000.0;
-            self.footsteps.tick(report, moved, elapsed_ms);
+            let events = &self.session.events;
+            self.sounds.tick(report, moved, events, elapsed_ms);
+            for glow in &mut self.glows {
+                *glow = (*glow - 4.0 * tick).max(0.0);
+            }
+            for event in events {
+                if let Event::Damaged { dummy, .. } = *event {
+                    self.glows[dummy] = 1.0;
+                }
+            }
+            if let (Some(gpu), Some(effects)) = (&mut self.gpu, &mut self.effects) {
+                effects.play(&mut gpu.world, events);
+                effects.rockets(&mut gpu.world, &self.session.rockets);
+            }
         }
-        self.footsteps.pump();
+        let ticks = ticks.min(MAX_TICKS_PER_FRAME);
 
         let blend = self.accumulator / tick;
         let center = Vec3::from(self.previous_center).lerp(Vec3::from(self.center), blend);
@@ -217,10 +245,46 @@ impl App {
         let eye_above_center = self.previous_eye + (self.eye - self.previous_eye) * blend
             - PLAYER_HALF_EXTENTS.y as f32;
         let eye = (center + Vec3::Y * eye_above_center) * METRES_PER_UNIT;
-        let scene = scene::frame(eye, Vec3::from(self.look.forward()));
-        if let Some(gpu) = &mut self.gpu
-            && let Err(error) = gpu.render(&scene)
-        {
+        let forward = Vec3::from(self.look.forward());
+        let (_, right, _) = scene::basis(forward);
+        self.sounds.listen(eye.to_array(), right.to_array());
+        self.sounds.pump();
+
+        let world = &self.session.world;
+        let rockets: Vec<Vec3> = self
+            .session
+            .rockets
+            .iter()
+            .map(|rocket| Vec3::from(rocket.position_units()) * METRES_PER_UNIT)
+            .collect();
+        let point_lights = self
+            .effects
+            .as_mut()
+            .map(|effects| effects.lights(seconds, &rockets))
+            .unwrap_or_default();
+        let scene = scene::frame(eye, forward, point_lights);
+        let Some(gpu) = &mut self.gpu else {
+            return;
+        };
+        if let Some(actors) = &mut self.actors {
+            #[allow(clippy::cast_precision_loss)]
+            let dummies: Vec<DummyView> = self
+                .session
+                .dummies
+                .iter()
+                .zip(&self.glows)
+                .map(|(dummy, glow)| DummyView {
+                    center: dummy
+                        .center(world)
+                        .map(|center| Vec3::from(center) * METRES_PER_UNIT),
+                    health: dummy.health as f32 / DUMMY_HEALTH as f32,
+                    glow: *glow,
+                })
+                .collect();
+            let held = self.session.arsenal.held;
+            actors.update(&mut gpu.world, &dummies, &rockets, held, eye, forward);
+        }
+        if let Err(error) = gpu.render(&scene, ticks) {
             crate::log(&error);
         }
     }
@@ -261,6 +325,8 @@ impl ApplicationHandler<GpuReady> for App {
         match gpu {
             Ok(mut gpu) => {
                 scene::build(&mut gpu.world, &self.session.arena);
+                self.effects = Some(Effects::new(&mut gpu.world));
+                self.actors = Some(Actors::new(&mut gpu.world, self.session.dummies.len()));
                 if let Some(window) = &self.window {
                     let size = window.inner_size();
                     gpu.resize(size.width, size.height);
@@ -293,6 +359,21 @@ impl ApplicationHandler<GpuReady> for App {
                 button: MouseButton::Left,
                 ..
             } if !self.captured => self.capture(true),
+            WindowEvent::MouseInput { state, button, .. } => {
+                let button = match button {
+                    MouseButton::Left => PRIMARY_BUTTON,
+                    MouseButton::Middle => 1,
+                    MouseButton::Right => 2,
+                    MouseButton::Back => 3,
+                    MouseButton::Forward => 4,
+                    MouseButton::Other(other) => other,
+                };
+                if state == ElementState::Pressed {
+                    self.controls.mouse_down(button);
+                } else {
+                    self.controls.mouse_up(button);
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;

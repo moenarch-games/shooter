@@ -1,0 +1,126 @@
+//! The energy weapons on physics-engine: hitscan damage, walls stopping bolts, rocket splash and
+//! rocket jumping, and the greybox's dummies.
+
+use shooter_sim::dummies::DUMMY_HEALTH;
+use shooter_sim::player::PLAYER_HALF_EXTENTS;
+use shooter_sim::scenarios::{self, Scenario};
+use shooter_sim::tour::{Sample, end_of, run_legs};
+use shooter_sim::{Arena, Event, Intent, Session, Weapon};
+
+fn run(scenario: Scenario) -> (Session, Vec<Sample>) {
+    let mut session = Session::new((scenario.arena)()).expect("arena builds");
+    let samples = run_legs(&mut session, scenario.legs).expect("scenario runs");
+    (session, samples)
+}
+
+const HALF: f32 = PLAYER_HALF_EXTENTS.y as f32;
+
+fn damage_in(samples: &[Sample], leg: &str) -> i32 {
+    samples
+        .iter()
+        .filter(|s| s.leg == leg)
+        .map(|s| s.damage)
+        .sum()
+}
+
+#[test]
+fn a_rocket_jump_reaches_a_ledge_a_double_jump_cannot() {
+    let (_, samples) = run(scenarios::ROCKET_JUMP);
+    assert_eq!(samples.iter().filter(|s| s.exploded).count(), 1);
+    let peak = samples.iter().map(|s| s.center[1]).fold(f32::MIN, f32::max);
+    assert!(peak - HALF > 300.0, "apex {}", peak - HALF);
+    let top = end_of(&samples, "on the ledge").unwrap();
+    assert!(top.grounded, "{top:?}");
+    assert!((top.center[1] - (250.0 + HALF)).abs() < 2.0, "{top:?}");
+}
+
+#[test]
+fn the_rifle_and_rail_gun_down_a_dummy_and_walls_stop_bolts() {
+    let (session, samples) = run(scenarios::SHOOTING_RANGE);
+    let rifle = damage_in(&samples, "rifle the middle");
+    assert_eq!(rifle, 10 * 12, "ten rifle bolts");
+    assert_eq!(damage_in(&samples, "rail the middle"), 85);
+    let middle = session.dummies[0];
+    assert!(!middle.alive() && middle.health == 0, "{middle:?}");
+
+    let rocket = damage_in(&samples, "rocket flies") + damage_in(&samples, "rocket the east");
+    assert!((50..=100).contains(&rocket), "rocket {rocket}");
+    assert_eq!(session.dummies[1].health, DUMMY_HEALTH - rocket);
+
+    let fired = samples
+        .iter()
+        .filter(|s| s.leg == "rifle the wall" && s.fired.is_some())
+        .count();
+    assert_eq!(fired, 5);
+    assert_eq!(damage_in(&samples, "rifle the wall"), 0);
+    assert_eq!(session.dummies[2].health, DUMMY_HEALTH);
+}
+
+#[test]
+fn a_downed_dummy_comes_back() {
+    let (mut session, _) = run(scenarios::SHOOTING_RANGE);
+    for _ in 0..200 {
+        session.tick(Intent::IDLE).unwrap();
+    }
+    let middle = session.dummies[0];
+    assert!(
+        middle.alive() && middle.health == DUMMY_HEALTH,
+        "{middle:?}"
+    );
+    assert!(middle.center(&session.world).is_some());
+}
+
+#[test]
+fn the_greybox_dummies_stand_and_patrol() {
+    let mut session = Session::new(Arena::greybox()).unwrap();
+    let start = session.dummies[3].center(&session.world).unwrap();
+    let mut xs = Vec::new();
+    for _ in 0..240 {
+        session.tick(Intent::IDLE).unwrap();
+        xs.push(session.dummies[3].center(&session.world).unwrap()[0]);
+    }
+    let (low, high) = xs
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(l, h), x| (l.min(*x), h.max(*x)));
+    assert!(high - low > 500.0, "patrol {low}..{high} from {start:?}");
+    for dummy in &session.dummies {
+        let center = dummy.center(&session.world).unwrap();
+        let feet = dummy.post.feet;
+        assert!(
+            (center[1] - HALF - feet.y as f32).abs() < 2.0,
+            "{dummy:?} at {center:?}"
+        );
+    }
+}
+
+#[test]
+fn a_hitscan_shot_reports_its_beam() {
+    let mut session = Session::new((scenarios::SHOOTING_RANGE.arena)()).unwrap();
+    session
+        .tick(Intent {
+            fire: true,
+            ..Intent::IDLE
+        })
+        .unwrap();
+    let beam = session.events.iter().find_map(|event| match *event {
+        Event::Beam {
+            weapon,
+            end,
+            struck,
+            ..
+        } => Some((weapon, end, struck)),
+        _ => None,
+    });
+    let (weapon, end, struck) = beam.expect("a beam");
+    assert_eq!(weapon, Weapon::EnergyRifle);
+    assert!(struck);
+    // The middle dummy's capsule is 30 units round its post at z = 0.
+    assert!((end[2] + 30.0).abs() < 8.0, "{end:?}");
+}
+
+#[test]
+fn weapon_scenarios_replay_exactly() {
+    for scenario in [scenarios::ROCKET_JUMP, scenarios::SHOOTING_RANGE] {
+        assert_eq!(run(scenario).1, run(scenario).1, "{}", scenario.name);
+    }
+}

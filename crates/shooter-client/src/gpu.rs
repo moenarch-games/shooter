@@ -83,7 +83,9 @@ impl Gpu {
             .resize(&self.renderer, self.config.width, self.config.height);
     }
 
-    pub fn render(&mut self, scene: &Scene) -> Result<(), String> {
+    /// Draws `scene`, first stepping the particles `particle_steps` simulation ticks (they run
+    /// at the simulation's fixed rate, so effects look the same at any frame rate).
+    pub fn render(&mut self, scene: &Scene, particle_steps: u32) -> Result<(), String> {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -108,6 +110,10 @@ impl Gpu {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let tick = 1.0 / f32::from(shooter_sim::TICK_HZ);
+        for _ in 0..particle_steps {
+            self.world.step_particles(&mut encoder, tick, None);
+        }
         self.renderer
             .encode(&mut encoder, &self.viewport, &self.world, &view, None);
         self.queue.submit([encoder.finish()]);

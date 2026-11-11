@@ -1,5 +1,6 @@
-//! Movement controls over the shared `input-bindings` runtime: the shooter's action catalog
-//! (keyboard and gamepad defaults), physical strokes in, held semantic actions out. Binding
+//! Movement and weapon controls over the shared `input-bindings` runtime: the shooter's action
+//! catalog (keyboard, mouse and gamepad defaults), physical strokes in, held semantic actions
+//! out. Binding
 //! resolution and held-state release belong to `input_bindings_core`.
 //!
 //! Look is analog and stays outside the runtime (input-bindings' Rust core has no analog axis
@@ -10,6 +11,7 @@ use input_bindings_core::{
     InputRuntime, InputRuntimeOptions, InputStroke, KeyMatch, KeyStroke, Modifiers, Provenance,
     RepeatPolicy, RuntimeDecision, SemanticControlState, WhenExpr,
 };
+use shooter_sim::Weapon;
 use std::collections::BTreeMap;
 use winit::keyboard::KeyCode;
 
@@ -20,6 +22,16 @@ pub const MOVE_RIGHT: &str = "move.strafeRight";
 pub const JUMP: &str = "move.jump";
 pub const SPRINT: &str = "move.sprint";
 pub const CROUCH: &str = "move.crouch";
+pub const FIRE: &str = "weapon.fire";
+/// Select actions, in [`Weapon::ALL`] order.
+pub const SELECT: [&str; 3] = [
+    "weapon.energyRifle",
+    "weapon.railGun",
+    "weapon.rocketLauncher",
+];
+
+/// W3C mouse button index of the primary (left) button.
+pub const PRIMARY_BUTTON: u16 = 0;
 
 /// W3C standard gamepad layout indices.
 pub mod standard {
@@ -62,12 +74,19 @@ fn stick(axis: u8, direction: AxisDirection) -> InputStroke {
     })
 }
 
-/// The shooter's movement catalog: id, title and default strokes.
+fn mouse_button(button: u16) -> InputStroke {
+    InputStroke::Device(DeviceStroke::MouseButton {
+        button,
+        modifiers: Modifiers::default(),
+    })
+}
+
+/// The shooter's movement and weapon catalog: id, title and default strokes.
 #[must_use]
 pub fn action_registry() -> ActionRegistry {
     use AxisDirection::{Negative, Positive};
     use standard::{LEFT_X, LEFT_Y, SOUTH};
-    let actions: [(&str, &str, Vec<InputStroke>); 7] = [
+    let actions: [(&str, &str, Vec<InputStroke>); 11] = [
         (
             MOVE_FORWARD,
             "Move forward",
@@ -93,6 +112,10 @@ pub fn action_registry() -> ActionRegistry {
         (SPRINT, "Sprint", vec![key("ShiftLeft")]),
         // C, not Control: Control+W closes the browser tab and pages cannot stop it.
         (CROUCH, "Crouch / slide", vec![key("KeyC")]),
+        (FIRE, "Fire", vec![mouse_button(PRIMARY_BUTTON)]),
+        (SELECT[0], "Energy rifle", vec![key("Digit1")]),
+        (SELECT[1], "Rail gun", vec![key("Digit2")]),
+        (SELECT[2], "Rocket launcher", vec![key("Digit3")]),
     ];
     ActionRegistry {
         actions: actions
@@ -101,9 +124,20 @@ pub fn action_registry() -> ActionRegistry {
                 id: id.to_owned(),
                 title: title.to_owned(),
                 description: None,
-                category_path: vec!["Movement".to_owned()],
+                category_path: vec![
+                    if id.starts_with("weapon.") {
+                        "Weapons"
+                    } else {
+                        "Movement"
+                    }
+                    .to_owned(),
+                ],
                 repeat_policy: RepeatPolicy::Never,
-                allowed_devices: vec![DeviceClass::Keyboard, DeviceClass::Gamepad],
+                allowed_devices: vec![
+                    DeviceClass::Keyboard,
+                    DeviceClass::Mouse,
+                    DeviceClass::Gamepad,
+                ],
                 defaults: strokes
                     .into_iter()
                     .enumerate()
@@ -184,8 +218,12 @@ impl Controls {
         let mut pad_strokes: Vec<(InputStroke, bool)> = Vec::new();
         for binding in registry.actions.iter().flat_map(|action| &action.defaults) {
             for stroke in &binding.sequence {
-                if matches!(stroke, InputStroke::Device(_))
-                    && !pad_strokes.iter().any(|(known, _)| known == stroke)
+                if matches!(
+                    stroke,
+                    InputStroke::Device(
+                        DeviceStroke::GamepadButton { .. } | DeviceStroke::GamepadAxis { .. }
+                    )
+                ) && !pad_strokes.iter().any(|(known, _)| known == stroke)
                 {
                     pad_strokes.push((stroke.clone(), false));
                 }
@@ -281,6 +319,34 @@ impl Controls {
     pub fn crouch_held(&self) -> bool {
         self.state.is_held(CROUCH)
     }
+
+    /// A W3C mouse button went down (0 primary).
+    pub fn mouse_down(&mut self, button: u16) {
+        let decisions = self
+            .runtime
+            .input_down(mouse_button(button), false, NO_CLOCK_MS);
+        self.apply(&decisions);
+    }
+
+    pub fn mouse_up(&mut self, button: u16) {
+        let decisions = self.runtime.input_up(&mouse_button(button), NO_CLOCK_MS);
+        self.apply(&decisions);
+    }
+
+    #[must_use]
+    pub fn fire_held(&self) -> bool {
+        self.state.is_held(FIRE)
+    }
+
+    /// The weapon whose select key is held, if any.
+    #[must_use]
+    pub fn selected(&self) -> Option<Weapon> {
+        SELECT
+            .iter()
+            .zip(Weapon::ALL)
+            .find(|(action, _)| self.state.is_held(action))
+            .map(|(_, weapon)| weapon)
+    }
 }
 
 /// The first-person view direction, turned by mouse and right stick.
@@ -342,6 +408,14 @@ impl Look {
         wrapped
     }
 
+    /// The pitch as the simulation's angle steps (a quarter turn is 16 384).
+    #[must_use]
+    pub fn sim_pitch(&self) -> i16 {
+        #[allow(clippy::cast_possible_truncation)]
+        let steps = (self.pitch / std::f32::consts::TAU * 65_536.0).round() as i16;
+        steps
+    }
+
     /// Unit view direction (x, y, z).
     #[must_use]
     pub fn forward(&self) -> [f32; 3] {
@@ -379,6 +453,21 @@ mod tests {
     }
 
     #[test]
+    fn the_mouse_fires_and_digits_select_weapons() {
+        let mut controls = Controls::new();
+        controls.mouse_down(PRIMARY_BUTTON);
+        assert!(controls.fire_held());
+        controls.mouse_up(PRIMARY_BUTTON);
+        assert!(!controls.fire_held());
+        assert_eq!(controls.selected(), None);
+        controls.key_down(KeyCode::Digit3, false);
+        assert_eq!(controls.selected(), Some(Weapon::RocketLauncher));
+        controls.key_up(KeyCode::Digit3);
+        controls.key_down(KeyCode::Digit2, false);
+        assert_eq!(controls.selected(), Some(Weapon::RailGun));
+    }
+
+    #[test]
     fn the_pad_moves_and_jumps() {
         let mut controls = Controls::new();
         let mut pads = PadState::default();
@@ -396,6 +485,9 @@ mod tests {
     fn look_yaw_matches_the_simulation() {
         let look = Look::new(std::f32::consts::PI);
         assert_eq!(look.sim_yaw(), 32_768);
+        let mut down = look;
+        down.pitch = -std::f32::consts::FRAC_PI_4;
+        assert_eq!(down.sim_pitch(), -8_192);
         let [x, _, z] = Look::new(std::f32::consts::FRAC_PI_2).forward();
         assert!((x - 1.0).abs() < 1e-6 && z.abs() < 1e-6);
     }

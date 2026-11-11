@@ -26,8 +26,10 @@ control. Fight with energy guns, a grapple hook and melee weapons.
 
 ## Play
 
-The first slice is a greybox arena to run, slide and jump around in, with two jump pads onto the
-central platform (no weapons yet).
+The current slice is a greybox arena to run, slide and jump around in, with two jump pads onto the
+central platform, three energy weapons and five target dummies to shoot (one walks to and fro).
+Downed dummies come back after 3 s. There are no other players or bots yet, and the guns, dummies
+and sounds are placeholders until asset-tooling delivers models and clips.
 
 ```sh
 cargo run -p shooter-client --release      # native window
@@ -39,9 +41,20 @@ Click to capture the mouse. WASD or the left stick moves, the mouse or the right
 Space or the south face button jumps (press again in the air to double jump), Shift sprints, C
 while sprinting slides, Esc releases the mouse. Steer in the air with WASD.
 
-The movement is checked against Rapier on a scripted tour of the arena and on scripted fast moves
-(sprint, slide, double jump, jump pad, ramp slides, a thin wall, a step):
-`cargo test -p shooter-sim --features physics-ab --test physics_ab`.
+The left mouse button fires; 1, 2 and 3 pick the weapon:
+
+| Key | Weapon | Shot |
+| --- | --- | --- |
+| 1 | Energy rifle | Hitscan bolts, 12 damage, 10 a second |
+| 2 | Rail gun | One hitscan beam, 85 damage, every 1.2 s |
+| 3 | Rocket launcher | A 24 m/s rocket, every 0.8 s: up to 100 splash damage within 3 m, and a push |
+
+Rocket jump by firing at your feet as you jump: the blast throws you about 5 m up. Rockets do not
+hurt their owner.
+
+The movement and the weapons are checked against Rapier on a scripted tour of the arena and on
+scripted moves (sprint, slide, double jump, jump pad, ramp slides, a thin wall, a step, a rocket
+jump, a shooting range): `cargo test -p shooter-sim --features physics-ab --test physics_ab`.
 
 When a crate can't do something yet, the shooter files an issue on that crate and uses Rapier
 (or the off-the-shelf equivalent) for that piece only, until the crate catches up.

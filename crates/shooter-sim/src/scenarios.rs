@@ -1,11 +1,12 @@
 //! Scripted fast moves, each in a small arena of its own (or the greybox): sprint and slide,
 //! double jump onto a ledge, a jump pad onto the platform, slides up and down a ramp, a slide
-//! into a thin wall and a sprint into a step. The movement tests check what each one does and
-//! the Rapier A/B test runs each on both backends.
+//! into a thin wall, a sprint into a step, a rocket jump and a shooting range. The movement and
+//! weapon tests check what each one does and the Rapier A/B test runs each on both backends.
 
-use crate::arena::{Arena, Piece};
+use crate::arena::{Arena, Piece, Post};
 use crate::player::Intent;
 use crate::tour::{Leg, NORTH, SOUTH, hold, stand, walk};
+use crate::weapons::{MAX_PITCH, Weapon};
 use sim_foundation::RampRise;
 use sim_foundation::physics::Vec3i;
 
@@ -64,6 +65,7 @@ fn open(spawn: [i32; 3], pieces: Vec<Piece>) -> Arena {
         half_size: 2_000,
         pieces,
         pads: Vec::new(),
+        posts: Vec::new(),
         spawn: Vec3i::new(spawn[0], spawn[1], spawn[2]),
         spawn_yaw: SOUTH,
     }
@@ -168,6 +170,123 @@ pub const STEP: Scenario = Scenario {
     legs: &[stand("settle", 10), sprint("sprint at the step", SOUTH, 40)],
 };
 
+/// Straight down.
+const DOWN: i16 = -MAX_PITCH;
+
+/// A 2.5 m ledge 3.3 m south: out of reach of a double jump (about 2 m), in reach of a rocket
+/// jump. Jump, fire a rocket at the feet, then steer onto the ledge.
+pub const ROCKET_JUMP: Scenario = Scenario {
+    name: "rocket jump onto a ledge",
+    arena: || open([0, 0, -330], vec![block([0, 125, 600], [300, 125, 600])]),
+    legs: &[
+        hold(
+            "take the launcher",
+            Intent {
+                yaw: SOUTH,
+                select: Some(Weapon::RocketLauncher),
+                ..Intent::IDLE
+            },
+            20,
+        ),
+        hold(
+            "jump and fire down",
+            Intent {
+                yaw: SOUTH,
+                pitch: DOWN,
+                jump: true,
+                fire: true,
+                ..Intent::IDLE
+            },
+            1,
+        ),
+        hold(
+            "blast",
+            Intent {
+                yaw: SOUTH,
+                pitch: DOWN,
+                ..Intent::IDLE
+            },
+            8,
+        ),
+        walk("steer onto the ledge", SOUTH, 50),
+        stand("on the ledge", 60),
+    ],
+};
+
+/// The yaw from the shooting range's spawn (0, 0, -600) toward a point on the floor.
+const fn yaw_to(x: i32, z: i32) -> u16 {
+    match sim_foundation::trig::yaw_from_vector(x, z + 600) {
+        Some(yaw) => yaw,
+        None => 0,
+    }
+}
+
+const fn shoot(name: &'static str, yaw: u16, weapon: Weapon, ticks: u32) -> Leg {
+    hold(
+        name,
+        Intent {
+            yaw,
+            fire: true,
+            select: Some(weapon),
+            ..Intent::IDLE
+        },
+        ticks,
+    )
+}
+
+const fn aim_with(name: &'static str, yaw: u16, weapon: Weapon, ticks: u32) -> Leg {
+    hold(
+        name,
+        Intent {
+            yaw,
+            select: Some(weapon),
+            ..Intent::IDLE
+        },
+        ticks,
+    )
+}
+
+/// A shooting range: three dummies 6 m south, the west one behind a wall. The rifle and the rail
+/// gun take down the middle one, a rocket hits the east one, rifle bolts at the west one stop at
+/// the wall.
+pub const SHOOTING_RANGE: Scenario = Scenario {
+    name: "shooting range",
+    arena: || {
+        let mut arena = open([0, 0, -600], vec![block([-200, 150, -300], [50, 150, 50])]);
+        arena.posts = vec![
+            Post {
+                feet: Vec3i::new(0, 0, 0),
+                patrol_units: 0,
+            },
+            Post {
+                feet: Vec3i::new(400, 0, 0),
+                patrol_units: 0,
+            },
+            Post {
+                feet: Vec3i::new(-400, 0, 0),
+                patrol_units: 0,
+            },
+        ];
+        arena
+    },
+    legs: &[
+        stand("settle", 10),
+        shoot("rifle the middle", SOUTH, Weapon::EnergyRifle, 60),
+        aim_with("take the rail gun", SOUTH, Weapon::RailGun, 12),
+        shoot("rail the middle", SOUTH, Weapon::RailGun, 1),
+        aim_with(
+            "take the launcher",
+            yaw_to(400, 0),
+            Weapon::RocketLauncher,
+            72,
+        ),
+        shoot("rocket the east", yaw_to(400, 0), Weapon::RocketLauncher, 1),
+        aim_with("rocket flies", yaw_to(400, 0), Weapon::RocketLauncher, 40),
+        aim_with("take the rifle", yaw_to(-400, 0), Weapon::EnergyRifle, 12),
+        shoot("rifle the wall", yaw_to(-400, 0), Weapon::EnergyRifle, 30),
+    ],
+};
+
 pub const ALL: &[Scenario] = &[
     SPRINT_AND_SLIDE,
     DOUBLE_JUMP,
@@ -175,4 +294,6 @@ pub const ALL: &[Scenario] = &[
     RAMP_SLIDE,
     THIN_WALL,
     STEP,
+    ROCKET_JUMP,
+    SHOOTING_RANGE,
 ];

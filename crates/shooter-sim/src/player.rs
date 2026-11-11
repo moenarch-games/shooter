@@ -7,6 +7,7 @@
 //! (`sim_foundation::trig`), lengths integer square roots.
 
 use crate::arena::Arena;
+use crate::weapons::Weapon;
 use sim_foundation::physics::{BodyId, PhysicsError, RigidBody, Vec3i, World};
 use sim_foundation::{subunits_per_tick, subunits_per_tick_squared, trig};
 
@@ -59,10 +60,17 @@ pub struct Intent {
     pub sprint: bool,
     /// Crouch held: starts a slide when moving fast enough on ground.
     pub crouch: bool,
+    /// Where the player aims up (positive) or down, in `trig` angle steps within
+    /// ±[`crate::weapons::MAX_PITCH`].
+    pub pitch: i16,
+    /// Trigger held: fires whenever the held weapon is ready.
+    pub fire: bool,
+    /// Switch to this weapon (it stays held until another is selected).
+    pub select: Option<Weapon>,
 }
 
 impl Intent {
-    /// Standing still, facing yaw 0.
+    /// Standing still, facing yaw 0, looking level.
     pub const IDLE: Self = Self {
         forward: 0,
         strafe: 0,
@@ -70,6 +78,9 @@ impl Intent {
         jump: false,
         sprint: false,
         crouch: false,
+        pitch: 0,
+        fire: false,
+        select: None,
     };
 }
 
@@ -97,20 +108,6 @@ pub struct Moves {
 pub struct Player {
     pub body: BodyId,
     pub motion: Motion,
-}
-
-/// What a tick did to a player, for presentation (footsteps, landing, camera).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct StepReport {
-    pub grounded: bool,
-    pub jumped: bool,
-    /// The jump was the air jump.
-    pub air_jumped: bool,
-    /// A jump pad threw the player.
-    pub launched: bool,
-    pub sliding: bool,
-    /// It touched down this tick after being airborne.
-    pub landed: bool,
 }
 
 /// The yaw offset of a forward/strafe combination: strafing right turns away from +X, the way
@@ -318,6 +315,35 @@ impl Player {
         [x, y - PLAYER_HALF_EXTENTS.y as f32, z]
     }
 
+    /// Where shots leave from: the eye, lower while sliding.
+    #[must_use]
+    pub fn eye(&self, world: &World) -> [f32; 3] {
+        let [x, y, z] = self.feet(world);
+        let height = if self.motion.sliding {
+            SLIDE_EYE_HEIGHT_UNITS
+        } else {
+            EYE_HEIGHT_UNITS
+        };
+        #[allow(clippy::cast_precision_loss)]
+        [x, y + height as f32, z]
+    }
+
+    /// Adds `push` (subunits per tick) to the body's velocity: a blast's knockback.
+    pub fn push(&self, world: &mut World, push: [i32; 3]) -> Result<(), PhysicsError> {
+        let velocity = world
+            .body(self.body)
+            .map(RigidBody::velocity)
+            .unwrap_or_default();
+        world.set_velocity(
+            self.body,
+            Vec3i::new(
+                velocity.x + push[0],
+                velocity.y + push[1],
+                velocity.z + push[2],
+            ),
+        )
+    }
+
     /// The horizontal speed the last step realized, subunits per tick.
     #[must_use]
     pub fn horizontal_speed(&self, world: &World) -> i32 {
@@ -326,63 +352,5 @@ impl Player {
             .map(RigidBody::velocity)
             .unwrap_or_default();
         length([velocity.x, velocity.z])
-    }
-}
-
-/// A single-player arena simulation: the world and one player, advanced one tick at a time.
-#[derive(Debug)]
-pub struct Session {
-    pub arena: Arena,
-    pub world: World,
-    pub player: Player,
-    grounded: bool,
-}
-
-impl Session {
-    pub fn new(arena: Arena) -> Result<Self, PhysicsError> {
-        let mut world = arena.build_world(GRAVITY)?;
-        let player = Player::spawn(
-            &mut world,
-            BodyId(crate::arena::FIRST_PLAYER_BODY),
-            arena.spawn,
-        )?;
-        Ok(Self {
-            arena,
-            world,
-            player,
-            grounded: false,
-        })
-    }
-
-    /// One tick at [`sim_foundation::TICK_HZ`].
-    pub fn tick(&mut self, intent: Intent) -> Result<StepReport, PhysicsError> {
-        let moves = self.player.apply(&mut self.world, &self.arena, intent)?;
-        self.world.step()?;
-        if self.player.feet(&self.world)[1] < KILL_HEIGHT_UNITS as f32 {
-            self.respawn()?;
-        }
-        let grounded = self.world.grounded(self.player.body);
-        let left_ground = moves.jumped || moves.launched;
-        let landed = grounded && !self.grounded && !left_ground;
-        self.grounded = grounded;
-        Ok(StepReport {
-            grounded,
-            jumped: moves.jumped,
-            air_jumped: moves.air_jumped,
-            launched: moves.launched,
-            sliding: self.player.motion.sliding,
-            landed,
-        })
-    }
-
-    /// Back to the arena's spawn, at rest.
-    pub fn respawn(&mut self) -> Result<(), PhysicsError> {
-        let spawn = self.arena.spawn;
-        self.player.motion = Motion::default();
-        self.world.set_position(
-            self.player.body,
-            Vec3i::new(spawn.x, spawn.y + PLAYER_HALF_EXTENTS.y, spawn.z),
-        )?;
-        self.world.set_velocity(self.player.body, Vec3i::ZERO)
     }
 }
