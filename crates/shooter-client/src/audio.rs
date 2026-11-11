@@ -16,7 +16,8 @@ const MANIFEST: &str = r#"{
     { "id": "rail", "source": { "tone": { "frequency_hz": 220, "duration_ms": 280, "waveform": "saw", "amplitude": 0.45 } } },
     { "id": "rocket", "source": { "tone": { "frequency_hz": 160, "duration_ms": 140, "waveform": "noise", "amplitude": 0.45 } } },
     { "id": "boom", "source": { "tone": { "frequency_hz": 60, "duration_ms": 450, "waveform": "noise", "amplitude": 0.9 } } },
-    { "id": "hit", "source": { "tone": { "frequency_hz": 1400, "duration_ms": 35, "waveform": "sine", "amplitude": 0.3 } } }
+    { "id": "hit", "source": { "tone": { "frequency_hz": 1400, "duration_ms": 35, "waveform": "sine", "amplitude": 0.3 } } },
+    { "id": "hurt", "source": { "tone": { "frequency_hz": 110, "duration_ms": 120, "waveform": "square", "amplitude": 0.4 } } }
   ],
   "cues": [
     { "kind": "player.step", "clips": ["step"], "max_voices": 2, "gain_db": -8, "pitch_jitter": 0.12 },
@@ -25,7 +26,8 @@ const MANIFEST: &str = r#"{
     { "kind": "weapon.railGun", "clips": ["rail"], "max_voices": 2, "gain_db": -2, "spatial": true },
     { "kind": "weapon.rocketLauncher", "clips": ["rocket"], "max_voices": 2, "gain_db": -4, "spatial": true },
     { "kind": "rocket.explode", "clips": ["boom"], "priority": 70, "max_voices": 4, "pitch_jitter": 0.08, "spatial": true },
-    { "kind": "target.hit", "clips": ["hit"], "max_voices": 2, "gain_db": -6, "cooldown_ms": 30 }
+    { "kind": "target.hit", "clips": ["hit"], "max_voices": 2, "gain_db": -6, "cooldown_ms": 30 },
+    { "kind": "player.hurt", "clips": ["hurt"], "max_voices": 1, "gain_db": -6, "cooldown_ms": 80 }
   ]
 }"#;
 
@@ -97,8 +99,16 @@ impl Sounds {
         self.director.set_listener(eye, right);
     }
 
-    /// After a tick: `moved` is the horizontal distance (units) the player covered.
-    pub fn tick(&mut self, report: StepReport, moved: f32, events: &[Event], now_ms: f64) {
+    /// After a tick: `moved` is the horizontal distance (units) the player covered; `local` is
+    /// the player's slot (its hits on others tick, hits on it thud).
+    pub fn tick(
+        &mut self,
+        report: StepReport,
+        moved: f32,
+        events: &[Event],
+        local: Option<u8>,
+        now_ms: f64,
+    ) {
         if report.landed {
             self.walked = 0.0;
             self.cue("player.land", None, now_ms);
@@ -116,7 +126,19 @@ impl Sounds {
                 }
                 Event::Exploded { at } => self.cue("rocket.explode", Some(metres(at)), now_ms),
                 Event::Damaged { .. } => self.cue("target.hit", None, now_ms),
-                Event::Beam { .. } => {}
+                Event::Hit {
+                    victim, attacker, ..
+                } => {
+                    if Some(victim) == local {
+                        self.cue("player.hurt", None, now_ms);
+                    } else if attacker.is_some() && attacker == local {
+                        self.cue("target.hit", None, now_ms);
+                    }
+                }
+                Event::Beam { .. }
+                | Event::Killed { .. }
+                | Event::Spawned { .. }
+                | Event::RoundOver { .. } => {}
             }
         }
     }

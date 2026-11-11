@@ -123,7 +123,7 @@ pub fn run_legs(session: &mut Session, legs: &[Leg]) -> Result<Vec<Sample>, Phys
             samples.push(Sample {
                 tick,
                 leg: leg.name,
-                center: session.player.center(&session.world),
+                center: session.local().player.center(&session.world),
                 grounded: report.grounded,
                 sliding: report.sliding,
                 launched: report.launched,

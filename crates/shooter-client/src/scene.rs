@@ -232,18 +232,21 @@ pub fn gun_pose(eye: Vec3, forward: Vec3) -> (Mat4, Vec3) {
     )
 }
 
-/// One dummy as drawn this frame.
+/// One other fighter as drawn this frame.
 #[derive(Clone, Copy, Debug)]
-pub struct DummyView {
-    /// Body centre in metres, or `None` while it is down.
+pub struct FighterView {
+    /// Body centre in metres, or `None` while it is dead.
     pub center: Option<Vec3>,
+    /// Where it looks.
+    pub forward: Vec3,
     /// Remaining health, 0..=1.
     pub health: f32,
     /// Hit glow, 1 just hit and fading to 0.
     pub glow: f32,
+    pub held: Weapon,
 }
 
-fn dummy_material(health: f32, glow: f32) -> StandardMaterial {
+fn fighter_material(health: f32, glow: f32) -> StandardMaterial {
     let healthy = Vec3::new(0.15, 0.55, 0.5);
     let hurt = Vec3::new(0.75, 0.12, 0.1);
     let color = hurt.lerp(healthy, health.clamp(0.0, 1.0));
@@ -255,12 +258,19 @@ fn dummy_material(health: f32, glow: f32) -> StandardMaterial {
     }
 }
 
-/// The moving things drawn over the arena: target dummies, rockets, the held gun and (natively;
-/// the page draws its own) a crosshair. Placeholder primitives until asset-tooling delivers the
-/// weapon and character models.
+/// One other fighter's instances: its body (coloured by health) and its gun.
+struct FighterInstances {
+    body: InstanceId,
+    material: MaterialId,
+    gun: InstanceId,
+}
+
+/// The moving things drawn over the arena: the other fighters, rockets, the held gun and
+/// (natively; the page draws its own) a crosshair and a health bar. Placeholder primitives until
+/// asset-tooling delivers the weapon and character models.
 pub struct Actors {
-    dummies: Vec<(InstanceId, MaterialId)>,
-    dummy_mesh: MeshId,
+    fighters: Vec<FighterInstances>,
+    fighter_mesh: MeshId,
     rocket_mesh: MeshId,
     rocket_material: MaterialId,
     rockets: Vec<InstanceId>,
@@ -268,34 +278,32 @@ pub struct Actors {
     gun_mesh: MeshId,
     gun_materials: [MaterialId; 3],
     crosshair: Option<InstanceId>,
+    /// Natively: the health bar's mesh, material and instance (HUD stopgap).
+    health_bar: Option<(MeshId, MaterialId, InstanceId)>,
+}
+
+fn glowing(rgb: Vec3, nits: f32) -> StandardMaterial {
+    StandardMaterial {
+        base_color: rgb.extend(1.0),
+        emissive: rgb * nits,
+        perceptual_roughness: 0.4,
+        ..StandardMaterial::default()
+    }
+}
+
+fn gun_material(materials: &[MaterialId; 3], held: Weapon) -> MaterialId {
+    materials[usize::from(held.index())]
 }
 
 impl Actors {
-    pub fn new(world: &mut World, dummies: usize) -> Self {
-        let dummy_mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(0.6, 1.8, 0.6))));
-        let dummies = (0..dummies)
-            .map(|_| {
-                let material = world.add_material(&dummy_material(1.0, 0.0));
-                let instance = world.add_instance(Instance {
-                    mesh: dummy_mesh,
-                    material,
-                    world_from_local: HIDDEN,
-                    skin: None,
-                });
-                (instance, material)
-            })
-            .collect();
+    pub fn new(world: &mut World) -> Self {
+        let fighter_mesh =
+            world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(0.6, 1.8, 0.6))));
         let rocket_mesh = world.add_mesh(&MeshData::shape(Shape::Sphere {
             radius: 0.09,
             sectors: 12,
             stacks: 8,
         }));
-        let glowing = |rgb: Vec3, nits: f32| StandardMaterial {
-            base_color: rgb.extend(1.0),
-            emissive: rgb * nits,
-            perceptual_roughness: 0.4,
-            ..StandardMaterial::default()
-        };
         let rocket_material = world.add_material(&glowing(Vec3::new(1.0, 0.6, 0.2), 60_000.0));
         let gun_mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
             0.045, 0.055, GUN_LENGTH,
@@ -308,7 +316,8 @@ impl Actors {
             world_from_local: HIDDEN,
             skin: None,
         });
-        let crosshair = (!cfg!(target_arch = "wasm32")).then(|| {
+        let native = !cfg!(target_arch = "wasm32");
+        let crosshair = native.then(|| {
             let mesh = world.add_mesh(&MeshData::shape(Shape::Sphere {
                 radius: 0.0015,
                 sectors: 8,
@@ -322,9 +331,24 @@ impl Actors {
                 skin: None,
             })
         });
+        let health_bar = native.then(|| {
+            let mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
+                HEALTH_BAR_LENGTH,
+                0.004,
+                0.001,
+            ))));
+            let material = world.add_material(&glowing(Vec3::new(0.3, 1.0, 0.5), 20_000.0));
+            let instance = world.add_instance(Instance {
+                mesh,
+                material,
+                world_from_local: HIDDEN,
+                skin: None,
+            });
+            (mesh, material, instance)
+        });
         Self {
-            dummies,
-            dummy_mesh,
+            fighters: Vec::new(),
+            fighter_mesh,
             rocket_mesh,
             rocket_material,
             rockets: Vec::new(),
@@ -332,30 +356,87 @@ impl Actors {
             gun_mesh,
             gun_materials,
             crosshair,
+            health_bar,
         }
     }
 
-    /// Places everything for this frame.
+    fn place(
+        world: &mut World,
+        instance: InstanceId,
+        mesh: MeshId,
+        material: MaterialId,
+        at: Mat4,
+    ) {
+        world.set_instance(
+            instance,
+            Instance {
+                mesh,
+                material,
+                world_from_local: at,
+                skin: None,
+            },
+        );
+    }
+
+    /// Places everything for this frame. `eye`/`forward` is the local camera; `held` is `None`
+    /// while the local fighter is dead (no gun in view); `health` is its health (0..=1).
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         world: &mut World,
-        dummies: &[DummyView],
+        fighters: &[FighterView],
         rockets: &[Vec3],
-        held: Weapon,
+        held: Option<Weapon>,
+        health: Option<f32>,
         eye: Vec3,
         forward: Vec3,
     ) {
-        for ((instance, material), view) in self.dummies.iter().zip(dummies) {
-            world.set_material(*material, &dummy_material(view.health, view.glow));
-            world.set_instance(
-                *instance,
-                Instance {
-                    mesh: self.dummy_mesh,
-                    material: *material,
-                    world_from_local: view.center.map_or(HIDDEN, Mat4::from_translation),
-                    skin: None,
-                },
+        while self.fighters.len() < fighters.len() {
+            let material = world.add_material(&fighter_material(1.0, 0.0));
+            let body = world.add_instance(Instance {
+                mesh: self.fighter_mesh,
+                material,
+                world_from_local: HIDDEN,
+                skin: None,
+            });
+            let gun = world.add_instance(Instance {
+                mesh: self.gun_mesh,
+                material: self.gun_materials[0],
+                world_from_local: HIDDEN,
+                skin: None,
+            });
+            self.fighters.push(FighterInstances {
+                body,
+                material,
+                gun,
+            });
+        }
+        for (index, instances) in self.fighters.iter().enumerate() {
+            let view = fighters.get(index).filter(|view| view.center.is_some());
+            let (body_at, gun_at, gun_material) = match view {
+                Some(view) => {
+                    world.set_material(
+                        instances.material,
+                        &fighter_material(view.health, view.glow),
+                    );
+                    let center = view.center.unwrap_or_default();
+                    let fighter_eye = center + Vec3::Y * 0.75;
+                    (
+                        Mat4::from_translation(center),
+                        gun_pose(fighter_eye, view.forward).0,
+                        gun_material(&self.gun_materials, view.held),
+                    )
+                }
+                None => (HIDDEN, HIDDEN, self.gun_materials[0]),
+            };
+            Self::place(
+                world,
+                instances.body,
+                self.fighter_mesh,
+                instances.material,
+                body_at,
             );
+            Self::place(world, instances.gun, self.gun_mesh, gun_material, gun_at);
         }
         while self.rockets.len() < rockets.len() {
             let instance = world.add_instance(Instance {
@@ -367,38 +448,41 @@ impl Actors {
             self.rockets.push(instance);
         }
         for (index, instance) in self.rockets.iter().enumerate() {
-            world.set_instance(
-                *instance,
-                Instance {
-                    mesh: self.rocket_mesh,
-                    material: self.rocket_material,
-                    world_from_local: rockets
-                        .get(index)
-                        .map_or(HIDDEN, |at| Mat4::from_translation(*at)),
-                    skin: None,
-                },
-            );
+            let at = rockets
+                .get(index)
+                .map_or(HIDDEN, |at| Mat4::from_translation(*at));
+            Self::place(world, *instance, self.rocket_mesh, self.rocket_material, at);
         }
-        let material = match held {
-            Weapon::EnergyRifle => self.gun_materials[0],
-            Weapon::RailGun => self.gun_materials[1],
-            Weapon::RocketLauncher => self.gun_materials[2],
+        let material = gun_material(&self.gun_materials, held.unwrap_or_default());
+        let at = if held.is_some() {
+            gun_pose(eye, forward).0
+        } else {
+            HIDDEN
         };
-        world.set_instance(
-            self.gun,
-            Instance {
-                mesh: self.gun_mesh,
-                material,
-                world_from_local: gun_pose(eye, forward).0,
-                skin: None,
-            },
-        );
+        Self::place(world, self.gun, self.gun_mesh, material, at);
         if let Some(crosshair) = self.crosshair {
             let mut instance = world.instance(crosshair);
             instance.world_from_local = Mat4::from_translation(eye + forward * 0.5);
             world.set_instance(crosshair, instance);
         }
+        if let Some((mesh, material, instance)) = self.health_bar {
+            let at = health.map_or(HIDDEN, |health| health_bar_pose(eye, forward, health));
+            Self::place(world, instance, mesh, material, at);
+        }
     }
+}
+
+/// The native health bar's full length (metres, half a metre ahead of the eye).
+const HEALTH_BAR_LENGTH: f32 = 0.12;
+
+/// The health bar low in the view, shrunk to `health` from its left end.
+fn health_bar_pose(eye: Vec3, forward: Vec3, health: f32) -> Mat4 {
+    let (forward, right, up) = basis(forward);
+    let health = health.clamp(0.0, 1.0);
+    let left = eye + forward * 0.5 - up * 0.2 - right * (HEALTH_BAR_LENGTH / 2.0);
+    let center = left + right * (HEALTH_BAR_LENGTH * health / 2.0);
+    let rotation = Quat::from_mat3(&Mat3::from_cols(-right, up, forward));
+    Mat4::from_scale_rotation_translation(Vec3::new(health.max(0.001), 1.0, 1.0), rotation, center)
 }
 
 /// The frame's camera and the hall's light: a high sun through an open roof and soft ambient,

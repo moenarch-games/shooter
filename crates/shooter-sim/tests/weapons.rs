@@ -4,8 +4,9 @@
 use shooter_sim::dummies::DUMMY_HEALTH;
 use shooter_sim::player::PLAYER_HALF_EXTENTS;
 use shooter_sim::scenarios::{self, Scenario};
+use shooter_sim::sim_foundation::physics::Vec3i;
 use shooter_sim::tour::{Sample, end_of, run_legs};
-use shooter_sim::{Arena, Event, Intent, Session, Weapon};
+use shooter_sim::{Arena, Event, Intent, Post, Session, Weapon};
 
 fn run(scenario: Scenario) -> (Session, Vec<Sample>) {
     let mut session = Session::new((scenario.arena)()).expect("arena builds");
@@ -71,13 +72,21 @@ fn a_downed_dummy_comes_back() {
 }
 
 #[test]
-fn the_greybox_dummies_stand_and_patrol() {
-    let mut session = Session::new(Arena::greybox()).unwrap();
-    let start = session.dummies[3].center(&session.world).unwrap();
+fn dummies_stand_and_patrol() {
+    let post = |feet: [i32; 3], patrol_units| Post {
+        feet: Vec3i::new(feet[0], feet[1], feet[2]),
+        patrol_units,
+    };
+    let arena = Arena {
+        posts: vec![post([500, 0, 800], 0), post([-1_000, 0, -800], 300)],
+        ..Arena::greybox()
+    };
+    let mut session = Session::new(arena).unwrap();
+    let start = session.dummies[1].center(&session.world).unwrap();
     let mut xs = Vec::new();
     for _ in 0..240 {
         session.tick(Intent::IDLE).unwrap();
-        xs.push(session.dummies[3].center(&session.world).unwrap()[0]);
+        xs.push(session.dummies[1].center(&session.world).unwrap()[0]);
     }
     let (low, high) = xs
         .iter()

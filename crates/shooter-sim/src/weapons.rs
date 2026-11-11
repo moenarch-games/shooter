@@ -33,6 +33,27 @@ pub enum Delivery {
 impl Weapon {
     pub const ALL: [Self; 3] = [Self::EnergyRifle, Self::RailGun, Self::RocketLauncher];
 
+    /// Its place in [`Weapon::ALL`] (the 1, 2, 3 keys and the wire).
+    #[must_use]
+    pub const fn index(self) -> u8 {
+        match self {
+            Self::EnergyRifle => 0,
+            Self::RailGun => 1,
+            Self::RocketLauncher => 2,
+        }
+    }
+
+    /// The weapon at `index` in [`Weapon::ALL`].
+    #[must_use]
+    pub const fn from_index(index: u8) -> Option<Self> {
+        match index {
+            0 => Some(Self::EnergyRifle),
+            1 => Some(Self::RailGun),
+            2 => Some(Self::RocketLauncher),
+            _ => None,
+        }
+    }
+
     /// Ticks between two shots.
     #[must_use]
     pub const fn refire_ticks(self) -> u32 {
@@ -134,7 +155,7 @@ pub struct Trace {
 }
 
 /// A hitscan ray from `eye` (units) along the Q16 `direction` for `range_units`, ignoring
-/// `owner`.
+/// `owner` and every body `accept` refuses.
 #[must_use]
 pub fn trace(
     world: &World,
@@ -142,14 +163,45 @@ pub fn trace(
     direction: [i32; 3],
     range_units: i32,
     owner: BodyId,
+    accept: impl Fn(BodyId) -> bool,
 ) -> Trace {
     #[allow(clippy::cast_precision_loss)]
     let translation = unit_f32(direction).map(|axis| axis * range_units as f32);
-    let hit = world.cast_ray(eye, translation, |body| body != owner);
+    let hit = world.cast_ray(eye, translation, |body| body != owner && accept(body));
     Trace {
         end: along(eye, translation, hit.map_or(1.0, |hit| hit.fraction)),
         hit,
     }
+}
+
+/// Where along `translation` (0..=1) a ray from `origin` enters the box at `center` with
+/// `half` extents, if it does (0 when it starts inside). A slab test: fighters are boxes to
+/// lag-compensated shots, wherever they stood at the rewound tick.
+#[must_use]
+pub fn ray_box(
+    origin: [f32; 3],
+    translation: [f32; 3],
+    center: [f32; 3],
+    half: [f32; 3],
+) -> Option<f32> {
+    let (mut enter, mut exit) = (0.0f32, 1.0f32);
+    for axis in 0..3 {
+        let (low, high) = (center[axis] - half[axis], center[axis] + half[axis]);
+        let (start, step) = (origin[axis], translation[axis]);
+        if step == 0.0 {
+            if start < low || start > high {
+                return None;
+            }
+            continue;
+        }
+        let (a, b) = ((low - start) / step, (high - start) / step);
+        enter = enter.max(a.min(b));
+        exit = exit.min(a.max(b));
+        if enter > exit {
+            return None;
+        }
+    }
+    Some(enter)
 }
 
 /// A rocket in flight, in subunits.

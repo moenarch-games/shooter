@@ -10,7 +10,7 @@ use render_engine::particles::{
 };
 use render_engine::scene::PointLight;
 use render_engine::world::{EmitterId, World};
-use shooter_sim::weapons::Rocket;
+use shooter_sim::wire::RocketState;
 use shooter_sim::{Event, Weapon};
 
 /// Rockets trail exhaust from this many ticks after launch (about 1.6 m out).
@@ -277,6 +277,7 @@ impl Effects {
                     weapon,
                     eye,
                     direction,
+                    ..
                 } => {
                     let direction = Vec3::from(direction);
                     let muzzle = gun_pose(units(eye), direction).1;
@@ -320,19 +321,23 @@ impl Effects {
                     world.burst(self.impact, 60, facing(at, Vec3::Y));
                     self.flash(at, Vec3::new(1.0, 0.55, 0.2), 3_000_000.0, 14.0, 0.4);
                 }
-                Event::Damaged { .. } => {}
+                Event::Damaged { .. }
+                | Event::Hit { .. }
+                | Event::Killed { .. }
+                | Event::Spawned { .. }
+                | Event::RoundOver { .. } => {}
             }
         }
     }
 
     /// Exhaust behind each rocket, once per simulation tick, from a few ticks out (so it never
     /// fills the shooter's view).
-    pub fn rockets(&mut self, world: &mut World, rockets: &[Rocket]) {
+    pub fn rockets(&mut self, world: &mut World, rockets: &[RocketState]) {
         for rocket in rockets
             .iter()
             .filter(|rocket| rocket.age >= EXHAUST_AFTER_TICKS)
         {
-            let at = units(rocket.position_units());
+            let at = units(rocket.position);
             world.burst(self.exhaust, 3, Mat4::from_translation(at));
         }
     }
