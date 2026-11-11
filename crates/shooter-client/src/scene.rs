@@ -1,16 +1,18 @@
 //! The arena as render-engine content: one mesh per piece at its true size (so normals stay
-//! exact), a checkered floor for a sense of speed, glowing jump pads, and the hall's lighting.
+//! exact), a checkered floor for a sense of speed, glowing jump pads, and the hall's lighting;
+//! and the [`Actors`] that move over it.
 
-use render_engine::glam::{Mat4, Quat, Vec3, Vec4};
+use crate::effects::tint;
+use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use render_engine::material::StandardMaterial;
 use render_engine::mesh::{MeshData, Shape};
 use render_engine::scene::{
-    Ambient, Camera, Scene, ShadowFilter, ShadowMapSizes, Sun, SunShadows, Tonemapping,
+    Ambient, Camera, PointLight, Scene, ShadowFilter, ShadowMapSizes, Sun, SunShadows, Tonemapping,
 };
-use render_engine::world::{Instance, World};
+use render_engine::world::{Instance, InstanceId, MaterialId, MeshId, World};
 use shooter_sim::sim_foundation::RampRise;
 use shooter_sim::sim_foundation::physics::Vec3i;
-use shooter_sim::{Arena, Piece};
+use shooter_sim::{Arena, Piece, Weapon};
 
 /// Simulation units (cm) to render metres.
 pub const METRES_PER_UNIT: f32 = 0.01;
@@ -204,9 +206,205 @@ pub fn build(world: &mut World, arena: &Arena) {
     }
 }
 
-/// The frame's camera and the hall's light: a high sun through an open roof and soft ambient.
+/// Where something moving is drawn hidden: under the floor.
+const HIDDEN: Mat4 = Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::Z, Vec4::new(0.0, -100.0, 0.0, 1.0));
+
+/// The first-person camera's basis: forward, right (yaw 0 faces +Z, its right is -X) and up.
 #[must_use]
-pub fn frame(eye: Vec3, forward: Vec3) -> Scene {
+pub fn basis(forward: Vec3) -> (Vec3, Vec3, Vec3) {
+    let forward = forward.normalize_or(Vec3::Z);
+    let right = forward.cross(Vec3::Y).normalize_or(Vec3::NEG_X);
+    (forward, right, right.cross(forward))
+}
+
+/// The placeholder gun's length (metres) and where it sits relative to the eye.
+const GUN_LENGTH: f32 = 0.3;
+
+/// The held gun's transform and its barrel's end, for an eye and view direction (metres).
+#[must_use]
+pub fn gun_pose(eye: Vec3, forward: Vec3) -> (Mat4, Vec3) {
+    let (forward, right, up) = basis(forward);
+    let center = eye + forward * 0.42 + right * 0.2 - up * 0.2;
+    let rotation = Quat::from_mat3(&Mat3::from_cols(up.cross(forward), up, forward));
+    (
+        Mat4::from_rotation_translation(rotation, center),
+        center + forward * (GUN_LENGTH / 2.0),
+    )
+}
+
+/// One dummy as drawn this frame.
+#[derive(Clone, Copy, Debug)]
+pub struct DummyView {
+    /// Body centre in metres, or `None` while it is down.
+    pub center: Option<Vec3>,
+    /// Remaining health, 0..=1.
+    pub health: f32,
+    /// Hit glow, 1 just hit and fading to 0.
+    pub glow: f32,
+}
+
+fn dummy_material(health: f32, glow: f32) -> StandardMaterial {
+    let healthy = Vec3::new(0.15, 0.55, 0.5);
+    let hurt = Vec3::new(0.75, 0.12, 0.1);
+    let color = hurt.lerp(healthy, health.clamp(0.0, 1.0));
+    StandardMaterial {
+        base_color: color.extend(1.0),
+        emissive: Vec3::new(1.0, 0.85, 0.7) * (glow * 4_000.0),
+        perceptual_roughness: 0.6,
+        ..StandardMaterial::default()
+    }
+}
+
+/// The moving things drawn over the arena: target dummies, rockets, the held gun and (natively;
+/// the page draws its own) a crosshair. Placeholder primitives until asset-tooling delivers the
+/// weapon and character models.
+pub struct Actors {
+    dummies: Vec<(InstanceId, MaterialId)>,
+    dummy_mesh: MeshId,
+    rocket_mesh: MeshId,
+    rocket_material: MaterialId,
+    rockets: Vec<InstanceId>,
+    gun: InstanceId,
+    gun_mesh: MeshId,
+    gun_materials: [MaterialId; 3],
+    crosshair: Option<InstanceId>,
+}
+
+impl Actors {
+    pub fn new(world: &mut World, dummies: usize) -> Self {
+        let dummy_mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(0.6, 1.8, 0.6))));
+        let dummies = (0..dummies)
+            .map(|_| {
+                let material = world.add_material(&dummy_material(1.0, 0.0));
+                let instance = world.add_instance(Instance {
+                    mesh: dummy_mesh,
+                    material,
+                    world_from_local: HIDDEN,
+                    skin: None,
+                });
+                (instance, material)
+            })
+            .collect();
+        let rocket_mesh = world.add_mesh(&MeshData::shape(Shape::Sphere {
+            radius: 0.09,
+            sectors: 12,
+            stacks: 8,
+        }));
+        let glowing = |rgb: Vec3, nits: f32| StandardMaterial {
+            base_color: rgb.extend(1.0),
+            emissive: rgb * nits,
+            perceptual_roughness: 0.4,
+            ..StandardMaterial::default()
+        };
+        let rocket_material = world.add_material(&glowing(Vec3::new(1.0, 0.6, 0.2), 60_000.0));
+        let gun_mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
+            0.045, 0.055, GUN_LENGTH,
+        ))));
+        let gun_materials =
+            Weapon::ALL.map(|weapon| world.add_material(&glowing(tint(weapon), 1_200.0)));
+        let gun = world.add_instance(Instance {
+            mesh: gun_mesh,
+            material: gun_materials[0],
+            world_from_local: HIDDEN,
+            skin: None,
+        });
+        let crosshair = (!cfg!(target_arch = "wasm32")).then(|| {
+            let mesh = world.add_mesh(&MeshData::shape(Shape::Sphere {
+                radius: 0.0015,
+                sectors: 8,
+                stacks: 6,
+            }));
+            let material = world.add_material(&glowing(Vec3::ONE, 40_000.0));
+            world.add_instance(Instance {
+                mesh,
+                material,
+                world_from_local: HIDDEN,
+                skin: None,
+            })
+        });
+        Self {
+            dummies,
+            dummy_mesh,
+            rocket_mesh,
+            rocket_material,
+            rockets: Vec::new(),
+            gun,
+            gun_mesh,
+            gun_materials,
+            crosshair,
+        }
+    }
+
+    /// Places everything for this frame.
+    pub fn update(
+        &mut self,
+        world: &mut World,
+        dummies: &[DummyView],
+        rockets: &[Vec3],
+        held: Weapon,
+        eye: Vec3,
+        forward: Vec3,
+    ) {
+        for ((instance, material), view) in self.dummies.iter().zip(dummies) {
+            world.set_material(*material, &dummy_material(view.health, view.glow));
+            world.set_instance(
+                *instance,
+                Instance {
+                    mesh: self.dummy_mesh,
+                    material: *material,
+                    world_from_local: view.center.map_or(HIDDEN, Mat4::from_translation),
+                    skin: None,
+                },
+            );
+        }
+        while self.rockets.len() < rockets.len() {
+            let instance = world.add_instance(Instance {
+                mesh: self.rocket_mesh,
+                material: self.rocket_material,
+                world_from_local: HIDDEN,
+                skin: None,
+            });
+            self.rockets.push(instance);
+        }
+        for (index, instance) in self.rockets.iter().enumerate() {
+            world.set_instance(
+                *instance,
+                Instance {
+                    mesh: self.rocket_mesh,
+                    material: self.rocket_material,
+                    world_from_local: rockets
+                        .get(index)
+                        .map_or(HIDDEN, |at| Mat4::from_translation(*at)),
+                    skin: None,
+                },
+            );
+        }
+        let material = match held {
+            Weapon::EnergyRifle => self.gun_materials[0],
+            Weapon::RailGun => self.gun_materials[1],
+            Weapon::RocketLauncher => self.gun_materials[2],
+        };
+        world.set_instance(
+            self.gun,
+            Instance {
+                mesh: self.gun_mesh,
+                material,
+                world_from_local: gun_pose(eye, forward).0,
+                skin: None,
+            },
+        );
+        if let Some(crosshair) = self.crosshair {
+            let mut instance = world.instance(crosshair);
+            instance.world_from_local = Mat4::from_translation(eye + forward * 0.5);
+            world.set_instance(crosshair, instance);
+        }
+    }
+}
+
+/// The frame's camera and the hall's light: a high sun through an open roof and soft ambient,
+/// plus the weapons' flashes.
+#[must_use]
+pub fn frame(eye: Vec3, forward: Vec3, point_lights: Vec<PointLight>) -> Scene {
     Scene {
         camera: Camera {
             eye,
@@ -229,7 +427,7 @@ pub fn frame(eye: Vec3, forward: Vec3) -> Scene {
         }),
         moon: None,
         sky: None,
-        point_lights: Vec::new(),
+        point_lights,
         spot_lights: Vec::new(),
         shadow_maps: ShadowMapSizes::default(),
         ambient: Ambient {

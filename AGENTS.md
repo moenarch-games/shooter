@@ -9,16 +9,16 @@ that materially changes the task.
 
 | Crate | Role |
 | --- | --- |
-| `shooter-sim` | Deterministic simulation both clients share: the greybox arena and player movement over `sim-foundation`'s physics world. No rendering, input devices or I/O |
-| `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame, input-bindings controls, gilrs gamepads, game-audio footsteps |
+| `shooter-sim` | Deterministic simulation both clients share: the greybox arena, player movement, the energy weapons and target dummies over `sim-foundation`'s physics world. No rendering, input devices or I/O |
+| `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame, input-bindings controls, gilrs gamepads, render-engine weapon lights and particles, game-audio footsteps and positional gunfire |
 | `web/` | The page around the `wasm32` build; `scripts/build-web.sh` writes `web/dist` |
 
 ## Commands
 
 ```sh
 cargo fmt --all -- --check
-cargo test -p shooter-sim --locked                                         # movement on physics-engine
-cargo test -p shooter-sim --features physics-ab --test physics_ab --locked # Rapier A/B of the arena tour
+cargo test -p shooter-sim --locked                                         # movement and weapons on physics-engine
+cargo test -p shooter-sim --features physics-ab --test physics_ab --locked # Rapier A/B of the tour, moves and weapons
 cargo run -p shooter-client --release                                      # native client
 scripts/build-web.sh && python3 -m http.server -d web/dist                 # browser client
 ```
