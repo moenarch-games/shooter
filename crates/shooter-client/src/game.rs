@@ -1,7 +1,7 @@
 //! Where the client's match comes from: offline practice runs the deathmatch in-process
-//! (`shooter-sim`, the local player in slot 0 against bots), online play (native) follows a
-//! game-server host and predicts the local fighter. Both hand the frame the same
-//! [`Snapshot`] of the match, so drawing and the HUD do not care which it is.
+//! (`shooter-sim`, the local player in slot 0 against bots), online play (native and in the
+//! browser) follows a game-server host and predicts the local fighter. Both hand the frame the
+//! same [`Snapshot`] of the match, so drawing and the HUD do not care which it is.
 
 use shooter_sim::session::LOCAL_PLAYER;
 use shooter_sim::{Arena, Event, Intent, Rules, Session, Snapshot, StepReport};
@@ -21,7 +21,6 @@ pub enum Game {
         session: Box<Session>,
         snapshot: Snapshot,
     },
-    #[cfg(not(target_arch = "wasm32"))]
     Online(Box<online::Online>),
 }
 
@@ -53,7 +52,6 @@ impl Game {
                     events: session.events.clone(),
                 })
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Online(online) => online.tick(intent),
         }
     }
@@ -63,7 +61,6 @@ impl Game {
     pub fn snapshot(&self) -> Option<&Snapshot> {
         match self {
             Self::Practice { snapshot, .. } => Some(snapshot),
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Online(online) => online.snapshot(),
         }
     }
@@ -73,7 +70,6 @@ impl Game {
     pub fn local_slot(&self) -> Option<u8> {
         let id = match self {
             Self::Practice { .. } => LOCAL_PLAYER,
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Online(online) => online.player_id()?,
         };
         Some(self.snapshot()?.of_player(id)?.slot)
@@ -87,7 +83,6 @@ impl Game {
                 .local()
                 .alive()
                 .then(|| session.local().player.center(&session.world)),
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Online(online) => online.local_center(),
         }
     }
@@ -97,7 +92,6 @@ impl Game {
     pub fn local_sliding(&self) -> bool {
         match self {
             Self::Practice { session, .. } => session.local().player.motion.sliding,
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Online(online) => online.sliding(),
         }
     }
@@ -107,7 +101,6 @@ impl Game {
     pub fn local_hook(&self) -> Option<[f32; 3]> {
         match self {
             Self::Practice { session, .. } => session.local().hook.map(|hook| hook.anchor_units()),
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Online(online) => online.hook(),
         }
     }
@@ -117,13 +110,11 @@ impl Game {
     pub fn status(&self) -> Option<&str> {
         match self {
             Self::Practice { .. } => None,
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Online(online) => online.status(),
         }
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod online {
     //! Following a hosted match: inputs go out once a tick, the local fighter is predicted by a
     //! one-fighter session of the same arena and reconciled with every snapshot (reset to the
@@ -131,14 +122,13 @@ pub mod online {
     //! prediction was off).
 
     use super::Tick;
-    use crate::net::{Connection, NetEvent};
+    use crate::net::{Connection, NetEvent, Trust};
     use shooter_sim::grapple::Hook;
     use shooter_sim::player::Motion;
     use shooter_sim::session::MAX_HEALTH;
     use shooter_sim::wire::encode_input;
     use shooter_sim::{Arena, Event, Intent, Session, Snapshot, StepReport};
     use std::collections::VecDeque;
-    use std::path::PathBuf;
 
     /// A prediction further than this (units, any axis) from the server's state is corrected.
     const TOLERANCE_UNITS: f32 = 1.0;
@@ -169,7 +159,7 @@ pub mod online {
         /// # Errors
         ///
         /// If the arena does not build.
-        pub fn connect(url: String, certificate: Option<PathBuf>) -> Result<Self, String> {
+        pub fn connect(url: String, certificate: Trust) -> Result<Self, String> {
             let status = format!("connecting to {url}");
             Ok(Self {
                 connection: Connection::open(url, certificate),

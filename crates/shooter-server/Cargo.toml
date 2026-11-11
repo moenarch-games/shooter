@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 shooter-sim.workspace = true
-game-server.workspace = true
+game-server = { workspace = true, features = ["transport"] }
 tokio.workspace = true
 
 [lints]

@@ -46,19 +46,25 @@ python3 -m http.server -d web/dist
 ```
 
 **Play online locally.** One command makes a development certificate, starts the deathmatch host
-(`shooter-server`, game-server over WebTransport on UDP 4433) and opens native clients joining
-it. Each client takes a slot from a bot and gets it back to a bot when it leaves.
+(`shooter-server`, game-server over WebTransport on UDP 4433) and opens clients joining it. Each
+client takes a slot from a bot and gets it back to a bot when it leaves.
 
 ```sh
-scripts/dev.sh        # host + one client
-scripts/dev.sh 2      # host + two clients in the same match
+scripts/dev.sh        # host + one native client
+scripts/dev.sh 2      # host + two native clients in the same match
+scripts/dev.sh web    # host + the browser build on http://localhost:8080 (prints the join URL)
 cargo run -p shooter-client --release -- --connect https://localhost:4433/shooter/matches/dm --cert target/dev-host/cert.pem
 ```
 
-The host is authoritative: clients send one input per tick, predict their own movement and
-correct it from the snapshots; hitscan hits and blade swings are checked where the attacker saw
-the target (up to 250 ms back). The browser joins hosted matches once game-server's frames build for `wasm32`
-(see the follow-up issues); a public host is described in
+**Join from the browser.** The page practises offline by default. `?connect=<match URL>` joins a
+hosted deathmatch over the browser's WebTransport (game-server's `BrowserSession`), with
+`&certHash=<SHA-256 hex>` for a development host's self-signed certificate (colons allowed);
+the overlay's join field fills these in, and "Practice offline" goes back. A host with a publicly
+trusted certificate needs no hash.
+
+The host is authoritative: clients (native and browser alike) send one input per tick, predict
+their own movement and correct it from the snapshots; hitscan hits and blade swings are checked
+where the attacker saw the target (up to 250 ms back). A public host is described in
 [docs/hosting.md](docs/hosting.md).
 
 Click to capture the mouse. WASD moves, the mouse looks, Space jumps (press again in the air to

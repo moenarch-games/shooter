@@ -8,6 +8,9 @@ rounds full of bots).
 
 `scripts/dev.sh [clients]` makes a 14-day ECDSA development certificate in `target/dev-host/`,
 starts the host on UDP 4433 and opens native clients that trust that certificate by its hash.
+`scripts/dev.sh web` starts the same host, builds the browser client and serves it on
+`http://localhost:8080`, printing the page URL with `?connect=…&certHash=…` (the browser trusts
+the development certificate by that SHA-256, through WebTransport's `serverCertificateHashes`).
 
 ## Configuration
 
@@ -33,5 +36,6 @@ Nothing is deployed. To run a public match on the shared Hetzner host the owner 
    `SHOOTER_ALLOWED_ORIGINS=https://moenarch-games.github.io`.
 3. Native players then join with
    `shooter-client --connect https://moenarch.com:4433/shooter/matches/dm` (no `--cert`: the
-   certificate is publicly trusted). The browser client joins once it can speak game-server's
-   frames (see the follow-up issues).
+   certificate is publicly trusted). Browser players open the Pages build with
+   `?connect=https://moenarch.com:4433/shooter/matches/dm` (no `certHash`), or paste that URL
+   into the page's join field.

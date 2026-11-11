@@ -22,16 +22,19 @@ web-time = "1.1.0"
 # Linux builds need ALSA headers (libasound2-dev) for kira's cpal output.
 game-audio = { workspace = true, features = ["kira"] }
 pollster = "1.0.1"
-game-server.workspace = true
+game-server = { workspace = true, features = ["transport"] }
 tokio.workspace = true
 wtransport.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 game-audio = { workspace = true, features = ["web"] }
-# game-audio pins wasm-bindgen exactly; the web build's wasm-bindgen CLI must match Cargo.lock.
-wasm-bindgen = "0.2.129"
+# Online play in the browser: game-server's BrowserSession over the page's WebTransport.
+game-server = { workspace = true, features = ["browser-transport"] }
+# The web build's wasm-bindgen CLI must match the wasm-bindgen in Cargo.lock (build-web.sh
+# installs the matching one).
+wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Document", "Element", "HtmlElement", "Window", "console"] }
+web-sys = { version = "0.3", features = ["Document", "Element", "HtmlElement", "Location", "UrlSearchParams", "Window", "console"] }
 console_error_panic_hook = "0.1.7"
 
 [lints]
