@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/shooter-sim", "crates/shooter-client"]
+members = ["crates/shooter-sim", "crates/shooter-server", "crates/shooter-client"]
 resolver = "3"
 
 [workspace.package]
@@ -17,6 +17,10 @@ sim-foundation = { git = "https://github.com/moenarch-games/mmorpg.git", rev = "
 render-engine = { git = "https://github.com/moritzbrantner/render-engine.git", rev = "9aadac9b5be5651f571c71836ff833c89a450202" }
 input-bindings-core = { git = "https://github.com/moritzbrantner/input-bindings.git", rev = "561002ee94ab062f59c0d72dbca35b58734524dd" }
 game-audio = { git = "https://github.com/moritzbrantner/game-audio.git", rev = "2643e342a7d071445186e421082acb553141811d" }
+game-server = { git = "https://github.com/moritzbrantner/game-server.git", rev = "9fbaedc448c7d1be0c78f8b942cdfc8f84c1f442" }
+# Native clients and the host binary only; game-server pins wtransport (and tokio) itself.
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+wtransport = { version = "=0.7.2", default-features = false, features = ["quinn", "ring"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

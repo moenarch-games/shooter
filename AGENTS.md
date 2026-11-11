@@ -9,8 +9,9 @@ that materially changes the task.
 
 | Crate | Role |
 | --- | --- |
-| `shooter-sim` | Deterministic simulation both clients share: the greybox arena, player movement, the energy weapons and target dummies over `sim-foundation`'s physics world. No rendering, input devices or I/O |
-| `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame, input-bindings controls, gilrs gamepads, render-engine weapon lights and particles, game-audio footsteps and positional gunfire |
+| `shooter-sim` | Deterministic simulation the clients and the host share: the greybox arena, movement, the energy weapons, health, deaths, respawns and deathmatch rounds, lag-compensated hitscan, the seeded bots, and the wire format (`wire`). No rendering, input devices or I/O |
+| `shooter-server` | The deathmatch as a game-server `GameSimulation` and the `shooter-server` WebTransport host binary |
+| `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame, input-bindings controls, render-engine weapon lights and particles, game-audio cues, the HUD stopgap (page DOM / window title), offline practice in-process and (native) online play with prediction over wtransport |
 | `web/` | The page around the `wasm32` build; `scripts/build-web.sh` writes `web/dist` |
 
 ## Commands
@@ -19,7 +20,10 @@ that materially changes the task.
 cargo fmt --all -- --check
 cargo test -p shooter-sim --locked                                         # movement and weapons on physics-engine
 cargo test -p shooter-sim --features physics-ab --test physics_ab --locked # Rapier A/B of the tour, moves and weapons
-cargo run -p shooter-client --release                                      # native client
+cargo test -p shooter-sim --test deathmatch --locked                       # bots, scoring, rounds, lag compensation
+cargo test -p shooter-client --test online --locked                        # two clients through a real host on loopback
+cargo run -p shooter-client --release                                      # native client, practice vs bots
+scripts/dev.sh [clients]                                                   # local host + native clients online
 scripts/build-web.sh && python3 -m http.server -d web/dist                 # browser client
 ```
 
@@ -31,6 +35,8 @@ native build and a `wasm32` check; `pages.yml` builds and deploys `web/dist` fro
 - Physics is `sim-foundation` (moenarch-games/mmorpg), which wraps physics-engine and compiles the
   Rapier oracle only under `physics-ab`. Rapier never ships in a client.
 - Rendering is render-engine; input semantics are `input-bindings-core`; audio is game-audio.
+- Hosting is game-server (WebTransport, sessions, snapshots); the shooter owns its rules, input
+  queue and lag compensation in `shooter-sim`.
 - Foundations are pinned by git rev in the root `Cargo.toml`. Bump pins intentionally.
 - When a foundation lacks something, file an issue on the owning repository and use the
   off-the-shelf equivalent for that piece only (Atlas D4.1). Never fork a foundation here.

@@ -95,6 +95,27 @@ pub struct Motion {
     jump_held: bool,
 }
 
+impl Motion {
+    /// The state packed in a byte, for snapshots: a client predicting the player resumes from it.
+    #[must_use]
+    pub const fn to_bits(self) -> u8 {
+        (self.sliding as u8)
+            | (self.slide_ready as u8) << 1
+            | (self.jump_held as u8) << 2
+            | (self.air_jumps & 0x1f) << 3
+    }
+
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self {
+            sliding: bits & 1 != 0,
+            slide_ready: bits & 2 != 0,
+            jump_held: bits & 4 != 0,
+            air_jumps: bits >> 3,
+        }
+    }
+}
+
 /// What [`Player::apply`] did this tick.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Moves {

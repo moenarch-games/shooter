@@ -7,8 +7,37 @@ pub mod app;
 pub mod audio;
 pub mod controls;
 pub mod effects;
+pub mod game;
 pub mod gpu;
+pub mod hud;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod net;
 pub mod scene;
+
+/// The match to play: natively `--connect <url> [--cert <pem>]` joins a hosted deathmatch (the
+/// certificate is a development host's self-signed one), anything else is offline practice
+/// against bots. The browser always practises for now.
+fn game() -> game::Game {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut args = std::env::args().skip(1);
+        let (mut url, mut cert) = (None, None);
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--connect" => url = args.next(),
+                "--cert" => cert = args.next().map(std::path::PathBuf::from),
+                other => log(&format!("unknown argument {other}")),
+            }
+        }
+        if let Some(url) = url {
+            match game::online::Online::connect(url, cert) {
+                Ok(online) => return game::Game::Online(Box::new(online)),
+                Err(error) => fail(&error),
+            }
+        }
+    }
+    game::Game::practice()
+}
 
 use winit::event_loop::EventLoop;
 
@@ -21,7 +50,7 @@ pub fn run() {
     let event_loop = EventLoop::<app::GpuReady>::with_user_event()
         .build()
         .expect("an event loop");
-    let app = app::App::new(event_loop.create_proxy());
+    let app = app::App::new(event_loop.create_proxy(), game());
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut app = app;

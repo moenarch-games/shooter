@@ -68,6 +68,7 @@ fn open(spawn: [i32; 3], pieces: Vec<Piece>) -> Arena {
         posts: Vec::new(),
         spawn: Vec3i::new(spawn[0], spawn[1], spawn[2]),
         spawn_yaw: SOUTH,
+        spawns: Vec::new(),
     }
 }
 

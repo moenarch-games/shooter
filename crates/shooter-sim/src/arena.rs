@@ -73,7 +73,21 @@ impl JumpPad {
     }
 }
 
-/// A whole arena: its floor extent, pieces, jump pads and where a player spawns.
+/// Where a fighter appears: its feet and the yaw it faces (`sim_foundation::trig`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Spawn {
+    pub feet: Vec3i,
+    pub yaw: u16,
+}
+
+const fn spawn_at(feet: [i32; 3], yaw: u16) -> Spawn {
+    Spawn {
+        feet: Vec3i::new(feet[0], feet[1], feet[2]),
+        yaw,
+    }
+}
+
+/// A whole arena: its floor extent, pieces, jump pads and where players spawn.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arena {
     /// The floor spans `±half_size` units on X and Z, inside the perimeter walls.
@@ -86,6 +100,8 @@ pub struct Arena {
     pub spawn: Vec3i,
     /// The yaw a spawning player faces (`sim_foundation::trig`: 0 faces +Z, increasing toward +X).
     pub spawn_yaw: u16,
+    /// More deathmatch spawn points after the first one ([`Arena::spawn`]).
+    pub spawns: Vec<Spawn>,
 }
 
 /// The floor's body; pieces take the IDs after it, players start at [`FIRST_PLAYER_BODY`].
@@ -100,13 +116,6 @@ pub const FIRST_DUMMY_BODY: u64 = 2_000;
 pub struct Post {
     pub feet: Vec3i,
     pub patrol_units: i32,
-}
-
-const fn post(feet: [i32; 3], patrol_units: i32) -> Post {
-    Post {
-        feet: Vec3i::new(feet[0], feet[1], feet[2]),
-        patrol_units,
-    }
 }
 
 const fn block(center: [i32; 3], half: [i32; 3]) -> Piece {
@@ -170,24 +179,62 @@ impl Arena {
                 launch: Vec3i::new(0, 1_200, 600),
             },
         ];
-        // Target dummies: two beside the south ramp, one on the platform, one walking to and fro
-        // north-west of it and one far in the south-east corner for long shots.
-        let posts = vec![
-            post([-500, 0, 800], 0),
-            post([500, 0, 800], 0),
-            post([0, 200, -200], 0),
-            post([-1_000, 0, -800], 300),
-            post([1_700, 0, 1_700], 0),
+        // Deathmatch spawns round the hall, each facing the platform: the north, east and west
+        // walls' middles, the four corners and the platform's top.
+        let spawns = vec![
+            spawn_at([0, 0, -1_700], 0),
+            spawn_at([1_700, 0, 0], 49_152),
+            spawn_at([-1_700, 0, 0], 16_384),
+            spawn_at([-1_600, 0, 1_600], 24_576),
+            spawn_at([1_600, 0, -1_600], 57_344),
+            spawn_at([1_600, 0, 1_600], 40_960),
+            spawn_at([-1_600, 0, -1_600], 8_192),
+            spawn_at([0, 200, -200], 32_768),
         ];
         Self {
             half_size,
             pieces,
             pads,
-            posts,
+            // Bots are the targets now; only the scripted shooting range has dummies.
+            posts: Vec::new(),
             spawn: Vec3i::new(0, 0, 1_600),
             // Half a turn: facing -Z, toward the platform.
             spawn_yaw: 32_768,
+            spawns,
         }
+    }
+
+    /// Every spawn point: [`Arena::spawn`] first, then [`Arena::spawns`].
+    #[must_use]
+    pub fn spawn_points(&self) -> Vec<Spawn> {
+        std::iter::once(Spawn {
+            feet: self.spawn,
+            yaw: self.spawn_yaw,
+        })
+        .chain(self.spawns.iter().copied())
+        .collect()
+    }
+
+    /// Whether a fighter walking straight from `from` to `to` (feet, units) on the floor meets
+    /// no piece taller than a step (ramps excepted): bots pick waypoints they can walk to.
+    #[must_use]
+    pub fn clear_walk(&self, from: Vec3i, to: Vec3i) -> bool {
+        const SAMPLES: i32 = 16;
+        const MARGIN: i32 = 40;
+        (0..=SAMPLES).all(|step| {
+            let x = from.x + (to.x - from.x) * step / SAMPLES;
+            let z = from.z + (to.z - from.z) * step / SAMPLES;
+            let feet = from.y + (to.y - from.y) * step / SAMPLES;
+            self.pieces.iter().all(|piece| match *piece {
+                Piece::Ramp { .. } => true,
+                Piece::Block { center, half } => {
+                    let top = center.y + half.y;
+                    top <= feet + 20
+                        || (x - center.x).abs() > half.x + MARGIN
+                        || (z - center.z).abs() > half.z + MARGIN
+                }
+            })
+        })
     }
 
     /// The pad a player with feet at `feet` (units) stands on, if any.

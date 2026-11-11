@@ -67,16 +67,79 @@
       #error[data-shown] {
         display: block;
       }
+      /* The HUD: a stopgap until render-engine draws screen overlays (render-engine#101). */
+      #hud {
+        position: fixed;
+        inset: 0;
+        z-index: 1;
+        pointer-events: none;
+        font: 600 15px/1.4 ui-monospace, monospace;
+        text-shadow: 0 1px 2px rgb(0 0 0 / 80%);
+      }
+      #hud-bottom {
+        position: absolute;
+        left: 20px;
+        bottom: 18px;
+      }
+      #hud-bar {
+        width: 220px;
+        height: 8px;
+        margin-bottom: 6px;
+        background: rgb(255 255 255 / 15%);
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      #hud-health {
+        height: 100%;
+        background: #5fe39a;
+      }
+      #hud-feed {
+        position: absolute;
+        right: 20px;
+        top: 16px;
+        text-align: right;
+        white-space: pre;
+      }
+      #hud-banner {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 30%;
+        text-align: center;
+        font-size: 22px;
+      }
+      #hud-board {
+        position: absolute;
+        left: 50%;
+        top: 38%;
+        transform: translateX(-50%);
+        white-space: pre;
+        background: rgb(16 19 26 / 70%);
+        border-radius: 6px;
+        padding: 0 14px;
+      }
+      #hud-board:empty {
+        display: none;
+      }
     </style>
   </head>
   <body>
     <div id="crosshair"></div>
+    <div id="hud">
+      <div id="hud-bottom">
+        <div id="hud-bar"><div id="hud-health"></div></div>
+        <div id="hud-status"></div>
+      </div>
+      <div id="hud-feed"></div>
+      <div id="hud-banner"></div>
+      <div id="hud-board"></div>
+    </div>
     <div id="overlay">
       <div>
-        <strong>Click to play</strong><br />
-        WASD or left stick to move · mouse or right stick to look · Space or A to jump, again in
-        the air to double jump · Shift to sprint · C while sprinting to slide · Esc to release the
-        mouse
+        <strong>Click to play: practice deathmatch against bots</strong><br />
+        WASD to move · mouse to look · Space to jump, again in the air to double jump · Shift to
+        sprint · C while sprinting to slide · left mouse to fire · 1, 2, 3 for rifle, rail gun,
+        rockets · Tab for the scores · Esc to release the mouse
       </div>
     </div>
     <div id="error"></div>
@@ -84,6 +147,10 @@
       const overlay = document.getElementById("overlay");
       document.addEventListener("pointerlockchange", () => {
         overlay.hidden = document.pointerLockElement !== null;
+      });
+      // Tab shows the scores; keep it from moving the focus off the game.
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Tab") event.preventDefault();
       });
       if (!navigator.gpu) {
         const error = document.getElementById("error");

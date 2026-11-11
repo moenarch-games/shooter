@@ -1,14 +1,222 @@
-//! A single-player arena simulation: the world, one player with their weapons, the target
-//! dummies and the rockets in flight, advanced one fixed tick at a time. game-server will own the
-//! same state for a match; the clients draw it and play its [`Event`]s.
+//! The arena simulation: the world, the fighters in their slots (people and bots) with their
+//! weapons, health and scores, the rockets in flight and the target dummies, advanced one fixed
+//! tick at a time. The offline practice mode runs it in the client; game-server runs the same
+//! state for a hosted match (`shooter-server`), and the clients draw it and play its [`Event`]s.
+//!
+//! A deathmatch: every fighter has [`MAX_HEALTH`], a kill scores a frag for the killer and a
+//! death for the victim (a suicide, by a fall or one's own rocket, costs a frag), the dead come
+//! back at the spawn point farthest from everyone else after [`Rules::respawn_ticks`], and a
+//! round ends at the frag limit or the time limit, followed by an intermission and a fresh round.
+//!
+//! Hitscan shots are lag-compensated: a person's shot is checked against the fighters where that
+//! person saw them (the snapshot tick its command names, at most [`MAX_REWIND_TICKS`] back),
+//! while the arena's geometry blocks the ray as it is now.
 
-use crate::arena::{Arena, FIRST_PLAYER_BODY};
+use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
+use crate::bots::{Bot, Sight};
 use crate::dummies::Dummy;
-use crate::player::{GRAVITY, Intent, KILL_HEIGHT_UNITS, Motion, PLAYER_HALF_EXTENTS, Player};
+use crate::player::{
+    EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player,
+};
 use crate::weapons::{self, Arsenal, Delivery, Flight, Rocket, Weapon};
 use sim_foundation::physics::{BodyId, PhysicsError, Vec3i, World};
+use std::collections::VecDeque;
 
-/// What a tick did to the player, for presentation (footsteps, landing, camera) and checks.
+/// A fighter's health pool (large, Atlas D2.3).
+pub const MAX_HEALTH: i32 = 200;
+/// Ticks a fighter stays dead: 2 s.
+pub const RESPAWN_TICKS: u32 = 120;
+/// A rocket's splash hurts its owner at this share of the damage (rocket jumps cost health).
+pub const SELF_SPLASH_PERCENT: i32 = 50;
+/// The furthest back a lag-compensated shot looks: 250 ms.
+pub const MAX_REWIND_TICKS: u32 = 15;
+/// Inputs a person may have queued; older ones are dropped beyond this.
+pub const MAX_QUEUED_INPUTS: usize = 8;
+/// Slots in a deathmatch: people take them from bots.
+pub const DEATHMATCH_SLOTS: u8 = 6;
+/// A round ends when someone has this many frags...
+pub const FRAG_LIMIT: i32 = 15;
+/// ...or after 5 minutes.
+pub const TIME_LIMIT_TICKS: u32 = 5 * 60 * 60;
+/// The scoreboard shows for 8 s between rounds.
+pub const INTERMISSION_TICKS: u32 = 8 * 60;
+/// The person playing the in-process practice match (and the scripted scenarios).
+pub const LOCAL_PLAYER: u32 = 0;
+
+/// How a match is played.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rules {
+    pub slots: u8,
+    /// Bots fill the slots no person holds.
+    pub bots: bool,
+    /// Slot 0 starts held by [`LOCAL_PLAYER`] (practice and scripts).
+    pub local: bool,
+    /// Seeds the bots.
+    pub seed: u64,
+    /// 0: no limit.
+    pub frag_limit: i32,
+    /// 0: no limit.
+    pub time_limit_ticks: u32,
+    pub intermission_ticks: u32,
+    pub respawn_ticks: u32,
+}
+
+impl Rules {
+    /// One person alone, no bots and no end: the movement and weapon scripts.
+    #[must_use]
+    pub const fn solo() -> Self {
+        Self {
+            slots: 1,
+            bots: false,
+            local: true,
+            seed: 0,
+            frag_limit: 0,
+            time_limit_ticks: 0,
+            intermission_ticks: 0,
+            respawn_ticks: RESPAWN_TICKS,
+        }
+    }
+
+    /// A hosted deathmatch: every slot a bot until people join.
+    #[must_use]
+    pub const fn deathmatch(seed: u64) -> Self {
+        Self {
+            slots: DEATHMATCH_SLOTS,
+            bots: true,
+            local: false,
+            seed,
+            frag_limit: FRAG_LIMIT,
+            time_limit_ticks: TIME_LIMIT_TICKS,
+            intermission_ticks: INTERMISSION_TICKS,
+            respawn_ticks: RESPAWN_TICKS,
+        }
+    }
+
+    /// Offline practice: the local person in slot 0 against bots.
+    #[must_use]
+    pub const fn practice(seed: u64) -> Self {
+        Self {
+            local: true,
+            ..Self::deathmatch(seed)
+        }
+    }
+}
+
+/// Where the round is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Phase {
+    /// Fighting; the round ends at `ends_at` (if there is a time limit) or at the frag limit.
+    Playing { ends_at: Option<u32> },
+    /// The round is over: `winner` had the most frags; the next starts at `restarts_at`.
+    Intermission {
+        winner: Option<u8>,
+        restarts_at: u32,
+    },
+}
+
+/// Who controls a slot.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pilot {
+    /// Nobody: no body in the arena.
+    Open,
+    /// A person; `id` is game-server's player ID (or [`LOCAL_PLAYER`]).
+    Human {
+        id: u32,
+    },
+    Bot(Box<Bot>),
+}
+
+/// One tick of a person's controls, as their client sent it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Input {
+    /// game-server's command sequence: snapshots acknowledge the last one applied.
+    pub sequence: u32,
+    pub intent: Intent,
+    /// The snapshot tick the client showed the other fighters at: hitscan rewinds to it.
+    pub view_tick: u32,
+}
+
+/// One slot of the match.
+#[derive(Clone, Debug)]
+pub struct Fighter {
+    pub slot: u8,
+    pub pilot: Pilot,
+    pub player: Player,
+    pub arsenal: Arsenal,
+    pub health: i32,
+    /// While dead: the tick it comes back.
+    pub respawn_at: Option<u32>,
+    pub frags: i32,
+    pub deaths: i32,
+    /// The intent it acts on (a person's last input, held until the next).
+    pub intent: Intent,
+    /// The last input applied.
+    pub ack: u32,
+    pub view_tick: u32,
+    inputs: VecDeque<Input>,
+    grounded: bool,
+}
+
+impl Fighter {
+    fn new(slot: u8, pilot: Pilot) -> Self {
+        Self {
+            slot,
+            pilot,
+            player: Player {
+                body: body_of(slot),
+                motion: crate::player::Motion::default(),
+            },
+            arsenal: Arsenal::default(),
+            health: 0,
+            respawn_at: None,
+            frags: 0,
+            deaths: 0,
+            intent: Intent::IDLE,
+            ack: 0,
+            view_tick: 0,
+            inputs: VecDeque::new(),
+            grounded: false,
+        }
+    }
+
+    /// In the arena with a body (not dead, not an open slot).
+    #[must_use]
+    pub fn alive(&self) -> bool {
+        self.respawn_at.is_none() && self.pilot != Pilot::Open
+    }
+
+    #[must_use]
+    pub const fn human(&self) -> Option<u32> {
+        match self.pilot {
+            Pilot::Human { id } => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Whether it stood on ground after the last tick.
+    #[must_use]
+    pub const fn grounded(&self) -> bool {
+        self.grounded
+    }
+}
+
+/// The physics body of a slot's fighter.
+#[must_use]
+pub const fn body_of(slot: u8) -> BodyId {
+    BodyId(FIRST_PLAYER_BODY + slot as u64)
+}
+
+/// The slot whose fighter owns `body`, if it is a fighter's.
+#[must_use]
+pub fn slot_of(body: BodyId) -> Option<u8> {
+    (FIRST_PLAYER_BODY..FIRST_DUMMY_BODY)
+        .contains(&body.0)
+        .then(|| u8::try_from(body.0 - FIRST_PLAYER_BODY).ok())
+        .flatten()
+}
+
+/// What a tick did to the local fighter (slot 0), for presentation (footsteps, landing,
+/// camera) and checks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StepReport {
     pub grounded: bool,
@@ -22,7 +230,7 @@ pub struct StepReport {
     pub landed: bool,
     /// The weapon that fired this tick.
     pub fired: Option<Weapon>,
-    /// Damage dealt to dummies this tick.
+    /// Damage dealt to others (fighters and dummies) this tick.
     pub damage: i32,
     /// A rocket exploded this tick.
     pub exploded: bool,
@@ -31,8 +239,9 @@ pub struct StepReport {
 /// Something a tick did that the clients show or sound.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
-    /// A shot left the eye (units) along `direction` (unit vector).
+    /// A shot left `slot`'s eye (units) along `direction` (unit vector).
     Fired {
+        slot: u8,
         weapon: Weapon,
         eye: [f32; 3],
         direction: [f32; 3],
@@ -54,38 +263,96 @@ pub enum Event {
         damage: i32,
         downed: bool,
     },
+    /// A fighter took damage from `attacker` (itself for its own rocket; `None`: the arena).
+    Hit {
+        victim: u8,
+        attacker: Option<u8>,
+        damage: i32,
+        at: [f32; 3],
+    },
+    /// A fighter died: `killer` scored (`None` or the victim itself: a suicide).
+    Killed {
+        victim: u8,
+        killer: Option<u8>,
+        weapon: Option<Weapon>,
+    },
+    /// A fighter appeared at a spawn point facing `yaw`.
+    Spawned { slot: u8, yaw: u16 },
+    /// The round is over.
+    RoundOver { winner: Option<u8> },
+}
+
+/// The fighters' centres after a tick (`None` while dead), for lag-compensated shots.
+#[derive(Clone, Debug)]
+struct Frame {
+    tick: u32,
+    centers: Vec<Option<[f32; 3]>>,
 }
 
 #[derive(Debug)]
 pub struct Session {
     pub arena: Arena,
     pub world: World,
-    pub player: Player,
-    pub arsenal: Arsenal,
+    pub rules: Rules,
+    pub phase: Phase,
+    /// One per slot, in slot order.
+    pub fighters: Vec<Fighter>,
     pub dummies: Vec<Dummy>,
     pub rockets: Vec<Rocket>,
     /// What the last tick did, in order.
     pub events: Vec<Event>,
     tick: u32,
-    grounded: bool,
+    history: VecDeque<Frame>,
+    /// Damage each slot dealt to others this tick.
+    dealt: Vec<i32>,
 }
 
+#[allow(clippy::cast_precision_loss)]
+const HALF: [f32; 3] = [
+    PLAYER_HALF_EXTENTS.x as f32,
+    PLAYER_HALF_EXTENTS.y as f32,
+    PLAYER_HALF_EXTENTS.z as f32,
+];
+
 impl Session {
+    /// One person alone in `arena` ([`Rules::solo`]): the movement and weapon scripts.
     pub fn new(arena: Arena) -> Result<Self, PhysicsError> {
-        let mut world = arena.build_world(GRAVITY)?;
-        let player = Player::spawn(&mut world, BodyId(FIRST_PLAYER_BODY), arena.spawn)?;
-        let dummies = Dummy::spawn_all(&mut world, &arena.posts)?;
-        Ok(Self {
+        Self::with_rules(arena, Rules::solo())
+    }
+
+    pub fn with_rules(arena: Arena, rules: Rules) -> Result<Self, PhysicsError> {
+        let world = arena.build_world(GRAVITY)?;
+        let fighters = (0..rules.slots)
+            .map(|slot| {
+                let pilot = if rules.local && slot == 0 {
+                    Pilot::Human { id: LOCAL_PLAYER }
+                } else if rules.bots {
+                    Pilot::Bot(Box::new(Bot::new(rules.seed, slot, 0)))
+                } else {
+                    Pilot::Open
+                };
+                Fighter::new(slot, pilot)
+            })
+            .collect();
+        let mut session = Self {
             arena,
             world,
-            player,
-            arsenal: Arsenal::default(),
-            dummies,
+            rules,
+            phase: Phase::Playing {
+                ends_at: (rules.time_limit_ticks > 0).then_some(rules.time_limit_ticks),
+            },
+            fighters,
+            dummies: Vec::new(),
             rockets: Vec::new(),
             events: Vec::new(),
             tick: 0,
-            grounded: false,
-        })
+            history: VecDeque::new(),
+            dealt: vec![0; usize::from(rules.slots)],
+        };
+        session.spawn_everyone()?;
+        session.dummies = Dummy::spawn_all(&mut session.world, &session.arena.posts)?;
+        session.record();
+        Ok(session)
     }
 
     /// Ticks run so far.
@@ -94,19 +361,260 @@ impl Session {
         self.tick
     }
 
-    /// One tick at [`sim_foundation::TICK_HZ`]: the player moves, the dummies walk, the held
-    /// weapon fires, rockets fly and explode, then the world steps.
+    /// The fighter in slot 0: the local person in practice and scripts.
+    #[must_use]
+    pub fn local(&self) -> &Fighter {
+        &self.fighters[0]
+    }
+
+    /// The slot person `id` holds.
+    #[must_use]
+    pub fn slot_of_player(&self, id: u32) -> Option<u8> {
+        self.fighters
+            .iter()
+            .find(|fighter| fighter.human() == Some(id))
+            .map(|fighter| fighter.slot)
+    }
+
+    /// Every fighter at a spawn point of its own (slot order), at the start of a round.
+    fn spawn_everyone(&mut self) -> Result<(), PhysicsError> {
+        let points = self.arena.spawn_points();
+        for slot in 0..self.fighters.len() {
+            if self.fighters[slot].pilot != Pilot::Open {
+                self.spawn(slot, points[slot % points.len()])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn spawn(&mut self, slot: usize, at: Spawn) -> Result<(), PhysicsError> {
+        let fighter = &mut self.fighters[slot];
+        fighter.player = Player::spawn(&mut self.world, fighter.player.body, at.feet)?;
+        fighter.arsenal = Arsenal::default();
+        fighter.health = MAX_HEALTH;
+        fighter.respawn_at = None;
+        fighter.intent = Intent {
+            yaw: at.yaw,
+            ..Intent::IDLE
+        };
+        if let Pilot::Bot(bot) = &mut fighter.pilot {
+            bot.spawned(at.yaw);
+        }
+        self.events.push(Event::Spawned {
+            slot: fighter.slot,
+            yaw: at.yaw,
+        });
+        Ok(())
+    }
+
+    /// The spawn point farthest from every other living fighter (the first one when alone).
+    fn spawn_point_for(&self, slot: usize) -> Spawn {
+        let points = self.arena.spawn_points();
+        let others: Vec<Vec3i> = self
+            .fighters
+            .iter()
+            .filter(|fighter| usize::from(fighter.slot) != slot && fighter.alive())
+            .filter_map(|fighter| self.world.body(fighter.player.body))
+            .map(sim_foundation::physics::RigidBody::position)
+            .collect();
+        let room = |point: &Spawn| {
+            others
+                .iter()
+                .map(|other| {
+                    let d = [
+                        i64::from(other.x - point.feet.x),
+                        i64::from(other.y - point.feet.y),
+                        i64::from(other.z - point.feet.z),
+                    ];
+                    d.iter().map(|axis| axis * axis).sum::<i64>()
+                })
+                .min()
+                .unwrap_or(i64::MAX)
+        };
+        let mut best = points[0];
+        let mut best_room = room(&best);
+        for point in &points[1..] {
+            let room = room(point);
+            if room > best_room {
+                best = *point;
+                best_room = room;
+            }
+        }
+        best
+    }
+
+    /// Person `id` takes a slot: an open one, else the first bot's. Returns the slot, or `None`
+    /// when people hold every slot.
+    pub fn join(&mut self, id: u32) -> Result<Option<u8>, PhysicsError> {
+        if let Some(slot) = self.slot_of_player(id) {
+            return Ok(Some(slot));
+        }
+        let Some(slot) = self
+            .fighters
+            .iter()
+            .position(|fighter| fighter.pilot == Pilot::Open)
+            .or_else(|| {
+                self.fighters
+                    .iter()
+                    .position(|fighter| matches!(fighter.pilot, Pilot::Bot(_)))
+            })
+        else {
+            return Ok(None);
+        };
+        self.replace_pilot(slot, Pilot::Human { id })?;
+        Ok(u8::try_from(slot).ok())
+    }
+
+    /// Person `id` leaves: a bot takes the slot (or it opens). Whether `id` held one.
+    pub fn leave(&mut self, id: u32) -> Result<bool, PhysicsError> {
+        let Some(slot) = self.slot_of_player(id) else {
+            return Ok(false);
+        };
+        let slot = usize::from(slot);
+        let pilot = if self.rules.bots {
+            Pilot::Bot(Box::new(Bot::new(
+                self.rules.seed,
+                self.fighters[slot].slot,
+                self.tick,
+            )))
+        } else {
+            Pilot::Open
+        };
+        self.replace_pilot(slot, pilot)?;
+        Ok(true)
+    }
+
+    fn replace_pilot(&mut self, slot: usize, pilot: Pilot) -> Result<(), PhysicsError> {
+        let fighter = &mut self.fighters[slot];
+        if fighter.alive() {
+            self.world.remove_body(fighter.player.body);
+        }
+        let open = pilot == Pilot::Open;
+        *fighter = Fighter::new(fighter.slot, pilot);
+        if !open {
+            let at = self.spawn_point_for(slot);
+            self.spawn(slot, at)?;
+        }
+        Ok(())
+    }
+
+    /// Puts `slot`'s fighter alive at an exact physics state: a client resuming its prediction
+    /// from a snapshot.
+    pub fn place(
+        &mut self,
+        slot: u8,
+        position: [f32; 3],
+        velocity: [f32; 3],
+        motion: crate::player::Motion,
+        held: Weapon,
+    ) -> Result<(), PhysicsError> {
+        let fighter = &mut self.fighters[usize::from(slot)];
+        self.world.remove_body(fighter.player.body);
+        self.world
+            .add_body(sim_foundation::physics::RigidBody::moving(
+                fighter.player.body,
+                position,
+                velocity,
+                PLAYER_HALF_EXTENTS,
+            ))?;
+        fighter.player.motion = motion;
+        fighter.arsenal.held = held;
+        fighter.respawn_at = None;
+        fighter.health = MAX_HEALTH;
+        Ok(())
+    }
+
+    /// Queues one tick of person `id`'s controls; the fighter applies one queued input per tick.
+    /// Whether `id` holds a slot.
+    pub fn queue(&mut self, id: u32, input: Input) -> bool {
+        let Some(slot) = self.slot_of_player(id) else {
+            return false;
+        };
+        let inputs = &mut self.fighters[usize::from(slot)].inputs;
+        if inputs.len() >= MAX_QUEUED_INPUTS {
+            inputs.pop_front();
+        }
+        inputs.push_back(input);
+        true
+    }
+
+    /// One tick for the local person (slot 0) holding `intent`, seeing the others as they are now.
     pub fn tick(&mut self, intent: Intent) -> Result<StepReport, PhysicsError> {
+        let input = Input {
+            sequence: self.fighters[0].ack.wrapping_add(1),
+            intent,
+            view_tick: self.tick,
+        };
+        self.queue(LOCAL_PLAYER, input);
+        self.step()
+    }
+
+    /// One tick at [`sim_foundation::TICK_HZ`]: people apply their next input and bots think;
+    /// everyone moves, the dummies walk, weapons fire, rockets fly and explode, the world
+    /// steps, the fallen die, and the round may end. Reports on slot 0.
+    pub fn step(&mut self) -> Result<StepReport, PhysicsError> {
         self.events.clear();
-        let moves = self.player.apply(&mut self.world, &self.arena, intent)?;
+        self.dealt.iter_mut().for_each(|dealt| *dealt = 0);
+        if let Phase::Intermission { restarts_at, .. } = self.phase
+            && self.tick >= restarts_at
+        {
+            self.restart()?;
+        }
+        let playing = matches!(self.phase, Phase::Playing { .. });
+
+        self.decide();
+        for slot in 0..self.fighters.len() {
+            let fighter = &self.fighters[slot];
+            if let Some(at) = fighter.respawn_at
+                && playing
+                && self.tick >= at
+            {
+                let point = self.spawn_point_for(slot);
+                self.spawn(slot, point)?;
+            }
+        }
+
+        let mut moves = crate::player::Moves::default();
+        for fighter in &mut self.fighters {
+            if !fighter.alive() {
+                continue;
+            }
+            let intent = if playing {
+                fighter.intent
+            } else {
+                Intent {
+                    yaw: fighter.intent.yaw,
+                    pitch: fighter.intent.pitch,
+                    ..Intent::IDLE
+                }
+            };
+            let moved = fighter.player.apply(&mut self.world, &self.arena, intent)?;
+            if fighter.slot == 0 {
+                moves = moved;
+            }
+        }
         for dummy in &mut self.dummies {
             dummy.drive(&mut self.world, self.tick)?;
         }
-        let mut damage = 0;
-        let fired = self.arsenal.trigger(intent.select, intent.fire, self.tick);
-        if let Some(weapon) = fired {
-            damage += self.fire(weapon, intent)?;
+
+        let mut local_fired = None;
+        for slot in 0..self.fighters.len() {
+            let fighter = &mut self.fighters[slot];
+            if !fighter.alive() {
+                continue;
+            }
+            let intent = fighter.intent;
+            let fired = fighter
+                .arsenal
+                .trigger(intent.select, intent.fire && playing, self.tick);
+            if let Some(weapon) = fired {
+                if slot == 0 {
+                    local_fired = Some(weapon);
+                }
+                self.fire(slot, weapon, intent)?;
+            }
         }
+
         let mut exploded = false;
         let mut index = 0;
         while index < self.rockets.len() {
@@ -116,119 +624,337 @@ impl Session {
                     self.rockets.remove(index);
                 }
                 Flight::Exploded { at, .. } => {
-                    self.rockets.remove(index);
+                    let owner = self.rockets.remove(index).owner;
                     exploded = true;
-                    damage += self.explode(at)?;
+                    self.explode(at, owner)?;
                 }
             }
         }
 
         self.world.step()?;
         self.tick += 1;
-        if self.player.feet(&self.world)[1] < KILL_HEIGHT_UNITS as f32 {
-            self.respawn()?;
+        for slot in 0..self.fighters.len() {
+            let fighter = &self.fighters[slot];
+            if fighter.alive() && fighter.player.feet(&self.world)[1] < KILL_HEIGHT_UNITS as f32 {
+                self.kill(slot, None, None);
+            }
         }
-        let grounded = self.world.grounded(self.player.body);
-        let left_ground = moves.jumped || moves.launched;
-        let landed = grounded && !self.grounded && !left_ground;
-        self.grounded = grounded;
-        Ok(StepReport {
-            grounded,
+        let mut report = StepReport {
+            fired: local_fired,
+            damage: self.dealt.first().copied().unwrap_or(0),
+            exploded,
             jumped: moves.jumped,
             air_jumped: moves.air_jumped,
             launched: moves.launched,
-            sliding: self.player.motion.sliding,
-            landed,
-            fired,
-            damage,
-            exploded,
-        })
+            ..StepReport::default()
+        };
+        for fighter in &mut self.fighters {
+            let grounded = fighter.alive() && self.world.grounded(fighter.player.body);
+            if fighter.slot == 0 {
+                let left_ground = moves.jumped || moves.launched;
+                report.grounded = grounded;
+                report.landed = grounded && !fighter.grounded && !left_ground;
+                report.sliding = fighter.alive() && fighter.player.motion.sliding;
+            }
+            fighter.grounded = grounded;
+        }
+        self.record();
+        self.check_round_end();
+        Ok(report)
+    }
+
+    /// Each fighter's intent for this tick: a person's next queued input (or the last one
+    /// again), a bot's decision.
+    fn decide(&mut self) {
+        let sights: Vec<Sight> = self
+            .fighters
+            .iter()
+            .map(|fighter| {
+                let center = fighter
+                    .alive()
+                    .then(|| self.world.body(fighter.player.body))
+                    .flatten()
+                    .map(sim_foundation::physics::RigidBody::position);
+                Sight {
+                    center,
+                    eye: center.map(|center| {
+                        Vec3i::new(
+                            center.x,
+                            center.y - PLAYER_HALF_EXTENTS.y + EYE_HEIGHT_UNITS,
+                            center.z,
+                        )
+                    }),
+                    health: fighter.health,
+                }
+            })
+            .collect();
+        let tick = self.tick;
+        for (slot, fighter) in self.fighters.iter_mut().enumerate() {
+            match &mut fighter.pilot {
+                Pilot::Open => {}
+                Pilot::Human { .. } => {
+                    if let Some(input) = fighter.inputs.pop_front() {
+                        fighter.intent = input.intent;
+                        fighter.ack = input.sequence;
+                        fighter.view_tick = input.view_tick;
+                    } else {
+                        // No input this tick (a late packet): hold the last one, but
+                        // never repeat a weapon switch.
+                        fighter.intent.select = None;
+                    }
+                }
+                Pilot::Bot(bot) => {
+                    if fighter.respawn_at.is_none() {
+                        fighter.intent = bot.think(
+                            slot,
+                            &sights,
+                            &self.world,
+                            &self.arena,
+                            fighter.arsenal.held,
+                            tick,
+                        );
+                        fighter.view_tick = tick;
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_round_end(&mut self) {
+        let Phase::Playing { ends_at } = self.phase else {
+            return;
+        };
+        let limit = self.rules.frag_limit;
+        let fragged = limit > 0 && self.fighters.iter().any(|f| f.frags >= limit);
+        let timed_out = ends_at.is_some_and(|at| self.tick >= at);
+        if !(fragged || timed_out) {
+            return;
+        }
+        let winner = self
+            .fighters
+            .iter()
+            .filter(|fighter| fighter.pilot != Pilot::Open)
+            .fold(None::<&Fighter>, |best, fighter| match best {
+                Some(best) if best.frags >= fighter.frags => Some(best),
+                _ => Some(fighter),
+            })
+            .map(|fighter| fighter.slot);
+        self.phase = Phase::Intermission {
+            winner,
+            restarts_at: self.tick + self.rules.intermission_ticks,
+        };
+        self.events.push(Event::RoundOver { winner });
+    }
+
+    /// A fresh round: scores cleared, everyone back at their spawn point, no rockets.
+    fn restart(&mut self) -> Result<(), PhysicsError> {
+        for fighter in &mut self.fighters {
+            if fighter.alive() {
+                self.world.remove_body(fighter.player.body);
+            }
+            fighter.respawn_at = None;
+            fighter.frags = 0;
+            fighter.deaths = 0;
+        }
+        self.rockets.clear();
+        self.phase = Phase::Playing {
+            ends_at: (self.rules.time_limit_ticks > 0)
+                .then_some(self.tick + self.rules.time_limit_ticks),
+        };
+        self.spawn_everyone()
+    }
+
+    fn record(&mut self) {
+        let centers = self
+            .fighters
+            .iter()
+            .map(|fighter| fighter.alive().then(|| fighter.player.center(&self.world)))
+            .collect();
+        if self.history.len() > MAX_REWIND_TICKS as usize {
+            self.history.pop_front();
+        }
+        self.history.push_back(Frame {
+            tick: self.tick,
+            centers,
+        });
+    }
+
+    /// The fighters' centres at `tick`, or at the oldest (newest) kept tick before (after) it.
+    fn centers_at(&self, tick: u32) -> &[Option<[f32; 3]>] {
+        let frame = self
+            .history
+            .iter()
+            .find(|frame| frame.tick >= tick)
+            .or_else(|| self.history.back());
+        frame.map_or(&[], |frame| frame.centers.as_slice())
     }
 
     fn dummy_of(&self, body: BodyId) -> Option<usize> {
         self.dummies.iter().position(|dummy| dummy.body == body)
     }
 
-    fn hurt(&mut self, index: usize, damage: i32, at: [f32; 3]) -> i32 {
+    fn hurt_dummy(&mut self, index: usize, attacker: usize, damage: i32, at: [f32; 3]) {
         let dummy = &mut self.dummies[index];
         if !dummy.alive() || damage <= 0 {
-            return 0;
+            return;
         }
         let downed = dummy.hurt(&mut self.world, damage, self.tick);
+        self.dealt[attacker] += damage;
         self.events.push(Event::Damaged {
             dummy: index,
             at,
             damage,
             downed,
         });
-        damage
     }
 
-    /// Fires `weapon` from the eye: a hitscan beam resolves now, a rocket starts flying.
-    fn fire(&mut self, weapon: Weapon, intent: Intent) -> Result<i32, PhysicsError> {
-        let eye = self.player.eye(&self.world);
+    fn hurt(&mut self, victim: usize, attacker: usize, damage: i32, weapon: Weapon, at: [f32; 3]) {
+        let fighter = &mut self.fighters[victim];
+        if !fighter.alive() || damage <= 0 {
+            return;
+        }
+        fighter.health -= damage;
+        if attacker != victim {
+            self.dealt[attacker] += damage;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        self.events.push(Event::Hit {
+            victim: victim as u8,
+            attacker: Some(attacker as u8),
+            damage,
+            at,
+        });
+        if self.fighters[victim].health <= 0 {
+            self.kill(victim, Some(attacker), Some(weapon));
+        }
+    }
+
+    /// `victim` dies; `killer` scores unless it is the victim (or nobody): then the victim
+    /// loses a frag.
+    #[allow(clippy::cast_possible_truncation)]
+    fn kill(&mut self, victim: usize, killer: Option<usize>, weapon: Option<Weapon>) {
+        let fighter = &mut self.fighters[victim];
+        self.world.remove_body(fighter.player.body);
+        fighter.health = 0;
+        fighter.respawn_at = Some(self.tick + self.rules.respawn_ticks);
+        fighter.deaths += 1;
+        match killer.filter(|killer| *killer != victim) {
+            Some(killer) => self.fighters[killer].frags += 1,
+            None => self.fighters[victim].frags -= 1,
+        }
+        self.events.push(Event::Killed {
+            victim: victim as u8,
+            killer: killer.map(|killer| killer as u8),
+            weapon,
+        });
+    }
+
+    /// Fires `weapon` from `slot`'s eye: a hitscan beam resolves now (lag-compensated), a
+    /// rocket starts flying.
+    fn fire(&mut self, slot: usize, weapon: Weapon, intent: Intent) -> Result<(), PhysicsError> {
+        let shooter = &self.fighters[slot];
+        let body = shooter.player.body;
+        let eye = shooter.player.eye(&self.world);
         let direction = weapons::aim(intent.yaw, intent.pitch);
         #[allow(clippy::cast_precision_loss)]
         let unit = direction.map(|axis| axis as f32 / sim_foundation::trig::TRIG_ONE as f32);
+        #[allow(clippy::cast_possible_truncation)]
         self.events.push(Event::Fired {
+            slot: slot as u8,
             weapon,
             eye,
             direction: unit,
         });
-        match weapon.delivery() {
+        let (damage, range_units) = match weapon.delivery() {
+            Delivery::Rocket => {
+                self.rockets.push(Rocket::launch(body, eye, direction));
+                return Ok(());
+            }
             Delivery::Hitscan {
                 damage,
                 range_units,
-            } => {
-                let trace =
-                    weapons::trace(&self.world, eye, direction, range_units, self.player.body);
-                self.events.push(Event::Beam {
-                    weapon,
-                    from: eye,
-                    end: trace.end,
-                    normal: trace.hit.map_or([0.0; 3], |hit| hit.normal),
-                    struck: trace.hit.is_some(),
-                });
-                Ok(trace
-                    .hit
-                    .and_then(|hit| self.dummy_of(hit.body))
-                    .map_or(0, |index| self.hurt(index, damage, trace.end)))
+            } => (damage, range_units),
+        };
+        // The arena (and the dummies) as they are now; fighters where the shooter saw them.
+        let scenery = weapons::trace(&self.world, eye, direction, range_units, body, |hit| {
+            slot_of(hit).is_none()
+        });
+        #[allow(clippy::cast_precision_loss)]
+        let translation = unit.map(|axis| axis * range_units as f32);
+        let reach = scenery.hit.map_or(1.0, |hit| hit.fraction);
+        let rewind = self
+            .tick
+            .saturating_sub(shooter.view_tick)
+            .min(MAX_REWIND_TICKS);
+        let mut target: Option<(usize, f32)> = None;
+        for (other, center) in self.centers_at(self.tick - rewind).iter().enumerate() {
+            let Some(center) = center else { continue };
+            if other == slot || !self.fighters.get(other).is_some_and(Fighter::alive) {
+                continue;
             }
-            Delivery::Rocket => {
-                self.rockets
-                    .push(Rocket::launch(self.player.body, eye, direction));
-                Ok(0)
+            if let Some(fraction) = weapons::ray_box(eye, translation, *center, HALF)
+                && fraction < reach
+                && target.is_none_or(|(_, best)| fraction < best)
+            {
+                target = Some((other, fraction));
             }
         }
+        if let Some((victim, fraction)) = target {
+            let end = [0, 1, 2].map(|axis| eye[axis] + translation[axis] * fraction);
+            self.events.push(Event::Beam {
+                weapon,
+                from: eye,
+                end,
+                normal: unit.map(|axis| -axis),
+                struck: true,
+            });
+            self.hurt(victim, slot, damage, weapon, end);
+            return Ok(());
+        }
+        self.events.push(Event::Beam {
+            weapon,
+            from: eye,
+            end: scenery.end,
+            normal: scenery.hit.map_or([0.0; 3], |hit| hit.normal),
+            struck: scenery.hit.is_some(),
+        });
+        if let Some(index) = scenery.hit.and_then(|hit| self.dummy_of(hit.body)) {
+            self.hurt_dummy(index, slot, damage, scenery.end);
+        }
+        Ok(())
     }
 
-    /// A blast at `at`: splash damage to every standing dummy in reach and knockback to the
-    /// player (rocket jumping). Rockets do not hurt their owner.
-    fn explode(&mut self, at: [f32; 3]) -> Result<i32, PhysicsError> {
+    /// A blast at `at` from `owner`'s rocket: splash damage and knockback to every standing
+    /// dummy and fighter in reach. The owner takes [`SELF_SPLASH_PERCENT`] of its share (and the
+    /// full push: rocket jumps).
+    fn explode(&mut self, at: [f32; 3], owner: BodyId) -> Result<(), PhysicsError> {
         self.events.push(Event::Exploded { at });
-        let mut dealt = 0;
+        let attacker = slot_of(owner).map_or(0, usize::from);
         for index in 0..self.dummies.len() {
             let Some(center) = self.dummies[index].center(&self.world) else {
                 continue;
             };
             if let Some((damage, _)) = weapons::splash(at, center) {
-                dealt += self.hurt(index, damage, center);
+                self.hurt_dummy(index, attacker, damage, center);
             }
         }
-        if let Some((_, push)) = weapons::splash(at, self.player.center(&self.world)) {
-            self.player.push(&mut self.world, push)?;
+        for slot in 0..self.fighters.len() {
+            if !self.fighters[slot].alive() {
+                continue;
+            }
+            let player = self.fighters[slot].player;
+            let center = player.center(&self.world);
+            let Some((damage, push)) = weapons::splash(at, center) else {
+                continue;
+            };
+            player.push(&mut self.world, push)?;
+            let damage = if slot == attacker {
+                damage * SELF_SPLASH_PERCENT / 100
+            } else {
+                damage
+            };
+            self.hurt(slot, attacker, damage, Weapon::RocketLauncher, center);
         }
-        Ok(dealt)
-    }
-
-    /// Back to the arena's spawn, at rest.
-    pub fn respawn(&mut self) -> Result<(), PhysicsError> {
-        let spawn = self.arena.spawn;
-        self.player.motion = Motion::default();
-        self.world.set_position(
-            self.player.body,
-            Vec3i::new(spawn.x, spawn.y + PLAYER_HALF_EXTENTS.y, spawn.z),
-        )?;
-        self.world.set_velocity(self.player.body, Vec3i::ZERO)
+        Ok(())
     }
 }

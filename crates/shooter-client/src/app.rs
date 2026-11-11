@@ -1,14 +1,17 @@
-//! The window, the fixed-tick loop and the frame: input in, simulation ticks, render out.
+//! The window, the fixed-tick loop and the frame: input in, the match ticks (in-process practice
+//! or a hosted match), render out.
 
 use crate::audio::Sounds;
 use crate::controls::{Controls, Look, PRIMARY_BUTTON, PadState, standard};
 use crate::effects::Effects;
+use crate::game::Game;
 use crate::gpu::Gpu;
-use crate::scene::{self, Actors, DummyView, METRES_PER_UNIT};
+use crate::hud::{Hud, HudText};
+use crate::scene::{self, Actors, FighterView, METRES_PER_UNIT};
 use render_engine::glam::Vec3;
-use shooter_sim::dummies::DUMMY_HEALTH;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
-use shooter_sim::{Arena, Event, Intent, Session, TICK_HZ};
+use shooter_sim::session::MAX_HEALTH;
+use shooter_sim::{Arena, Event, Intent, Snapshot, TICK_HZ};
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -29,20 +32,50 @@ const EYE: f32 = EYE_HEIGHT_UNITS as f32;
 /// How far (units) the eye moves toward its target height each tick.
 const EYE_DIP_PER_TICK: f32 = 12.0;
 
+/// A `sim_foundation::trig` yaw in radians.
+fn radians(yaw: u16) -> f32 {
+    f32::from(yaw) / 65_536.0 * std::f32::consts::TAU
+}
+
+/// Where a yaw and pitch (`trig` steps) look.
+fn looking(yaw: u16, pitch: i16) -> Vec3 {
+    let (sy, cy) = radians(yaw).sin_cos();
+    let (sp, cp) = (f32::from(pitch) / 65_536.0 * std::f32::consts::TAU).sin_cos();
+    Vec3::new(sy * cp, sp, cy * cp)
+}
+
+/// Every slot's fighter centre in a snapshot (`None`: dead or no fighter).
+fn centers(snapshot: &Snapshot) -> Vec<Option<[f32; 3]>> {
+    let mut centers = vec![None; usize::from(u8::MAX)];
+    for fighter in snapshot.fighters.iter().filter(|fighter| fighter.alive) {
+        centers[usize::from(fighter.slot)] = Some(fighter.position);
+    }
+    centers
+}
+
 pub struct App {
     proxy: EventLoopProxy<GpuReady>,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
-    session: Session,
+    game: Game,
+    arena: Arena,
     controls: Controls,
     look: Look,
     pads: Option<gilrs::Gilrs>,
     sounds: Sounds,
+    hud: Hud,
+    shown: HudText,
+    /// Tab held: the scoreboard shows.
+    board: bool,
     /// Weapon effects and the moving actors, once the GPU is up.
     effects: Option<Effects>,
     actors: Option<Actors>,
-    /// Each dummy's hit glow, 1 when just hit.
+    /// Each slot's hit glow, 1 when just hit.
     glows: Vec<f32>,
+    /// The other fighters' centres in the snapshot before the latest one and in it, by slot.
+    previous_centers: Vec<Option<[f32; 3]>>,
+    centers: Vec<Option<[f32; 3]>>,
+    seen_tick: Option<u32>,
     started: Instant,
     last_frame: Instant,
     /// Seconds not yet simulated.
@@ -57,31 +90,32 @@ pub struct App {
 }
 
 impl App {
-    /// # Panics
-    ///
-    /// If the arena does not build.
     #[must_use]
-    pub fn new(proxy: EventLoopProxy<GpuReady>) -> Self {
+    pub fn new(proxy: EventLoopProxy<GpuReady>, game: Game) -> Self {
         let arena = Arena::greybox();
-        let yaw = f32::from(arena.spawn_yaw) / 65_536.0 * std::f32::consts::TAU;
-        let session = Session::new(arena).expect("the greybox arena builds");
-        let center = session.player.center(&session.world);
-        let dummies = session.dummies.len();
         let now = Instant::now();
+        let center = game.local_center().unwrap_or_default();
         Self {
             proxy,
             window: None,
             gpu: None,
-            session,
+            game,
+            look: Look::new(radians(arena.spawn_yaw)),
+            arena,
             controls: Controls::new(),
-            look: Look::new(yaw),
             pads: gilrs::Gilrs::new()
                 .inspect_err(|error| crate::log(&format!("gamepads unavailable: {error}")))
                 .ok(),
             sounds: Sounds::new(),
+            hud: Hud::default(),
+            shown: HudText::default(),
+            board: false,
             effects: None,
             actors: None,
-            glows: vec![0.0; dummies],
+            glows: vec![0.0; usize::from(u8::MAX)],
+            previous_centers: Vec::new(),
+            centers: Vec::new(),
+            seen_tick: None,
             started: now,
             last_frame: now,
             accumulator: 0.0,
@@ -162,6 +196,83 @@ impl App {
         state
     }
 
+    /// One local tick: the controls become an intent, the match ticks, and its events play.
+    fn tick(&mut self, now: Instant) -> bool {
+        let (forward, strafe) = self.controls.movement();
+        let intent = Intent {
+            forward,
+            strafe,
+            yaw: self.look.sim_yaw(),
+            jump: self.controls.jump_held(),
+            sprint: self.controls.sprint_held(),
+            crouch: self.controls.crouch_held(),
+            pitch: self.look.sim_pitch(),
+            // Only a captured mouse shoots: the click that captures it does not.
+            fire: self.captured && self.controls.fire_held(),
+            select: self.controls.selected(),
+        };
+        let tick = match self.game.tick(intent) {
+            Ok(tick) => tick,
+            Err(error) => {
+                crate::log(&format!("the match failed: {error}"));
+                return false;
+            }
+        };
+        let local = self.game.local_slot();
+        self.previous_eye = self.eye;
+        let target = if self.game.local_sliding() {
+            SLIDE_EYE_HEIGHT_UNITS
+        } else {
+            EYE_HEIGHT_UNITS
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let target = target as f32;
+        // The camera dips into a slide and rises out of it over a few ticks.
+        self.eye += (target - self.eye).clamp(-EYE_DIP_PER_TICK, EYE_DIP_PER_TICK);
+        self.previous_center = self.center;
+        let respawned = tick
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::Spawned { slot, .. } if Some(*slot) == local));
+        if let Some(center) = self.game.local_center() {
+            if respawned {
+                self.previous_center = center;
+            }
+            self.center = center;
+        }
+        let moved = (self.center[0] - self.previous_center[0])
+            .hypot(self.center[2] - self.previous_center[2]);
+        let elapsed_ms = (now - self.started).as_secs_f64() * 1_000.0;
+        self.sounds
+            .tick(tick.report, moved, &tick.events, local, elapsed_ms);
+        let seconds = 1.0 / f32::from(TICK_HZ);
+        for glow in &mut self.glows {
+            *glow = (*glow - 4.0 * seconds).max(0.0);
+        }
+        for event in &tick.events {
+            match *event {
+                Event::Hit { victim, .. } => self.glows[usize::from(victim)] = 1.0,
+                Event::Spawned { slot, yaw } if Some(slot) == local => {
+                    self.look = Look::new(radians(yaw));
+                }
+                _ => {}
+            }
+        }
+        if let Some(snapshot) = self.game.snapshot() {
+            self.hud.events(snapshot, &tick.events, local);
+            if self.seen_tick != Some(snapshot.tick) {
+                self.seen_tick = Some(snapshot.tick);
+                self.previous_centers = std::mem::take(&mut self.centers);
+                self.centers = centers(snapshot);
+            }
+            if let (Some(gpu), Some(effects)) = (&mut self.gpu, &mut self.effects) {
+                effects.play(&mut gpu.world, &tick.events);
+                effects.rockets(&mut gpu.world, &snapshot.rockets);
+            }
+        }
+        true
+    }
+
     fn frame(&mut self) {
         let now = Instant::now();
         let seconds = (now - self.last_frame).as_secs_f32().min(0.25);
@@ -187,54 +298,8 @@ impl App {
                 self.accumulator = 0.0;
                 break;
             }
-            let (forward, strafe) = self.controls.movement();
-            let intent = Intent {
-                forward,
-                strafe,
-                yaw: self.look.sim_yaw(),
-                jump: self.controls.jump_held(),
-                sprint: self.controls.sprint_held(),
-                crouch: self.controls.crouch_held(),
-                pitch: self.look.sim_pitch(),
-                // Only a captured mouse shoots: the click that captures it does not.
-                fire: self.captured && self.controls.fire_held(),
-                select: self.controls.selected(),
-            };
-            let report = match self.session.tick(intent) {
-                Ok(report) => report,
-                Err(error) => {
-                    crate::log(&format!("physics step failed: {error}"));
-                    return;
-                }
-            };
-            self.previous_eye = self.eye;
-            let target = if report.sliding {
-                SLIDE_EYE_HEIGHT_UNITS
-            } else {
-                EYE_HEIGHT_UNITS
-            };
-            #[allow(clippy::cast_precision_loss)]
-            let target = target as f32;
-            // The camera dips into a slide and rises out of it over a few ticks.
-            self.eye += (target - self.eye).clamp(-EYE_DIP_PER_TICK, EYE_DIP_PER_TICK);
-            self.previous_center = self.center;
-            self.center = self.session.player.center(&self.session.world);
-            let moved = (self.center[0] - self.previous_center[0])
-                .hypot(self.center[2] - self.previous_center[2]);
-            let elapsed_ms = (now - self.started).as_secs_f64() * 1_000.0;
-            let events = &self.session.events;
-            self.sounds.tick(report, moved, events, elapsed_ms);
-            for glow in &mut self.glows {
-                *glow = (*glow - 4.0 * tick).max(0.0);
-            }
-            for event in events {
-                if let Event::Damaged { dummy, .. } = *event {
-                    self.glows[dummy] = 1.0;
-                }
-            }
-            if let (Some(gpu), Some(effects)) = (&mut self.gpu, &mut self.effects) {
-                effects.play(&mut gpu.world, events);
-                effects.rockets(&mut gpu.world, &self.session.rockets);
+            if !self.tick(now) {
+                return;
             }
         }
         let ticks = ticks.min(MAX_TICKS_PER_FRAME);
@@ -250,13 +315,55 @@ impl App {
         self.sounds.listen(eye.to_array(), right.to_array());
         self.sounds.pump();
 
-        let world = &self.session.world;
-        let rockets: Vec<Vec3> = self
-            .session
-            .rockets
-            .iter()
-            .map(|rocket| Vec3::from(rocket.position_units()) * METRES_PER_UNIT)
-            .collect();
+        let local = self.game.local_slot();
+        let snapshot = self.game.snapshot();
+        let rockets: Vec<Vec3> = snapshot
+            .map(|snapshot| {
+                snapshot
+                    .rockets
+                    .iter()
+                    .map(|rocket| Vec3::from(rocket.position) * METRES_PER_UNIT)
+                    .collect()
+            })
+            .unwrap_or_default();
+        #[allow(clippy::cast_precision_loss)]
+        let fighters: Vec<FighterView> = snapshot
+            .map(|snapshot| {
+                snapshot
+                    .fighters
+                    .iter()
+                    .filter(|fighter| Some(fighter.slot) != local)
+                    .map(|fighter| {
+                        let slot = usize::from(fighter.slot);
+                        let now = self.centers.get(slot).copied().flatten();
+                        let before = self.previous_centers.get(slot).copied().flatten();
+                        let center = now.map(|now| {
+                            let before = Vec3::from(before.unwrap_or(now));
+                            before.lerp(Vec3::from(now), blend) * METRES_PER_UNIT
+                        });
+                        FighterView {
+                            center: center.filter(|_| fighter.alive),
+                            forward: looking(fighter.yaw, fighter.pitch),
+                            health: fighter.health as f32 / MAX_HEALTH as f32,
+                            glow: self.glows[slot],
+                            held: fighter.held,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let me = local.and_then(|slot| snapshot.and_then(|snapshot| snapshot.slot(slot)));
+        let held = me.filter(|me| me.alive).map(|me| me.held);
+        let text = self
+            .hud
+            .text(snapshot, local, self.game.status(), self.board, seconds);
+        #[cfg(target_arch = "wasm32")]
+        crate::hud::show(&text, &mut self.shown);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(window) = &self.window {
+            crate::hud::show(&text, &mut self.shown, window);
+        }
+
         let point_lights = self
             .effects
             .as_mut()
@@ -267,22 +374,15 @@ impl App {
             return;
         };
         if let Some(actors) = &mut self.actors {
-            #[allow(clippy::cast_precision_loss)]
-            let dummies: Vec<DummyView> = self
-                .session
-                .dummies
-                .iter()
-                .zip(&self.glows)
-                .map(|(dummy, glow)| DummyView {
-                    center: dummy
-                        .center(world)
-                        .map(|center| Vec3::from(center) * METRES_PER_UNIT),
-                    health: dummy.health as f32 / DUMMY_HEALTH as f32,
-                    glow: *glow,
-                })
-                .collect();
-            let held = self.session.arsenal.held;
-            actors.update(&mut gpu.world, &dummies, &rockets, held, eye, forward);
+            actors.update(
+                &mut gpu.world,
+                &fighters,
+                &rockets,
+                held,
+                text.health,
+                eye,
+                forward,
+            );
         }
         if let Err(error) = gpu.render(&scene, ticks) {
             crate::log(&error);
@@ -324,9 +424,9 @@ impl ApplicationHandler<GpuReady> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, gpu: GpuReady) {
         match gpu {
             Ok(mut gpu) => {
-                scene::build(&mut gpu.world, &self.session.arena);
+                scene::build(&mut gpu.world, &self.arena);
                 self.effects = Some(Effects::new(&mut gpu.world));
-                self.actors = Some(Actors::new(&mut gpu.world, self.session.dummies.len()));
+                self.actors = Some(Actors::new(&mut gpu.world));
                 if let Some(window) = &self.window {
                     let size = window.inner_size();
                     gpu.resize(size.width, size.height);
@@ -353,6 +453,7 @@ impl ApplicationHandler<GpuReady> for App {
             WindowEvent::Focused(false) => {
                 self.capture(false);
                 self.controls.release_all();
+                self.board = false;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -381,6 +482,10 @@ impl ApplicationHandler<GpuReady> for App {
                 // Escape frees the mouse; keys keep moving the player while the window has focus.
                 if code == KeyCode::Escape {
                     self.capture(false);
+                    return;
+                }
+                if code == KeyCode::Tab {
+                    self.board = event.state == ElementState::Pressed;
                     return;
                 }
                 if event.state == ElementState::Pressed {

@@ -22,6 +22,9 @@ web-time = "1.1.0"
 # Linux builds need ALSA headers (libasound2-dev) for kira's cpal output.
 game-audio = { workspace = true, features = ["kira"] }
 pollster = "1.0.1"
+game-server.workspace = true
+tokio.workspace = true
+wtransport.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 game-audio = { workspace = true, features = ["web"] }
@@ -33,3 +36,8 @@ console_error_panic_hook = "0.1.7"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+shooter-server = { path = "../shooter-server" }
+# Self-signed identities let the online test host a real WebTransport match on loopback.
+wtransport = { workspace = true, features = ["self-signed"] }
