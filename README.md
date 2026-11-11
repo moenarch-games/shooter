@@ -24,5 +24,21 @@ control. Fight with energy guns, a grapple hook and melee weapons.
 | Arena kit, weapons, character | asset-tooling |
 | Frame and tick traces | runtime-profiler |
 
+## Play
+
+The first slice is a greybox arena to walk, look and jump around in (no weapons yet).
+
+```sh
+cargo run -p shooter-client --release      # native window
+scripts/build-web.sh                       # browser build into web/dist (needs a WebGPU browser)
+python3 -m http.server -d web/dist
+```
+
+Click to capture the mouse. WASD or the left stick moves, the mouse or the right stick looks,
+Space or the south face button jumps, Esc releases the mouse.
+
+The movement is checked against Rapier on a scripted tour of the arena:
+`cargo test -p shooter-sim --features physics-ab --test physics_ab`.
+
 When a crate can't do something yet, the shooter files an issue on that crate and uses Rapier
 (or the off-the-shelf equivalent) for that piece only, until the crate catches up.
