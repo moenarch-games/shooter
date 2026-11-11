@@ -2886,6 +2886,7 @@ dependencies = [
 name = "shooter-sim"
 version = "0.1.0"
 dependencies = [
+ "sim-combat",
  "sim-foundation",
 ]
 
@@ -2897,6 +2898,15 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "sim-combat"
+version = "0.1.0"
+source = "git+https://github.com/moenarch-games/mmorpg.git?rev=eb58c43b5537dc3c156664f21cb5d5376d54be66#eb58c43b5537dc3c156664f21cb5d5376d54be66"
+dependencies = [
+ "sim-foundation",
+ "strum",
 ]
 
 [[package]]

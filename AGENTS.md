@@ -9,7 +9,7 @@ that materially changes the task.
 
 | Crate | Role |
 | --- | --- |
-| `shooter-sim` | Deterministic simulation the clients and the host share: the greybox arena, movement, the energy weapons and the grapple hook, health, deaths, respawns and deathmatch rounds, lag-compensated hitscan, the seeded bots, and the wire format (`wire`). No rendering, input devices or I/O |
+| `shooter-sim` | Deterministic simulation the clients and the host share: the greybox arena, movement, the energy weapons, the grapple hook and the energy blade (quick melee), health, deaths, respawns and deathmatch rounds, lag-compensated hitscan and swings, the seeded bots, and the wire format (`wire`). No rendering, input devices or I/O |
 | `shooter-server` | The deathmatch as a game-server `GameSimulation` and the `shooter-server` WebTransport host binary |
 | `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame, input-bindings controls, render-engine weapon lights and particles, game-audio cues, the HUD stopgap (page DOM / window title), offline practice in-process and (native) online play with prediction over wtransport |
 | `web/` | The page around the `wasm32` build; `scripts/build-web.sh` writes `web/dist` |

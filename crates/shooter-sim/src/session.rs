@@ -8,14 +8,15 @@
 //! back at the spawn point farthest from everyone else after [`Rules::respawn_ticks`], and a
 //! round ends at the frag limit or the time limit, followed by an intermission and a fresh round.
 //!
-//! Hitscan shots are lag-compensated: a person's shot is checked against the fighters where that
-//! person saw them (the snapshot tick its command names, at most [`MAX_REWIND_TICKS`] back),
-//! while the arena's geometry blocks the ray as it is now.
+//! Hitscan shots and blade swings are lag-compensated: a person's shot is checked against the
+//! fighters where that person saw them (the snapshot tick its command names, at most
+//! [`MAX_REWIND_TICKS`] back), while the arena's geometry blocks the ray as it is now.
 
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
 use crate::bots::{Bot, Sight};
 use crate::dummies::Dummy;
 use crate::grapple::Hook;
+use crate::melee;
 use crate::player::{
     EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player, STEP_UP,
 };
@@ -619,6 +620,7 @@ impl Session {
             let hooked = fighter.hook.is_some();
             let fired = fighter.arsenal.trigger(
                 intent.select,
+                intent.melee && playing,
                 intent.fire && playing && !hooked,
                 self.tick,
             );
@@ -907,6 +909,7 @@ impl Session {
                 });
                 return Ok(());
             }
+            Delivery::Melee => return self.swing(slot, intent.yaw, eye, direction),
             Delivery::Hitscan {
                 damage,
                 range_units,
@@ -957,6 +960,92 @@ impl Session {
         });
         if let Some(index) = scenery.hit.and_then(|hit| self.dummy_of(hit.body)) {
             self.hurt_dummy(index, slot, damage, scenery.end);
+        }
+        Ok(())
+    }
+
+    /// `slot`'s energy blade swung toward `yaw` from `eye` (units): every fighter (where the
+    /// swinger saw it, like hitscan) and dummy it covers ([`melee::covers`]) and sees past the
+    /// arena is struck, shoved and hurt; a swing that strikes nobody may still spark on a wall
+    /// within reach.
+    fn swing(
+        &mut self,
+        slot: usize,
+        yaw: u16,
+        eye: [f32; 3],
+        direction: [i32; 3],
+    ) -> Result<(), PhysicsError> {
+        let swinger = &self.fighters[slot];
+        let body = swinger.player.body;
+        let feet = swinger.player.feet(&self.world);
+        let rewind = self
+            .tick
+            .saturating_sub(swinger.view_tick)
+            .min(MAX_REWIND_TICKS);
+        let in_sight = |world: &World, center: [f32; 3]| {
+            let along = [0, 1, 2].map(|axis| center[axis] - eye[axis]);
+            world
+                .cast_ray(eye, along, |hit| hit.0 < FIRST_PLAYER_BODY)
+                .is_none()
+        };
+        let covered = |center: [f32; 3]| melee::covers(feet, yaw, center);
+        let fighters: Vec<(usize, [f32; 3])> = self
+            .centers_at(self.tick - rewind)
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| {
+                *other != slot && self.fighters.get(*other).is_some_and(Fighter::alive)
+            })
+            .filter_map(|(other, center)| Some((other, (*center)?)))
+            .filter(|(_, center)| covered(*center) && in_sight(&self.world, *center))
+            .collect();
+        let dummies: Vec<(usize, [f32; 3])> = (0..self.dummies.len())
+            .filter_map(|index| Some((index, self.dummies[index].center(&self.world)?)))
+            .filter(|(_, center)| covered(*center) && in_sight(&self.world, *center))
+            .collect();
+        let strike = |at: [f32; 3]| {
+            let normal = [eye[0] - at[0], 0.0, eye[2] - at[2]];
+            let length = normal[0].hypot(normal[2]).max(f32::EPSILON);
+            Event::Beam {
+                weapon: Weapon::EnergyBlade,
+                from: eye,
+                end: at,
+                normal: normal.map(|axis| axis / length),
+                struck: true,
+            }
+        };
+        if fighters.is_empty() && dummies.is_empty() {
+            let wall = weapons::trace(
+                &self.world,
+                eye,
+                direction,
+                melee::REACH_UNITS,
+                body,
+                |hit| hit.0 < FIRST_PLAYER_BODY,
+            );
+            if let Some(hit) = wall.hit {
+                self.events.push(Event::Beam {
+                    weapon: Weapon::EnergyBlade,
+                    from: eye,
+                    end: wall.end,
+                    normal: hit.normal,
+                    struck: true,
+                });
+            }
+            return Ok(());
+        }
+        for (victim, center) in fighters {
+            let at = melee::contact(eye, center);
+            self.events.push(strike(at));
+            self.fighters[victim]
+                .player
+                .push(&mut self.world, melee::knockback(yaw))?;
+            self.hurt(victim, slot, melee::DAMAGE, Weapon::EnergyBlade, at);
+        }
+        for (index, center) in dummies {
+            let at = melee::contact(eye, center);
+            self.events.push(strike(at));
+            self.hurt_dummy(index, slot, melee::DAMAGE, at);
         }
         Ok(())
     }

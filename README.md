@@ -19,6 +19,7 @@ weapons.
 | --- | --- |
 | Collision, character movement, rays, projectiles | physics-engine (Rapier A/B oracle in CI) |
 | Grapple rope on a character | shooter-sim stand-in until physics-engine has it (moritzbrantner/physics-engine#557) |
+| Melee reach, arc and height band | sim-combat (mmorpg); the coverage test is restated in shooter-sim until sim-combat shares it (moenarch-games/mmorpg#754) |
 | Lighting, particles (muzzle flashes, trims, impacts) | render-engine |
 | Positional gunfire and impacts, native and Web Audio | game-audio |
 | Mouse, keyboard, gamepad, pointer lock | input-bindings |
@@ -28,9 +29,9 @@ weapons.
 
 ## Play
 
-The current slice is a deathmatch in a greybox arena with two jump pads onto the central platform
-and three energy weapons. Six slots; bots fill every slot no person holds. A kill scores a frag;
-dying by your own rocket or a fall costs one. The dead respawn after 2 s at the spawn point
+The current slice is a deathmatch in a greybox arena with two jump pads onto the central platform,
+three energy weapons, the grapple hook and an energy blade. Six slots; bots fill every slot no
+person holds. A kill scores a frag; dying by your own rocket or a fall costs one. The dead respawn after 2 s at the spawn point
 farthest from everyone else. A round ends at 15 frags or after 5 minutes, the scores show for 8 s
 and a fresh round starts. Every fighter has 200 health. The guns, the fighters (boxes) and the
 sounds are placeholders until asset-tooling delivers models and clips.
@@ -55,8 +56,8 @@ cargo run -p shooter-client --release -- --connect https://localhost:4433/shoote
 ```
 
 The host is authoritative: clients send one input per tick, predict their own movement and
-correct it from the snapshots; hitscan hits are checked where the shooter saw the target (up to
-250 ms back). The browser joins hosted matches once game-server's frames build for `wasm32`
+correct it from the snapshots; hitscan hits and blade swings are checked where the attacker saw
+the target (up to 250 ms back). The browser joins hosted matches once game-server's frames build for `wasm32`
 (see the follow-up issues); a public host is described in
 [docs/hosting.md](docs/hosting.md).
 
@@ -85,17 +86,24 @@ off; the next hook is ready 0.75 s after the last one fired. It is a determinist
 `shooter-sim` until physics-engine can pull a character on a rope
 (moritzbrantner/physics-engine#557).
 
+V (or the mouse's back button) swings the energy blade, a quick melee attack whatever gun you
+hold: 50 damage (four swings kill), every 0.5 s, and the gun is ready again 0.3 s after a swing.
+A swing strikes everyone within 2.5 m across the ground, 50° either side of where you face and
+from 1 m below your feet to 2 m above them, unless the arena is in the way, and shoves them 6 m/s
+away. The reach, arc and height band are mmorpg's shared melee rules (`sim-combat`). Your swing
+is drawn and heard as soon as you press; the host decides what it strikes.
+
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points,
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
 degrees of wandering error, strafing as they fire; rifle up close, rockets at mid range, the rail
-gun far off.
+gun far off, and inside 3 m they rush in and swing the blade.
 
 The movement and the weapons are checked against Rapier on a scripted tour of the arena and on
 scripted moves (sprint, slide, double jump, jump pad, ramp slides, a thin wall, a step, a rocket
 jump, a grapple onto a ledge, a shooting range):
 `cargo test -p shooter-sim --features physics-ab --test physics_ab`.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
-lag compensation, scoring and rounds, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
+lag compensation of shots and swings, blade kills, scoring and rounds, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
 clients through a real game-server host on loopback.
 
 When a crate can't do something yet, the shooter files an issue on that crate and uses Rapier

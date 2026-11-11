@@ -16,6 +16,8 @@ const MANIFEST: &str = r#"{
     { "id": "rail", "source": { "tone": { "frequency_hz": 220, "duration_ms": 280, "waveform": "saw", "amplitude": 0.45 } } },
     { "id": "rocket", "source": { "tone": { "frequency_hz": 160, "duration_ms": 140, "waveform": "noise", "amplitude": 0.45 } } },
     { "id": "grapple", "source": { "tone": { "frequency_hz": 520, "duration_ms": 90, "waveform": "saw", "amplitude": 0.3 } } },
+    { "id": "slash", "source": { "tone": { "frequency_hz": 340, "duration_ms": 130, "waveform": "noise", "amplitude": 0.35 } } },
+    { "id": "clang", "source": { "tone": { "frequency_hz": 2600, "duration_ms": 70, "waveform": "square", "amplitude": 0.4 } } },
     { "id": "latch", "source": { "tone": { "frequency_hz": 1900, "duration_ms": 40, "waveform": "square", "amplitude": 0.35 } } },
     { "id": "boom", "source": { "tone": { "frequency_hz": 60, "duration_ms": 450, "waveform": "noise", "amplitude": 0.9 } } },
     { "id": "hit", "source": { "tone": { "frequency_hz": 1400, "duration_ms": 35, "waveform": "sine", "amplitude": 0.3 } } },
@@ -28,6 +30,8 @@ const MANIFEST: &str = r#"{
     { "kind": "weapon.railGun", "clips": ["rail"], "max_voices": 2, "gain_db": -2, "spatial": true },
     { "kind": "weapon.rocketLauncher", "clips": ["rocket"], "max_voices": 2, "gain_db": -4, "spatial": true },
     { "kind": "weapon.grapple", "clips": ["grapple"], "max_voices": 2, "gain_db": -6, "spatial": true },
+    { "kind": "weapon.energyBlade", "clips": ["slash"], "max_voices": 3, "gain_db": -4, "pitch_jitter": 0.1, "spatial": true },
+    { "kind": "blade.strike", "clips": ["clang"], "max_voices": 3, "gain_db": -4, "pitch_jitter": 0.06, "spatial": true },
     { "kind": "grapple.latch", "clips": ["latch"], "max_voices": 2, "gain_db": -6, "spatial": true },
     { "kind": "rocket.explode", "clips": ["boom"], "priority": 70, "max_voices": 4, "pitch_jitter": 0.08, "spatial": true },
     { "kind": "target.hit", "clips": ["hit"], "max_voices": 2, "gain_db": -6, "cooldown_ms": 30 },
@@ -49,6 +53,7 @@ const fn fire_cue(weapon: Weapon) -> &'static str {
         Weapon::RailGun => "weapon.railGun",
         Weapon::RocketLauncher => "weapon.rocketLauncher",
         Weapon::Grapple => "weapon.grapple",
+        Weapon::EnergyBlade => "weapon.energyBlade",
     }
 }
 
@@ -124,8 +129,17 @@ impl Sounds {
                 self.cue("player.step", None, now_ms);
             }
         }
+        // The local swing sounds as it is predicted, not when the host confirms it.
+        if report.fired == Some(Weapon::EnergyBlade) {
+            self.cue(fire_cue(Weapon::EnergyBlade), None, now_ms);
+        }
         for event in events {
             match *event {
+                Event::Fired {
+                    slot,
+                    weapon: Weapon::EnergyBlade,
+                    ..
+                } if Some(slot) == local => {}
                 Event::Fired { weapon, eye, .. } => {
                     self.cue(fire_cue(weapon), Some(metres(eye)), now_ms);
                 }
@@ -146,6 +160,11 @@ impl Sounds {
                     struck: true,
                     ..
                 } => self.cue("grapple.latch", Some(metres(end)), now_ms),
+                Event::Beam {
+                    weapon: Weapon::EnergyBlade,
+                    end,
+                    ..
+                } => self.cue("blade.strike", Some(metres(end)), now_ms),
                 Event::Beam { .. }
                 | Event::Killed { .. }
                 | Event::Spawned { .. }

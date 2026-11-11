@@ -7,11 +7,11 @@ use crate::effects::Effects;
 use crate::game::Game;
 use crate::gpu::Gpu;
 use crate::hud::{Hud, HudText};
-use crate::scene::{self, Actors, FighterView, METRES_PER_UNIT};
+use crate::scene::{self, Actors, FighterView, METRES_PER_UNIT, SWING_SECONDS};
 use render_engine::glam::Vec3;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
 use shooter_sim::session::MAX_HEALTH;
-use shooter_sim::{Arena, Event, Intent, Snapshot, TICK_HZ};
+use shooter_sim::{Arena, Event, Intent, Snapshot, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -44,6 +44,11 @@ fn looking(yaw: u16, pitch: i16) -> Vec3 {
     Vec3::new(sy * cp, sp, cy * cp)
 }
 
+/// How far through its drawn swing a blade is (0..=1), `seconds` after the swing began.
+fn swing_progress(seconds: f32) -> Option<f32> {
+    (seconds < SWING_SECONDS).then(|| seconds / SWING_SECONDS)
+}
+
 /// Every slot's fighter centre in a snapshot (`None`: dead or no fighter).
 fn centers(snapshot: &Snapshot) -> Vec<Option<[f32; 3]>> {
     let mut centers = vec![None; usize::from(u8::MAX)];
@@ -72,6 +77,10 @@ pub struct App {
     actors: Option<Actors>,
     /// Each slot's hit glow, 1 when just hit.
     glows: Vec<f32>,
+    /// Seconds since each slot's last blade swing (others', from the match's events), and since
+    /// the local fighter's (as predicted).
+    swings: Vec<f32>,
+    local_swing: f32,
     /// The other fighters' centres in the snapshot before the latest one and in it, by slot.
     previous_centers: Vec<Option<[f32; 3]>>,
     centers: Vec<Option<[f32; 3]>>,
@@ -113,6 +122,8 @@ impl App {
             effects: None,
             actors: None,
             glows: vec![0.0; usize::from(u8::MAX)],
+            swings: vec![f32::INFINITY; usize::from(u8::MAX)],
+            local_swing: f32::INFINITY,
             previous_centers: Vec::new(),
             centers: Vec::new(),
             seen_tick: None,
@@ -209,6 +220,7 @@ impl App {
             pitch: self.look.sim_pitch(),
             // Only a captured mouse shoots: the click that captures it does not.
             fire: self.captured && self.controls.fire_held(),
+            melee: self.captured && self.controls.melee_held(),
             select: self.controls.selected(),
         };
         let tick = match self.game.tick(intent) {
@@ -249,9 +261,21 @@ impl App {
         for glow in &mut self.glows {
             *glow = (*glow - 4.0 * seconds).max(0.0);
         }
+        for swing in &mut self.swings {
+            *swing += seconds;
+        }
+        self.local_swing += seconds;
+        if tick.report.fired == Some(Weapon::EnergyBlade) {
+            self.local_swing = 0.0;
+        }
         for event in &tick.events {
             match *event {
                 Event::Hit { victim, .. } => self.glows[usize::from(victim)] = 1.0,
+                Event::Fired {
+                    slot,
+                    weapon: Weapon::EnergyBlade,
+                    ..
+                } if Some(slot) != local => self.swings[usize::from(slot)] = 0.0,
                 Event::Spawned { slot, yaw } if Some(slot) == local => {
                     self.look = Look::new(radians(yaw));
                 }
@@ -350,6 +374,7 @@ impl App {
                             hook: fighter
                                 .hook
                                 .map(|hook| Vec3::from(hook.anchor_units()) * METRES_PER_UNIT),
+                            swing: swing_progress(self.swings[slot]),
                         }
                     })
                     .collect()
@@ -382,6 +407,7 @@ impl App {
                 &fighters,
                 &rockets,
                 held,
+                swing_progress(self.local_swing),
                 text.health,
                 self.game
                     .local_hook()

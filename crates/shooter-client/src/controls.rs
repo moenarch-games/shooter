@@ -23,7 +23,8 @@ pub const JUMP: &str = "move.jump";
 pub const SPRINT: &str = "move.sprint";
 pub const CROUCH: &str = "move.crouch";
 pub const FIRE: &str = "weapon.fire";
-/// Select actions, in [`Weapon::ALL`] order.
+pub const MELEE: &str = "weapon.melee";
+/// Select actions, in [`Weapon::ROTATION`] order.
 pub const SELECT: [&str; 4] = [
     "weapon.energyRifle",
     "weapon.railGun",
@@ -31,8 +32,10 @@ pub const SELECT: [&str; 4] = [
     "weapon.grapple",
 ];
 
-/// W3C mouse button index of the primary (left) button.
+/// W3C mouse button index of the primary (left) button...
 pub const PRIMARY_BUTTON: u16 = 0;
+/// ...and of the thumb's back button.
+pub const BACK_BUTTON: u16 = 3;
 
 /// W3C standard gamepad layout indices.
 pub mod standard {
@@ -87,7 +90,7 @@ fn mouse_button(button: u16) -> InputStroke {
 pub fn action_registry() -> ActionRegistry {
     use AxisDirection::{Negative, Positive};
     use standard::{LEFT_X, LEFT_Y, SOUTH};
-    let actions: [(&str, &str, Vec<InputStroke>); 12] = [
+    let actions: [(&str, &str, Vec<InputStroke>); 13] = [
         (
             MOVE_FORWARD,
             "Move forward",
@@ -114,6 +117,11 @@ pub fn action_registry() -> ActionRegistry {
         // C, not Control: Control+W closes the browser tab and pages cannot stop it.
         (CROUCH, "Crouch / slide", vec![key("KeyC")]),
         (FIRE, "Fire", vec![mouse_button(PRIMARY_BUTTON)]),
+        (
+            MELEE,
+            "Energy blade (quick melee)",
+            vec![key("KeyV"), mouse_button(BACK_BUTTON)],
+        ),
         (SELECT[0], "Energy rifle", vec![key("Digit1")]),
         (SELECT[1], "Rail gun", vec![key("Digit2")]),
         (SELECT[2], "Rocket launcher", vec![key("Digit3")]),
@@ -340,12 +348,17 @@ impl Controls {
         self.state.is_held(FIRE)
     }
 
+    #[must_use]
+    pub fn melee_held(&self) -> bool {
+        self.state.is_held(MELEE)
+    }
+
     /// The weapon whose select key is held, if any.
     #[must_use]
     pub fn selected(&self) -> Option<Weapon> {
         SELECT
             .iter()
-            .zip(Weapon::ALL)
+            .zip(Weapon::ROTATION)
             .find(|(action, _)| self.state.is_held(action))
             .map(|(_, weapon)| weapon)
     }
@@ -467,6 +480,18 @@ mod tests {
         controls.key_up(KeyCode::Digit3);
         controls.key_down(KeyCode::Digit2, false);
         assert_eq!(controls.selected(), Some(Weapon::RailGun));
+    }
+
+    #[test]
+    fn v_and_the_thumb_button_swing_the_blade() {
+        let mut controls = Controls::new();
+        controls.key_down(KeyCode::KeyV, false);
+        assert!(controls.melee_held());
+        controls.key_up(KeyCode::KeyV);
+        assert!(!controls.melee_held());
+        controls.mouse_down(BACK_BUTTON);
+        assert!(controls.melee_held());
+        assert_eq!(controls.selected(), None);
     }
 
     #[test]

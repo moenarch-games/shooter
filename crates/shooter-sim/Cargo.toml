@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 sim-foundation.workspace = true
+sim-combat.workspace = true
 
 [features]
 # Compiles the Rapier oracle into sim-foundation for the A/B scenario (tests/physics_ab.rs).

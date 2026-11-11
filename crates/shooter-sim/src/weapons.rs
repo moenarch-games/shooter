@@ -1,6 +1,7 @@
 //! The energy weapons: a hitscan energy rifle, a high-damage rail gun and a rocket launcher whose
 //! rockets fly as projectiles and explode with splash damage and knockback (rocket jumping), and
-//! the grapple hook in the same rotation ([`crate::grapple`]).
+//! the grapple hook in the same rotation ([`crate::grapple`]); and the energy blade, a quick
+//! melee swing on its own key whatever gun is held ([`crate::melee`]).
 //!
 //! Everything a shot decides is integer: the aim is a Q16 direction from the yaw and pitch
 //! steps, rockets fly in subunits per tick, splash distances are integer square roots. Rays and
@@ -23,6 +24,8 @@ pub enum Weapon {
     /// A movement tool: hooks arena geometry and reels the player in while the trigger is held
     /// ([`crate::grapple`]).
     Grapple,
+    /// The quick-melee energy blade: never held, swung on its own key ([`crate::melee`]).
+    EnergyBlade,
 }
 
 /// How a weapon's shot reaches its target.
@@ -34,17 +37,28 @@ pub enum Delivery {
     Rocket,
     /// A [`crate::grapple::Hook`].
     Grapple,
+    /// A [`crate::melee`] swing.
+    Melee,
 }
 
 impl Weapon {
-    pub const ALL: [Self; 4] = [
+    /// Every weapon, in [`Weapon::index`] order.
+    pub const ALL: [Self; 5] = [
+        Self::EnergyRifle,
+        Self::RailGun,
+        Self::RocketLauncher,
+        Self::Grapple,
+        Self::EnergyBlade,
+    ];
+    /// The weapons a player can hold (the 1 to 4 keys); the blade is swung, never held.
+    pub const ROTATION: [Self; 4] = [
         Self::EnergyRifle,
         Self::RailGun,
         Self::RocketLauncher,
         Self::Grapple,
     ];
 
-    /// Its place in [`Weapon::ALL`] (the 1 to 4 keys and the wire).
+    /// Its place in [`Weapon::ALL`] (the wire).
     #[must_use]
     pub const fn index(self) -> u8 {
         match self {
@@ -52,6 +66,7 @@ impl Weapon {
             Self::RailGun => 1,
             Self::RocketLauncher => 2,
             Self::Grapple => 3,
+            Self::EnergyBlade => 4,
         }
     }
 
@@ -63,6 +78,7 @@ impl Weapon {
             1 => Some(Self::RailGun),
             2 => Some(Self::RocketLauncher),
             3 => Some(Self::Grapple),
+            4 => Some(Self::EnergyBlade),
             _ => None,
         }
     }
@@ -79,6 +95,7 @@ impl Weapon {
             Self::RocketLauncher => 48,
             // 0.75 s from one hook to the next.
             Self::Grapple => 45,
+            Self::EnergyBlade => crate::melee::SWING_TICKS,
         }
     }
 
@@ -95,6 +112,7 @@ impl Weapon {
             },
             Self::RocketLauncher => Delivery::Rocket,
             Self::Grapple => Delivery::Grapple,
+            Self::EnergyBlade => Delivery::Melee,
         }
     }
 }
@@ -118,19 +136,35 @@ pub const SPLASH_KNOCKBACK_SUBUNITS_PER_TICK: i32 =
 /// Pitch steps (`sim_foundation::trig` angle units) of straight up; straight down is the negative.
 pub const MAX_PITCH: i16 = trig::YAW_QUARTER_TURN as i16;
 
-/// The weapon a player holds and when it may fire next: part of the simulation state.
+/// The weapon a player holds and when it (and the blade) may fire next: part of the simulation
+/// state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Arsenal {
     pub held: Weapon,
     ready_at: u32,
+    blade_ready_at: u32,
 }
 
 impl Arsenal {
-    /// Applies a switch request and the trigger at `tick`: the weapon that fires, if any.
-    pub fn trigger(&mut self, select: Option<Weapon>, fire: bool, tick: u32) -> Option<Weapon> {
-        if let Some(weapon) = select.filter(|weapon| *weapon != self.held) {
+    /// Applies a switch request, the melee key and the trigger at `tick`: the weapon that fires,
+    /// if any. A swing goes first and keeps the gun down for [`crate::melee::GUN_LOCKOUT_TICKS`].
+    pub fn trigger(
+        &mut self,
+        select: Option<Weapon>,
+        melee: bool,
+        fire: bool,
+        tick: u32,
+    ) -> Option<Weapon> {
+        if let Some(weapon) =
+            select.filter(|weapon| *weapon != self.held && Weapon::ROTATION.contains(weapon))
+        {
             self.held = weapon;
             self.ready_at = self.ready_at.max(tick + SWITCH_TICKS);
+        }
+        if melee && tick >= self.blade_ready_at {
+            self.blade_ready_at = tick + Weapon::EnergyBlade.refire_ticks();
+            self.ready_at = self.ready_at.max(tick + crate::melee::GUN_LOCKOUT_TICKS);
+            return Some(Weapon::EnergyBlade);
         }
         if fire && tick >= self.ready_at {
             self.ready_at = tick + self.held.refire_ticks();
@@ -335,12 +369,37 @@ mod tests {
     #[test]
     fn the_trigger_respects_refire_and_switch_delays() {
         let mut arsenal = Arsenal::default();
-        assert_eq!(arsenal.trigger(None, true, 0), Some(Weapon::EnergyRifle));
-        assert_eq!(arsenal.trigger(None, true, 5), None);
-        assert_eq!(arsenal.trigger(None, true, 6), Some(Weapon::EnergyRifle));
-        assert_eq!(arsenal.trigger(Some(Weapon::RailGun), true, 7), None);
-        assert_eq!(arsenal.trigger(None, true, 19), Some(Weapon::RailGun));
-        assert_eq!(arsenal.trigger(None, true, 20), None);
+        assert_eq!(
+            arsenal.trigger(None, false, true, 0),
+            Some(Weapon::EnergyRifle)
+        );
+        assert_eq!(arsenal.trigger(None, false, true, 5), None);
+        assert_eq!(
+            arsenal.trigger(None, false, true, 6),
+            Some(Weapon::EnergyRifle)
+        );
+        assert_eq!(arsenal.trigger(Some(Weapon::RailGun), false, true, 7), None);
+        assert_eq!(
+            arsenal.trigger(None, false, true, 19),
+            Some(Weapon::RailGun)
+        );
+        assert_eq!(arsenal.trigger(None, false, true, 20), None);
+    }
+
+    #[test]
+    fn the_blade_swings_over_any_gun_and_is_never_held() {
+        let mut arsenal = Arsenal::default();
+        let blade = Some(Weapon::EnergyBlade);
+        assert_eq!(arsenal.trigger(blade, true, true, 0), blade);
+        assert_eq!(arsenal.held, Weapon::EnergyRifle);
+        // The gun waits out the lockout; the blade its own refire.
+        assert_eq!(arsenal.trigger(None, false, true, 17), None);
+        assert_eq!(
+            arsenal.trigger(None, true, true, 18),
+            Some(Weapon::EnergyRifle)
+        );
+        assert_eq!(arsenal.trigger(None, true, false, 29), None);
+        assert_eq!(arsenal.trigger(None, true, false, 30), blade);
     }
 
     #[test]
