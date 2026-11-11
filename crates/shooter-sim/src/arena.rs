@@ -36,12 +36,50 @@ impl Piece {
     }
 }
 
-/// A whole arena: its floor extent, pieces and where a player spawns.
+/// A jump pad: a flat plate on the ground that throws a player standing on it. It has no
+/// collider of its own (the controller has no step-up yet), only its footprint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JumpPad {
+    /// The centre of the plate's top, on the ground it lies on.
+    pub center: Vec3i,
+    /// Half its footprint on X and Z.
+    pub half: [i32; 2],
+    /// The velocity it sets, units per second (a multiple of 15 per axis, so it is exact in
+    /// subunits per tick).
+    pub launch: Vec3i,
+}
+
+/// How far above or below a pad's top a player's feet may be and still be thrown.
+pub const PAD_REACH_UNITS: i32 = 10;
+
+impl JumpPad {
+    /// Whether feet at `feet` (units) stand on this pad.
+    #[must_use]
+    pub const fn under(&self, feet: Vec3i) -> bool {
+        (feet.x - self.center.x).abs() <= self.half[0]
+            && (feet.z - self.center.z).abs() <= self.half[1]
+            && (feet.y - self.center.y).abs() <= PAD_REACH_UNITS
+    }
+
+    /// The launch velocity in subunits per tick.
+    #[must_use]
+    pub const fn launch_velocity(&self) -> Vec3i {
+        use sim_foundation::subunits_per_tick;
+        Vec3i::new(
+            subunits_per_tick(self.launch.x),
+            subunits_per_tick(self.launch.y),
+            subunits_per_tick(self.launch.z),
+        )
+    }
+}
+
+/// A whole arena: its floor extent, pieces, jump pads and where a player spawns.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arena {
     /// The floor spans `±half_size` units on X and Z, inside the perimeter walls.
     pub half_size: i32,
     pub pieces: Vec<Piece>,
+    pub pads: Vec<JumpPad>,
     /// A spawning player's feet.
     pub spawn: Vec3i,
     /// The yaw a spawning player faces (`sim_foundation::trig`: 0 faces +Z, increasing toward +X).
@@ -69,7 +107,8 @@ const fn ramp(center: [i32; 3], half: [i32; 3], rises: RampRise) -> Piece {
 
 impl Arena {
     /// The first greybox: a 40 m square hall with 4 m walls, a central 2 m platform reached by
-    /// two ramps, crates to hop onto, pillars and low cover walls.
+    /// two ramps, crates to hop onto, pillars, low cover walls and two jump pads that throw a
+    /// player onto the platform from the east and the north.
     #[must_use]
     pub fn greybox() -> Self {
         let half_size = 2_000;
@@ -98,13 +137,34 @@ impl Arena {
             block([1_400, 60, 0], [30, 60, 250]),
             block([0, 60, -1_400], [250, 60, 30]),
         ];
+        // Both pads throw 12 m/s up (a 4 m apex) and 6 m/s toward the platform: about 1.1 s in
+        // the air and 6.8 m across, landing on the platform's near half.
+        let pads = vec![
+            JumpPad {
+                center: Vec3i::new(1_000, 0, 0),
+                half: [80, 80],
+                launch: Vec3i::new(-600, 1_200, 0),
+            },
+            JumpPad {
+                center: Vec3i::new(0, 0, -1_000),
+                half: [80, 80],
+                launch: Vec3i::new(0, 1_200, 600),
+            },
+        ];
         Self {
             half_size,
             pieces,
+            pads,
             spawn: Vec3i::new(0, 0, 1_600),
             // Half a turn: facing -Z, toward the platform.
             spawn_yaw: 32_768,
         }
+    }
+
+    /// The pad a player with feet at `feet` (units) stands on, if any.
+    #[must_use]
+    pub fn pad_under(&self, feet: Vec3i) -> Option<&JumpPad> {
+        self.pads.iter().find(|pad| pad.under(feet))
     }
 
     /// A physics world holding this arena's floor and pieces, under `gravity` (subunits per tick²).

@@ -1,17 +1,17 @@
 //! A scripted walk through the greybox arena: up the south ramp onto the platform, a jump there,
 //! down the west ramp, into the west wall, and a jump onto a crate. The movement tests and the
-//! Rapier A/B scenario both run it.
+//! Rapier A/B scenario both run it. [`crate::scenarios`] script the fast moves the same way.
 
 use crate::player::{Intent, Session};
 use sim_foundation::physics::PhysicsError;
 use sim_foundation::trig::YAW_QUARTER_TURN;
 
-const NORTH: u16 = 2 * YAW_QUARTER_TURN; // -Z
-const WEST: u16 = 3 * YAW_QUARTER_TURN; // -X
-const SOUTH: u16 = 0; // +Z
-const EAST: u16 = YAW_QUARTER_TURN; // +X
+pub const NORTH: u16 = 2 * YAW_QUARTER_TURN; // -Z
+pub const WEST: u16 = 3 * YAW_QUARTER_TURN; // -X
+pub const SOUTH: u16 = 0; // +Z
+pub const EAST: u16 = YAW_QUARTER_TURN; // +X
 
-/// One leg of the tour: hold `intent` for `ticks`.
+/// One leg of a script: hold `intent` for `ticks`.
 #[derive(Clone, Copy, Debug)]
 pub struct Leg {
     pub name: &'static str,
@@ -19,43 +19,53 @@ pub struct Leg {
     pub ticks: u32,
 }
 
-const fn walk(name: &'static str, yaw: u16, ticks: u32) -> Leg {
+/// Hold `intent` for `ticks`.
+#[must_use]
+pub const fn hold(name: &'static str, intent: Intent, ticks: u32) -> Leg {
     Leg {
         name,
-        intent: Intent {
+        intent,
+        ticks,
+    }
+}
+
+#[must_use]
+pub const fn walk(name: &'static str, yaw: u16, ticks: u32) -> Leg {
+    hold(
+        name,
+        Intent {
             forward: 1,
-            strafe: 0,
             yaw,
-            jump: false,
+            ..Intent::IDLE
         },
         ticks,
-    }
+    )
 }
 
-const fn stand(name: &'static str, ticks: u32) -> Leg {
-    Leg {
+#[must_use]
+pub const fn stand(name: &'static str, ticks: u32) -> Leg {
+    hold(
         name,
-        intent: Intent {
-            forward: 0,
-            strafe: 0,
+        Intent {
             yaw: NORTH,
-            jump: false,
+            ..Intent::IDLE
         },
         ticks,
-    }
+    )
 }
 
-const fn jump(name: &'static str, yaw: u16, forward: i8) -> Leg {
-    Leg {
+#[must_use]
+pub const fn jump(name: &'static str, yaw: u16, forward: i8) -> Leg {
+    hold(
         name,
-        intent: Intent {
+        Intent {
             forward,
-            strafe: 0,
             yaw,
             jump: true,
+            ..Intent::IDLE
         },
-        ticks: 1,
-    }
+        1,
+    )
 }
 
 /// The legs, in order, from the arena's spawn at (0, 0, 16 m) facing north.
@@ -78,20 +88,28 @@ pub const LEGS: &[Leg] = &[
     stand("on the crate", 40),
 ];
 
-/// One sample of the tour: the tick, the player's exact centre and whether it stood on ground.
+/// One sample of a script: the tick, the player's exact centre and whether it stood on ground.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
     pub tick: u32,
     pub leg: &'static str,
     pub center: [f32; 3],
     pub grounded: bool,
+    pub sliding: bool,
+    pub launched: bool,
+    pub air_jumped: bool,
 }
 
-/// Runs every leg on `session`, sampling after each tick.
+/// Runs the tour's legs on `session`, sampling after each tick.
 pub fn run(session: &mut Session) -> Result<Vec<Sample>, PhysicsError> {
+    run_legs(session, LEGS)
+}
+
+/// Runs `legs` on `session`, sampling after each tick.
+pub fn run_legs(session: &mut Session, legs: &[Leg]) -> Result<Vec<Sample>, PhysicsError> {
     let mut samples = Vec::new();
     let mut tick = 0;
-    for leg in LEGS {
+    for leg in legs {
         for _ in 0..leg.ticks {
             let report = session.tick(leg.intent)?;
             tick += 1;
@@ -100,6 +118,9 @@ pub fn run(session: &mut Session) -> Result<Vec<Sample>, PhysicsError> {
                 leg: leg.name,
                 center: session.player.center(&session.world),
                 grounded: report.grounded,
+                sliding: report.sliding,
+                launched: report.launched,
+                air_jumped: report.air_jumped,
             });
         }
     }

@@ -5,7 +5,7 @@ use crate::controls::{Controls, Look, PadState, standard};
 use crate::gpu::Gpu;
 use crate::scene::{self, METRES_PER_UNIT};
 use render_engine::glam::Vec3;
-use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS};
+use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
 use shooter_sim::{Arena, Intent, Session, TICK_HZ};
 use std::sync::Arc;
 use web_time::Instant;
@@ -20,6 +20,12 @@ pub type GpuReady = Result<Gpu, String>;
 
 /// Never simulate more than this many ticks in one frame (after a stall, time is dropped).
 const MAX_TICKS_PER_FRAME: u32 = 8;
+
+/// Standing eye height (units) as `f32`.
+#[allow(clippy::cast_precision_loss)]
+const EYE: f32 = EYE_HEIGHT_UNITS as f32;
+/// How far (units) the eye moves toward its target height each tick.
+const EYE_DIP_PER_TICK: f32 = 12.0;
 
 pub struct App {
     proxy: EventLoopProxy<GpuReady>,
@@ -36,6 +42,9 @@ pub struct App {
     accumulator: f32,
     previous_center: [f32; 3],
     center: [f32; 3],
+    /// Eye height above the feet (units), dipping while sliding.
+    previous_eye: f32,
+    eye: f32,
     /// The pointer is locked to the game (native: grabbed; web: Pointer Lock).
     captured: bool,
 }
@@ -67,6 +76,8 @@ impl App {
             accumulator: 0.0,
             previous_center: center,
             center,
+            previous_eye: EYE,
+            eye: EYE,
             captured: false,
         }
     }
@@ -171,6 +182,8 @@ impl App {
                 strafe,
                 yaw: self.look.sim_yaw(),
                 jump: self.controls.jump_held(),
+                sprint: self.controls.sprint_held(),
+                crouch: self.controls.crouch_held(),
             };
             let report = match self.session.tick(intent) {
                 Ok(report) => report,
@@ -179,6 +192,16 @@ impl App {
                     return;
                 }
             };
+            self.previous_eye = self.eye;
+            let target = if report.sliding {
+                SLIDE_EYE_HEIGHT_UNITS
+            } else {
+                EYE_HEIGHT_UNITS
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let target = target as f32;
+            // The camera dips into a slide and rises out of it over a few ticks.
+            self.eye += (target - self.eye).clamp(-EYE_DIP_PER_TICK, EYE_DIP_PER_TICK);
             self.previous_center = self.center;
             self.center = self.session.player.center(&self.session.world);
             let moved = (self.center[0] - self.previous_center[0])
@@ -191,7 +214,8 @@ impl App {
         let blend = self.accumulator / tick;
         let center = Vec3::from(self.previous_center).lerp(Vec3::from(self.center), blend);
         #[allow(clippy::cast_precision_loss)]
-        let eye_above_center = (EYE_HEIGHT_UNITS - PLAYER_HALF_EXTENTS.y) as f32;
+        let eye_above_center = self.previous_eye + (self.eye - self.previous_eye) * blend
+            - PLAYER_HALF_EXTENTS.y as f32;
         let eye = (center + Vec3::Y * eye_above_center) * METRES_PER_UNIT;
         let scene = scene::frame(eye, Vec3::from(self.look.forward()));
         if let Some(gpu) = &mut self.gpu

@@ -1,5 +1,5 @@
 //! The arena as render-engine content: one mesh per piece at its true size (so normals stay
-//! exact), a checkered floor for a sense of speed, and the hall's lighting.
+//! exact), a checkered floor for a sense of speed, glowing jump pads, and the hall's lighting.
 
 use render_engine::glam::{Mat4, Quat, Vec3, Vec4};
 use render_engine::material::StandardMaterial;
@@ -177,6 +177,28 @@ pub fn build(world: &mut World, arena: &Arena) {
             mesh,
             material,
             world_from_local: Mat4::from_rotation_translation(rotation, center),
+            skin: None,
+        });
+    }
+
+    // Jump pads: glowing 2 cm plates (no collider; the simulation throws from the footprint).
+    let pad_material = world.add_material(&StandardMaterial {
+        base_color: Vec4::new(0.1, 0.8, 0.95, 1.0),
+        emissive: Vec3::new(400.0, 3_000.0, 3_600.0),
+        perceptual_roughness: 0.3,
+        ..StandardMaterial::default()
+    });
+    const PAD_THICKNESS: f32 = 0.02;
+    for pad in &arena.pads {
+        #[allow(clippy::cast_precision_loss)]
+        let half = Vec3::new(pad.half[0] as f32, 0.0, pad.half[1] as f32) * METRES_PER_UNIT;
+        let size = Vec3::new(half.x * 2.0, PAD_THICKNESS, half.z * 2.0);
+        let center = metres(pad.center) + Vec3::Y * (PAD_THICKNESS / 2.0);
+        let mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(size)));
+        world.add_instance(Instance {
+            mesh,
+            material: pad_material,
+            world_from_local: Mat4::from_translation(center),
             skin: None,
         });
     }
