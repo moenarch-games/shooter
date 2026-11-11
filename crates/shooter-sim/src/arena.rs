@@ -80,6 +80,8 @@ pub struct Arena {
     pub half_size: i32,
     pub pieces: Vec<Piece>,
     pub pads: Vec<JumpPad>,
+    /// Where target dummies stand.
+    pub posts: Vec<Post>,
     /// A spawning player's feet.
     pub spawn: Vec3i,
     /// The yaw a spawning player faces (`sim_foundation::trig`: 0 faces +Z, increasing toward +X).
@@ -89,6 +91,23 @@ pub struct Arena {
 /// The floor's body; pieces take the IDs after it, players start at [`FIRST_PLAYER_BODY`].
 pub const FLOOR_BODY: BodyId = BodyId(1);
 pub const FIRST_PLAYER_BODY: u64 = 1_000;
+/// Target dummies take the IDs from here, in post order.
+pub const FIRST_DUMMY_BODY: u64 = 2_000;
+
+/// Where a target dummy stands: its feet, and how far it walks to either side along X (0 stands
+/// still).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Post {
+    pub feet: Vec3i,
+    pub patrol_units: i32,
+}
+
+const fn post(feet: [i32; 3], patrol_units: i32) -> Post {
+    Post {
+        feet: Vec3i::new(feet[0], feet[1], feet[2]),
+        patrol_units,
+    }
+}
 
 const fn block(center: [i32; 3], half: [i32; 3]) -> Piece {
     Piece::Block {
@@ -151,10 +170,20 @@ impl Arena {
                 launch: Vec3i::new(0, 1_200, 600),
             },
         ];
+        // Target dummies: two beside the south ramp, one on the platform, one walking to and fro
+        // north-west of it and one far in the south-east corner for long shots.
+        let posts = vec![
+            post([-500, 0, 800], 0),
+            post([500, 0, 800], 0),
+            post([0, 200, -200], 0),
+            post([-1_000, 0, -800], 300),
+            post([1_700, 0, 1_700], 0),
+        ];
         Self {
             half_size,
             pieces,
             pads,
+            posts,
             spawn: Vec3i::new(0, 0, 1_600),
             // Half a turn: facing -Z, toward the platform.
             spawn_yaw: 32_768,

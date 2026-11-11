@@ -1,7 +1,9 @@
 //! Rapier A/B: the scripted tour through the greybox arena and every fast-move scenario
-//! (sprint, slide, double jump, jump pad, slopes, a thin wall, a step) on physics-engine and on
-//! the Rapier oracle (`sim_foundation::physics::using_backend`). Both must follow the same path
-//! within a few centimetres and agree on support at the end of every leg.
+//! (sprint, slide, double jump, jump pad, slopes, a thin wall, a step, a rocket jump, a shooting
+//! range) on physics-engine and on the Rapier oracle (`sim_foundation::physics::using_backend`).
+//! Both must follow the same path within a few centimetres, agree on support at the end of every
+//! leg, and fire, hit and explode on the same ticks for the same damage (rays and rocket sweeps
+//! are the backends' `cast_ray`).
 //!
 //! `cargo test -p shooter-sim --features physics-ab --test physics_ab`
 
@@ -85,6 +87,16 @@ fn compare(scenario: Scenario) {
         events(&rapier),
         "{name}: pad and air-jump ticks"
     );
+    // Shots, hits and blasts: the same weapon fires on the same tick and every ray or rocket
+    // deals the same damage on the same tick.
+    let combat = |samples: &[Sample]| {
+        samples
+            .iter()
+            .filter(|s| s.fired.is_some() || s.damage > 0 || s.exploded)
+            .map(|s| (s.tick, s.fired, s.damage, s.exploded))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(combat(&engine), combat(&rapier), "{name}: shots and hits");
 }
 
 #[test]
@@ -120,6 +132,16 @@ fn the_thin_wall_matches_the_rapier_oracle() {
 #[test]
 fn the_step_matches_the_rapier_oracle() {
     compare(scenarios::STEP);
+}
+
+#[test]
+fn the_rocket_jump_matches_the_rapier_oracle() {
+    compare(scenarios::ROCKET_JUMP);
+}
+
+#[test]
+fn the_shooting_range_matches_the_rapier_oracle() {
+    compare(scenarios::SHOOTING_RANGE);
 }
 
 #[test]

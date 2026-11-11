@@ -2,7 +2,9 @@
 //! down the west ramp, into the west wall, and a jump onto a crate. The movement tests and the
 //! Rapier A/B scenario both run it. [`crate::scenarios`] script the fast moves the same way.
 
-use crate::player::{Intent, Session};
+use crate::player::Intent;
+use crate::session::Session;
+use crate::weapons::Weapon;
 use sim_foundation::physics::PhysicsError;
 use sim_foundation::trig::YAW_QUARTER_TURN;
 
@@ -88,7 +90,8 @@ pub const LEGS: &[Leg] = &[
     stand("on the crate", 40),
 ];
 
-/// One sample of a script: the tick, the player's exact centre and whether it stood on ground.
+/// One sample of a script: the tick, the player's exact centre, whether it stood on ground and
+/// what its weapons did.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
     pub tick: u32,
@@ -98,6 +101,10 @@ pub struct Sample {
     pub sliding: bool,
     pub launched: bool,
     pub air_jumped: bool,
+    pub fired: Option<Weapon>,
+    /// Damage dealt to dummies this tick.
+    pub damage: i32,
+    pub exploded: bool,
 }
 
 /// Runs the tour's legs on `session`, sampling after each tick.
@@ -121,6 +128,9 @@ pub fn run_legs(session: &mut Session, legs: &[Leg]) -> Result<Vec<Sample>, Phys
                 sliding: report.sliding,
                 launched: report.launched,
                 air_jumped: report.air_jumped,
+                fired: report.fired,
+                damage: report.damage,
+                exploded: report.exploded,
             });
         }
     }
