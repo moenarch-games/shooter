@@ -232,6 +232,27 @@ pub fn gun_pose(eye: Vec3, forward: Vec3) -> (Mat4, Vec3) {
     )
 }
 
+/// The energy blade's length (metres).
+const BLADE_LENGTH: f32 = 0.75;
+/// A swing sweeps from this far right of the view to as far left (radians).
+const SWING_ARC: f32 = 1.3;
+/// How long a drawn swing lasts (seconds).
+pub const SWING_SECONDS: f32 = 0.18;
+
+/// The blade `progress` (0..=1) through a swing from `eye` looking along `forward` (metres): a
+/// flat slash from right to left across the view, like the swing's arc in the simulation.
+#[must_use]
+pub fn blade_pose(eye: Vec3, forward: Vec3, progress: f32) -> Mat4 {
+    let (forward, right, up) = basis(forward);
+    let t = progress.clamp(0.0, 1.0);
+    let angle = SWING_ARC * (1.0 - 2.0 * t * t * (3.0 - 2.0 * t));
+    let (sine, cosine) = angle.sin_cos();
+    let direction = (forward * cosine + right * sine - up * 0.2).normalize_or(forward);
+    let hilt = eye + forward * 0.1 + right * (0.12 * sine) - up * 0.22;
+    let rotation = Quat::from_rotation_arc(Vec3::Z, direction);
+    Mat4::from_rotation_translation(rotation, hilt + direction * (BLADE_LENGTH / 2.0))
+}
+
 /// One other fighter as drawn this frame.
 #[derive(Clone, Copy, Debug)]
 pub struct FighterView {
@@ -246,6 +267,8 @@ pub struct FighterView {
     pub held: Weapon,
     /// Where its grapple hook holds (metres), while set.
     pub hook: Option<Vec3>,
+    /// How far through a blade swing it is (0..=1), while swinging.
+    pub swing: Option<f32>,
 }
 
 /// A grapple cable's thickness (metres).
@@ -274,16 +297,17 @@ fn fighter_material(health: f32, glow: f32) -> StandardMaterial {
     }
 }
 
-/// One other fighter's instances: its body (coloured by health) and its gun.
+/// One other fighter's instances: its body (coloured by health), its gun and its blade.
 struct FighterInstances {
     body: InstanceId,
     material: MaterialId,
     gun: InstanceId,
+    blade: InstanceId,
 }
 
-/// The moving things drawn over the arena: the other fighters, rockets, the held gun and
-/// (natively; the page draws its own) a crosshair and a health bar. Placeholder primitives until
-/// asset-tooling delivers the weapon and character models.
+/// The moving things drawn over the arena: the other fighters, rockets, the held gun, the swung
+/// blade and (natively; the page draws its own) a crosshair and a health bar. Placeholder
+/// primitives until asset-tooling delivers the weapon and character models.
 pub struct Actors {
     fighters: Vec<FighterInstances>,
     fighter_mesh: MeshId,
@@ -292,7 +316,11 @@ pub struct Actors {
     rockets: Vec<InstanceId>,
     gun: InstanceId,
     gun_mesh: MeshId,
-    gun_materials: [MaterialId; 4],
+    gun_materials: [MaterialId; 5],
+    /// The local energy blade, drawn only through a swing.
+    blade: InstanceId,
+    blade_mesh: MeshId,
+    blade_material: MaterialId,
     cable_mesh: MeshId,
     cable_material: MaterialId,
     /// Grapple cables, reused frame to frame (hidden when unused).
@@ -311,7 +339,7 @@ fn glowing(rgb: Vec3, nits: f32) -> StandardMaterial {
     }
 }
 
-fn gun_material(materials: &[MaterialId; 4], held: Weapon) -> MaterialId {
+fn gun_material(materials: &[MaterialId; 5], held: Weapon) -> MaterialId {
     materials[usize::from(held.index())]
 }
 
@@ -333,6 +361,18 @@ impl Actors {
         let gun = world.add_instance(Instance {
             mesh: gun_mesh,
             material: gun_materials[0],
+            world_from_local: HIDDEN,
+            skin: None,
+        });
+        let blade_mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
+            0.012,
+            0.05,
+            BLADE_LENGTH,
+        ))));
+        let blade_material = world.add_material(&glowing(tint(Weapon::EnergyBlade), 8_000.0));
+        let blade = world.add_instance(Instance {
+            mesh: blade_mesh,
+            material: blade_material,
             world_from_local: HIDDEN,
             skin: None,
         });
@@ -375,6 +415,9 @@ impl Actors {
             gun,
             gun_mesh,
             gun_materials,
+            blade,
+            blade_mesh,
+            blade_material,
             cable_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
                 CABLE_WIDTH,
                 CABLE_WIDTH,
@@ -407,7 +450,8 @@ impl Actors {
 
     /// Places everything for this frame. `eye`/`forward` is the local camera; `held` is `None`
     /// while the local fighter is dead (no gun in view); `health` is its health (0..=1);
-    /// `hook` is where its grapple holds (metres), while set.
+    /// `hook` is where its grapple holds (metres), while set; `swing` how far through a blade
+    /// swing it is (0..=1), while swinging.
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
@@ -415,6 +459,7 @@ impl Actors {
         fighters: &[FighterView],
         rockets: &[Vec3],
         held: Option<Weapon>,
+        swing: Option<f32>,
         health: Option<f32>,
         hook: Option<Vec3>,
         eye: Vec3,
@@ -460,10 +505,17 @@ impl Actors {
                 world_from_local: HIDDEN,
                 skin: None,
             });
+            let blade = world.add_instance(Instance {
+                mesh: self.blade_mesh,
+                material: self.blade_material,
+                world_from_local: HIDDEN,
+                skin: None,
+            });
             self.fighters.push(FighterInstances {
                 body,
                 material,
                 gun,
+                blade,
             });
         }
         for (index, instances) in self.fighters.iter().enumerate() {
@@ -491,7 +543,20 @@ impl Actors {
                 instances.material,
                 body_at,
             );
+            let swinging = view.and_then(|view| Some((view, view.swing?)));
+            let blade_at = swinging.map_or(HIDDEN, |(view, swing)| {
+                let fighter_eye = view.center.unwrap_or_default() + Vec3::Y * 0.75;
+                blade_pose(fighter_eye, view.forward, swing)
+            });
+            let gun_at = if swinging.is_some() { HIDDEN } else { gun_at };
             Self::place(world, instances.gun, self.gun_mesh, gun_material, gun_at);
+            Self::place(
+                world,
+                instances.blade,
+                self.blade_mesh,
+                self.blade_material,
+                blade_at,
+            );
         }
         while self.rockets.len() < rockets.len() {
             let instance = world.add_instance(Instance {
@@ -508,13 +573,17 @@ impl Actors {
                 .map_or(HIDDEN, |at| Mat4::from_translation(*at));
             Self::place(world, *instance, self.rocket_mesh, self.rocket_material, at);
         }
+        // Through a swing the blade sweeps across the view and the gun is put away.
+        let swing = swing.filter(|_| held.is_some());
         let material = gun_material(&self.gun_materials, held.unwrap_or_default());
-        let at = if held.is_some() {
+        let at = if held.is_some() && swing.is_none() {
             gun_pose(eye, forward).0
         } else {
             HIDDEN
         };
         Self::place(world, self.gun, self.gun_mesh, material, at);
+        let at = swing.map_or(HIDDEN, |swing| blade_pose(eye, forward, swing));
+        Self::place(world, self.blade, self.blade_mesh, self.blade_material, at);
         if let Some(crosshair) = self.crosshair {
             let mut instance = world.instance(crosshair);
             instance.world_from_local = Mat4::from_translation(eye + forward * 0.5);

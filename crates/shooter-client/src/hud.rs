@@ -33,6 +33,7 @@ const fn weapon_name(weapon: Weapon) -> &'static str {
         Weapon::RailGun => "Rail gun",
         Weapon::RocketLauncher => "Rockets",
         Weapon::Grapple => "Grapple",
+        Weapon::EnergyBlade => "Energy blade",
     }
 }
 

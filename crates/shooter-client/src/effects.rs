@@ -1,6 +1,6 @@
 //! Weapon effects as render-engine lights and particles: muzzle flashes, beam trails, impact
-//! sparks, rocket exhaust and explosions. The simulation's [`Event`]s start them; they live on
-//! their own clock (presentation only, never fed back into the simulation).
+//! sparks, blade strikes, rocket exhaust and explosions. The simulation's [`Event`]s start them;
+//! they live on their own clock (presentation only, never fed back into the simulation).
 
 use crate::scene::{METRES_PER_UNIT, gun_pose};
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
@@ -24,6 +24,7 @@ pub const fn tint(weapon: Weapon) -> Vec3 {
         Weapon::RailGun => Vec3::new(0.75, 0.35, 1.0),
         Weapon::RocketLauncher => Vec3::new(1.0, 0.55, 0.15),
         Weapon::Grapple => Vec3::new(0.45, 1.0, 0.55),
+        Weapon::EnergyBlade => Vec3::new(1.0, 0.25, 0.6),
     }
 }
 
@@ -200,8 +201,8 @@ struct Flash {
 }
 
 pub struct Effects {
-    muzzle: [EmitterId; 4],
-    trail: [EmitterId; 4],
+    muzzle: [EmitterId; 5],
+    trail: [EmitterId; 5],
     impact: EmitterId,
     fireball: EmitterId,
     exhaust: EmitterId,
@@ -214,16 +215,18 @@ fn index(weapon: Weapon) -> usize {
         Weapon::RailGun => 1,
         Weapon::RocketLauncher => 2,
         Weapon::Grapple => 3,
+        Weapon::EnergyBlade => 4,
     }
 }
 
 /// Spacing of trail motes along a beam (metres) and their size and life, per weapon (only
-/// hitscan weapons draw beams; the rocket's entry is unused).
-const TRAIL: [(f32, f32, f32); 4] = [
+/// hitscan weapons draw beams; the rocket's and the blade's entries are unused).
+const TRAIL: [(f32, f32, f32); 5] = [
     (0.5, 0.05, 0.12),
     (0.12, 0.07, 0.7),
     (1.0, 0.05, 0.1),
     (0.3, 0.035, 0.25),
+    (1.0, 0.05, 0.1),
 ];
 
 impl Effects {
@@ -280,6 +283,25 @@ impl Effects {
     pub fn play(&mut self, world: &mut World, events: &[Event]) {
         for event in events {
             match *event {
+                // The blade has no muzzle: its swing is drawn by the actors.
+                Event::Fired {
+                    weapon: Weapon::EnergyBlade,
+                    ..
+                } => {}
+                // A blade strike: a spray of the blade's sparks and the white impact's.
+                Event::Beam {
+                    weapon: Weapon::EnergyBlade,
+                    end,
+                    normal,
+                    ..
+                } => {
+                    let (end, normal) = (units(end), Vec3::from(normal));
+                    let blade = tint(Weapon::EnergyBlade);
+                    let at = facing(end + normal * 0.02, normal);
+                    world.burst(self.muzzle[index(Weapon::EnergyBlade)], 36, at);
+                    world.burst(self.impact, 14, at);
+                    self.flash(end + normal * 0.15, blade, 200_000.0, 5.0, 0.15);
+                }
                 Event::Fired {
                     weapon,
                     eye,

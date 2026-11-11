@@ -73,6 +73,8 @@ pub struct Intent {
     pub pitch: i16,
     /// Trigger held: fires whenever the held weapon is ready.
     pub fire: bool,
+    /// Melee held: swings the energy blade whenever it is ready ([`crate::melee`]).
+    pub melee: bool,
     /// Switch to this weapon (it stays held until another is selected).
     pub select: Option<Weapon>,
 }
@@ -88,6 +90,7 @@ impl Intent {
         crouch: false,
         pitch: 0,
         fire: false,
+        melee: false,
         select: None,
     };
 }

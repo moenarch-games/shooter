@@ -8,6 +8,7 @@ pub mod arena;
 pub mod bots;
 pub mod dummies;
 pub mod grapple;
+pub mod melee;
 pub mod player;
 pub mod scenarios;
 pub mod session;

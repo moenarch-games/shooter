@@ -54,6 +54,11 @@ supersedes them. New entries take an issue-derived ID (parent ID + `i` + issue n
 - **Q2**: Bot skill and behavior beyond "fills empty slots and is beatable".
 - **Q3**: Weapon count and how distinct each one is; which melee weapons (energy blade, hammer, …);
   whether melee is a separate slot or part of the rotation.
+  Defaults in use until decided (shooter#6): one melee weapon, an energy blade, as a quick melee
+  on its own key (V, or the mouse's back button) usable whatever gun is held, not a rotation slot.
+  50 damage, a swing every 0.5 s, the gun ready 0.3 s after a swing, a 6 m/s shove; mmorpg's shared
+  `sim-combat` reach (2.5 m), arc (50° either side) and height band (1 m below to 2 m above the
+  feet), striking every fighter it covers in line of sight.
 - **Q4**: Grapple details: pull versus swing, range, cooldown, whether it can hook players.
   Defaults in use until decided (shooter#5): pull and swing together (a reel toward the hook
   while the rope swings), 30 m range, 0.75 s between hooks, arena geometry only (no players).

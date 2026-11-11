@@ -12,7 +12,7 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 2;
+pub const WIRE_VERSION: u8 = 3;
 const NONE: u8 = u8::MAX;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -225,6 +225,7 @@ const JUMP: u8 = 1;
 const SPRINT: u8 = 2;
 const CROUCH: u8 = 4;
 const FIRE: u8 = 8;
+const MELEE: u8 = 16;
 
 /// One tick of a person's controls and the snapshot tick it was made against.
 #[must_use]
@@ -240,6 +241,7 @@ pub fn encode_input(intent: Intent, view_tick: u32) -> Vec<u8> {
         (intent.sprint, SPRINT),
         (intent.crouch, CROUCH),
         (intent.fire, FIRE),
+        (intent.melee, MELEE),
     ]
     .iter()
     .filter(|(held, _)| *held)
@@ -275,6 +277,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<(Intent, u32), WireError> {
         sprint: flags & SPRINT != 0,
         crouch: flags & CROUCH != 0,
         fire: flags & FIRE != 0,
+        melee: flags & MELEE != 0,
         select,
     };
     Ok((intent, view_tick))

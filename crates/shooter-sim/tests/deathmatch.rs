@@ -2,6 +2,7 @@
 //! from bots, lag-compensated hitscan, the round's end and restart, rocket self-damage, and the
 //! wire round trip.
 
+use shooter_sim::melee;
 use shooter_sim::scenarios;
 use shooter_sim::session::{MAX_HEALTH, SELF_SPLASH_PERCENT};
 use shooter_sim::sim_foundation::physics::Vec3i;
@@ -166,6 +167,152 @@ fn hitscan_is_lag_compensated() {
     assert!(duel_shot(12), "A saw B in the line of fire 12 ticks ago");
 }
 
+/// A (slot 0) and B (slot 1) face each other 2 m apart; B strafes for 24 ticks (out of the
+/// blade's arc), then A swings having seen B at `seen_ticks_ago`. Whether B was struck.
+fn melee_duel(seen_ticks_ago: u32) -> bool {
+    let arena = Arena {
+        spawn: Vec3i::new(0, 0, -100),
+        spawns: vec![Spawn {
+            feet: Vec3i::new(0, 0, 100),
+            yaw: 32_768,
+        }],
+        ..duel_arena()
+    };
+    let mut session = Session::with_rules(arena, duel_rules()).unwrap();
+    session.join(1).unwrap();
+    session.join(2).unwrap();
+    let mut sequence = 0;
+    let mut step = |session: &mut Session, a: Intent, b: Intent, view_tick: u32| {
+        sequence += 1;
+        for (id, intent) in [(1, a), (2, Intent { yaw: 32_768, ..b })] {
+            session.queue(
+                id,
+                Input {
+                    sequence,
+                    intent,
+                    view_tick,
+                },
+            );
+        }
+        session.step().unwrap();
+    };
+    let strafe = Intent {
+        strafe: 1,
+        ..Intent::IDLE
+    };
+    for _ in 0..24 {
+        let now = session.ticks();
+        step(&mut session, Intent::IDLE, strafe, now);
+    }
+    let swing = Intent {
+        melee: true,
+        ..Intent::IDLE
+    };
+    let seen = session.ticks() - seen_ticks_ago;
+    step(&mut session, swing, Intent::IDLE, seen);
+    assert!(session.events.iter().any(|event| matches!(
+        event,
+        Event::Fired {
+            slot: 0,
+            weapon: Weapon::EnergyBlade,
+            ..
+        }
+    )));
+    session.events.iter().any(|event| {
+        matches!(
+            event,
+            Event::Hit {
+                victim: 1,
+                damage: melee::DAMAGE,
+                ..
+            }
+        )
+    })
+}
+
+#[test]
+fn blade_swings_are_lag_compensated() {
+    assert!(!melee_duel(0), "B has strafed out of the blade's arc");
+    assert!(melee_duel(15), "A saw B in front 15 ticks ago");
+}
+
+#[test]
+fn the_blade_kills_in_four_swings_whatever_gun_is_held() {
+    let arena = Arena {
+        spawn: Vec3i::new(0, 0, -100),
+        spawns: vec![Spawn {
+            feet: Vec3i::new(0, 0, 100),
+            yaw: 32_768,
+        }],
+        ..duel_arena()
+    };
+    let mut session = Session::with_rules(arena, duel_rules()).unwrap();
+    session.join(1).unwrap();
+    session.join(2).unwrap();
+    session.step().unwrap();
+    let mut killed_at = None;
+    for sequence in 1..=120 {
+        let now = session.ticks();
+        // A follows B up after each shove, stopping 1.5 m short.
+        let gap = session.fighters[1].player.center(&session.world)[2]
+            - session.fighters[0].player.center(&session.world)[2];
+        let swing = Intent {
+            melee: true,
+            forward: i8::from(gap > 150.0),
+            select: Some(Weapon::RocketLauncher),
+            ..Intent::IDLE
+        };
+        session.queue(
+            1,
+            Input {
+                sequence,
+                intent: swing,
+                view_tick: now,
+            },
+        );
+        session.step().unwrap();
+        if session.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Killed {
+                    victim: 1,
+                    killer: Some(0),
+                    weapon: Some(Weapon::EnergyBlade),
+                }
+            )
+        }) {
+            killed_at = Some(sequence);
+            break;
+        }
+    }
+    // Swings at ticks 0, 30, 60 and 90; A walks after the shoves.
+    assert_eq!(killed_at, Some(91));
+    assert_eq!(session.fighters[0].arsenal.held, Weapon::RocketLauncher);
+}
+
+#[test]
+fn bots_swing_the_blade_up_close() {
+    let mut session = Session::with_rules(Arena::greybox(), Rules::deathmatch(7)).unwrap();
+    let mut swings = 0;
+    for _ in 0..180 * 60 {
+        session.step().unwrap();
+        swings += session
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    Event::Fired {
+                        weapon: Weapon::EnergyBlade,
+                        ..
+                    }
+                )
+            })
+            .count();
+    }
+    assert!(swings > 0, "no bot swung the blade in 3 minutes");
+}
+
 #[test]
 fn rail_kills_score_and_the_round_ends_and_restarts() {
     let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
@@ -299,6 +446,7 @@ fn inputs_and_snapshots_round_trip() {
         sprint: false,
         crouch: true,
         fire: true,
+        melee: true,
         select: Some(Weapon::RocketLauncher),
     };
     assert_eq!(

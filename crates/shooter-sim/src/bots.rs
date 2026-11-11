@@ -1,7 +1,8 @@
 //! Bots: simple, beatable and deterministic. A bot walks from spawn point to spawn point, looks
 //! for the nearest fighter it can see, turns toward it at a limited rate, waits a reaction delay,
 //! then fires with an aim error it re-rolls every few hundred milliseconds, strafing as it does.
-//! It picks the rifle up close, rockets at mid range and the rail gun far off. Every random
+//! It picks the rifle up close, rockets at mid range and the rail gun far off, and rushes in to
+//! swing the energy blade when someone comes within a few metres. Every random
 //! choice comes from its own seeded stream (`sim_foundation`'s SplitMix64), so a match replays
 //! exactly.
 
@@ -34,6 +35,10 @@ pub const ROCKET_RANGE_UNITS: i64 = 1_800;
 /// It closes in beyond 12 m and backs off inside 5 m.
 pub const CLOSE_IN_UNITS: i64 = 1_200;
 pub const BACK_OFF_UNITS: i64 = 500;
+/// Inside 3 m it rushes in and swings the blade once its target is within 2.2 m across the
+/// ground (a little inside the blade's reach).
+pub const RUSH_UNITS: i64 = 300;
+pub const MELEE_UNITS: i32 = crate::melee::REACH_UNITS - 30;
 /// It counts as at a waypoint within 1.5 m.
 pub const WAYPOINT_REACH_UNITS: i64 = 150;
 /// After 0.5 s barely moving while it wants to walk, it jumps and picks another waypoint.
@@ -233,8 +238,9 @@ impl Bot {
             self.strafe_until = tick + 40 + self.rng.below(60);
         }
         let on_target = turn(self.yaw, yaw).abs() < FIRE_CONE;
+        let ready = on_target && tick >= self.spotted_at + REACTION_TICKS;
         Intent {
-            forward: if distance > CLOSE_IN_UNITS {
+            forward: if !(RUSH_UNITS..=CLOSE_IN_UNITS).contains(&distance) {
                 1
             } else if distance < BACK_OFF_UNITS {
                 -1
@@ -247,7 +253,8 @@ impl Bot {
             jump: self.rng.below(90) == 0,
             sprint: false,
             crouch: false,
-            fire: weapon == held && on_target && tick >= self.spotted_at + REACTION_TICKS,
+            fire: weapon == held && ready,
+            melee: ready && run < MELEE_UNITS && dy.abs() < crate::player::EYE_HEIGHT_UNITS,
             select: Some(weapon),
         }
     }
