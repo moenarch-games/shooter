@@ -28,6 +28,8 @@ supersedes them. New entries take an issue-derived ID (parent ID + `i` + issue n
 
 - **D3.1** (owner, 2026-11-11): Native wgpu client on render-engine plus a browser client on Pages.
   Both join the same game-server match.
+- **D3.2** (owner, 2026-11-11): Assume mouse and keyboard for now. Gamepad support is not a
+  current goal; existing gamepad paths may stay, but no work or acceptance depends on them.
 
 ## 4. Foundations and data
 
