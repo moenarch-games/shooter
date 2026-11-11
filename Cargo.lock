@@ -2902,7 +2902,7 @@ dependencies = [
 [[package]]
 name = "sim-foundation"
 version = "0.1.0"
-source = "git+https://github.com/moenarch-games/mmorpg.git?rev=575ab96ba904392ef0d2258f358bedf804ae806b#575ab96ba904392ef0d2258f358bedf804ae806b"
+source = "git+https://github.com/moenarch-games/mmorpg.git?rev=eb58c43b5537dc3c156664f21cb5d5376d54be66#eb58c43b5537dc3c156664f21cb5d5376d54be66"
 dependencies = [
  "physics-engine",
  "rapier3d",

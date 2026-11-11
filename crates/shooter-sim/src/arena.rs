@@ -37,7 +37,7 @@ impl Piece {
 }
 
 /// A jump pad: a flat plate on the ground that throws a player standing on it. It has no
-/// collider of its own (the controller has no step-up yet), only its footprint.
+/// collider of its own (it is flush with the floor), only its footprint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct JumpPad {
     /// The centre of the plate's top, on the ground it lies on.
@@ -229,7 +229,7 @@ impl Arena {
                 Piece::Ramp { .. } => true,
                 Piece::Block { center, half } => {
                     let top = center.y + half.y;
-                    top <= feet + 20
+                    top <= feet + crate::player::STEP_UP.max_height
                         || (x - center.x).abs() > half.x + MARGIN
                         || (z - center.z).abs() > half.z + MARGIN
                 }
