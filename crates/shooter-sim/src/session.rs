@@ -15,6 +15,7 @@
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
 use crate::bots::{Bot, Sight};
 use crate::dummies::Dummy;
+use crate::grapple::Hook;
 use crate::player::{
     EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player, STEP_UP,
 };
@@ -143,6 +144,8 @@ pub struct Fighter {
     pub pilot: Pilot,
     pub player: Player,
     pub arsenal: Arsenal,
+    /// The grapple's hook while it is set.
+    pub hook: Option<Hook>,
     pub health: i32,
     /// While dead: the tick it comes back.
     pub respawn_at: Option<u32>,
@@ -167,6 +170,7 @@ impl Fighter {
                 motion: crate::player::Motion::default(),
             },
             arsenal: Arsenal::default(),
+            hook: None,
             health: 0,
             respawn_at: None,
             frags: 0,
@@ -392,6 +396,7 @@ impl Session {
         let fighter = &mut self.fighters[slot];
         fighter.player = Player::spawn(&mut self.world, fighter.player.body, at.feet)?;
         fighter.arsenal = Arsenal::default();
+        fighter.hook = None;
         fighter.health = MAX_HEALTH;
         fighter.respawn_at = None;
         fighter.intent = Intent {
@@ -508,6 +513,7 @@ impl Session {
         velocity: [f32; 3],
         motion: crate::player::Motion,
         held: Weapon,
+        hook: Option<Hook>,
     ) -> Result<(), PhysicsError> {
         let fighter = &mut self.fighters[usize::from(slot)];
         self.world.remove_body(fighter.player.body);
@@ -520,6 +526,7 @@ impl Session {
             ))?;
         fighter.player.motion = motion;
         fighter.arsenal.held = held;
+        fighter.hook = hook;
         fighter.respawn_at = None;
         fighter.health = MAX_HEALTH;
         Ok(())
@@ -589,7 +596,10 @@ impl Session {
                     ..Intent::IDLE
                 }
             };
-            let moved = fighter.player.apply(&mut self.world, &self.arena, intent)?;
+            let hooked = fighter.hook.is_some();
+            let moved = fighter
+                .player
+                .apply(&mut self.world, &self.arena, intent, hooked)?;
             if fighter.slot == 0 {
                 moves = moved;
             }
@@ -605,14 +615,27 @@ impl Session {
                 continue;
             }
             let intent = fighter.intent;
-            let fired = fighter
-                .arsenal
-                .trigger(intent.select, intent.fire && playing, self.tick);
+            // A set hook holds while the trigger stays down: no second hook until it is let go.
+            let hooked = fighter.hook.is_some();
+            let fired = fighter.arsenal.trigger(
+                intent.select,
+                intent.fire && playing && !hooked,
+                self.tick,
+            );
+            if hooked && !(intent.fire && playing && fighter.arsenal.held == Weapon::Grapple) {
+                fighter.hook = None;
+            }
             if let Some(weapon) = fired {
                 if slot == 0 {
                     local_fired = Some(weapon);
                 }
                 self.fire(slot, weapon, intent)?;
+            }
+        }
+        for fighter in &mut self.fighters {
+            if let Some(hook) = &mut fighter.hook {
+                let eye = fighter.player.eye(&self.world);
+                hook.pull(&mut self.world, fighter.player.body, eye)?;
             }
         }
 
@@ -837,6 +860,7 @@ impl Session {
         let fighter = &mut self.fighters[victim];
         self.world.remove_body(fighter.player.body);
         fighter.health = 0;
+        fighter.hook = None;
         fighter.respawn_at = Some(self.tick + self.rules.respawn_ticks);
         fighter.deaths += 1;
         match killer.filter(|killer| *killer != victim) {
@@ -869,6 +893,18 @@ impl Session {
         let (damage, range_units) = match weapon.delivery() {
             Delivery::Rocket => {
                 self.rockets.push(Rocket::launch(body, eye, direction));
+                return Ok(());
+            }
+            Delivery::Grapple => {
+                let (hook, trace) = Hook::fire(&self.world, eye, direction, body);
+                self.fighters[slot].hook = hook;
+                self.events.push(Event::Beam {
+                    weapon,
+                    from: eye,
+                    end: trace.end,
+                    normal: trace.hit.map_or([0.0; 3], |hit| hit.normal),
+                    struck: hook.is_some(),
+                });
                 return Ok(());
             }
             Delivery::Hitscan {

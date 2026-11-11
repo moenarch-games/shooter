@@ -234,6 +234,60 @@ fn a_rocket_jump_costs_health() {
     );
 }
 
+/// The grapple scenario played by a person on a host: the host sets the hook, the snapshot
+/// carries it, and a client predicting from that snapshot follows the host's path exactly.
+#[test]
+fn a_hosted_grapple_is_carried_and_predicted() {
+    let rules = Rules {
+        slots: 1,
+        ..duel_rules()
+    };
+    let mut host = Session::with_rules((scenarios::GRAPPLE.arena)(), rules).unwrap();
+    assert_eq!(host.join(7).unwrap(), Some(0));
+    let mut predictor = Session::new((scenarios::GRAPPLE.arena)()).unwrap();
+    let mut predicting = false;
+    let mut sequence = 0;
+    for leg in scenarios::GRAPPLE.legs {
+        for _ in 0..leg.ticks {
+            sequence += 1;
+            host.queue(
+                7,
+                Input {
+                    sequence,
+                    intent: leg.intent,
+                    view_tick: 0,
+                },
+            );
+            host.step().unwrap();
+            let snapshot = decode_snapshot(&encode_snapshot(&host.snapshot())).unwrap();
+            let me = *snapshot.of_player(7).unwrap();
+            if predicting {
+                predictor.tick(leg.intent).unwrap();
+                let predicted = predictor.local();
+                let center = predicted.player.center(&predictor.world);
+                assert_eq!(predicted.hook, me.hook, "{} tick {sequence}", leg.name);
+                for axis in 0..3 {
+                    assert!(
+                        (center[axis] - me.position[axis]).abs() < 0.01,
+                        "{} tick {sequence}: {center:?} vs {:?}",
+                        leg.name,
+                        me.position
+                    );
+                }
+            } else if me.hook.is_some() {
+                predictor
+                    .place(0, me.position, me.velocity, me.motion, me.held, me.hook)
+                    .unwrap();
+                predicting = true;
+            }
+        }
+    }
+    assert!(predicting, "the host set the hook");
+    let me = *host.snapshot().of_player(7).unwrap();
+    assert!(me.hook.is_none());
+    assert!(me.position[1] > 380.0, "on the ledge: {:?}", me.position);
+}
+
 #[test]
 fn inputs_and_snapshots_round_trip() {
     let intent = Intent {

@@ -24,10 +24,11 @@ pub const SPRINT: &str = "move.sprint";
 pub const CROUCH: &str = "move.crouch";
 pub const FIRE: &str = "weapon.fire";
 /// Select actions, in [`Weapon::ALL`] order.
-pub const SELECT: [&str; 3] = [
+pub const SELECT: [&str; 4] = [
     "weapon.energyRifle",
     "weapon.railGun",
     "weapon.rocketLauncher",
+    "weapon.grapple",
 ];
 
 /// W3C mouse button index of the primary (left) button.
@@ -86,7 +87,7 @@ fn mouse_button(button: u16) -> InputStroke {
 pub fn action_registry() -> ActionRegistry {
     use AxisDirection::{Negative, Positive};
     use standard::{LEFT_X, LEFT_Y, SOUTH};
-    let actions: [(&str, &str, Vec<InputStroke>); 11] = [
+    let actions: [(&str, &str, Vec<InputStroke>); 12] = [
         (
             MOVE_FORWARD,
             "Move forward",
@@ -116,6 +117,7 @@ pub fn action_registry() -> ActionRegistry {
         (SELECT[0], "Energy rifle", vec![key("Digit1")]),
         (SELECT[1], "Rail gun", vec![key("Digit2")]),
         (SELECT[2], "Rocket launcher", vec![key("Digit3")]),
+        (SELECT[3], "Grapple hook", vec![key("Digit4")]),
     ];
     ActionRegistry {
         actions: actions

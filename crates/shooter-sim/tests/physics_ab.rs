@@ -1,6 +1,7 @@
 //! Rapier A/B: the scripted tour through the greybox arena and every fast-move scenario
-//! (sprint, slide, double jump, jump pad, slopes, a thin wall, a step, a rocket jump, a shooting
-//! range) on physics-engine and on the Rapier oracle (`sim_foundation::physics::using_backend`).
+//! (sprint, slide, double jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
+//! a shooting range) on physics-engine and on the Rapier oracle
+//! (`sim_foundation::physics::using_backend`).
 //! Both must follow the same path within a few centimetres, agree on support at the end of every
 //! leg, and fire, hit and explode on the same ticks for the same damage (rays and rocket sweeps
 //! are the backends' `cast_ray`).
@@ -97,6 +98,9 @@ fn compare(scenario: Scenario) {
             .collect::<Vec<_>>()
     };
     assert_eq!(combat(&engine), combat(&rapier), "{name}: shots and hits");
+    // The grapple's hook sets and lets go on the same ticks.
+    let hooked = |samples: &[Sample]| samples.iter().map(|s| s.hooked).collect::<Vec<_>>();
+    assert_eq!(hooked(&engine), hooked(&rapier), "{name}: hook");
 }
 
 #[test]
@@ -142,6 +146,11 @@ fn the_rocket_jump_matches_the_rapier_oracle() {
 #[test]
 fn the_shooting_range_matches_the_rapier_oracle() {
     compare(scenarios::SHOOTING_RANGE);
+}
+
+#[test]
+fn the_grapple_matches_the_rapier_oracle() {
+    compare(scenarios::GRAPPLE);
 }
 
 #[test]

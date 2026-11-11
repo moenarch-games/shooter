@@ -55,3 +55,5 @@ supersedes them. New entries take an issue-derived ID (parent ID + `i` + issue n
 - **Q3**: Weapon count and how distinct each one is; which melee weapons (energy blade, hammer, …);
   whether melee is a separate slot or part of the rotation.
 - **Q4**: Grapple details: pull versus swing, range, cooldown, whether it can hook players.
+  Defaults in use until decided (shooter#5): pull and swing together (a reel toward the hook
+  while the rope swings), 30 m range, 0.75 s between hooks, arena geometry only (no players).
