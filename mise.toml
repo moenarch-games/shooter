@@ -1,0 +1,26 @@
+# Tools for contributors and coding agents: `mise install && mise run setup`.
+# Rust is not a mise tool: rust-toolchain.toml names the channel, components and the wasm32 target,
+# and rustup installs exactly that. The wasm-bindgen CLI must match Cargo.lock (scripts/build-web.sh).
+[tools]
+gh = "latest"
+jq = "latest"
+ripgrep = "latest"
+"github:nextest-rs/nextest" = { version = "latest", version_prefix = "cargo-nextest-" }
+
+[tasks."setup:rust"]
+description = "rustup (when missing) and the toolchain rust-toolchain.toml names"
+run = """
+command -v rustup >/dev/null || curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+rustup toolchain install
+"""
+
+[tasks."setup:wasm-bindgen"]
+description = "The wasm-bindgen CLI matching Cargo.lock, for scripts/build-web.sh"
+run = """
+version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print }' Cargo.lock)"
+cargo install wasm-bindgen-cli --version "$version" --locked
+"""
+
+[tasks.setup]
+description = "Everything beyond `mise install`"
+depends = ["setup:rust", "setup:wasm-bindgen"]
