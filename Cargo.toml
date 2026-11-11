@@ -13,7 +13,7 @@ publish = false
 shooter-sim = { path = "crates/shooter-sim" }
 # The shared simulation floor (fixed-point tick maths, trig, the physics world over physics-engine
 # with the Rapier A/B oracle behind `physics-ab`). It pins physics-engine and rapier3d itself.
-sim-foundation = { git = "https://github.com/moenarch-games/mmorpg.git", rev = "575ab96ba904392ef0d2258f358bedf804ae806b" }
+sim-foundation = { git = "https://github.com/moenarch-games/mmorpg.git", rev = "eb58c43b5537dc3c156664f21cb5d5376d54be66" }
 render-engine = { git = "https://github.com/moritzbrantner/render-engine.git", rev = "9aadac9b5be5651f571c71836ff833c89a450202" }
 input-bindings-core = { git = "https://github.com/moritzbrantner/input-bindings.git", rev = "561002ee94ab062f59c0d72dbca35b58734524dd" }
 game-audio = { git = "https://github.com/moritzbrantner/game-audio.git", rev = "2643e342a7d071445186e421082acb553141811d" }

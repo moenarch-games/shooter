@@ -100,11 +100,13 @@ fn a_slide_does_not_pass_a_thin_wall() {
 }
 
 #[test]
-fn a_sprint_stops_at_a_step_without_step_up() {
+fn a_sprint_climbs_a_step() {
     let samples = run(scenarios::STEP);
-    let stopped = end_of(&samples, "sprint at the step").unwrap();
-    assert!((stopped.center[2] + 230.0).abs() < 3.0, "{stopped:?}");
-    assert!((stopped.center[1] - HALF).abs() < 2.0, "{stopped:?}");
+    let on_top = end_of(&samples, "on the step").unwrap();
+    // Past the step's north face (z = -200) and standing on its 20 cm top.
+    assert!(on_top.center[2] > -170.0, "{on_top:?}");
+    assert!((on_top.center[1] - (HALF + 20.0)).abs() < 2.0, "{on_top:?}");
+    assert!(on_top.grounded, "{on_top:?}");
 }
 
 #[test]

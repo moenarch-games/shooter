@@ -1,6 +1,6 @@
 //! Scripted fast moves, each in a small arena of its own (or the greybox): sprint and slide,
 //! double jump onto a ledge, a jump pad onto the platform, slides up and down a ramp, a slide
-//! into a thin wall, a sprint into a step, a rocket jump and a shooting range. The movement and
+//! into a thin wall, a sprint up a step, a rocket jump and a shooting range. The movement and
 //! weapon tests check what each one does and the Rapier A/B test runs each on both backends.
 
 use crate::arena::{Arena, Piece, Post};
@@ -163,12 +163,16 @@ pub const THIN_WALL: Scenario = Scenario {
     ],
 };
 
-/// A 20 cm step: the character controller has no step-up yet, so a sprint stops at it
-/// (moenarch-games/mmorpg#750: sim-foundation does not expose autostep).
+/// A 20 cm step 3.7 m south, 4 m deep: a sprint climbs it without a jump
+/// ([`crate::player::STEP_UP`]) and runs on across its top.
 pub const STEP: Scenario = Scenario {
-    name: "sprint into a step",
+    name: "sprint up a step",
     arena: || open([0, 0, -600], vec![block([0, 10, 0], [200, 10, 200])]),
-    legs: &[stand("settle", 10), sprint("sprint at the step", SOUTH, 40)],
+    legs: &[
+        stand("settle", 10),
+        sprint("sprint up the step", SOUTH, 30),
+        stand("on the step", 10),
+    ],
 };
 
 /// Straight down.

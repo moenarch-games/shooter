@@ -1,4 +1,4 @@
-//! How a player's body moves: walk, sprint, slide, jump, double jump, jump pads and air control.
+//! How a player's body moves: walk, sprint, slide, step-up, jump, double jump, jump pads and air control.
 //! The physics world (physics-engine, or the Rapier oracle under `physics-ab`) resolves contact,
 //! slopes and support; this module only turns the player's intent and the body's realized
 //! velocity into the velocity it asks for each tick.
@@ -8,7 +8,7 @@
 
 use crate::arena::Arena;
 use crate::weapons::Weapon;
-use sim_foundation::physics::{BodyId, PhysicsError, RigidBody, Vec3i, World};
+use sim_foundation::physics::{BodyId, PhysicsError, RigidBody, StepUp, Vec3i, World};
 use sim_foundation::{subunits_per_tick, subunits_per_tick_squared, trig};
 
 /// The player's collision box, 0.6 m × 1.8 m × 0.6 m (an upright capsule in physics).
@@ -42,6 +42,13 @@ pub const JUMP_VELOCITY_SUBUNITS_PER_TICK: i32 = subunits_per_tick(JUMP_VELOCITY
 pub const AIR_JUMPS: u8 = 1;
 /// Arena gravity, 18 m/s²: heavier than Earth's for short, snappy jumps.
 pub const GRAVITY: Vec3i = Vec3i::new(0, subunits_per_tick_squared(-1_800), 0);
+/// Step-up: a grounded player running into a ledge up to 35 cm high, with at least 20 cm of
+/// room on top, climbs it without jumping (stairs, kerbs, low lips). Crates (80 cm) and cover
+/// (1.2 m) stay jumps.
+pub const STEP_UP: StepUp = StepUp {
+    max_height: 35,
+    min_width: 20,
+};
 /// Below this height a player has fallen out of the arena and respawns.
 pub const KILL_HEIGHT_UNITS: i32 = -2_000;
 

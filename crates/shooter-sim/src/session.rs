@@ -16,7 +16,7 @@ use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
 use crate::bots::{Bot, Sight};
 use crate::dummies::Dummy;
 use crate::player::{
-    EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player,
+    EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player, STEP_UP,
 };
 use crate::weapons::{self, Arsenal, Delivery, Flight, Rocket, Weapon};
 use sim_foundation::physics::{BodyId, PhysicsError, Vec3i, World};
@@ -321,7 +321,8 @@ impl Session {
     }
 
     pub fn with_rules(arena: Arena, rules: Rules) -> Result<Self, PhysicsError> {
-        let world = arena.build_world(GRAVITY)?;
+        let mut world = arena.build_world(GRAVITY)?;
+        world.set_step_up(Some(STEP_UP));
         let fighters = (0..rules.slots)
             .map(|slot| {
                 let pilot = if rules.local && slot == 0 {
