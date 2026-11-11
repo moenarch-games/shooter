@@ -26,7 +26,8 @@ control. Fight with energy guns, a grapple hook and melee weapons.
 
 ## Play
 
-The first slice is a greybox arena to walk, look and jump around in (no weapons yet).
+The first slice is a greybox arena to run, slide and jump around in, with two jump pads onto the
+central platform (no weapons yet).
 
 ```sh
 cargo run -p shooter-client --release      # native window
@@ -35,9 +36,11 @@ python3 -m http.server -d web/dist
 ```
 
 Click to capture the mouse. WASD or the left stick moves, the mouse or the right stick looks,
-Space or the south face button jumps, Esc releases the mouse.
+Space or the south face button jumps (press again in the air to double jump), Shift sprints, C
+while sprinting slides, Esc releases the mouse. Steer in the air with WASD.
 
-The movement is checked against Rapier on a scripted tour of the arena:
+The movement is checked against Rapier on a scripted tour of the arena and on scripted fast moves
+(sprint, slide, double jump, jump pad, ramp slides, a thin wall, a step):
 `cargo test -p shooter-sim --features physics-ab --test physics_ab`.
 
 When a crate can't do something yet, the shooter files an issue on that crate and uses Rapier

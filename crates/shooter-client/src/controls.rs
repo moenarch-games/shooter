@@ -18,6 +18,8 @@ pub const MOVE_BACK: &str = "move.back";
 pub const MOVE_LEFT: &str = "move.strafeLeft";
 pub const MOVE_RIGHT: &str = "move.strafeRight";
 pub const JUMP: &str = "move.jump";
+pub const SPRINT: &str = "move.sprint";
+pub const CROUCH: &str = "move.crouch";
 
 /// W3C standard gamepad layout indices.
 pub mod standard {
@@ -65,7 +67,7 @@ fn stick(axis: u8, direction: AxisDirection) -> InputStroke {
 pub fn action_registry() -> ActionRegistry {
     use AxisDirection::{Negative, Positive};
     use standard::{LEFT_X, LEFT_Y, SOUTH};
-    let actions: [(&str, &str, Vec<InputStroke>); 5] = [
+    let actions: [(&str, &str, Vec<InputStroke>); 7] = [
         (
             MOVE_FORWARD,
             "Move forward",
@@ -87,6 +89,10 @@ pub fn action_registry() -> ActionRegistry {
             vec![key("KeyD"), key("ArrowRight"), stick(LEFT_X, Positive)],
         ),
         (JUMP, "Jump", vec![key("Space"), pad_button(SOUTH)]),
+        // Mouse and keyboard first (Atlas D3.2): no pad defaults for the new moves yet.
+        (SPRINT, "Sprint", vec![key("ShiftLeft")]),
+        // C, not Control: Control+W closes the browser tab and pages cannot stop it.
+        (CROUCH, "Crouch / slide", vec![key("KeyC")]),
     ];
     ActionRegistry {
         actions: actions
@@ -265,6 +271,16 @@ impl Controls {
     pub fn jump_held(&self) -> bool {
         self.state.is_held(JUMP)
     }
+
+    #[must_use]
+    pub fn sprint_held(&self) -> bool {
+        self.state.is_held(SPRINT)
+    }
+
+    #[must_use]
+    pub fn crouch_held(&self) -> bool {
+        self.state.is_held(CROUCH)
+    }
 }
 
 /// The first-person view direction, turned by mouse and right stick.
@@ -349,6 +365,17 @@ mod tests {
         assert_eq!(controls.movement(), (0, 1));
         controls.release_all();
         assert_eq!(controls.movement(), (0, 0));
+    }
+
+    #[test]
+    fn shift_sprints_and_c_crouches() {
+        let mut controls = Controls::new();
+        controls.key_down(KeyCode::ShiftLeft, false);
+        controls.key_down(KeyCode::KeyC, false);
+        assert!(controls.sprint_held() && controls.crouch_held());
+        controls.key_up(KeyCode::KeyC);
+        assert!(!controls.crouch_held());
+        assert!(controls.sprint_held());
     }
 
     #[test]
