@@ -1,0 +1,41 @@
+name: Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/**"
+      - "web/**"
+      - "scripts/build-web.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      pages: write
+      id-token: write
+    uses: moritzbrantner/reusable-workflows/.github/workflows/deploy-pages.yml@d6e2fe0d4f9decc88a0073a317cf3efbe12ee6d6
+    with:
+      node_version: ""
+      bun_version: ""
+      install_command: ""
+      cache_bun: false
+      # The prebuilt wasm-bindgen CLI matching Cargo.lock.
+      pre_command: |
+        version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print }' Cargo.lock)"
+        name="wasm-bindgen-${version}-x86_64-unknown-linux-musl"
+        curl -fsSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}/${name}.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+        echo "$RUNNER_TEMP/${name}" >> "$GITHUB_PATH"
+      build_command: scripts/build-web.sh
+      artifact_path: web/dist

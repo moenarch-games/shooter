@@ -1,0 +1,43 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  rust:
+    permissions:
+      contents: read
+      packages: read
+    uses: moritzbrantner/reusable-workflows/.github/workflows/validate-repo.yml@d6e2fe0d4f9decc88a0073a317cf3efbe12ee6d6
+    with:
+      bun_version: ""
+      node_version: ""
+      install_command: ""
+      cache_bun: false
+      cache_cargo: true
+      # kira's cpal output (ALSA) and gilrs (udev) on Linux.
+      apt_packages: libasound2-dev libudev-dev
+      format_command: cargo fmt --all -- --check
+      lint_command: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # Includes the Rapier A/B of the arena tour (crates/shooter-sim/tests/physics_ab.rs).
+      test_command: cargo test --workspace --all-features --locked
+      build_command: |
+        cargo build --workspace --locked
+        cargo check -p shooter-client --lib --target wasm32-unknown-unknown --locked
+      artifact_paths: ""
+
+  merge-ready:
+    name: merge-ready
+    if: ${{ always() }}
+    needs: [rust]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: moritzbrantner/reusable-workflows/.github/actions/merge-ready@d6e2fe0d4f9decc88a0073a317cf3efbe12ee6d6
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: '["rust"]'
