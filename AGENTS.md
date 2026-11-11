@@ -11,7 +11,7 @@ that materially changes the task.
 | --- | --- |
 | `shooter-sim` | Deterministic simulation the clients and the host share: the greybox arena, movement, the energy weapons, the grapple hook and the energy blade (quick melee), health, deaths, respawns and deathmatch rounds, lag-compensated hitscan and swings, the seeded bots, and the wire format (`wire`). No rendering, input devices or I/O |
 | `shooter-server` | The deathmatch as a game-server `GameSimulation` and the `shooter-server` WebTransport host binary |
-| `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame, input-bindings controls, render-engine weapon lights and particles, game-audio cues, the HUD stopgap (page DOM / window title), offline practice in-process and (native) online play with prediction over wtransport |
+| `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame, input-bindings controls, render-engine weapon lights and particles, game-audio cues, the HUD stopgap (page DOM / window title), offline practice in-process and online play with prediction (wtransport natively, game-server's `BrowserSession` in the browser) |
 | `web/` | The page around the `wasm32` build; `scripts/build-web.sh` writes `web/dist` |
 
 ## Commands
@@ -23,8 +23,8 @@ cargo test -p shooter-sim --features physics-ab --test physics_ab --locked # Rap
 cargo test -p shooter-sim --test deathmatch --locked                       # bots, scoring, rounds, lag compensation
 cargo test -p shooter-client --test online --locked                        # two clients through a real host on loopback
 cargo run -p shooter-client --release                                      # native client, practice vs bots
-scripts/dev.sh [clients]                                                   # local host + native clients online
-scripts/build-web.sh && python3 -m http.server -d web/dist                 # browser client
+scripts/dev.sh [clients|web]                                               # local host + native clients (or the browser build) online
+scripts/build-web.sh && python3 -m http.server -d web/dist                 # browser client (?connect=…&certHash=… joins a host)
 ```
 
 CI (`.github/workflows/validate.yml`) runs fmt, Clippy, the full test suite with `physics-ab`, the

@@ -5,16 +5,21 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 wanted="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print }' Cargo.lock)"
-have="$(wasm-bindgen --version 2>/dev/null | awk '{ print $2 }' || true)"
+bindgen=wasm-bindgen
+have="$("$bindgen" --version 2>/dev/null | awk '{ print $2 }' || true)"
 if [[ "$have" != "$wanted" ]]; then
-  echo "wasm-bindgen CLI $wanted is needed (found '${have:-none}'):" >&2
-  echo "  cargo install wasm-bindgen-cli --version $wanted --locked" >&2
-  exit 1
+  # The global CLI is another version: use (once: install) the matching one in a cache.
+  root="${XDG_CACHE_HOME:-$HOME/.cache}/wasm-bindgen-cli/$wanted"
+  bindgen="$root/bin/wasm-bindgen"
+  if [[ ! -x "$bindgen" ]]; then
+    echo "installing wasm-bindgen CLI $wanted into $root (found '${have:-none}')" >&2
+    cargo install wasm-bindgen-cli --version "$wanted" --locked --root "$root"
+  fi
 fi
 
 cargo build -p shooter-client --lib --target wasm32-unknown-unknown --release --locked
 rm -rf web/dist
-wasm-bindgen --target web --no-typescript --out-dir web/dist \
+"$bindgen" --target web --no-typescript --out-dir web/dist \
   target/wasm32-unknown-unknown/release/shooter_client.wasm
 cp web/index.html web/dist/
 echo "web/dist is ready: serve it with any static server, e.g. python3 -m http.server -d web/dist"

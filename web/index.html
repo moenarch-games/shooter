@@ -44,6 +44,38 @@
         font-size: 22px;
         letter-spacing: 0.04em;
       }
+      /* Joining a hosted match: a GET form, so it only sets ?connect=…&certHash=… and reloads. */
+      #join {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: center;
+        margin-top: 18px;
+        pointer-events: auto;
+      }
+      #join input {
+        width: 21em;
+        padding: 6px 8px;
+        border: 1px solid rgb(255 255 255 / 25%);
+        border-radius: 4px;
+        background: rgb(16 19 26 / 85%);
+        color: inherit;
+        font: 13px ui-monospace, monospace;
+      }
+      #join button,
+      #join a {
+        padding: 6px 14px;
+        border: 0;
+        border-radius: 4px;
+        background: #3d6fd8;
+        color: #fff;
+        font: inherit;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      #join a {
+        background: rgb(255 255 255 / 15%);
+      }
       #crosshair {
         position: fixed;
         left: 50%;
@@ -136,16 +168,41 @@
     </div>
     <div id="overlay">
       <div>
-        <strong>Click to play: practice deathmatch against bots</strong><br />
+        <strong id="mode">Click to play: practice deathmatch against bots</strong><br />
         WASD to move · mouse to look · Space to jump, again in the air to double jump · Shift to
         sprint · C while sprinting to slide · left mouse to fire · 1 to 4 for rifle, rail gun,
         rockets, grapple (hold to reel in) · V (or the mouse's back button) to swing the energy blade
         · Tab for the scores · Esc to release the mouse
+        <form id="join" method="get">
+          <input
+            name="connect"
+            placeholder="https://host:4433/shooter/matches/dm"
+            aria-label="Hosted match URL"
+            required
+          />
+          <input
+            name="certHash"
+            placeholder="certificate SHA-256 (development host)"
+            aria-label="Certificate SHA-256, for a development host"
+          />
+          <button>Join match</button>
+          <a id="practice" href="?" hidden>Practice offline</a>
+        </form>
       </div>
     </div>
     <div id="error"></div>
     <script type="module">
       const overlay = document.getElementById("overlay");
+      // ?connect=<match url>[&certHash=<sha-256>] joins a hosted match (the wasm reads it too).
+      const query = new URLSearchParams(location.search);
+      const join = document.getElementById("join");
+      join.connect.value = query.get("connect") ?? "";
+      join.certHash.value = query.get("certHash") ?? "";
+      if (query.get("connect")) {
+        const host = URL.canParse(query.get("connect")) ? new URL(query.get("connect")).host : "?";
+        document.getElementById("mode").textContent = `Click to play: online deathmatch at ${host}`;
+        document.getElementById("practice").hidden = false;
+      }
       document.addEventListener("pointerlockchange", () => {
         overlay.hidden = document.pointerLockElement !== null;
       });
