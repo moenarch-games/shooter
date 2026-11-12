@@ -1,0 +1,21 @@
+schema_version: runtime-profiler/scenario/v1
+# The native client without a window: 600 frames (10 s) of a practice match at one tick per
+# frame, slot 0 played by the replays' scripted person 0, drawn offscreen at 1280x720 on
+# whatever adapter wgpu picks (lavapipe in CI). See docs/foundation-data.md.
+id: shooter-native-client-v1
+target:
+  type: command
+  program: ./target/release/shooter-client
+  args: ["--frames", "600"]
+  working_directory: ..
+  inherit_env:
+    - WGPU_FORCE_FALLBACK_ADAPTER
+    - WGPU_BACKEND
+    - VK_DRIVER_FILES
+    - VK_ICD_FILENAMES
+run:
+  warmup_iterations: 0
+  measurement_iterations: 3
+  timeout_seconds: 600
+collectors:
+  - process

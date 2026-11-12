@@ -1,15 +1,15 @@
 name: Profile
 
-# A runtime-profiler bundle of the scripted bot match, plus its replay, as an artifact
-# (docs/foundation-data.md). Evidence only: no thresholds, and merge-ready does not wait for it.
+# runtime-profiler bundles of the scripted bot match (plus its replay) and of the native client
+# drawing a scripted match offscreen on lavapipe, as one artifact (docs/foundation-data.md).
+# Evidence only: no thresholds, and merge-ready does not wait for it.
 
 on:
   pull_request:
     paths:
-      - "crates/shooter-sim/**"
-      - "crates/shooter-server/**"
+      - "crates/**"
       - "profiles/**"
-      - "scripts/profile-bot-match.sh"
+      - "scripts/profile.sh"
       - "Cargo.lock"
       - ".github/workflows/profile.yml"
   push:
@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 jobs:
-  bot-match:
+  profile:
     permissions:
       contents: read
       packages: read
@@ -32,7 +32,9 @@ jobs:
       install_command: ""
       cache_bun: false
       cache_cargo: true
-      build_command: scripts/profile-bot-match.sh target/profile
+      # The client's audio (ALSA) and gamepads (udev); lavapipe (software Vulkan) draws it.
+      apt_packages: libasound2-dev libudev-dev mesa-vulkan-drivers libvulkan1
+      build_command: WGPU_FORCE_FALLBACK_ADAPTER=1 scripts/profile.sh target/profile
       artifact_paths: target/profile
       upload_artifacts_on: always
-      artifact_name_suffix: -bot-match-profile
+      artifact_name_suffix: -profile

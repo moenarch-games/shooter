@@ -26,11 +26,16 @@ real players.
 
 4. **Hand it over:** open a PR on the foundation with the fixture and a test, or file an issue
    with the command when the foundation has no format for it yet.
-5. **Profile:** `scripts/profile-bot-match.sh [OUT]` captures `profiles/bot-match.yaml`, about
-   5 1/2 minutes of match ticks, with runtime-profiler. It also records the same match as a
-   replay. `profile.yml` runs it on `main` and on PRs that touch the simulation, and uploads `OUT`
-   as the `validate-repo-artifacts-bot-match-profile` artifact. The numbers are evidence only:
-   nothing gates on them.
+5. **Profile:** `scripts/profile.sh [OUT]` captures two runtime-profiler scenarios.
+   `profiles/bot-match.yaml` is about 5 1/2 minutes of match ticks without a window; the script
+   also records the same match as a replay. `profiles/native-client.yaml` runs
+   `shooter-client --frames 600`: the native client draws 600 frames (10 s) of a practice match
+   offscreen at 1280x720, one tick per frame, with the local fighter played by the replays'
+   scripted person 0. The script runs it once more to record its frame times (mean, p50, p95,
+   max). `WGPU_FORCE_FALLBACK_ADAPTER=1` picks lavapipe, as CI does. `profile.yml` runs it on
+   `main` and on PRs that touch the crates, and uploads `OUT` as the
+   `validate-repo-artifacts-profile` artifact. The numbers are evidence only: nothing gates on
+   them, and lavapipe frame times measure a CPU rasterizer, not a GPU.
 
 ```sh
 cargo run --release -p shooter-server --bin shooter-replay -- record --ticks 1200 -o dm.shrp
@@ -38,7 +43,8 @@ cargo run --release -p shooter-server --bin shooter-replay -- verify dm.shrp
 cargo run --release -p shooter-server --bin shooter-replay -- promote dm.shrp --target game-server --to 1200 -o deathmatch-v1.replay
 cargo run --release -p shooter-server --bin shooter-replay -- promote dm.shrp --target physics --from 300 --to 420 -o window.json
 cargo run --release -p shooter-server --bin shooter-replay -- promote dm.shrp --target render --to 900 -o frame.json
-scripts/profile-bot-match.sh
+cargo run --release -p shooter-client -- --frames 600
+scripts/profile.sh
 ```
 
 ## Where the data went
@@ -48,7 +54,6 @@ scripts/profile-bot-match.sh
 | game-server | 20 s deathmatch replay fixture with a codec and runtime-shape test: [game-server#84](https://github.com/moritzbrantner/game-server/pull/84) |
 | physics-engine | Proposed as an A/B scenario, ask-first: [physics-engine#558](https://github.com/moritzbrantner/physics-engine/issues/558) |
 | render-engine | Proposed as a scene fixture: [render-engine#105](https://github.com/moritzbrantner/render-engine/issues/105) |
-| runtime-profiler | The `native-perf` collector fails on perf 7.x ([runtime-profiler#146](https://github.com/moritzbrantner/runtime-profiler/issues/146)), so the profile uses `process` only |
+| runtime-profiler | Pinned at `a2a9c75` (the perf 7.x fix, [runtime-profiler#146](https://github.com/moritzbrantner/runtime-profiler/issues/146)). `native-perf` still fails: Rust symbols with `;` (`[f32; 3]`) break its call-path parser ([runtime-profiler#149](https://github.com/moritzbrantner/runtime-profiler/issues/149)), so both scenarios use `process` only |
 
-Profiling the windowed native client and the browser client is
-[#21](https://github.com/moenarch-games/shooter/issues/21).
+Profiling the browser client is [#28](https://github.com/moenarch-games/shooter/issues/28).

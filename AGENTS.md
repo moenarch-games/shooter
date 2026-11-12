@@ -26,12 +26,14 @@ cargo run -p shooter-client --release                                      # nat
 scripts/dev.sh [clients|web]                                               # local host + native clients (or the browser build) online
 scripts/build-web.sh && python3 -m http.server -d web/dist                 # browser client (?connect=…&certHash=… joins a host)
 cargo run --release -p shooter-server --bin shooter-replay -- record -o dm.shrp  # scripted match replay (then verify / promote)
-scripts/profile-bot-match.sh                                               # runtime-profiler bundle of the scripted bot match
+cargo run -p shooter-client --release -- --frames 600                      # native client, scripted match drawn offscreen (profile run)
+scripts/profile.sh                                                         # runtime-profiler bundles: bot match + offscreen native client
 ```
 
 CI (`.github/workflows/validate.yml`) runs fmt, Clippy, the full test suite with `physics-ab`, the
 native build and a `wasm32` check; `pages.yml` builds and deploys `web/dist` from `main`;
-`profile.yml` uploads the bot-match profile as an artifact (no thresholds).
+`profile.yml` uploads the bot-match and native-client (lavapipe) profiles as an artifact (no
+thresholds).
 
 ## Foundations
 

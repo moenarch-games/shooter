@@ -10,6 +10,7 @@ use crate::hud::{Hud, HudText};
 use crate::scene::{self, Actors, FighterView, METRES_PER_UNIT, SWING_SECONDS};
 use render_engine::glam::Vec3;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
+use shooter_sim::scenarios::scripted_intent;
 use shooter_sim::session::MAX_HEALTH;
 use shooter_sim::{Arena, Event, Intent, TICK_HZ, Weapon};
 use std::sync::Arc;
@@ -50,7 +51,11 @@ fn swing_progress(seconds: f32) -> Option<f32> {
 }
 
 pub struct App {
-    proxy: EventLoopProxy<GpuReady>,
+    /// None in the offscreen profile run, which has no event loop.
+    proxy: Option<EventLoopProxy<GpuReady>>,
+    /// The offscreen profile run's tick: the local fighter plays
+    /// [`scripted_intent`]`(0, tick)` instead of the controls.
+    scripted: Option<u32>,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
     game: Game,
@@ -92,7 +97,8 @@ impl App {
         let now = Instant::now();
         let center = game.local_center().unwrap_or_default();
         Self {
-            proxy,
+            proxy: Some(proxy),
+            scripted: None,
             window: None,
             gpu: None,
             game,
@@ -120,6 +126,75 @@ impl App {
             eye: EYE,
             captured: false,
         }
+    }
+
+    /// The offscreen profile run ([`crate::offscreen`]): `game` drawn on `gpu`, the local
+    /// fighter scripted, no window, event loop or gamepads.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn scripted(game: Game, gpu: Gpu) -> Self {
+        let arena = Arena::greybox();
+        let now = Instant::now();
+        let center = game.local_center().unwrap_or_default();
+        let mut app = Self {
+            proxy: None,
+            scripted: Some(0),
+            window: None,
+            gpu: None,
+            game,
+            look: Look::new(radians(arena.spawn_yaw)),
+            arena,
+            controls: Controls::new(),
+            pads: None,
+            sounds: Sounds::new(),
+            hud: Hud::default(),
+            shown: HudText::default(),
+            board: false,
+            effects: None,
+            actors: None,
+            glows: vec![0.0; usize::from(u8::MAX)],
+            swings: vec![f32::INFINITY; usize::from(u8::MAX)],
+            local_swing: f32::INFINITY,
+            started: now,
+            last_frame: now,
+            accumulator: 0.0,
+            previous_center: center,
+            center,
+            previous_eye: EYE,
+            eye: EYE,
+            captured: false,
+        };
+        app.attach(gpu);
+        app
+    }
+
+    /// One frame of the offscreen profile run: exactly one tick, then the drawing.
+    ///
+    /// # Errors
+    ///
+    /// If the match fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn scripted_frame(&mut self) -> Result<(), String> {
+        let tick = 1.0 / f32::from(TICK_HZ);
+        if self.advance(Instant::now(), tick) {
+            Ok(())
+        } else {
+            Err("the scripted match failed".into())
+        }
+    }
+
+    /// The GPU is up: the arena, effects and actors go into its world.
+    fn attach(&mut self, mut gpu: Gpu) {
+        scene::build(&mut gpu.world, &self.arena);
+        self.effects = Some(Effects::new(&mut gpu.world));
+        self.actors = Some(Actors::new(&mut gpu.world));
+        if let Some(window) = &self.window {
+            let size = window.inner_size();
+            gpu.resize(size.width, size.height);
+            window.request_redraw();
+        }
+        self.gpu = Some(gpu);
+        self.last_frame = Instant::now();
     }
 
     fn capture(&mut self, captured: bool) {
@@ -194,18 +269,25 @@ impl App {
     /// One local tick: the controls become an intent, the match ticks, and its events play.
     fn tick(&mut self, now: Instant) -> bool {
         let (forward, strafe) = self.controls.movement();
-        let intent = Intent {
-            forward,
-            strafe,
-            yaw: self.look.sim_yaw(),
-            jump: self.controls.jump_held(),
-            sprint: self.controls.sprint_held(),
-            crouch: self.controls.crouch_held(),
-            pitch: self.look.sim_pitch(),
-            // Only a captured mouse shoots: the click that captures it does not.
-            fire: self.captured && self.controls.fire_held(),
-            melee: self.captured && self.controls.melee_held(),
-            select: self.controls.selected(),
+        let intent = if let Some(tick) = &mut self.scripted {
+            let intent = scripted_intent(0, *tick);
+            *tick += 1;
+            self.look = Look::new(radians(intent.yaw));
+            intent
+        } else {
+            Intent {
+                forward,
+                strafe,
+                yaw: self.look.sim_yaw(),
+                jump: self.controls.jump_held(),
+                sprint: self.controls.sprint_held(),
+                crouch: self.controls.crouch_held(),
+                pitch: self.look.sim_pitch(),
+                // Only a captured mouse shoots: the click that captures it does not.
+                fire: self.captured && self.controls.fire_held(),
+                melee: self.captured && self.controls.melee_held(),
+                select: self.controls.selected(),
+            }
         };
         let tick = match self.game.tick(intent) {
             Ok(tick) => tick,
@@ -280,7 +362,11 @@ impl App {
         let now = Instant::now();
         let seconds = (now - self.last_frame).as_secs_f32().min(0.25);
         self.last_frame = now;
+        self.advance(now, seconds);
+    }
 
+    /// `seconds` of play: the ticks they hold, then the drawing. False once the match fails.
+    fn advance(&mut self, now: Instant, seconds: f32) -> bool {
         #[cfg(target_arch = "wasm32")]
         if self.captured && !crate::web::pointer_locked() {
             // The browser let go of the pointer (Escape): stop playing until the next click.
@@ -302,7 +388,7 @@ impl App {
                 break;
             }
             if !self.tick(now) {
-                return;
+                return false;
             }
         }
         let ticks = ticks.min(MAX_TICKS_PER_FRAME);
@@ -376,7 +462,7 @@ impl App {
             .unwrap_or_default();
         let scene = scene::frame(eye, forward, point_lights);
         let Some(gpu) = &mut self.gpu else {
-            return;
+            return true;
         };
         if let Some(actors) = &mut self.actors {
             actors.update(
@@ -396,6 +482,7 @@ impl App {
         if let Err(error) = gpu.render(&scene, ticks) {
             crate::log(&error);
         }
+        true
     }
 }
 
@@ -420,7 +507,9 @@ impl ApplicationHandler<GpuReady> for App {
             }
         };
         self.window = Some(window.clone());
-        let proxy = self.proxy.clone();
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
         let create = async move {
             let _ = proxy.send_event(Gpu::new(window).await);
         };
@@ -432,18 +521,7 @@ impl ApplicationHandler<GpuReady> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, gpu: GpuReady) {
         match gpu {
-            Ok(mut gpu) => {
-                scene::build(&mut gpu.world, &self.arena);
-                self.effects = Some(Effects::new(&mut gpu.world));
-                self.actors = Some(Actors::new(&mut gpu.world));
-                if let Some(window) = &self.window {
-                    let size = window.inner_size();
-                    gpu.resize(size.width, size.height);
-                    window.request_redraw();
-                }
-                self.gpu = Some(gpu);
-                self.last_frame = Instant::now();
-            }
+            Ok(gpu) => self.attach(gpu),
             Err(error) => {
                 crate::fail(&error);
                 event_loop.exit();
