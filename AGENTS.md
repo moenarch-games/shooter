@@ -10,7 +10,7 @@ that materially changes the task.
 | Crate | Role |
 | --- | --- |
 | `shooter-sim` | Deterministic simulation the clients and the host share: the greybox arena, movement, the energy weapons, the grapple hook and the energy blade (quick melee), health, deaths, respawns and deathmatch rounds, lag-compensated hitscan and swings, the seeded bots, and the wire format (`wire`). No rendering, input devices or I/O |
-| `shooter-server` | The deathmatch as a game-server `GameSimulation` and the `shooter-server` WebTransport host binary |
+| `shooter-server` | The deathmatch as a game-server `GameSimulation`, the `shooter-server` WebTransport host binary, and `shooter-replay` (record, verify and promote scripted match replays into foundation fixtures, `docs/foundation-data.md`) |
 | `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame, input-bindings controls, render-engine weapon lights and particles, game-audio cues, the HUD stopgap (page DOM / window title), offline practice in-process and online play with prediction (wtransport natively, game-server's `BrowserSession` in the browser) |
 | `web/` | The page around the `wasm32` build; `scripts/build-web.sh` writes `web/dist` |
 
@@ -25,10 +25,13 @@ cargo test -p shooter-client --test online --locked                        # two
 cargo run -p shooter-client --release                                      # native client, practice vs bots
 scripts/dev.sh [clients|web]                                               # local host + native clients (or the browser build) online
 scripts/build-web.sh && python3 -m http.server -d web/dist                 # browser client (?connect=…&certHash=… joins a host)
+cargo run --release -p shooter-server --bin shooter-replay -- record -o dm.shrp  # scripted match replay (then verify / promote)
+scripts/profile-bot-match.sh                                               # runtime-profiler bundle of the scripted bot match
 ```
 
 CI (`.github/workflows/validate.yml`) runs fmt, Clippy, the full test suite with `physics-ab`, the
-native build and a `wasm32` check; `pages.yml` builds and deploys `web/dist` from `main`.
+native build and a `wasm32` check; `pages.yml` builds and deploys `web/dist` from `main`;
+`profile.yml` uploads the bot-match profile as an artifact (no thresholds).
 
 ## Foundations
 
