@@ -1,0 +1,28 @@
+schema_version: runtime-profiler/scenario/v1
+# The browser client in headless Chromium: web/dist's profile run (?frames=180), 180 animation
+# frames of a practice match at one tick each, slot 0 played by the replays' scripted person 0,
+# in the profiler's 1280x720 viewport. Without a GPU, Chromium's WebGPU runs on SwiftShader
+# (software Vulkan) at about half a second a frame, hence 180 frames (3 s of match) rather than
+# the native 600. Each frame is a `runtime-profiler:js-to-wasm:frame` User Timing measure.
+# See docs/foundation-data.md.
+id: shooter-web-client-v1
+target:
+  type: browser-journey
+  module: scripts/profile-web-journey.mjs
+  working_directory: ..
+  inherit_env:
+    - HOME
+    - PLAYWRIGHT_BROWSERS_PATH
+    - XDG_CACHE_HOME
+    - SHOOTER_WEB_PROFILE_OUT
+  browser_args:
+    - --enable-unsafe-webgpu
+    - --use-angle=swiftshader
+    - --use-webgpu-adapter=swiftshader
+    - --enable-features=Vulkan
+run:
+  warmup_iterations: 0
+  measurement_iterations: 1
+  timeout_seconds: 600
+collectors:
+  - browser-chromium

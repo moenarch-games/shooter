@@ -235,6 +235,8 @@
         document.getElementById("mode").textContent = `Click to play: online deathmatch at ${host}`;
         document.getElementById("practice").hidden = false;
       }
+      // ?frames=<n> is the profile run: a scripted practice match, nobody to click.
+      if (query.get("frames")) overlay.hidden = true;
       document.addEventListener("pointerlockchange", () => {
         overlay.hidden = document.pointerLockElement !== null;
       });
