@@ -34,6 +34,15 @@ pub const SELF_SPLASH_PERCENT: i32 = 50;
 pub const MAX_REWIND_TICKS: u32 = 15;
 /// Inputs a person may have queued; older ones are dropped beyond this.
 pub const MAX_QUEUED_INPUTS: usize = 8;
+/// A person's input backlog is judged over this many ticks (0.5 s)...
+pub const BACKLOG_WINDOW_TICKS: u32 = 30;
+/// ...and when at least this many more inputs stayed queued the whole window (a client whose
+/// clock runs fast, or a burst after a stall), the oldest are dropped down to it: the queue adds
+/// at most this many ticks of standing latency, and jitter below it is never trimmed.
+pub const BACKLOG_KEEP: usize = 2;
+/// A person with no input for this many ticks (250 ms: a dropped connection) stops moving and
+/// shooting until inputs arrive again; shorter gaps hold the last input.
+pub const HOLD_INPUT_TICKS: u32 = 15;
 /// Slots in a deathmatch: people take them from bots.
 pub const DEATHMATCH_SLOTS: u8 = 6;
 /// A round ends when someone has this many frags...
@@ -158,6 +167,11 @@ pub struct Fighter {
     pub ack: u32,
     pub view_tick: u32,
     inputs: VecDeque<Input>,
+    /// The fewest inputs queued at any tick of the current backlog window.
+    backlog: usize,
+    backlog_ticks: u32,
+    /// Ticks in a row without a queued input.
+    starved: u32,
     grounded: bool,
 }
 
@@ -180,8 +194,38 @@ impl Fighter {
             ack: 0,
             view_tick: 0,
             inputs: VecDeque::new(),
+            backlog: usize::MAX,
+            backlog_ticks: 0,
+            starved: 0,
             grounded: false,
         }
+    }
+
+    /// Inputs queued for this tick and the ticks after.
+    #[must_use]
+    pub fn queued_inputs(&self) -> usize {
+        self.inputs.len()
+    }
+
+    /// Tracks the input backlog over [`BACKLOG_WINDOW_TICKS`] and, at the end of a window in
+    /// which more than [`BACKLOG_KEEP`] inputs always waited, drops the oldest down to it (a
+    /// dropped weapon switch carries over to the next input).
+    fn trim_backlog(&mut self) {
+        self.backlog = self.backlog.min(self.inputs.len());
+        self.backlog_ticks += 1;
+        if self.backlog_ticks < BACKLOG_WINDOW_TICKS {
+            return;
+        }
+        for _ in BACKLOG_KEEP..self.backlog {
+            let Some(dropped) = self.inputs.pop_front() else {
+                break;
+            };
+            if let Some(next) = self.inputs.front_mut() {
+                next.intent.select = next.intent.select.or(dropped.intent.select);
+            }
+        }
+        self.backlog = usize::MAX;
+        self.backlog_ticks = 0;
     }
 
     /// In the arena with a body (not dead, not an open slot).
@@ -312,8 +356,9 @@ pub struct Session {
     dealt: Vec<i32>,
 }
 
+/// A fighter's half extents (units) as lag-compensated shots see it ([`weapons::ray_box`]).
 #[allow(clippy::cast_precision_loss)]
-const HALF: [f32; 3] = [
+pub const HALF: [f32; 3] = [
     PLAYER_HALF_EXTENTS.x as f32,
     PLAYER_HALF_EXTENTS.y as f32,
     PLAYER_HALF_EXTENTS.z as f32,
@@ -719,14 +764,25 @@ impl Session {
             match &mut fighter.pilot {
                 Pilot::Open => {}
                 Pilot::Human { .. } => {
+                    fighter.trim_backlog();
                     if let Some(input) = fighter.inputs.pop_front() {
                         fighter.intent = input.intent;
                         fighter.ack = input.sequence;
                         fighter.view_tick = input.view_tick;
+                        fighter.starved = 0;
                     } else {
                         // No input this tick (a late packet): hold the last one, but
-                        // never repeat a weapon switch.
+                        // never repeat a weapon switch; after a while (a lost
+                        // connection), stand still looking the same way.
                         fighter.intent.select = None;
+                        fighter.starved = fighter.starved.saturating_add(1);
+                        if fighter.starved >= HOLD_INPUT_TICKS {
+                            fighter.intent = Intent {
+                                yaw: fighter.intent.yaw,
+                                pitch: fighter.intent.pitch,
+                                ..Intent::IDLE
+                            };
+                        }
                     }
                 }
                 Pilot::Bot(bot) => {

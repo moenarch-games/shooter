@@ -11,7 +11,7 @@ use crate::scene::{self, Actors, FighterView, METRES_PER_UNIT, SWING_SECONDS};
 use render_engine::glam::Vec3;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
 use shooter_sim::session::MAX_HEALTH;
-use shooter_sim::{Arena, Event, Intent, Snapshot, TICK_HZ, Weapon};
+use shooter_sim::{Arena, Event, Intent, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -49,15 +49,6 @@ fn swing_progress(seconds: f32) -> Option<f32> {
     (seconds < SWING_SECONDS).then(|| seconds / SWING_SECONDS)
 }
 
-/// Every slot's fighter centre in a snapshot (`None`: dead or no fighter).
-fn centers(snapshot: &Snapshot) -> Vec<Option<[f32; 3]>> {
-    let mut centers = vec![None; usize::from(u8::MAX)];
-    for fighter in snapshot.fighters.iter().filter(|fighter| fighter.alive) {
-        centers[usize::from(fighter.slot)] = Some(fighter.position);
-    }
-    centers
-}
-
 pub struct App {
     proxy: EventLoopProxy<GpuReady>,
     window: Option<Arc<Window>>,
@@ -81,10 +72,6 @@ pub struct App {
     /// the local fighter's (as predicted).
     swings: Vec<f32>,
     local_swing: f32,
-    /// The other fighters' centres in the snapshot before the latest one and in it, by slot.
-    previous_centers: Vec<Option<[f32; 3]>>,
-    centers: Vec<Option<[f32; 3]>>,
-    seen_tick: Option<u32>,
     started: Instant,
     last_frame: Instant,
     /// Seconds not yet simulated.
@@ -124,9 +111,6 @@ impl App {
             glows: vec![0.0; usize::from(u8::MAX)],
             swings: vec![f32::INFINITY; usize::from(u8::MAX)],
             local_swing: f32::INFINITY,
-            previous_centers: Vec::new(),
-            centers: Vec::new(),
-            seen_tick: None,
             started: now,
             last_frame: now,
             accumulator: 0.0,
@@ -284,11 +268,6 @@ impl App {
         }
         if let Some(snapshot) = self.game.snapshot() {
             self.hud.events(snapshot, &tick.events, local);
-            if self.seen_tick != Some(snapshot.tick) {
-                self.seen_tick = Some(snapshot.tick);
-                self.previous_centers = std::mem::take(&mut self.centers);
-                self.centers = centers(snapshot);
-            }
             if let (Some(gpu), Some(effects)) = (&mut self.gpu, &mut self.effects) {
                 effects.play(&mut gpu.world, &tick.events);
                 effects.rockets(&mut gpu.world, &snapshot.rockets);
@@ -359,14 +338,12 @@ impl App {
                     .filter(|fighter| Some(fighter.slot) != local)
                     .map(|fighter| {
                         let slot = usize::from(fighter.slot);
-                        let now = self.centers.get(slot).copied().flatten();
-                        let before = self.previous_centers.get(slot).copied().flatten();
-                        let center = now.map(|now| {
-                            let before = Vec3::from(before.unwrap_or(now));
-                            before.lerp(Vec3::from(now), blend) * METRES_PER_UNIT
-                        });
+                        let center = self
+                            .game
+                            .other_center(fighter.slot, blend)
+                            .map(|center| Vec3::from(center) * METRES_PER_UNIT);
                         FighterView {
-                            center: center.filter(|_| fighter.alive),
+                            center,
                             forward: looking(fighter.yaw, fighter.pitch),
                             health: fighter.health as f32 / MAX_HEALTH as f32,
                             glow: self.glows[slot],

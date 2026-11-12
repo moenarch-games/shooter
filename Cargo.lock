@@ -2863,6 +2863,7 @@ dependencies = [
  "game-server",
  "gilrs",
  "input-bindings-core",
+ "js-sys",
  "pollster",
  "render-engine",
  "shooter-server",

@@ -63,9 +63,12 @@ the overlay's join field fills these in, and "Practice offline" goes back. A hos
 trusted certificate needs no hash.
 
 The host is authoritative: clients (native and browser alike) send one input per tick, predict
-their own movement and correct it from the snapshots; hitscan hits and blade swings are checked
-where the attacker saw the target (up to 250 ms back). A public host is described in
-[docs/hosting.md](docs/hosting.md).
+their own movement and correct it from the snapshots, and see and hear their own shots at once.
+Other fighters are drawn 50 ms (3 ticks) behind the newest snapshot, so uneven arrivals still
+move smoothly; hitscan hits and blade swings are checked where the attacker saw them (up to
+250 ms back). The host keeps at most 2 ticks of standing input backlog per person. A dropped
+connection (not a closed one) shows "reconnecting" and rejoins the same slot, score kept, within
+the host's reconnect grace. A public host is described in [docs/hosting.md](docs/hosting.md).
 
 Click to capture the mouse. WASD moves, the mouse looks, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
@@ -109,8 +112,8 @@ scripted moves (sprint, slide, double jump, jump pad, ramp slides, a thin wall, 
 jump, a grapple onto a ledge, a shooting range):
 `cargo test -p shooter-sim --features physics-ab --test physics_ab`.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
-lag compensation of shots and swings, blade kills, scoring and rounds, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
-clients through a real game-server host on loopback.
+lag compensation of shots and swings, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
+clients through a real game-server host on loopback and resumes a severed connection in its slot.
 
 When a crate can't do something yet, the shooter files an issue on that crate and uses Rapier
 (or the off-the-shelf equivalent) for that piece only, until the crate catches up.
