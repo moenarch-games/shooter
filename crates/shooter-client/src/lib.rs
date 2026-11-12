@@ -270,7 +270,11 @@ pub(crate) mod web {
 
     #[wasm_bindgen(start)]
     pub fn start() {
-        console_error_panic_hook::set_once();
+        // Panics go to the console and the page (and a profile run's result).
+        std::panic::set_hook(Box::new(|info| {
+            console_error_panic_hook::hook(info);
+            show_error(&info.to_string());
+        }));
         super::run();
     }
 

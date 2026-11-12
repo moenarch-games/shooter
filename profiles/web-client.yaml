@@ -20,6 +20,8 @@ target:
     - --use-angle=swiftshader
     - --use-webgpu-adapter=swiftshader
     - --enable-features=Vulkan
+    # SwiftShader's first frame (shader compilation) can outlast the GPU watchdog on a runner.
+    - --disable-gpu-watchdog
 run:
   warmup_iterations: 0
   measurement_iterations: 1
