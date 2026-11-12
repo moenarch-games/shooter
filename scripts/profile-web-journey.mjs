@@ -1,5 +1,5 @@
 // The runtime-profiler browser journey for profiles/web-client.yaml: serves web/dist on
-// loopback, opens the page's profile run (?frames=180: a scripted practice match, one tick per
+// loopback, opens the page's profile run (?frames=120: a scripted practice match, one tick per
 // animation frame, as the native `--frames`) and waits for the frame times the page sets on
 // `window.shooterProfile`. They go to $SHOOTER_WEB_PROFILE_OUT when it is set (the profiler
 // keeps the trace, not the journey's output). See docs/foundation-data.md.
@@ -7,8 +7,8 @@ import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const FRAMES = 180;
-const RESULT_TIMEOUT_MS = 540_000;
+const FRAMES = 120;
+const RESULT_TIMEOUT_MS = 240_000;
 const root = path.resolve("web/dist");
 const types = {
   ".html": "text/html; charset=utf-8",
@@ -50,15 +50,23 @@ export async function run({ page }) {
     const logs = [];
     page.on("console", (message) => logs.push(message.text()));
     await page.goto(`http://127.0.0.1:${port}/?frames=${FRAMES}`, { waitUntil: "load" });
-    const handle = await page.waitForFunction(() => Reflect.get(window, "shooterProfile"), null, {
-      timeout: RESULT_TIMEOUT_MS,
-      polling: 500,
+    const adapter = await page.evaluate(async () => {
+      const found = await navigator.gpu?.requestAdapter();
+      if (!found) return null;
+      const { vendor, architecture, device, description } = found.info;
+      return { vendor, architecture, device, description };
     });
-    const result = await handle.jsonValue();
+    const result = await page
+      .waitForFunction(() => Reflect.get(window, "shooterProfile"), null, {
+        timeout: RESULT_TIMEOUT_MS,
+        polling: 500,
+      })
+      .then((handle) => handle.jsonValue())
+      .catch((error) => ({ error: String(error.message ?? error).split("\n")[0] }));
     if (process.env.SHOOTER_WEB_PROFILE_OUT) {
       await writeFile(
         process.env.SHOOTER_WEB_PROFILE_OUT,
-        JSON.stringify({ ...result, console: logs.slice(0, 50) }, null, 2) + "\n",
+        JSON.stringify({ ...result, adapter, console: logs.slice(-50) }, null, 2) + "\n",
       );
     }
     if (result.error) throw new Error(`the profile run failed: ${result.error}`);

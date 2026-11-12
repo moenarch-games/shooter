@@ -56,8 +56,16 @@ if [[ "$lane" != native ]]; then
   scripts/build-web.sh
   mkdir -p "$out/web-client"
   # The journey writes the page's frame times here (the profiler keeps only the trace).
+  status=0
   SHOOTER_WEB_PROFILE_OUT="$(cd "$out/web-client" && pwd)/frames.json" \
-    "$profiler" capture --scenario profiles/web-client.yaml --output "$out/web-client/bundle" > /dev/null
-  "$profiler" summarize --bundle "$out/web-client/bundle" | tee "$out/web-client/summary.txt"
-  tee -a "$out/web-client/summary.txt" < "$out/web-client/frames.json"
+    "$profiler" capture --scenario profiles/web-client.yaml --output "$out/web-client/bundle" > /dev/null ||
+    status=$?
+  if [[ $status == 0 ]]; then
+    "$profiler" summarize --bundle "$out/web-client/bundle" | tee "$out/web-client/summary.txt"
+  fi
+  # The page's frame times, or what it got to when it failed.
+  if [[ -f "$out/web-client/frames.json" ]]; then
+    tee -a "$out/web-client/summary.txt" < "$out/web-client/frames.json"
+  fi
+  exit "$status"
 fi

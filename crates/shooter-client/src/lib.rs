@@ -270,7 +270,11 @@ pub(crate) mod web {
 
     #[wasm_bindgen(start)]
     pub fn start() {
-        console_error_panic_hook::set_once();
+        // Panics go to the console and the page (and a profile run's result).
+        std::panic::set_hook(Box::new(|info| {
+            console_error_panic_hook::hook(info);
+            show_error(&info.to_string());
+        }));
         super::run();
     }
 
@@ -370,6 +374,14 @@ pub(crate) mod web {
             self.work.push(now() - started);
             if let Some(performance) = performance() {
                 let _ = performance.measure_with_start_mark(FRAME_MEASURE, FRAME_MARK);
+            }
+            if self.work.len().is_multiple_of(30) {
+                crate::log(&format!(
+                    "profile frame {} of {} at {:.1} s",
+                    self.work.len(),
+                    self.frames,
+                    (now() - self.first.unwrap_or(started)) / 1_000.0
+                ));
             }
             self.work.len() >= self.frames as usize
         }
