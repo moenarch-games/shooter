@@ -468,3 +468,60 @@ fn inputs_and_snapshots_round_trip() {
     assert!(saw_events);
     assert!(decode_snapshot(&[1, 2, 3]).is_err());
 }
+
+/// A client whose clock runs fast (or that bursts inputs after a stall) builds a standing input
+/// backlog: the host trims it back to `BACKLOG_KEEP` within a window, keeping the order and a
+/// weapon switch from the dropped inputs. A person whose inputs stop (a lost connection) holds
+/// the last one briefly, then stands still.
+#[test]
+fn a_standing_input_backlog_is_trimmed_and_a_silent_person_stops() {
+    use shooter_sim::session::{BACKLOG_KEEP, BACKLOG_WINDOW_TICKS, HOLD_INPUT_TICKS};
+    let mut session = bot_match(3, 0);
+    let slot = usize::from(session.join(4).unwrap().unwrap());
+    let forward = Intent {
+        forward: 1,
+        fire: true,
+        ..Intent::IDLE
+    };
+    let mut sequence = 0;
+    let mut send = |session: &mut Session, intent: Intent| {
+        sequence += 1;
+        assert!(session.queue(
+            4,
+            Input {
+                sequence,
+                intent,
+                view_tick: 0,
+            }
+        ));
+    };
+    // A burst of six, then one input a tick: six stay queued until the window trims them.
+    for _ in 0..5 {
+        send(&mut session, forward);
+    }
+    send(
+        &mut session,
+        Intent {
+            select: Some(Weapon::RocketLauncher),
+            ..forward
+        },
+    );
+    let mut most = 0;
+    for _ in 0..2 * BACKLOG_WINDOW_TICKS {
+        send(&mut session, forward);
+        session.step().unwrap();
+        most = most.max(session.fighters[slot].queued_inputs());
+    }
+    assert_eq!(most, 6);
+    assert_eq!(session.fighters[slot].queued_inputs(), BACKLOG_KEEP - 1);
+    assert_eq!(session.fighters[slot].arsenal.held, Weapon::RocketLauncher);
+    let acked = session.fighters[slot].ack;
+    assert_eq!(acked, sequence - (BACKLOG_KEEP as u32 - 1));
+
+    for _ in 0..HOLD_INPUT_TICKS + 1 {
+        session.step().unwrap();
+    }
+    let still = session.fighters[slot].intent;
+    assert!(!still.fire && still.forward == 0, "{still:?}");
+    assert_eq!(session.fighters[slot].ack, sequence);
+}

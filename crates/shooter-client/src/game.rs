@@ -3,6 +3,7 @@
 //! browser) follows a game-server host and predicts the local fighter. Both hand the frame the
 //! same [`Snapshot`] of the match, so drawing and the HUD do not care which it is.
 
+use crate::interpolation::Interpolation;
 use shooter_sim::session::LOCAL_PLAYER;
 use shooter_sim::{Arena, Event, Intent, Rules, Session, Snapshot, StepReport};
 
@@ -20,6 +21,7 @@ pub enum Game {
     Practice {
         session: Box<Session>,
         snapshot: Snapshot,
+        others: Interpolation,
     },
     Online(Box<online::Online>),
 }
@@ -38,15 +40,23 @@ impl Game {
         Self::Practice {
             session: Box::new(session),
             snapshot,
+            // Drawn between the last two ticks; shots see the match as it is.
+            others: Interpolation::new(1.0),
         }
     }
 
     /// One local tick holding `intent`.
     pub fn tick(&mut self, intent: Intent) -> Result<Tick, String> {
         match self {
-            Self::Practice { session, snapshot } => {
+            Self::Practice {
+                session,
+                snapshot,
+                others,
+            } => {
                 let report = session.tick(intent).map_err(|error| error.to_string())?;
                 *snapshot = session.snapshot();
+                others.push(snapshot);
+                others.advance();
                 Ok(Tick {
                     report,
                     events: session.events.clone(),
@@ -62,6 +72,16 @@ impl Game {
         match self {
             Self::Practice { snapshot, .. } => Some(snapshot),
             Self::Online(online) => online.snapshot(),
+        }
+    }
+
+    /// Where another fighter is drawn `blend` (0..1) of a tick after the last local tick (units),
+    /// `None` while it is dead there.
+    #[must_use]
+    pub fn other_center(&self, slot: u8, blend: f32) -> Option<[f32; 3]> {
+        match self {
+            Self::Practice { others, .. } => others.center(slot, blend),
+            Self::Online(online) => online.other_center(slot, blend),
         }
     }
 
@@ -122,12 +142,14 @@ pub mod online {
     //! prediction was off).
 
     use super::Tick;
+    use crate::interpolation::{Interpolation, ONLINE_DELAY_TICKS};
     use crate::net::{Connection, NetEvent, Trust};
     use shooter_sim::grapple::Hook;
     use shooter_sim::player::Motion;
-    use shooter_sim::session::MAX_HEALTH;
+    use shooter_sim::session::{HALF, MAX_HEALTH};
+    use shooter_sim::weapons::{self, Delivery};
     use shooter_sim::wire::encode_input;
-    use shooter_sim::{Arena, Event, Intent, Session, Snapshot, StepReport};
+    use shooter_sim::{Arena, Event, Intent, Session, Snapshot, StepReport, Weapon};
     use std::collections::VecDeque;
 
     /// A prediction further than this (units, any axis) from the server's state is corrected.
@@ -151,8 +173,31 @@ pub mod online {
         pending: VecDeque<Pending>,
         sequence: u32,
         latest: Option<Snapshot>,
+        /// The other fighters as drawn, a little behind the newest snapshot.
+        others: Interpolation,
         events: Vec<Event>,
         status: Option<String>,
+        /// Lost sessions resumed so far.
+        resumed: u32,
+    }
+
+    /// The host's events without the local fighter's own shots (`Fired` and the `Beam` right
+    /// after it), which were shown and heard when predicted; blade swings stay (their strikes
+    /// come from the host).
+    fn without_own_shots(events: &[Event], local: Option<u8>) -> impl Iterator<Item = Event> {
+        let mut skipping = false;
+        events.iter().copied().filter(move |event| {
+            let own = match *event {
+                Event::Fired { slot, weapon, .. } => {
+                    skipping = Some(slot) == local && weapon != Weapon::EnergyBlade;
+                    return !skipping;
+                }
+                Event::Beam { .. } => skipping,
+                _ => false,
+            };
+            skipping = false;
+            !own
+        })
     }
 
     impl Online {
@@ -169,9 +214,113 @@ pub mod online {
                 pending: VecDeque::new(),
                 sequence: 0,
                 latest: None,
+                others: Interpolation::new(ONLINE_DELAY_TICKS),
                 events: Vec::new(),
                 status: Some(status),
+                resumed: 0,
             })
+        }
+
+        /// Drops the connection without closing it, as a network loss would (testing the
+        /// reconnect).
+        #[cfg(not(target_arch = "wasm32"))]
+        #[doc(hidden)]
+        pub fn sever(&self) {
+            self.connection.sever();
+        }
+
+        pub fn other_center(&self, slot: u8, blend: f32) -> Option<[f32; 3]> {
+            self.others.center(slot, blend)
+        }
+
+        fn local_slot(&self) -> Option<u8> {
+            let id = self.player_id?;
+            Some(self.latest.as_ref()?.of_player(id)?.slot)
+        }
+
+        /// The predicted tick's own shots, shown and heard at once: the muzzle flash as fired,
+        /// a beam stopped by the first other fighter where they are drawn (the host's hit
+        /// decides the damage). Blade swings are left to the host's events.
+        fn predicted_shots(&self) -> Vec<Event> {
+            let Some(local) = self.local_slot() else {
+                return Vec::new();
+            };
+            let others: Vec<[f32; 3]> = self
+                .latest
+                .iter()
+                .flat_map(|snapshot| &snapshot.fighters)
+                .filter(|fighter| fighter.slot != local)
+                .filter_map(|fighter| self.others.center(fighter.slot, 0.0))
+                .collect();
+            let mut shots = Vec::new();
+            for event in &self.predictor.events {
+                match *event {
+                    Event::Fired { weapon, .. } | Event::Beam { weapon, .. }
+                        if weapon == Weapon::EnergyBlade => {}
+                    Event::Fired {
+                        weapon,
+                        eye,
+                        direction,
+                        ..
+                    } => shots.push(Event::Fired {
+                        slot: local,
+                        weapon,
+                        eye,
+                        direction,
+                    }),
+                    Event::Beam {
+                        weapon,
+                        from,
+                        end,
+                        normal,
+                        struck,
+                    } => {
+                        let translation = [0, 1, 2].map(|axis| end[axis] - from[axis]);
+                        let hit = matches!(weapon.delivery(), Delivery::Hitscan { .. })
+                            .then(|| {
+                                others
+                                    .iter()
+                                    .filter_map(|center| {
+                                        weapons::ray_box(from, translation, *center, HALF)
+                                    })
+                                    .reduce(f32::min)
+                            })
+                            .flatten();
+                        shots.push(match hit {
+                            Some(fraction) => Event::Beam {
+                                weapon,
+                                from,
+                                end: [0, 1, 2]
+                                    .map(|axis| from[axis] + translation[axis] * fraction),
+                                normal: {
+                                    let length = translation
+                                        .iter()
+                                        .map(|axis| axis * axis)
+                                        .sum::<f32>()
+                                        .sqrt()
+                                        .max(f32::EPSILON);
+                                    translation.map(|axis| -axis / length)
+                                },
+                                struck: true,
+                            },
+                            None => Event::Beam {
+                                weapon,
+                                from,
+                                end,
+                                normal,
+                                struck,
+                            },
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            shots
+        }
+
+        /// Lost sessions resumed so far.
+        pub const fn resumed(&self) -> u32 {
+            self.resumed
         }
 
         pub const fn player_id(&self) -> Option<u32> {
@@ -273,6 +422,9 @@ pub mod online {
             for event in self.connection.poll() {
                 match event {
                     NetEvent::Welcome { player_id } => {
+                        if self.player_id.is_some() {
+                            self.resumed += 1;
+                        }
                         self.player_id = Some(player_id);
                         self.status = None;
                     }
@@ -284,9 +436,23 @@ pub mod online {
                         {
                             continue;
                         }
-                        self.events.extend_from_slice(&snapshot.events);
+                        // Own shots are shown when predicted, so only while predicting.
+                        let local = self
+                            .player_id
+                            .filter(|_| self.predicting)
+                            .and_then(|id| snapshot.of_player(id))
+                            .map(|me| me.slot);
+                        self.events
+                            .extend(without_own_shots(&snapshot.events, local));
                         self.reconcile(&snapshot)?;
+                        self.others.push(&snapshot);
                         self.latest = Some(*snapshot);
+                    }
+                    NetEvent::Reconnecting(reason) => {
+                        // Prediction resumes from the first snapshot after the welcome.
+                        self.status = Some(format!("reconnecting ({reason})"));
+                        self.predicting = false;
+                        self.pending.clear();
                     }
                     NetEvent::Closed(reason) => {
                         self.status = Some(format!("disconnected: {reason}"));
@@ -294,14 +460,17 @@ pub mod online {
                     }
                 }
             }
+            self.others.advance();
             let mut report = StepReport::default();
             if self.player_id.is_some() && self.status.is_none() {
                 self.sequence += 1;
-                let view_tick = self.latest.as_ref().map_or(0, |latest| latest.tick);
+                let view_tick = self.others.view_tick().unwrap_or(0);
                 self.connection
                     .send(self.sequence, &encode_input(intent, view_tick));
                 if self.predicting {
                     report = self.predict(intent)?;
+                    let shots = self.predicted_shots();
+                    self.events.extend(shots);
                     let (position, motion, hook) = self.state();
                     self.pending.push_back(Pending {
                         sequence: self.sequence,

@@ -10,6 +10,7 @@ pub mod effects;
 pub mod game;
 pub mod gpu;
 pub mod hud;
+pub mod interpolation;
 pub mod net;
 pub mod scene;
 
