@@ -20,7 +20,7 @@ the development certificate by that SHA-256, through WebTransport's `serverCerti
 | `SHOOTER_CERT_PEM`, `SHOOTER_KEY_PEM` | `cert.pem`, `key.pem` | TLS identity (a publicly trusted certificate in production) |
 | `SHOOTER_MATCH_IDS` | `dm` | comma-separated match IDs; each is one deathmatch seeded from its ID |
 | `SHOOTER_ROUTE_PREFIX` | `/shooter` | a match is at `https://<host>:<port><prefix>/matches/<id>` |
-| `SHOOTER_ALLOWED_ORIGINS` | unset | browser origins allowed to connect (e.g. `https://moenarch-games.github.io`); unset admits any client |
+| `SHOOTER_ALLOWED_ORIGINS` | unset | browser origins allowed to connect (e.g. `https://moenarch-games.github.io`); unset admits any client. It only gates sessions that send an Origin (browsers always do), so native clients, which send none, are always admitted |
 
 ## A public host (not deployed)
 
@@ -36,6 +36,8 @@ Nothing is deployed. To run a public match on the shared Hetzner host the owner 
    `SHOOTER_ALLOWED_ORIGINS=https://moenarch-games.github.io`.
 3. Native players then join with
    `shooter-client --connect https://moenarch.com:4433/shooter/matches/dm` (no `--cert`: the
-   certificate is publicly trusted). Browser players open the Pages build with
+   certificate is publicly trusted). They are admitted although `SHOOTER_ALLOWED_ORIGINS` is
+   set: the allowlist applies only to sessions carrying an Origin header, which native clients
+   don't send, so native and browser players share the same match. Browser players open the Pages build with
    `?connect=https://moenarch.com:4433/shooter/matches/dm` (no `certHash`), or paste that URL
    into the page's join field.
