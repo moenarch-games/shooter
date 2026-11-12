@@ -1,7 +1,11 @@
 //! The shooter's deathmatch on game-server: [`DeathmatchHost`] is the `GameSimulation` game-server
 //! runs for a match. People join a slot (taking it from a bot), every command is one tick of
 //! their controls ([`shooter_sim::wire::decode_input`]), and every tick goes out to all clients
-//! as one shared snapshot ([`shooter_sim::wire::encode_snapshot`]).
+//! as one shared snapshot ([`shooter_sim::wire::encode_snapshot`]). [`replay`] records scripted
+//! matches in game-server's replay format; [`promote`] turns them into foundation fixtures.
+
+pub mod promote;
+pub mod replay;
 
 use game_server::{
     GameSimulation, HostError, MatchHost, MatchId, MatchIdError, MatchRuntime, PlayerId,

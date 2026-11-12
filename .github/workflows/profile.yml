@@ -1,0 +1,38 @@
+name: Profile
+
+# A runtime-profiler bundle of the scripted bot match, plus its replay, as an artifact
+# (docs/foundation-data.md). Evidence only: no thresholds, and merge-ready does not wait for it.
+
+on:
+  pull_request:
+    paths:
+      - "crates/shooter-sim/**"
+      - "crates/shooter-server/**"
+      - "profiles/**"
+      - "scripts/profile-bot-match.sh"
+      - "Cargo.lock"
+      - ".github/workflows/profile.yml"
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bot-match:
+    permissions:
+      contents: read
+      packages: read
+    uses: moritzbrantner/reusable-workflows/.github/workflows/validate-repo.yml@d6e2fe0d4f9decc88a0073a317cf3efbe12ee6d6
+    with:
+      bun_version: ""
+      node_version: ""
+      install_command: ""
+      cache_bun: false
+      cache_cargo: true
+      build_command: scripts/profile-bot-match.sh target/profile
+      artifact_paths: target/profile
+      upload_artifacts_on: always
+      artifact_name_suffix: -bot-match-profile
