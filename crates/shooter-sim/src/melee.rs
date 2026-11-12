@@ -5,14 +5,13 @@
 //! the swinger's feet) and in the swinger's line of sight past the arena's geometry. Online the
 //! fighters are where the swinger saw them, like hitscan ([`crate::session`]).
 //!
-//! `sim-combat` shares the constants; the coverage test itself lives in mmorpg's zone code, so
-//! [`covers`] restates it here for the shooter's bodies until `sim-combat` shares it
-//! (moenarch-games/mmorpg#754).
+//! `sim-combat` shares both the constants and the coverage test ([`swing_covers`]).
 
 use crate::player::PLAYER_HALF_EXTENTS;
 use crate::weapons::subunits;
+use sim_combat::swing::swing_covers;
 use sim_combat::unit::{PLAYER_REACH_UNITS, SWING_ARC_HALF_WIDTH, SWING_BAND_UNITS};
-use sim_foundation::physics::SUBUNITS_PER_UNIT;
+use sim_foundation::physics::{SUBUNITS_PER_UNIT, Vec3i};
 use sim_foundation::{subunits_per_tick, trig};
 
 /// Damage of one swing: four take a full health pool.
@@ -29,31 +28,28 @@ pub const LIFT_SUBUNITS_PER_TICK: i32 = subunits_per_tick(240);
 pub const REACH_UNITS: i32 = PLAYER_REACH_UNITS;
 
 /// Whether a swing from a fighter whose feet are at `feet` (units), facing `yaw`, covers a
-/// player-sized body centred at `center` (units). All integer, in subunits.
+/// player-sized body centred at `center` (units): `sim-combat`'s shared swing coverage, run in
+/// subunits so positions keep their sub-centimetre precision.
 #[must_use]
 pub fn covers(feet: [f32; 3], yaw: u16, center: [f32; 3]) -> bool {
-    let (feet, center) = (subunits(feet), subunits(center));
-    let unit = i64::from(SUBUNITS_PER_UNIT);
-    let [dx, dy, dz] = [0, 1, 2].map(|axis| i64::from(center[axis] - feet[axis]));
-    let half_height = i64::from(PLAYER_HALF_EXTENTS.y) * unit;
-    let [low, high] = SWING_BAND_UNITS.map(|band| i64::from(band) * unit);
-    if dy + half_height < low || dy - half_height > high {
-        return false;
-    }
-    let squared = dx * dx + dz * dz;
-    let reach = i64::from(REACH_UNITS) * unit;
-    if squared > reach * reach {
-        return false;
-    }
-    if squared == 0 {
-        return true;
-    }
-    // |v| cos(angle to the facing) >= |v| cos(half width), both Q16.
-    let (x, z) = trig::direction(yaw);
-    let along = dx * i64::from(x) + dz * i64::from(z);
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
-    let length = trig::isqrt(squared as u64) as i64;
-    along >= length * i64::from(trig::cos(SWING_ARC_HALF_WIDTH))
+    let point = |units| {
+        let [x, y, z] = subunits(units);
+        Vec3i::new(x, y, z)
+    };
+    let half = Vec3i::new(
+        PLAYER_HALF_EXTENTS.x * SUBUNITS_PER_UNIT,
+        PLAYER_HALF_EXTENTS.y * SUBUNITS_PER_UNIT,
+        PLAYER_HALF_EXTENTS.z * SUBUNITS_PER_UNIT,
+    );
+    swing_covers(
+        point(feet),
+        yaw,
+        point(center),
+        half,
+        REACH_UNITS * SUBUNITS_PER_UNIT,
+        SWING_ARC_HALF_WIDTH,
+        SWING_BAND_UNITS.map(|band| band * SUBUNITS_PER_UNIT),
+    )
 }
 
 /// The knockback (subunits per tick) of a swing facing `yaw`.
