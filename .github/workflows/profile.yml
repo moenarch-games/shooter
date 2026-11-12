@@ -38,7 +38,10 @@ jobs:
       cache_cargo: true
       # The client's audio (ALSA) and gamepads (udev); lavapipe (software Vulkan) draws it.
       apt_packages: libasound2-dev libudev-dev mesa-vulkan-drivers libvulkan1
-      build_command: WGPU_FORCE_FALLBACK_ADAPTER=1 scripts/profile.sh target/profile native
+      # native-perf (bot match) needs perf_event_paranoid <= 2; Ubuntu runners default to 4.
+      build_command: |
+        sudo sysctl -w kernel.perf_event_paranoid=1
+        WGPU_FORCE_FALLBACK_ADAPTER=1 scripts/profile.sh target/profile native
       artifact_paths: target/profile
       upload_artifacts_on: always
       artifact_name_suffix: -profile

@@ -29,7 +29,10 @@ real players.
 5. **Profile:** `scripts/profile.sh [OUT] [native|web|all]` captures runtime-profiler scenarios
    (default all). The native lane has two.
    `profiles/bot-match.yaml` is about 5 1/2 minutes of match ticks without a window; the script
-   also records the same match as a replay. `profiles/native-client.yaml` runs
+   also records the same match as a replay. It collects `process` and `native-perf`: the
+   bundle's `hotspots.json` holds the sampled hotspots with call paths, and the script renders
+   the top ones to `bot-match/hotspots.md`. `native-perf` needs `perf` and
+   `kernel.perf_event_paranoid` at 2 or lower (user-space cycles). `profiles/native-client.yaml` runs
    `shooter-client --frames 600`: the native client draws 600 frames (10 s) of a practice match
    offscreen at 1280x720, one tick per frame, with the local fighter played by the replays'
    scripted person 0. The script runs it once more to record its frame times (mean, p50, p95,
@@ -73,6 +76,6 @@ scripts/profile.sh                       # all lanes; `scripts/profile.sh target
 | game-server | 20 s deathmatch replay fixture with a codec and runtime-shape test: [game-server#84](https://github.com/moritzbrantner/game-server/pull/84) |
 | physics-engine | Proposed as an A/B scenario, ask-first: [physics-engine#558](https://github.com/moritzbrantner/physics-engine/issues/558) |
 | render-engine | Proposed as a scene fixture: [render-engine#105](https://github.com/moritzbrantner/render-engine/issues/105) |
-| runtime-profiler | Pinned at `a2a9c75` (the perf 7.x fix, [runtime-profiler#146](https://github.com/moritzbrantner/runtime-profiler/issues/146)). `native-perf` still fails: Rust symbols with `;` (`[f32; 3]`) break its call-path parser ([runtime-profiler#149](https://github.com/moritzbrantner/runtime-profiler/issues/149)), so both scenarios use `process` only |
+| runtime-profiler | Pinned at `2110e16` (the `;` in Rust symbols fix, [runtime-profiler#149](https://github.com/moritzbrantner/runtime-profiler/issues/149)). The bot match collects `native-perf` hotspots. The native client stays on `process`: its perf report (lavapipe and wgpu stacks) exceeds the profiler's 8 MiB limit ([runtime-profiler#151](https://github.com/moritzbrantner/runtime-profiler/issues/151)) |
 
 Profiling the browser client is [#28](https://github.com/moenarch-games/shooter/issues/28).

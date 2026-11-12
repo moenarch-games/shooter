@@ -12,6 +12,6 @@ run:
   warmup_iterations: 1
   measurement_iterations: 5
   timeout_seconds: 120
-# native-perf waits on runtime-profiler#149 (Rust symbols with ';' break its call-path parser).
 collectors:
   - process
+  - native-perf
