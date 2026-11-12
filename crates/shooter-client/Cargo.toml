@@ -34,9 +34,9 @@ game-server = { workspace = true, features = ["browser-transport"] }
 # installs the matching one).
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4"
-# The page timer between reconnect attempts.
+# The page timer between reconnect attempts; the profile run's result on `window`.
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Document", "Element", "HtmlElement", "Location", "UrlSearchParams", "Window", "console"] }
+web-sys = { version = "0.3", features = ["Document", "Element", "HtmlElement", "Location", "Performance", "UrlSearchParams", "Window", "console"] }
 console_error_panic_hook = "0.1.7"
 
 [lints]

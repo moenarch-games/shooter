@@ -26,7 +26,8 @@ real players.
 
 4. **Hand it over:** open a PR on the foundation with the fixture and a test, or file an issue
    with the command when the foundation has no format for it yet.
-5. **Profile:** `scripts/profile.sh [OUT]` captures two runtime-profiler scenarios.
+5. **Profile:** `scripts/profile.sh [OUT] [native|web|all]` captures runtime-profiler scenarios
+   (default all). The native lane has two.
    `profiles/bot-match.yaml` is about 5 1/2 minutes of match ticks without a window; the script
    also records the same match as a replay. `profiles/native-client.yaml` runs
    `shooter-client --frames 600`: the native client draws 600 frames (10 s) of a practice match
@@ -37,6 +38,20 @@ real players.
    `validate-repo-artifacts-profile` artifact. The numbers are evidence only: nothing gates on
    them, and lavapipe frame times measure a CPU rasterizer, not a GPU.
 
+   The web lane builds `web/dist` and captures `profiles/web-client.yaml`, a `browser-journey`
+   (collector `browser-chromium`). `scripts/profile-web-journey.mjs` serves `web/dist` on
+   loopback and opens `?frames=180`: the page's profile run plays the same scripted practice
+   match, one tick per animation frame, in the profiler's 1280x720 headless Chromium. Each frame
+   is a `runtime-profiler:js-to-wasm:frame` User Timing measure, so the bundle's trace summary
+   lists the frames as JS-to-WASM boundary evidence. When done the page sets
+   `window.shooterProfile` to its frame times: `workMs` is the frame's work (tick, scene, GPU
+   submission) and `intervalMs` is the time between frames, which includes waiting on the GPU.
+   The journey writes it to `web-client/frames.json`. Chromium has no GPU in CI, so WebGPU runs
+   on SwiftShader (`--use-webgpu-adapter=swiftshader`). That takes about half a second a frame,
+   which is why the browser run is 180 frames, not 600. It needs Node, `bun install` (Playwright)
+   and `bunx playwright install chromium`. `profile.yml` runs it as a second job and uploads the
+   `validate-repo-artifacts-web-profile` artifact.
+
 ```sh
 cargo run --release -p shooter-server --bin shooter-replay -- record --ticks 1200 -o dm.shrp
 cargo run --release -p shooter-server --bin shooter-replay -- verify dm.shrp
@@ -44,7 +59,7 @@ cargo run --release -p shooter-server --bin shooter-replay -- promote dm.shrp --
 cargo run --release -p shooter-server --bin shooter-replay -- promote dm.shrp --target physics --from 300 --to 420 -o window.json
 cargo run --release -p shooter-server --bin shooter-replay -- promote dm.shrp --target render --to 900 -o frame.json
 cargo run --release -p shooter-client -- --frames 600
-scripts/profile.sh
+scripts/profile.sh                       # all lanes; `scripts/profile.sh target/profile web` for the browser only
 ```
 
 ## Where the data went

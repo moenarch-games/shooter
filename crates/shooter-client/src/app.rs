@@ -88,6 +88,9 @@ pub struct App {
     eye: f32,
     /// The pointer is locked to the game (native: grabbed; web: Pointer Lock).
     captured: bool,
+    /// The browser profile run (`?frames=<n>`), timing each animation frame.
+    #[cfg(target_arch = "wasm32")]
+    profile: Option<crate::web::Profile>,
 }
 
 impl App {
@@ -125,7 +128,43 @@ impl App {
             previous_eye: EYE,
             eye: EYE,
             captured: false,
+            #[cfg(target_arch = "wasm32")]
+            profile: None,
         }
+    }
+
+    /// The browser profile run ([`crate::web::Profile`]): `frames` animation frames of one
+    /// tick each, the local fighter scripted as in the native offscreen run.
+    #[cfg(target_arch = "wasm32")]
+    #[must_use]
+    pub fn profiled(mut self, frames: u32) -> Self {
+        self.scripted = Some(0);
+        self.profile = Some(crate::web::Profile::new(frames));
+        self
+    }
+
+    /// One frame of the browser profile run; false once it is over.
+    #[cfg(target_arch = "wasm32")]
+    fn profiled_frame(&mut self) -> bool {
+        if self.gpu.is_none() {
+            // Not drawing yet: the timed frames start once the GPU is up.
+            return true;
+        }
+        let Some(started) = self.profile.as_mut().map(crate::web::Profile::begin) else {
+            return false;
+        };
+        if !self.advance(Instant::now(), 1.0 / f32::from(TICK_HZ)) {
+            crate::fail("the scripted match failed");
+            return false;
+        }
+        let Some(profile) = &mut self.profile else {
+            return false;
+        };
+        if profile.end(started) {
+            profile.finish();
+            return false;
+        }
+        true
     }
 
     /// The offscreen profile run ([`crate::offscreen`]): `game` drawn on `gpu`, the local
@@ -579,6 +618,14 @@ impl ApplicationHandler<GpuReady> for App {
                     self.controls.key_down(code, event.repeat);
                 } else {
                     self.controls.key_up(code);
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            WindowEvent::RedrawRequested if self.profile.is_some() => {
+                if self.profiled_frame()
+                    && let Some(window) = &self.window
+                {
+                    window.request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {
