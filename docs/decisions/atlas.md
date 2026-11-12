@@ -51,7 +51,11 @@ supersedes them. New entries take an issue-derived ID (parent ID + `i` + issue n
 ## Questions
 
 - **Q1**: Game modes beyond deathmatch (team deathmatch, capture the flag, …). Not yet decided.
+  Default in use (shooter#3): free-for-all deathmatch only, 6 slots, 15 frags or 5 minutes.
 - **Q2**: Bot skill and behavior beyond "fills empty slots and is beatable".
+  Defaults in use (shooter#3, #6): one skill level; 0.35 s reaction, at most 360°/s turning, a few
+  degrees of wandering aim error; rifle up close, rockets mid range, rail gun far, blade within
+  2.2 m; they walk between spawn points and ignore the grapple. Seeded and deterministic.
 - **Q3**: Weapon count and how distinct each one is; which melee weapons (energy blade, hammer, …);
   whether melee is a separate slot or part of the rotation.
   Defaults in use until decided (shooter#6): one melee weapon, an energy blade, as a quick melee
