@@ -33,7 +33,7 @@ const EYE: f32 = EYE_HEIGHT_UNITS as f32;
 /// How far (units) the eye moves toward its target height each tick.
 const EYE_DIP_PER_TICK: f32 = 12.0;
 
-/// A `sim_foundation::trig` yaw in radians.
+/// A `shooter_sim::trig` yaw in radians.
 fn radians(yaw: u16) -> f32 {
     f32::from(yaw) / 65_536.0 * std::f32::consts::TAU
 }

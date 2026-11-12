@@ -373,7 +373,7 @@ impl Controls {
 /// The first-person view direction, turned by mouse and right stick.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
-    /// Radians; 0 faces +Z and growing yaw turns toward +X (as `sim_foundation::trig`).
+    /// Radians; 0 faces +Z and growing yaw turns toward +X (as `shooter_sim::trig`).
     pub yaw: f32,
     /// Radians, up positive, within ±89°.
     pub pitch: f32,

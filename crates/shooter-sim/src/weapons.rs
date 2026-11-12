@@ -13,8 +13,9 @@
 //! sweeps go through the physics world's `cast_ray` and the flame through its `overlap_box`, so
 //! physics-engine and the Rapier oracle answer them alike.
 
-use sim_foundation::physics::{BodyId, PhysicsError, RayHit, SUBUNITS_PER_UNIT, World};
-use sim_foundation::{subunits_per_tick, trig};
+use crate::fixed::subunits_per_tick;
+use crate::physics::{BodyId, PhysicsError, RayHit, SUBUNITS_PER_UNIT, World};
+use crate::trig;
 
 /// The guns a player carries.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -211,7 +212,7 @@ pub const SPLASH_DAMAGE: i32 = 100;
 pub const SPLASH_KNOCKBACK_UNITS_PER_SECOND: i32 = 1_500;
 pub const SPLASH_KNOCKBACK_SUBUNITS_PER_TICK: i32 =
     subunits_per_tick(SPLASH_KNOCKBACK_UNITS_PER_SECOND);
-/// Pitch steps (`sim_foundation::trig` angle units) of straight up; straight down is the negative.
+/// Pitch steps (`crate::trig` angle units) of straight up; straight down is the negative.
 pub const MAX_PITCH: i16 = trig::YAW_QUARTER_TURN as i16;
 
 /// The weapon a player holds and when it (and the blade) may fire next: part of the simulation
@@ -667,7 +668,7 @@ mod tests {
         assert_eq!(pellet.damage(), 9);
         let mut damages = vec![pellet.damage()];
         let mut ticks = 0;
-        let world = World::new(sim_foundation::physics::Vec3i::new(0, 0, 0));
+        let world = World::new(crate::physics::Vec3i::new(0, 0, 0));
         while pellet.fly(&world) == Travel::Flying {
             damages.push(pellet.damage());
             ticks += 1;

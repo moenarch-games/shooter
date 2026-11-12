@@ -12,9 +12,10 @@
 //! Everything is integer: positions and velocities in subunits, lengths integer square roots.
 
 use crate::arena::FIRST_PLAYER_BODY;
+use crate::fixed::{subunits_per_tick, subunits_per_tick_squared};
+use crate::physics::{BodyId, PhysicsError, RigidBody, SUBUNITS_PER_UNIT, Vec3i, World};
+use crate::trig;
 use crate::weapons::{self, subunits};
-use sim_foundation::physics::{BodyId, PhysicsError, RigidBody, SUBUNITS_PER_UNIT, Vec3i, World};
-use sim_foundation::{subunits_per_tick, subunits_per_tick_squared, trig};
 
 /// The hook reaches 30 m.
 pub const RANGE_UNITS: i32 = 3_000;

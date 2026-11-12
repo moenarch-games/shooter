@@ -17,9 +17,8 @@ weapons.
 
 | Need | Crate |
 | --- | --- |
-| Collision, character movement, rays, projectiles | physics-engine (Rapier A/B oracle in CI) |
+| Collision, character movement, rays, projectiles | physics-engine, used directly through `shooter_sim::physics` (Rapier A/B oracle in CI) |
 | Grapple rope on a character | shooter-sim stand-in until physics-engine has it (moritzbrantner/physics-engine#557) |
-| Melee reach, arc, height band and swing coverage | sim-combat (mmorpg), `sim_combat::swing::swing_covers` |
 | Lighting, particles (muzzle flashes, trims, impacts) | render-engine |
 | Positional gunfire and impacts, native and Web Audio | game-audio |
 | Mouse, keyboard, gamepad, pointer lock | input-bindings |
@@ -109,7 +108,7 @@ V (or the mouse's back button) swings the energy blade, a quick melee attack wha
 hold: 50 damage (four swings kill), every 0.5 s, and the gun is ready again 0.3 s after a swing.
 A swing strikes everyone within 2.5 m across the ground, 50° either side of where you face and
 from 1 m below your feet to 2 m above them, unless the arena is in the way, and shoves them 6 m/s
-away. The reach, arc and height band are mmorpg's shared melee rules (`sim-combat`). Your swing
+away. The reach, arc and height band are the values of mmorpg's player swing. Your swing
 is drawn and heard as soon as you press; the host decides what it strikes.
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points,

@@ -1,15 +1,15 @@
 //! Rapier A/B: the scripted tour through the greybox arena and every fast-move scenario
 //! (sprint, slide, double jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
 //! a shooting range, a close range for the shotgun, laser and flamethrower) on physics-engine and on the Rapier oracle
-//! (`sim_foundation::physics::using_backend`).
+//! (`shooter_sim::physics::using_backend`).
 //! Both must follow the same path within a few centimetres, agree on support at the end of every
 //! leg, and fire, hit and explode on the same ticks for the same damage (rays and the rocket and
 //! pellet sweeps are the backends' `cast_ray`, the flame their `overlap_box`).
 //!
 //! `cargo test -p shooter-sim --features physics-ab --test physics_ab`
 
+use shooter_sim::physics::{Backend, using_backend};
 use shooter_sim::scenarios::{self, Scenario};
-use shooter_sim::sim_foundation::physics::{Backend, using_backend};
 use shooter_sim::tour::{self, Leg, Sample, end_of};
 use shooter_sim::{Arena, Session};
 

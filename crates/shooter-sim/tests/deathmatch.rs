@@ -3,9 +3,9 @@
 //! wire round trip.
 
 use shooter_sim::melee;
+use shooter_sim::physics::Vec3i;
 use shooter_sim::scenarios;
 use shooter_sim::session::{MAX_HEALTH, SELF_SPLASH_PERCENT};
-use shooter_sim::sim_foundation::physics::Vec3i;
 use shooter_sim::tour::run_legs;
 use shooter_sim::weapons;
 use shooter_sim::wire::{decode_input, decode_snapshot, encode_input, encode_snapshot};

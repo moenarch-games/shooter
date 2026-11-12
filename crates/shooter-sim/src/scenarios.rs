@@ -5,11 +5,11 @@
 //! what each one does and the Rapier A/B test runs each on both backends.
 
 use crate::arena::{Arena, Piece, Post};
+use crate::physics::RampRise;
+use crate::physics::Vec3i;
 use crate::player::Intent;
 use crate::tour::{Leg, NORTH, SOUTH, hold, stand, walk};
 use crate::weapons::{MAX_PITCH, Weapon};
-use sim_foundation::RampRise;
-use sim_foundation::physics::Vec3i;
 
 /// One scripted scenario.
 #[derive(Clone, Copy, Debug)]
@@ -265,7 +265,7 @@ pub const GRAPPLE: Scenario = Scenario {
 
 /// The yaw from the shooting range's spawn (0, 0, -600) toward a point on the floor.
 const fn yaw_to(x: i32, z: i32) -> u16 {
-    match sim_foundation::trig::yaw_from_vector(x, z + 600) {
+    match crate::trig::yaw_from_vector(x, z + 600) {
         Some(yaw) => yaw,
         None => 0,
     }

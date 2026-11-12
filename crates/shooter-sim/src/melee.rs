@@ -1,18 +1,15 @@
 //! The energy blade (Atlas D2.6; the Q3 defaults): a quick melee swing on its own key, whatever
-//! gun is held. A swing covers every fighter and dummy whose body is within the shared melee
-//! reach, arc and height band of `sim-combat` (mmorpg's player swing: 2.5 m centre distance
-//! across the ground, 50° either side of the facing, bodies overlapping 1 m below to 2 m above
-//! the swinger's feet) and in the swinger's line of sight past the arena's geometry. Online the
-//! fighters are where the swinger saw them, like hitscan ([`crate::session`]).
-//!
-//! `sim-combat` shares both the constants and the coverage test ([`swing_covers`]).
+//! gun is held. A swing covers every fighter and dummy whose body is within the melee reach, arc
+//! and height band (2.5 m centre distance across the ground, 50° either side of the facing,
+//! bodies overlapping 1 m below to 2 m above the swinger's feet; the values of mmorpg's player
+//! swing) and in the swinger's line of sight past the arena's geometry. Online the fighters are
+//! where the swinger saw them, like hitscan ([`crate::session`]).
 
+use crate::fixed::{SUBUNITS_PER_UNIT, subunits_per_tick};
+use crate::physics::Vec3i;
 use crate::player::PLAYER_HALF_EXTENTS;
+use crate::trig;
 use crate::weapons::subunits;
-use sim_combat::swing::swing_covers;
-use sim_combat::unit::{PLAYER_REACH_UNITS, SWING_ARC_HALF_WIDTH, SWING_BAND_UNITS};
-use sim_foundation::physics::{SUBUNITS_PER_UNIT, Vec3i};
-use sim_foundation::{subunits_per_tick, trig};
 
 /// Damage of one swing: four take a full health pool.
 pub const DAMAGE: i32 = 50;
@@ -25,11 +22,17 @@ pub const KNOCKBACK_SUBUNITS_PER_TICK: i32 = subunits_per_tick(600);
 /// ...and lifted 2.4 m/s.
 pub const LIFT_SUBUNITS_PER_TICK: i32 = subunits_per_tick(240);
 /// How far a swing reaches across the ground (centre to centre), in units.
-pub const REACH_UNITS: i32 = PLAYER_REACH_UNITS;
+pub const REACH_UNITS: i32 = 250;
+/// Half the horizontal arc a swing covers: 50° either side of the facing (yaw units: a quarter
+/// turn is 16 384).
+pub const ARC_HALF_WIDTH: u16 = 9_102;
+/// The inclusive height band above the swinger's feet, in units, that a swing covers: a body is
+/// covered when its vertical extent overlaps it.
+pub const BAND_UNITS: [i32; 2] = [-100, 200];
 
 /// Whether a swing from a fighter whose feet are at `feet` (units), facing `yaw`, covers a
-/// player-sized body centred at `center` (units): `sim-combat`'s shared swing coverage, run in
-/// subunits so positions keep their sub-centimetre precision.
+/// player-sized body centred at `center` (units), in subunits so positions keep their
+/// sub-centimetre precision.
 #[must_use]
 pub fn covers(feet: [f32; 3], yaw: u16, center: [f32; 3]) -> bool {
     let point = |units| {
@@ -47,9 +50,46 @@ pub fn covers(feet: [f32; 3], yaw: u16, center: [f32; 3]) -> bool {
         point(center),
         half,
         REACH_UNITS * SUBUNITS_PER_UNIT,
-        SWING_ARC_HALF_WIDTH,
-        SWING_BAND_UNITS.map(|band| band * SUBUNITS_PER_UNIT),
+        ARC_HALF_WIDTH,
+        BAND_UNITS.map(|band| band * SUBUNITS_PER_UNIT),
     )
+}
+
+/// Whether a target centred at `target` with half extents `target_half` lies within `reach`
+/// (XZ centre distance) of `feet`, inside `half_width` either side of `facing`, and overlaps the
+/// inclusive `band` above `feet`. A target centred on the swinger is always inside the arc.
+fn swing_covers(
+    feet: Vec3i,
+    facing: u16,
+    target: Vec3i,
+    target_half: Vec3i,
+    reach: i32,
+    half_width: u16,
+    band: [i32; 2],
+) -> bool {
+    let bottom = i64::from(target.y) - i64::from(target_half.y) - i64::from(feet.y);
+    let top = i64::from(target.y) + i64::from(target_half.y) - i64::from(feet.y);
+    if top < i64::from(band[0]) || bottom > i64::from(band[1]) {
+        return false;
+    }
+    let [dx, dz] = [
+        i64::from(target.x) - i64::from(feet.x),
+        i64::from(target.z) - i64::from(feet.z),
+    ];
+    // Saturates only for positions near opposite ends of the `i32` range, out of every reach.
+    let distance_squared = dx.saturating_mul(dx).saturating_add(dz.saturating_mul(dz));
+    if distance_squared > i64::from(reach).pow(2) {
+        return false;
+    }
+    // Within reach, so the offset fits `i32` again.
+    #[allow(clippy::cast_possible_truncation)]
+    let (dx, dz) = (dx as i32, dz as i32);
+    let (dir_x, dir_z) = trig::direction(facing);
+    // |v| cos(angle to the facing) >= |v| cos(half width), both Q16.
+    let along = i64::from(dx) * i64::from(dir_x) + i64::from(dz) * i64::from(dir_z);
+    #[allow(clippy::cast_possible_wrap)]
+    let length = trig::xz_length(dx, dz) as i64;
+    along >= length * i64::from(trig::cos(half_width))
 }
 
 /// The knockback (subunits per tick) of a swing facing `yaw`.

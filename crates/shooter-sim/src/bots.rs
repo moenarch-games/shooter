@@ -4,16 +4,16 @@
 //! It burns anyone within a few metres with the flamethrower, picks the rifle (even slots) or the
 //! shotgun (odd slots) up close, rockets (even) or the laser (odd) at mid range and the rail gun
 //! far off, and rushes in to swing the energy blade when someone comes within a few metres. Every random
-//! choice comes from its own seeded stream (`sim_foundation`'s SplitMix64), so a match replays
+//! choice comes from its own seeded stream (SplitMix64, `crate::rng`), so a match replays
 //! exactly.
 
 use crate::arena::Arena;
+use crate::physics::{Vec3i, World};
 use crate::player::Intent;
+use crate::rng::Rng;
 use crate::session::slot_of;
+use crate::trig;
 use crate::weapons::{MAX_PITCH, Weapon};
-use sim_foundation::physics::{Vec3i, World};
-use sim_foundation::rng::ZoneRng;
-use sim_foundation::trig;
 
 /// A bot looks for targets every 6 ticks (0.1 s).
 pub const SCAN_TICKS: u32 = 6;
@@ -58,7 +58,7 @@ pub struct Sight {
 /// One bot's mind.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Bot {
-    rng: ZoneRng,
+    rng: Rng,
     yaw: u16,
     pitch: i16,
     target: Option<usize>,
@@ -98,7 +98,7 @@ impl Bot {
     #[must_use]
     pub const fn new(seed: u64, slot: u8, tick: u32) -> Self {
         Self {
-            rng: ZoneRng::from_state(mix(seed ^ mix(slot as u64) ^ mix((tick as u64) << 8))),
+            rng: Rng::from_state(mix(seed ^ mix(slot as u64) ^ mix((tick as u64) << 8))),
             yaw: 0,
             pitch: 0,
             target: None,

@@ -5,12 +5,13 @@
 //! velocity into the velocity it asks for each tick.
 //!
 //! Every rule is integer: velocities are subunits per tick, directions Q16
-//! (`sim_foundation::trig`), lengths integer square roots.
+//! (`crate::trig`), lengths integer square roots.
 
 use crate::arena::Arena;
+use crate::fixed::{subunits_per_tick, subunits_per_tick_squared};
+use crate::physics::{BodyId, PhysicsError, RigidBody, StepUp, Vec3i, World};
+use crate::trig;
 use crate::weapons::Weapon;
-use sim_foundation::physics::{BodyId, PhysicsError, RigidBody, StepUp, Vec3i, World};
-use sim_foundation::{subunits_per_tick, subunits_per_tick_squared, trig};
 
 /// The player's collision box, 0.6 m × 1.8 m × 0.6 m (an upright capsule in physics).
 pub const PLAYER_HALF_EXTENTS: Vec3i = Vec3i::new(30, 90, 30);
@@ -60,7 +61,7 @@ pub struct Intent {
     pub forward: i8,
     /// +1 right, -1 left.
     pub strafe: i8,
-    /// The direction the player looks (`sim_foundation::trig` yaw).
+    /// The direction the player looks (`crate::trig` yaw).
     pub yaw: u16,
     /// Jump held: jumps from ground while held, and once more in the air on a fresh press.
     pub jump: bool,

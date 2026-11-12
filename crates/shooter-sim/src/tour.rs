@@ -2,11 +2,11 @@
 //! down the west ramp, into the west wall, and a jump onto a crate. The movement tests and the
 //! Rapier A/B scenario both run it. [`crate::scenarios`] script the fast moves the same way.
 
+use crate::physics::PhysicsError;
 use crate::player::Intent;
 use crate::session::Session;
+use crate::trig::YAW_QUARTER_TURN;
 use crate::weapons::Weapon;
-use sim_foundation::physics::PhysicsError;
-use sim_foundation::trig::YAW_QUARTER_TURN;
 
 pub const NORTH: u16 = 2 * YAW_QUARTER_TURN; // -Z
 pub const WEST: u16 = 3 * YAW_QUARTER_TURN; // -X

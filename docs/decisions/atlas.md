@@ -47,6 +47,11 @@ supersedes them. New entries take an issue-derived ID (parent ID + `i` + issue n
   compensation, render-engine scenes); (b) runtime-profiler traces from scripted bot matches on
   both clients in CI; (c) issues on the owning crate for gaps and regressions. Nothing is
   collected from real players.
+- **D4.3** (owner, 2026-11-12): The shooter does not depend on mmorpg. It uses physics-engine
+  directly through its own thin adapter (`shooter_sim::physics`) and builds every character move
+  itself, choosing the most performant option; the integer trig, bot RNG and melee coverage
+  live in `shooter-sim`. The Rapier A/B oracle is a shooter-owned backend under `physics-ab`
+  (shooter#42).
 
 ## 5. Repository
 
@@ -61,8 +66,8 @@ supersedes them. New entries take an issue-derived ID (parent ID + `i` + issue n
   whether melee is a separate slot or part of the rotation.
   Defaults in use until decided (shooter#6): one melee weapon, an energy blade, as a quick melee
   on its own key (V, or the mouse's back button) usable whatever gun is held, not a rotation slot.
-  50 damage, a swing every 0.5 s, the gun ready 0.3 s after a swing, a 6 m/s shove; mmorpg's shared
-  `sim-combat` reach (2.5 m), arc (50° either side) and height band (1 m below to 2 m above the
+  50 damage, a swing every 0.5 s, the gun ready 0.3 s after a swing, a 6 m/s shove; mmorpg's player
+  swing reach (2.5 m), arc (50° either side) and height band (1 m below to 2 m above the
   feet), striking every fighter it covers in line of sight.
 - **Q4**: Grapple details: pull versus swing, range, cooldown, whether it can hook players.
   Defaults in use until decided (shooter#5): pull and swing together (a reel toward the hook
