@@ -1,8 +1,9 @@
 //! Bots: simple, beatable and deterministic. A bot walks from spawn point to spawn point, looks
 //! for the nearest fighter it can see, turns toward it at a limited rate, waits a reaction delay,
 //! then fires with an aim error it re-rolls every few hundred milliseconds, strafing as it does.
-//! It picks the rifle up close, rockets at mid range and the rail gun far off, and rushes in to
-//! swing the energy blade when someone comes within a few metres. Every random
+//! It burns anyone within a few metres with the flamethrower, picks the rifle (even slots) or the
+//! shotgun (odd slots) up close, rockets (even) or the laser (odd) at mid range and the rail gun
+//! far off, and rushes in to swing the energy blade when someone comes within a few metres. Every random
 //! choice comes from its own seeded stream (`sim_foundation`'s SplitMix64), so a match replays
 //! exactly.
 
@@ -29,7 +30,9 @@ pub const AIM_ERROR_PITCH: u32 = 360;
 pub const AIM_ERROR_TICKS: u32 = 18;
 /// It fires once its aim is within 4° of where it wants it.
 pub const FIRE_CONE: i32 = 730;
-/// Rifle inside 7 m, rockets to 18 m, the rail gun beyond.
+/// The flamethrower inside 5 m, the rifle or shotgun inside 7 m, rockets or the laser to 18 m,
+/// the rail gun beyond.
+pub const FLAME_RANGE_UNITS: i64 = 500;
 pub const RIFLE_RANGE_UNITS: i64 = 700;
 pub const ROCKET_RANGE_UNITS: i64 = 1_800;
 /// It closes in beyond 12 m and backs off inside 5 m.
@@ -180,7 +183,7 @@ impl Bot {
             self.target = None;
         }
         let mut intent = match self.target.and_then(|target| sights[target].center) {
-            Some(target) => self.fight(eye, target, held, tick),
+            Some(target) => self.fight(me, eye, target, held, tick),
             None => self.wander(center, arena),
         };
         // Stuck against something while walking: hop and head elsewhere.
@@ -210,7 +213,7 @@ impl Bot {
         self.pitch = i16::try_from(i32::from(self.pitch) + step).unwrap_or(0);
     }
 
-    fn fight(&mut self, eye: Vec3i, target: Vec3i, held: Weapon, tick: u32) -> Intent {
+    fn fight(&mut self, me: usize, eye: Vec3i, target: Vec3i, held: Weapon, tick: u32) -> Intent {
         let (dx, dy, dz) = (target.x - eye.x, target.y - eye.y, target.z - eye.z);
         let run = i32::try_from(trig::xz_length(dx, dz)).unwrap_or(i32::MAX);
         let distance = i64::from(run).max(i64::from(dy.abs()));
@@ -226,10 +229,21 @@ impl Bot {
             .unwrap_or(0)
             .clamp(-MAX_PITCH, MAX_PITCH);
         self.face(yaw, pitch);
-        let weapon = if distance < RIFLE_RANGE_UNITS {
-            Weapon::EnergyRifle
+        let odd = me % 2 == 1;
+        let weapon = if distance < FLAME_RANGE_UNITS {
+            Weapon::Flamethrower
+        } else if distance < RIFLE_RANGE_UNITS {
+            if odd {
+                Weapon::Shotgun
+            } else {
+                Weapon::EnergyRifle
+            }
         } else if distance < ROCKET_RANGE_UNITS {
-            Weapon::RocketLauncher
+            if odd {
+                Weapon::Laser
+            } else {
+                Weapon::RocketLauncher
+            }
         } else {
             Weapon::RailGun
         };

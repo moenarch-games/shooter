@@ -30,7 +30,7 @@ weapons.
 ## Play
 
 The current slice is a deathmatch in a greybox arena with two jump pads onto the central platform,
-three energy weapons, the grapple hook and an energy blade. Six slots; bots fill every slot no
+six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower), the grapple hook and an energy blade. Six slots; bots fill every slot no
 person holds. A kill scores a frag; dying by your own rocket or a fall costs one. The dead respawn after 2 s at the spawn point
 farthest from everyone else. A round ends at 15 frags or after 5 minutes, the scores show for 8 s
 and a fresh round starts. Every fighter has 200 health. The guns, the fighters (boxes) and the
@@ -83,7 +83,7 @@ mouse. Steer in the air with WASD. The HUD (health, weapon, frags and place, the
 kill feed) is the page's overlay in the browser and the window title plus a health bar natively,
 until render-engine draws screen overlays.
 
-The left mouse button fires; 1 to 4 pick the weapon:
+The left mouse button fires; 1 to 7 pick the weapon:
 
 | Key | Weapon | Shot |
 | --- | --- | --- |
@@ -91,6 +91,9 @@ The left mouse button fires; 1 to 4 pick the weapon:
 | 2 | Rail gun | One hitscan beam, 85 damage, every 1.2 s |
 | 3 | Rocket launcher | A 24 m/s rocket, every 0.8 s: up to 100 splash damage within 3 m, and a push |
 | 4 | Grapple hook | A hook that holds on the arena while the trigger is down and reels you in |
+| 5 | Shotgun | A blast of 10 hitscan pellets in a fixed 4.5° spread, 9 damage each within 25 m, every 0.9 s |
+| 6 | Laser | A continuous beam while the trigger is down: 2 damage a tick (120 a second) to the first target within 30 m |
+| 7 | Flamethrower | A 6 m flame, 1.2 m across, cut short by walls: 3 damage a tick (180 a second) to everyone in it |
 
 Rocket jump by firing at your feet as you jump: the blast throws you about 5 m up. Your own
 rocket hurts you at half damage (a rocket jump costs about 35 health).
@@ -111,12 +114,13 @@ is drawn and heard as soon as you press; the host decides what it strikes.
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points,
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
-degrees of wandering error, strafing as they fire; rifle up close, rockets at mid range, the rail
-gun far off, and inside 3 m they rush in and swing the blade.
+degrees of wandering error, strafing as they fire; the flamethrower inside 5 m, the rifle (even
+slots) or the shotgun (odd slots) up close, rockets or the laser at mid range, the rail gun far off,
+and inside 3 m they rush in and swing the blade.
 
 The movement and the weapons are checked against Rapier on a scripted tour of the arena and on
 scripted moves (sprint, slide, double jump, jump pad, ramp slides, a thin wall, a step, a rocket
-jump, a grapple onto a ledge, a shooting range):
+jump, a grapple onto a ledge, a shooting range, a close range for the shotgun, laser and flamethrower):
 `cargo test -p shooter-sim --features physics-ab --test physics_ab`.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
 lag compensation of shots and swings, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two

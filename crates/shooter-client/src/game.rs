@@ -184,7 +184,7 @@ pub mod online {
         resumed: u32,
     }
 
-    /// The host's events without the local fighter's own shots (`Fired` and the `Beam` right
+    /// The host's events without the local fighter's own shots (`Fired` and the `Beam`s right
     /// after it), which were shown and heard when predicted; blade swings stay (their strikes
     /// come from the host).
     fn without_own_shots(events: &[Event], local: Option<u8>) -> impl Iterator<Item = Event> {
@@ -195,7 +195,8 @@ pub mod online {
                     skipping = Some(slot) == local && weapon != Weapon::EnergyBlade;
                     return !skipping;
                 }
-                Event::Beam { .. } => skipping,
+                // Every beam of the shot: a shotgun blast's pellets come together.
+                Event::Beam { .. } => return !skipping,
                 _ => false,
             };
             skipping = false;
@@ -284,16 +285,19 @@ pub mod online {
                         struck,
                     } => {
                         let translation = [0, 1, 2].map(|axis| end[axis] - from[axis]);
-                        let hit = matches!(weapon.delivery(), Delivery::Hitscan { .. })
-                            .then(|| {
-                                others
-                                    .iter()
-                                    .filter_map(|center| {
-                                        weapons::ray_box(from, translation, *center, HALF)
-                                    })
-                                    .reduce(f32::min)
-                            })
-                            .flatten();
+                        let hit = matches!(
+                            weapon.delivery(),
+                            Delivery::Hitscan { .. } | Delivery::Pellets { .. }
+                        )
+                        .then(|| {
+                            others
+                                .iter()
+                                .filter_map(|center| {
+                                    weapons::ray_box(from, translation, *center, HALF)
+                                })
+                                .reduce(f32::min)
+                        })
+                        .flatten();
                         shots.push(match hit {
                             Some(fraction) => Event::Beam {
                                 weapon,

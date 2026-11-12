@@ -1,8 +1,8 @@
 //! Scripted fast moves, each in a small arena of its own (or the greybox): sprint and slide,
 //! double jump onto a ledge, a jump pad onto the platform, slides up and down a ramp, a slide
-//! into a thin wall, a sprint up a step, a rocket jump, a grapple onto a ledge and a shooting
-//! range. The movement and weapon tests check what each one does and the Rapier A/B test runs
-//! each on both backends.
+//! into a thin wall, a sprint up a step, a rocket jump, a grapple onto a ledge, a shooting range
+//! and a close range for the shotgun, laser and flamethrower. The movement and weapon tests check
+//! what each one does and the Rapier A/B test runs each on both backends.
 
 use crate::arena::{Arena, Piece, Post};
 use crate::player::Intent;
@@ -337,6 +337,38 @@ pub const SHOOTING_RANGE: Scenario = Scenario {
     ],
 };
 
+/// A close range: a dummy 4 m south, one off to the east and one to the west behind a pillar.
+/// The flamethrower burns the south one and stops at the pillar, a shotgun blast and the laser
+/// hit the south and east ones.
+pub const CLOSE_RANGE: Scenario = Scenario {
+    name: "close range",
+    arena: || {
+        let mut arena = open([0, 0, -600], vec![block([-150, 150, -400], [40, 150, 40])]);
+        arena.posts = [[0, 0, -200], [300, 0, -200], [-300, 0, -200]]
+            .map(|[x, y, z]| Post {
+                feet: Vec3i::new(x, y, z),
+                patrol_units: 0,
+            })
+            .to_vec();
+        arena
+    },
+    legs: &[
+        stand("settle", 10),
+        aim_with("take the flamethrower", SOUTH, Weapon::Flamethrower, 12),
+        shoot("flame the south", SOUTH, Weapon::Flamethrower, 30),
+        shoot(
+            "flame the pillar",
+            yaw_to(-300, -200),
+            Weapon::Flamethrower,
+            30,
+        ),
+        aim_with("take the shotgun", SOUTH, Weapon::Shotgun, 12),
+        shoot("blast the south", SOUTH, Weapon::Shotgun, 1),
+        aim_with("take the laser", yaw_to(300, -200), Weapon::Laser, 54),
+        shoot("laser the east", yaw_to(300, -200), Weapon::Laser, 30),
+    ],
+};
+
 pub const ALL: &[Scenario] = &[
     SPRINT_AND_SLIDE,
     DOUBLE_JUMP,
@@ -347,6 +379,7 @@ pub const ALL: &[Scenario] = &[
     ROCKET_JUMP,
     SHOOTING_RANGE,
     GRAPPLE,
+    CLOSE_RANGE,
 ];
 
 /// This tick's controls for scripted person `index`: run and strafe in turns, sweep the view
@@ -357,12 +390,7 @@ pub const ALL: &[Scenario] = &[
 pub fn scripted_intent(index: u8, tick: u32) -> Intent {
     let person = u32::from(index);
     let segment = (tick + 45 * person) / 90;
-    let weapons = [
-        Weapon::EnergyRifle,
-        Weapon::RailGun,
-        Weapon::RocketLauncher,
-        Weapon::Grapple,
-    ];
+    let weapons = Weapon::ROTATION;
     #[allow(clippy::cast_possible_truncation)]
     Intent {
         forward: if segment % 4 == 3 { -1 } else { 1 },

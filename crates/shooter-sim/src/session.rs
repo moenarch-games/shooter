@@ -334,6 +334,22 @@ pub enum Event {
     RoundOver { winner: Option<u8> },
 }
 
+/// What a hitscan ray struck.
+#[derive(Clone, Copy, Debug)]
+enum Target {
+    Fighter(usize),
+    Dummy(usize),
+    Nothing,
+}
+
+/// One resolved hitscan ray: its beam event, what it struck and where.
+#[derive(Clone, Copy, Debug)]
+struct Shot {
+    beam: Event,
+    target: Target,
+    at: [f32; 3],
+}
+
 /// The fighters' centres after a tick (`None` while dead), for lag-compensated shots.
 #[derive(Clone, Debug)]
 struct Frame {
@@ -947,8 +963,8 @@ impl Session {
         });
     }
 
-    /// Fires `weapon` from `slot`'s eye: a hitscan beam resolves now (lag-compensated), a
-    /// rocket starts flying.
+    /// Fires `weapon` from `slot`'s eye: a hitscan beam or a shotgun blast resolves now
+    /// (lag-compensated), a rocket starts flying, a flame burns what it touches now.
     fn fire(&mut self, slot: usize, weapon: Weapon, intent: Intent) -> Result<(), PhysicsError> {
         let shooter = &self.fighters[slot];
         let body = shooter.player.body;
@@ -963,10 +979,9 @@ impl Session {
             eye,
             direction: unit,
         });
-        let (damage, range_units) = match weapon.delivery() {
+        match weapon.delivery() {
             Delivery::Rocket => {
                 self.rockets.push(Rocket::launch(body, eye, direction));
-                return Ok(());
             }
             Delivery::Grapple => {
                 let (hook, trace) = Hook::fire(&self.world, eye, direction, body);
@@ -978,15 +993,42 @@ impl Session {
                     normal: trace.hit.map_or([0.0; 3], |hit| hit.normal),
                     struck: hook.is_some(),
                 });
-                return Ok(());
             }
             Delivery::Melee => return self.swing(slot, intent.yaw, eye, direction),
             Delivery::Hitscan {
                 damage,
                 range_units,
-            } => (damage, range_units),
-        };
-        // The arena (and the dummies) as they are now; fighters where the shooter saw them.
+            } => {
+                let shot = self.hitscan(slot, weapon, eye, direction, range_units);
+                self.land(slot, weapon, damage, &[shot]);
+            }
+            Delivery::Pellets {
+                damage,
+                range_units,
+            } => {
+                let shots = weapons::pellets(intent.yaw, intent.pitch)
+                    .map(|pellet| self.hitscan(slot, weapon, eye, pellet, range_units));
+                self.land(slot, weapon, damage, &shots);
+            }
+            Delivery::Flame { damage } => self.burn(slot, weapon, eye, direction, damage)?,
+        }
+        Ok(())
+    }
+
+    /// Where one hitscan ray from `slot`'s `eye` along the Q16 `direction` ends and what it
+    /// strikes: the arena (and the dummies) as they are now, fighters where the shooter saw them.
+    fn hitscan(
+        &self,
+        slot: usize,
+        weapon: Weapon,
+        eye: [f32; 3],
+        direction: [i32; 3],
+        range_units: i32,
+    ) -> Shot {
+        let shooter = &self.fighters[slot];
+        let body = shooter.player.body;
+        #[allow(clippy::cast_precision_loss)]
+        let unit = direction.map(|axis| axis as f32 / sim_foundation::trig::TRIG_ONE as f32);
         let scenery = weapons::trace(&self.world, eye, direction, range_units, body, |hit| {
             slot_of(hit).is_none()
         });
@@ -1012,25 +1054,84 @@ impl Session {
         }
         if let Some((victim, fraction)) = target {
             let end = [0, 1, 2].map(|axis| eye[axis] + translation[axis] * fraction);
-            self.events.push(Event::Beam {
+            return Shot {
+                beam: Event::Beam {
+                    weapon,
+                    from: eye,
+                    end,
+                    normal: unit.map(|axis| -axis),
+                    struck: true,
+                },
+                target: Target::Fighter(victim),
+                at: end,
+            };
+        }
+        Shot {
+            beam: Event::Beam {
                 weapon,
                 from: eye,
-                end,
-                normal: unit.map(|axis| -axis),
-                struck: true,
-            });
-            self.hurt(victim, slot, damage, weapon, end);
-            return Ok(());
+                end: scenery.end,
+                normal: scenery.hit.map_or([0.0; 3], |hit| hit.normal),
+                struck: scenery.hit.is_some(),
+            },
+            target: scenery
+                .hit
+                .and_then(|hit| self.dummy_of(hit.body))
+                .map_or(Target::Nothing, Target::Dummy),
+            at: scenery.end,
         }
+    }
+
+    /// Shows every shot's beam, then deals `damage` for each one that struck.
+    fn land(&mut self, slot: usize, weapon: Weapon, damage: i32, shots: &[Shot]) {
+        self.events.extend(shots.iter().map(|shot| shot.beam));
+        for shot in shots {
+            match shot.target {
+                Target::Fighter(victim) => self.hurt(victim, slot, damage, weapon, shot.at),
+                Target::Dummy(index) => self.hurt_dummy(index, slot, damage, shot.at),
+                Target::Nothing => {}
+            }
+        }
+    }
+
+    /// One tick of `slot`'s flame from `eye` along the Q16 `direction` ([`weapons::flame`]):
+    /// `damage` to every fighter and dummy in it as they are now, the owner excepted.
+    fn burn(
+        &mut self,
+        slot: usize,
+        weapon: Weapon,
+        eye: [f32; 3],
+        direction: [i32; 3],
+        damage: i32,
+    ) -> Result<(), PhysicsError> {
+        let owner = self.fighters[slot].player.body;
+        let (flame, burning) = weapons::flame(&self.world, eye, direction, owner, |body| {
+            slot_of(body).is_some() || self.dummy_of(body).is_some()
+        })?;
         self.events.push(Event::Beam {
             weapon,
             from: eye,
-            end: scenery.end,
-            normal: scenery.hit.map_or([0.0; 3], |hit| hit.normal),
-            struck: scenery.hit.is_some(),
+            end: flame.end,
+            normal: flame.hit.map_or([0.0; 3], |hit| hit.normal),
+            struck: flame.hit.is_some(),
         });
-        if let Some(index) = scenery.hit.and_then(|hit| self.dummy_of(hit.body)) {
-            self.hurt_dummy(index, slot, damage, scenery.end);
+        let targets: Vec<(Target, [f32; 3])> = burning
+            .into_iter()
+            .filter_map(|body| {
+                let center = self.world.body(body)?.exact_position();
+                let target = match slot_of(body) {
+                    Some(victim) => Target::Fighter(usize::from(victim)),
+                    None => Target::Dummy(self.dummy_of(body)?),
+                };
+                Some((target, melee::contact(eye, center)))
+            })
+            .collect();
+        for (target, at) in targets {
+            match target {
+                Target::Fighter(victim) => self.hurt(victim, slot, damage, weapon, at),
+                Target::Dummy(index) => self.hurt_dummy(index, slot, damage, at),
+                Target::Nothing => {}
+            }
         }
         Ok(())
     }

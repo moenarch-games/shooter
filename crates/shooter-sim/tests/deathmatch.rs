@@ -7,6 +7,7 @@ use shooter_sim::scenarios;
 use shooter_sim::session::{MAX_HEALTH, SELF_SPLASH_PERCENT};
 use shooter_sim::sim_foundation::physics::Vec3i;
 use shooter_sim::tour::run_legs;
+use shooter_sim::weapons;
 use shooter_sim::wire::{decode_input, decode_snapshot, encode_input, encode_snapshot};
 use shooter_sim::{
     Arena, Controller, Event, Input, Intent, Phase, Pilot, Rules, Session, Spawn, Weapon,
@@ -531,4 +532,56 @@ fn a_standing_input_backlog_is_trimmed_and_a_silent_person_stops() {
     let still = session.fighters[slot].intent;
     assert!(!still.fire && still.forward == 0, "{still:?}");
     assert_eq!(session.fighters[slot].ack, sequence);
+}
+
+#[test]
+fn the_flame_burns_other_fighters_never_its_owner() {
+    let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
+    session.join(1).unwrap();
+    session.join(2).unwrap();
+    let flame = Intent {
+        forward: 1,
+        fire: true,
+        select: Some(Weapon::Flamethrower),
+        ..Intent::IDLE
+    };
+    let (mut burnt, mut first) = (0, None);
+    for sequence in 1..240 {
+        let now = session.ticks();
+        session.queue(
+            1,
+            Input {
+                sequence,
+                intent: flame,
+                view_tick: now,
+            },
+        );
+        session.step().unwrap();
+        for event in &session.events {
+            match *event {
+                Event::Hit {
+                    victim: 1,
+                    attacker: Some(0),
+                    damage,
+                    ..
+                } => {
+                    burnt += damage;
+                    let gap = session.fighters[1].player.center(&session.world)[2]
+                        - session.fighters[0].player.center(&session.world)[2];
+                    first.get_or_insert(gap);
+                }
+                Event::Hit { victim: 0, .. } => panic!("the flame burnt its owner"),
+                _ => {}
+            }
+        }
+    }
+    // The flame reaches B only once A has walked within its 6 m (and B's half width).
+    let reach = (weapons::FLAME_REACH_UNITS + weapons::FLAME_RADIUS_UNITS + 30) as f32;
+    assert!(
+        first.is_some_and(|gap| gap <= reach && gap > reach - 60.0),
+        "first burn {first:?} apart"
+    );
+    assert!(burnt >= MAX_HEALTH, "burnt {burnt}");
+    assert_eq!(session.fighters[0].health, MAX_HEALTH);
+    assert_eq!(session.fighters[1].deaths, 1);
 }

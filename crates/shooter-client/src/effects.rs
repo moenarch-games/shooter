@@ -1,5 +1,5 @@
 //! Weapon effects as render-engine lights and particles: muzzle flashes, beam trails, impact
-//! sparks, blade strikes, rocket exhaust and explosions. The simulation's [`Event`]s start them;
+//! sparks, blade strikes, the laser's beam, flames, rocket exhaust and explosions. The simulation's [`Event`]s start them;
 //! they live on their own clock (presentation only, never fed back into the simulation).
 
 use crate::scene::{METRES_PER_UNIT, gun_pose};
@@ -25,6 +25,9 @@ pub const fn tint(weapon: Weapon) -> Vec3 {
         Weapon::RocketLauncher => Vec3::new(1.0, 0.55, 0.15),
         Weapon::Grapple => Vec3::new(0.45, 1.0, 0.55),
         Weapon::EnergyBlade => Vec3::new(1.0, 0.25, 0.6),
+        Weapon::Shotgun => Vec3::new(1.0, 0.85, 0.3),
+        Weapon::Laser => Vec3::new(1.0, 0.15, 0.1),
+        Weapon::Flamethrower => Vec3::new(1.0, 0.4, 0.05),
     }
 }
 
@@ -200,34 +203,74 @@ struct Flash {
     life: f32,
 }
 
+const WEAPONS: usize = Weapon::ALL.len();
+
 pub struct Effects {
-    muzzle: [EmitterId; 5],
-    trail: [EmitterId; 5],
+    muzzle: [EmitterId; WEAPONS],
+    trail: [EmitterId; WEAPONS],
     impact: EmitterId,
+    flame: EmitterId,
     fireball: EmitterId,
     exhaust: EmitterId,
     flashes: Vec<Flash>,
 }
 
 fn index(weapon: Weapon) -> usize {
-    match weapon {
-        Weapon::EnergyRifle => 0,
-        Weapon::RailGun => 1,
-        Weapon::RocketLauncher => 2,
-        Weapon::Grapple => 3,
-        Weapon::EnergyBlade => 4,
-    }
+    usize::from(weapon.index())
 }
 
-/// Spacing of trail motes along a beam (metres) and their size and life, per weapon (only
-/// hitscan weapons draw beams; the rocket's and the blade's entries are unused).
-const TRAIL: [(f32, f32, f32); 5] = [
+/// Spacing of trail motes along a beam (metres) and their size and life, per weapon in
+/// [`Weapon::ALL`] order (only hitscan weapons draw trails; the rocket's, the blade's and the
+/// flamethrower's entries are unused).
+const TRAIL: [(f32, f32, f32); WEAPONS] = [
     (0.5, 0.05, 0.12),
     (0.12, 0.07, 0.7),
     (1.0, 0.05, 0.1),
     (0.3, 0.035, 0.25),
     (1.0, 0.05, 0.1),
+    (0.6, 0.03, 0.08),
+    (0.1, 0.04, 0.035),
+    (1.0, 0.05, 0.1),
 ];
+
+/// Flame spacing along the flame (metres) and puffs per step.
+const FLAME_SPACING: f32 = 0.5;
+const FLAME_PUFFS: u32 = 2;
+
+fn flame(seed: u32) -> Emitter {
+    Emitter {
+        accel: Vec3::new(0.0, 2.0, 0.0),
+        depth_fade: 0.25,
+        size_over_life: sizes(0.15, 0.6),
+        color_over_life: Some(ColorOverLife {
+            gradient: Gradient::new(vec![
+                (0.0, Vec4::new(6.0, 3.0, 0.8, 0.9)),
+                (0.5, Vec4::new(3.0, 0.8, 0.1, 0.6)),
+                (1.0, Vec4::new(0.4, 0.05, 0.0, 0.0)),
+            ]),
+            blend: ColorBlend::Overwrite,
+        }),
+        ..burst_emitter(
+            4_096,
+            seed,
+            vec![
+                InitModifier::PositionSphere {
+                    center: Vec3::ZERO,
+                    radius: 0.15,
+                    dimension: ShapeDimension::Volume,
+                },
+                InitModifier::Velocity(Value::Uniform {
+                    min: Vec3::splat(-0.4),
+                    max: Vec3::splat(0.4),
+                }),
+                InitModifier::Lifetime(Value::Uniform {
+                    min: 0.1,
+                    max: 0.25,
+                }),
+            ],
+        )
+    }
+}
 
 impl Effects {
     /// Creates the emitters in `world`.
@@ -261,6 +304,7 @@ impl Effects {
                 1.2,
                 [2.0, 7.0],
             )),
+            flame: world.add_emitter(&flame(61)),
             fireball: world.add_emitter(&fireball(41)),
             exhaust: world.add_emitter(&exhaust(51)),
             flashes: Vec::new(),
@@ -310,14 +354,39 @@ impl Effects {
                 } => {
                     let direction = Vec3::from(direction);
                     let muzzle = gun_pose(units(eye), direction).1;
-                    let count = if weapon == Weapon::RailGun { 24 } else { 8 };
-                    world.burst(self.muzzle[index(weapon)], count, facing(muzzle, direction));
-                    let lumens = if weapon == Weapon::RailGun {
-                        400_000.0
-                    } else {
-                        150_000.0
+                    // Continuous weapons fire every tick: a light glow, not a flash.
+                    let (count, lumens) = match weapon {
+                        Weapon::RailGun => (24, 400_000.0),
+                        Weapon::Shotgun => (24, 300_000.0),
+                        Weapon::Laser | Weapon::Flamethrower => (1, 40_000.0),
+                        _ => (8, 150_000.0),
                     };
+                    world.burst(self.muzzle[index(weapon)], count, facing(muzzle, direction));
                     self.flash(muzzle, tint(weapon), lumens, 6.0, 0.07);
+                }
+                // The flame: puffs of fire along it, licking the wall that cuts it short.
+                Event::Beam {
+                    weapon: Weapon::Flamethrower,
+                    from,
+                    end,
+                    normal,
+                    struck,
+                } => {
+                    let (from, end) = (units(from), units(end));
+                    let muzzle = gun_pose(from, end - from).1;
+                    let span = end - muzzle;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let steps = (span.length() / FLAME_SPACING).ceil().max(1.0) as u32;
+                    for step in 0..=steps {
+                        #[allow(clippy::cast_precision_loss)]
+                        let at = muzzle + span * (step as f32 / steps as f32);
+                        world.burst(self.flame, FLAME_PUFFS, Mat4::from_translation(at));
+                    }
+                    if struck {
+                        let normal = Vec3::from(normal);
+                        world.burst(self.flame, 4, facing(end + normal * 0.1, normal));
+                    }
+                    self.flash(end, tint(Weapon::Flamethrower), 60_000.0, 4.0, 0.05);
                 }
                 Event::Beam {
                     weapon,
@@ -339,9 +408,21 @@ impl Effects {
                     }
                     if struck {
                         let normal = Vec3::from(normal);
-                        let count = if weapon == Weapon::RailGun { 40 } else { 10 };
+                        let count = match weapon {
+                            Weapon::RailGun => 40,
+                            Weapon::Shotgun | Weapon::Laser => 3,
+                            _ => 10,
+                        };
                         world.burst(self.impact, count, facing(end + normal * 0.02, normal));
-                        self.flash(end + normal * 0.1, tint(weapon), 80_000.0, 4.0, 0.1);
+                        // One light per pellet or per beam tick would swamp the scene: the
+                        // laser's spot glows dimly, the shotgun's pellets share the muzzle's.
+                        match weapon {
+                            Weapon::Shotgun => {}
+                            Weapon::Laser => {
+                                self.flash(end + normal * 0.1, tint(weapon), 20_000.0, 2.0, 0.04);
+                            }
+                            _ => self.flash(end + normal * 0.1, tint(weapon), 80_000.0, 4.0, 0.1),
+                        }
                     }
                 }
                 Event::Exploded { at } => {

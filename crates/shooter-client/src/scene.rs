@@ -320,7 +320,7 @@ pub struct Actors {
     rockets: Vec<InstanceId>,
     gun: InstanceId,
     gun_mesh: MeshId,
-    gun_materials: [MaterialId; 5],
+    gun_materials: [MaterialId; Weapon::ALL.len()],
     /// The local energy blade, drawn only through a swing.
     blade: InstanceId,
     blade_mesh: MeshId,
@@ -343,7 +343,7 @@ fn glowing(rgb: Vec3, nits: f32) -> StandardMaterial {
     }
 }
 
-fn gun_material(materials: &[MaterialId; 5], held: Weapon) -> MaterialId {
+fn gun_material(materials: &[MaterialId; Weapon::ALL.len()], held: Weapon) -> MaterialId {
     materials[usize::from(held.index())]
 }
 
