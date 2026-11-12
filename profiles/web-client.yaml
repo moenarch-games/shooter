@@ -1,10 +1,10 @@
 schema_version: runtime-profiler/scenario/v1
-# The browser client in headless Chromium: web/dist's profile run (?frames=180), 180 animation
+# The browser client in headless Chromium: web/dist's profile run (?frames=120), 120 animation
 # frames of a practice match at one tick each, slot 0 played by the replays' scripted person 0,
-# in the profiler's 1280x720 viewport. Without a GPU, Chromium's WebGPU runs on SwiftShader
-# (software Vulkan) at about half a second a frame, hence 180 frames (3 s of match) rather than
-# the native 600. Each frame is a `runtime-profiler:js-to-wasm:frame` User Timing measure.
-# See docs/foundation-data.md.
+# in the profiler's 1280x720 viewport. Without a GPU, Chromium's WebGPU runs on SwiftShader.
+# 120 frames (2 s of match) rather than the native 600: on SwiftShader render-engine's particle
+# staging belt fails after about 200 frames (render-engine#108). Each frame is a
+# `runtime-profiler:js-to-wasm:frame` User Timing measure. See docs/foundation-data.md.
 id: shooter-web-client-v1
 target:
   type: browser-journey
@@ -15,16 +15,15 @@ target:
     - PLAYWRIGHT_BROWSERS_PATH
     - XDG_CACHE_HOME
     - SHOOTER_WEB_PROFILE_OUT
+  # Only the WebGPU adapter is SwiftShader: with ANGLE on SwiftShader too
+  # (--use-angle=swiftshader) the GPU process died on a hosted runner.
   browser_args:
     - --enable-unsafe-webgpu
-    - --use-angle=swiftshader
     - --use-webgpu-adapter=swiftshader
-    - --enable-features=Vulkan
-    # SwiftShader's first frame (shader compilation) can outlast the GPU watchdog on a runner.
     - --disable-gpu-watchdog
 run:
   warmup_iterations: 0
   measurement_iterations: 1
-  timeout_seconds: 600
+  timeout_seconds: 300
 collectors:
   - browser-chromium

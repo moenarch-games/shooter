@@ -301,6 +301,10 @@ fn fighter_material(health: f32, glow: f32) -> StandardMaterial {
 struct FighterInstances {
     body: InstanceId,
     material: MaterialId,
+    /// The health and hit glow `material` shows. render-engine rebuilds a material's GPU buffer
+    /// on each `set_material` (in WebGPU those pile up until garbage collection), so it is only
+    /// set when they change.
+    shown: Option<(f32, f32)>,
     gun: InstanceId,
     blade: InstanceId,
 }
@@ -514,18 +518,23 @@ impl Actors {
             self.fighters.push(FighterInstances {
                 body,
                 material,
+                shown: None,
                 gun,
                 blade,
             });
         }
-        for (index, instances) in self.fighters.iter().enumerate() {
+        for (index, instances) in self.fighters.iter_mut().enumerate() {
             let view = fighters.get(index).filter(|view| view.center.is_some());
             let (body_at, gun_at, gun_material) = match view {
                 Some(view) => {
-                    world.set_material(
-                        instances.material,
-                        &fighter_material(view.health, view.glow),
-                    );
+                    let look = (view.health, view.glow);
+                    if instances.shown != Some(look) {
+                        world.set_material(
+                            instances.material,
+                            &fighter_material(view.health, view.glow),
+                        );
+                        instances.shown = Some(look);
+                    }
                     let center = view.center.unwrap_or_default();
                     let fighter_eye = center + Vec3::Y * 0.75;
                     (

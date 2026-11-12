@@ -1,5 +1,5 @@
 // The runtime-profiler browser journey for profiles/web-client.yaml: serves web/dist on
-// loopback, opens the page's profile run (?frames=180: a scripted practice match, one tick per
+// loopback, opens the page's profile run (?frames=120: a scripted practice match, one tick per
 // animation frame, as the native `--frames`) and waits for the frame times the page sets on
 // `window.shooterProfile`. They go to $SHOOTER_WEB_PROFILE_OUT when it is set (the profiler
 // keeps the trace, not the journey's output). See docs/foundation-data.md.
@@ -7,8 +7,8 @@ import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const FRAMES = 180;
-const RESULT_TIMEOUT_MS = 480_000;
+const FRAMES = 120;
+const RESULT_TIMEOUT_MS = 240_000;
 const root = path.resolve("web/dist");
 const types = {
   ".html": "text/html; charset=utf-8",

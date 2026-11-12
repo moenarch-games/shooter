@@ -40,15 +40,19 @@ real players.
 
    The web lane builds `web/dist` and captures `profiles/web-client.yaml`, a `browser-journey`
    (collector `browser-chromium`). `scripts/profile-web-journey.mjs` serves `web/dist` on
-   loopback and opens `?frames=180`: the page's profile run plays the same scripted practice
+   loopback and opens `?frames=120`: the page's profile run plays the same scripted practice
    match, one tick per animation frame, in the profiler's 1280x720 headless Chromium. Each frame
    is a `runtime-profiler:js-to-wasm:frame` User Timing measure, so the bundle's trace summary
    lists the frames as JS-to-WASM boundary evidence. When done the page sets
    `window.shooterProfile` to its frame times: `workMs` is the frame's work (tick, scene, GPU
    submission) and `intervalMs` is the time between frames, which includes waiting on the GPU.
-   The journey writes it to `web-client/frames.json`. Chromium has no GPU in CI, so WebGPU runs
-   on SwiftShader (`--use-webgpu-adapter=swiftshader`). That takes about half a second a frame,
-   which is why the browser run is 180 frames, not 600. It needs Node, `bun install` (Playwright)
+   The journey writes it (or the page's error, adapter and last console lines) to
+   `web-client/frames.json`. Chromium has no GPU in CI, so WebGPU runs on SwiftShader
+   (`--use-webgpu-adapter=swiftshader`; with `--use-angle=swiftshader` as well the GPU process
+   died on a hosted runner). The browser run is 120 frames, not 600, because on SwiftShader
+   render-engine's particle staging belt fails after about 200 frames
+   ([render-engine#108](https://github.com/moritzbrantner/render-engine/issues/108)). A hardware
+   adapter runs 600 cleanly. It needs Node, `bun install` (Playwright)
    and `bunx playwright install chromium`. `profile.yml` runs it as a second job and uploads the
    `validate-repo-artifacts-web-profile` artifact.
 
