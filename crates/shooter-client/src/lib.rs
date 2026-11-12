@@ -19,21 +19,9 @@ pub mod scene;
 /// in the config directory for later runs, [`remembered_name`]); in the browser the page's
 /// `?connect=<url>[&certHash=<sha-256 hex>][&name=<name>]` does (the page remembers the name).
 /// Anything else is offline practice against bots.
-fn game() -> game::Game {
+fn game(#[cfg(not(target_arch = "wasm32"))] args: Args) -> game::Game {
     #[cfg(not(target_arch = "wasm32"))]
-    let (url, trust, name) = {
-        let mut args = std::env::args().skip(1);
-        let (mut url, mut cert, mut name) = (None, None, None);
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "--connect" => url = args.next(),
-                "--cert" => cert = args.next().map(std::path::PathBuf::from),
-                "--name" => name = args.next(),
-                other => log(&format!("unknown argument {other}")),
-            }
-        }
-        (url, cert, remembered_name(name))
-    };
+    let (url, trust, name) = (args.connect, args.cert, remembered_name(args.name));
     #[cfg(target_arch = "wasm32")]
     let (url, trust, name) = {
         let query = web::query("connect");
@@ -54,6 +42,83 @@ fn game() -> game::Game {
         }
     }
     game::Game::practice()
+}
+
+/// The native command line.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct Args {
+    connect: Option<String>,
+    cert: Option<std::path::PathBuf>,
+    name: Option<String>,
+    /// `--frames <n>`: the offscreen profile run instead of a window ([`offscreen`]).
+    frames: Option<u32>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Args {
+    fn parse() -> Self {
+        let mut parsed = Self::default();
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--connect" => parsed.connect = args.next(),
+                "--cert" => parsed.cert = args.next().map(std::path::PathBuf::from),
+                "--name" => parsed.name = args.next(),
+                "--frames" => parsed.frames = args.next().and_then(|n| n.parse().ok()),
+                other => log(&format!("unknown argument {other}")),
+            }
+        }
+        parsed
+    }
+}
+
+/// The offscreen profile run's frame size.
+pub const OFFSCREEN_SIZE: (u32, u32) = (1280, 720);
+
+/// The profile run (`shooter-client --frames <n>`): `frames` frames of a practice match at one
+/// tick per frame, the local fighter played by the replays' scripted person 0
+/// ([`shooter_sim::scenarios::scripted_intent`]), drawn to an offscreen [`OFFSCREEN_SIZE`]
+/// target with no window, as fast as the GPU finishes them. Prints frame times; nothing gates
+/// on them.
+///
+/// # Errors
+///
+/// If there is no GPU adapter or the match fails.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn offscreen(frames: u32) -> Result<(), String> {
+    let (width, height) = OFFSCREEN_SIZE;
+    let gpu = gpu::Gpu::offscreen(width, height)?;
+    let mut app = app::App::scripted(game::Game::practice(), gpu);
+    let mut times = Vec::with_capacity(frames as usize);
+    let started = std::time::Instant::now();
+    for _ in 0..frames {
+        let frame = std::time::Instant::now();
+        app.scripted_frame()?;
+        times.push(frame.elapsed().as_secs_f64() * 1_000.0);
+    }
+    let total = started.elapsed().as_secs_f64();
+    times.sort_by(f64::total_cmp);
+    let at = |q: f64| {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        times
+            .get(((times.len().saturating_sub(1)) as f64 * q).round() as usize)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let mean = times.iter().sum::<f64>() / times.len().max(1) as f64;
+    println!(
+        "offscreen {width}x{height}: {frames} frames in {total:.2} s; frame ms mean {mean:.2} p50 {:.2} p95 {:.2} max {:.2}",
+        at(0.5),
+        at(0.95),
+        at(1.0)
+    );
+    Ok(())
 }
 
 /// The player name file: `shooter/name` in `$XDG_CONFIG_HOME` (else `~/.config`, or
@@ -122,10 +187,26 @@ use winit::event_loop::EventLoop;
 ///
 /// If the platform has no event loop.
 pub fn run() {
+    #[cfg(not(target_arch = "wasm32"))]
+    let args = Args::parse();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(frames) = args.frames {
+        if let Err(error) = offscreen(frames) {
+            fail(&error);
+            std::process::exit(1);
+        }
+        return;
+    }
     let event_loop = EventLoop::<app::GpuReady>::with_user_event()
         .build()
         .expect("an event loop");
-    let app = app::App::new(event_loop.create_proxy(), game());
+    let app = app::App::new(
+        event_loop.create_proxy(),
+        game(
+            #[cfg(not(target_arch = "wasm32"))]
+            args,
+        ),
+    );
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut app = app;

@@ -15,8 +15,9 @@ use game_server::{
     GameSimulation, MatchRuntime, RECONNECT_TOKEN_BYTES, ReconnectToken, ReplayError, ReplayLog,
     ReplayRecord, ReplayVerification, SimulationError, verify_replay,
 };
+use shooter_sim::Session;
+use shooter_sim::scenarios::scripted_intent;
 use shooter_sim::wire::encode_input;
-use shooter_sim::{Intent, Session, Weapon};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
@@ -107,36 +108,6 @@ impl From<ReplayError> for Error {
 
 fn rejected(error: impl fmt::Display) -> Error {
     Error::Runtime(error.to_string())
-}
-
-/// This tick's controls for scripted person `index`: run and strafe in turns, sweep the view
-/// round, hop, slide, hold the trigger two thirds of the time, swap weapons every 5 s and swing
-/// the blade now and then. A pure function of the tick, so a replay needs nothing else.
-#[must_use]
-pub fn scripted_intent(index: u8, tick: u32) -> Intent {
-    let person = u32::from(index);
-    let segment = (tick + 45 * person) / 90;
-    let weapons = [
-        Weapon::EnergyRifle,
-        Weapon::RailGun,
-        Weapon::RocketLauncher,
-        Weapon::Grapple,
-    ];
-    #[allow(clippy::cast_possible_truncation)]
-    Intent {
-        forward: if segment % 4 == 3 { -1 } else { 1 },
-        strafe: if segment.is_multiple_of(2) { 1 } else { -1 },
-        yaw: (tick.wrapping_mul(40 + 13 * person) + person * 16_384) as u16,
-        jump: (tick + 30 * person) % 120 < 2,
-        sprint: segment.is_multiple_of(3),
-        crouch: segment % 5 == 4 && tick % 90 < 20,
-        pitch: 0,
-        fire: (tick + 20 * person) % 60 < 40,
-        melee: (tick + 50 * person).is_multiple_of(200),
-        select: tick
-            .is_multiple_of(300)
-            .then(|| weapons[(tick / 300 + person) as usize % weapons.len()]),
-    }
 }
 
 /// Plays `script` through game-server with replay capture on.
