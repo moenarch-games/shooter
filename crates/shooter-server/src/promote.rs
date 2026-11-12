@@ -14,8 +14,8 @@
 
 use crate::replay::{Error, Replay};
 use shooter_sim::arena::Piece;
+use shooter_sim::physics::Vec3i;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, GRAVITY, PLAYER_HALF_EXTENTS};
-use shooter_sim::sim_foundation::physics::Vec3i;
 use shooter_sim::{Controller, Event, SUBUNITS_PER_UNIT, Session, TICK_HZ};
 use std::fmt::Write;
 
@@ -315,7 +315,7 @@ pub fn render(replay: &Replay, at: u64, source: &str) -> Result<String, Error> {
         frame.ok_or(Error::Format("the replay does not reach `at`"))?;
     let arena = arena.unwrap_or_default();
     Ok(format!(
-        "{{\"schema\":\"shooter/render-frame/v1\",\"source\":\"{source}\",\"tick\":{at},\"units\":\"centimetres, y up; yaw is sim-foundation trig (65536 per turn, 0 faces +Z, toward +X)\",\"character_half_extents\":{},\"camera\":{camera},\"arena\":{arena},\"fighters\":[{fighters}],\"rockets\":[{rockets}],\"effects\":[{}]}}\n",
+        "{{\"schema\":\"shooter/render-frame/v1\",\"source\":\"{source}\",\"tick\":{at},\"units\":\"centimetres, y up; yaw is integer trig (65536 per turn, 0 faces +Z, toward +X)\",\"character_half_extents\":{},\"camera\":{camera},\"arena\":{arena},\"fighters\":[{fighters}],\"rockets\":[{rockets}],\"effects\":[{}]}}\n",
         units(PLAYER_HALF_EXTENTS),
         effects.join(",")
     ))

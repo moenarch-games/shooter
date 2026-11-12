@@ -1,10 +1,10 @@
 //! The greybox arena: one floor, perimeter walls and a few blocks and ramps, as fixed physics
 //! bodies. The clients draw the same pieces, so what a player sees is what they collide with.
 //!
-//! Lengths are centimetre units, as in `sim-foundation`. Y is up; the floor's top is at 0.
+//! Lengths are centimetre units, as in physics-engine (`length_unit` 100). Y is up; the floor's top is at 0.
 
-use sim_foundation::RampRise;
-use sim_foundation::physics::{BodyId, PhysicsError, RigidBody, Vec3i, World};
+use crate::physics::RampRise;
+use crate::physics::{BodyId, PhysicsError, RigidBody, Vec3i, World};
 
 /// One fixed piece of arena geometry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -12,7 +12,7 @@ pub enum Piece {
     /// An axis-aligned box: centre and half extents.
     Block { center: Vec3i, half: Vec3i },
     /// A wedge filling the lower half of its box, its top rising toward `rises` (a
-    /// `sim-foundation` ramp).
+    /// [`crate::physics::RigidBody::ramp`]).
     Ramp {
         center: Vec3i,
         half: Vec3i,
@@ -64,7 +64,7 @@ impl JumpPad {
     /// The launch velocity in subunits per tick.
     #[must_use]
     pub const fn launch_velocity(&self) -> Vec3i {
-        use sim_foundation::subunits_per_tick;
+        use crate::fixed::subunits_per_tick;
         Vec3i::new(
             subunits_per_tick(self.launch.x),
             subunits_per_tick(self.launch.y),
@@ -73,7 +73,7 @@ impl JumpPad {
     }
 }
 
-/// Where a fighter appears: its feet and the yaw it faces (`sim_foundation::trig`).
+/// Where a fighter appears: its feet and the yaw it faces (`crate::trig`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Spawn {
     pub feet: Vec3i,
@@ -98,7 +98,7 @@ pub struct Arena {
     pub posts: Vec<Post>,
     /// A spawning player's feet.
     pub spawn: Vec3i,
-    /// The yaw a spawning player faces (`sim_foundation::trig`: 0 faces +Z, increasing toward +X).
+    /// The yaw a spawning player faces (`crate::trig`: 0 faces +Z, increasing toward +X).
     pub spawn_yaw: u16,
     /// More deathmatch spawn points after the first one ([`Arena::spawn`]).
     pub spawns: Vec<Spawn>,

@@ -1,6 +1,6 @@
 [package]
 name = "shooter-sim"
-description = "The shooter's deterministic simulation: the greybox arena and the player's movement over sim-foundation"
+description = "The shooter's deterministic simulation: the greybox arena and the player's movement on physics-engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,12 +8,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-sim-foundation.workspace = true
-sim-combat.workspace = true
+physics-engine.workspace = true
+rapier3d = { workspace = true, optional = true }
 
 [features]
-# Compiles the Rapier oracle into sim-foundation for the A/B scenario (tests/physics_ab.rs).
-physics-ab = ["sim-foundation/physics-ab"]
+# Compiles the Rapier oracle backend for the A/B scenario (tests/physics_ab.rs).
+physics-ab = ["dep:rapier3d"]
 
 [[test]]
 name = "physics_ab"

@@ -10,8 +10,8 @@ use render_engine::scene::{
     Ambient, Camera, PointLight, Scene, ShadowFilter, ShadowMapSizes, Sun, SunShadows, Tonemapping,
 };
 use render_engine::world::{Instance, InstanceId, MaterialId, MeshId, World};
-use shooter_sim::sim_foundation::RampRise;
-use shooter_sim::sim_foundation::physics::Vec3i;
+use shooter_sim::physics::RampRise;
+use shooter_sim::physics::Vec3i;
 use shooter_sim::{Arena, Piece, Weapon};
 
 /// Simulation units (cm) to render metres.

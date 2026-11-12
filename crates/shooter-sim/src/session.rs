@@ -19,11 +19,11 @@ use crate::bots::{Bot, Sight};
 use crate::dummies::Dummy;
 use crate::grapple::Hook;
 use crate::melee;
+use crate::physics::{BodyId, PhysicsError, Vec3i, World};
 use crate::player::{
     EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player, STEP_UP,
 };
 use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
-use sim_foundation::physics::{BodyId, PhysicsError, Vec3i, World};
 use std::collections::VecDeque;
 
 /// A fighter's health pool (large, Atlas D2.3).
@@ -499,7 +499,7 @@ impl Session {
             .iter()
             .filter(|fighter| usize::from(fighter.slot) != slot && fighter.alive())
             .filter_map(|fighter| self.world.body(fighter.player.body))
-            .map(sim_foundation::physics::RigidBody::position)
+            .map(crate::physics::RigidBody::position)
             .collect();
         let room = |point: &Spawn| {
             others
@@ -595,13 +595,12 @@ impl Session {
     ) -> Result<(), PhysicsError> {
         let fighter = &mut self.fighters[usize::from(slot)];
         self.world.remove_body(fighter.player.body);
-        self.world
-            .add_body(sim_foundation::physics::RigidBody::moving(
-                fighter.player.body,
-                position,
-                velocity,
-                PLAYER_HALF_EXTENTS,
-            ))?;
+        self.world.add_body(crate::physics::RigidBody::moving(
+            fighter.player.body,
+            position,
+            velocity,
+            PLAYER_HALF_EXTENTS,
+        ))?;
         fighter.player.motion = motion;
         fighter.arsenal.held = held;
         fighter.hook = hook;
@@ -647,7 +646,7 @@ impl Session {
         self.step()
     }
 
-    /// One tick at [`sim_foundation::TICK_HZ`]: people apply their next input and bots think;
+    /// One tick at [`crate::TICK_HZ`]: people apply their next input and bots think;
     /// everyone moves, the dummies walk, weapons fire, rockets fly and explode, the world
     /// steps, the fallen die, and the round may end. Reports on slot 0.
     pub fn step(&mut self) -> Result<StepReport, PhysicsError> {
@@ -790,7 +789,7 @@ impl Session {
                     .alive()
                     .then(|| self.world.body(fighter.player.body))
                     .flatten()
-                    .map(sim_foundation::physics::RigidBody::position);
+                    .map(crate::physics::RigidBody::position);
                 Sight {
                     center,
                     eye: center.map(|center| {
@@ -987,7 +986,7 @@ impl Session {
         let eye = shooter.player.eye(&self.world);
         let direction = weapons::aim(intent.yaw, intent.pitch);
         #[allow(clippy::cast_precision_loss)]
-        let unit = direction.map(|axis| axis as f32 / sim_foundation::trig::TRIG_ONE as f32);
+        let unit = direction.map(|axis| axis as f32 / crate::trig::TRIG_ONE as f32);
         #[allow(clippy::cast_possible_truncation)]
         self.events.push(Event::Fired {
             slot: slot as u8,
@@ -1044,7 +1043,7 @@ impl Session {
         let shooter = &self.fighters[slot];
         let body = shooter.player.body;
         #[allow(clippy::cast_precision_loss)]
-        let unit = direction.map(|axis| axis as f32 / sim_foundation::trig::TRIG_ONE as f32);
+        let unit = direction.map(|axis| axis as f32 / crate::trig::TRIG_ONE as f32);
         let scenery = weapons::trace(&self.world, eye, direction, range_units, body, |hit| {
             slot_of(hit).is_none()
         });

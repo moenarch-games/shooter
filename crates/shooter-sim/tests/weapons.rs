@@ -3,9 +3,9 @@
 //! ignition, and the greybox's dummies.
 
 use shooter_sim::dummies::DUMMY_HEALTH;
+use shooter_sim::physics::Vec3i;
 use shooter_sim::player::PLAYER_HALF_EXTENTS;
 use shooter_sim::scenarios::{self, Scenario};
-use shooter_sim::sim_foundation::physics::Vec3i;
 use shooter_sim::tour::{Sample, end_of, run_legs};
 use shooter_sim::weapons::{self, FLAME_IGNITION_TICKS, PELLETS};
 use shooter_sim::{Arena, Event, Intent, Piece, Post, Session, Weapon};

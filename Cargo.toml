@@ -11,11 +11,10 @@ publish = false
 
 [workspace.dependencies]
 shooter-sim = { path = "crates/shooter-sim" }
-# The shared simulation floor (fixed-point tick maths, trig, the physics world over physics-engine
-# with the Rapier A/B oracle behind `physics-ab`). It pins physics-engine and rapier3d itself.
-sim-foundation = { git = "https://github.com/moenarch-games/mmorpg.git", rev = "45e1a357a8d62da921730d25f921fff5cf5043e8" }
-# Shared melee rules from the same mmorpg rev: swing reach, arc and height band (the energy blade).
-sim-combat = { git = "https://github.com/moenarch-games/mmorpg.git", rev = "45e1a357a8d62da921730d25f921fff5cf5043e8" }
+# Physics (`shooter_sim::physics` adapts it); Rapier is the A/B oracle under `physics-ab` only and
+# never ships in a client.
+physics-engine = { git = "https://github.com/moritzbrantner/physics-engine", rev = "a7e04ef68eb6116565ea2731e4df8a47875d5248" }
+rapier3d = "=0.36.1"
 render-engine = { git = "https://github.com/moritzbrantner/render-engine.git", rev = "9aadac9b5be5651f571c71836ff833c89a450202" }
 input-bindings-core = { git = "https://github.com/moritzbrantner/input-bindings.git", rev = "561002ee94ab062f59c0d72dbca35b58734524dd" }
 game-audio = { git = "https://github.com/moritzbrantner/game-audio.git", rev = "29739b442ee0ef3aedb61a82845645ceeb8c7342" }

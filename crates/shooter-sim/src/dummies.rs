@@ -3,9 +3,9 @@
 //! before game-server bots exist.
 
 use crate::arena::{FIRST_DUMMY_BODY, Post};
+use crate::fixed::subunits_per_tick;
+use crate::physics::{BodyId, PhysicsError, RigidBody, Vec3i, World};
 use crate::player::PLAYER_HALF_EXTENTS;
-use sim_foundation::physics::{BodyId, PhysicsError, RigidBody, Vec3i, World};
-use sim_foundation::subunits_per_tick;
 
 /// A dummy's health: as large as a player's pool will be (Atlas D2.3).
 pub const DUMMY_HEALTH: i32 = 200;

@@ -37,8 +37,9 @@ browser client's (headless Chromium, SwiftShader WebGPU), as artifacts (no thres
 
 ## Foundations
 
-- Physics is `sim-foundation` (moenarch-games/mmorpg), which wraps physics-engine and compiles the
-  Rapier oracle only under `physics-ab`. Rapier never ships in a client.
+- Physics is physics-engine, used directly through `shooter_sim::physics` (Atlas D4.3): the
+  shooter builds every character move itself. Its Rapier oracle backend compiles only under
+  `physics-ab`; Rapier never ships in a client. The shooter does not depend on mmorpg.
 - Rendering is render-engine; input semantics are `input-bindings-core`; audio is game-audio.
 - Hosting is game-server (WebTransport, sessions, snapshots); the shooter owns its rules, input
   queue and lag compensation in `shooter-sim`.

@@ -264,7 +264,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "bvh-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels?rev=c219e947ad361e79c3c38e843854c73f8fbe9071#c219e947ad361e79c3c38e843854c73f8fbe9071"
+source = "git+https://github.com/moritzbrantner/rust-kernels?rev=eb807d2b8a4cc91098b9a77b82dbc612467d23c1#eb807d2b8a4cc91098b9a77b82dbc612467d23c1"
 dependencies = [
  "spatial-kernels",
 ]
@@ -803,7 +803,7 @@ dependencies = [
 [[package]]
 name = "geometry-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels?rev=c219e947ad361e79c3c38e843854c73f8fbe9071#c219e947ad361e79c3c38e843854c73f8fbe9071"
+source = "git+https://github.com/moritzbrantner/rust-kernels?rev=eb807d2b8a4cc91098b9a77b82dbc612467d23c1#eb807d2b8a4cc91098b9a77b82dbc612467d23c1"
 dependencies = [
  "spatial-kernels",
 ]
@@ -1038,12 +1038,6 @@ dependencies = [
  "hash32",
  "stable_deref_trait",
 ]
-
-[[package]]
-name = "heck"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermit-abi"
@@ -2183,7 +2177,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "physics-engine"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/physics-engine?rev=ceef58fab0bc1dc7e084e733cf3223fc6ad27fc5#ceef58fab0bc1dc7e084e733cf3223fc6ad27fc5"
+source = "git+https://github.com/moritzbrantner/physics-engine?rev=a7e04ef68eb6116565ea2731e4df8a47875d5248#a7e04ef68eb6116565ea2731e4df8a47875d5248"
 dependencies = [
  "bvh-kernels",
  "geometry-kernels",
@@ -2890,8 +2884,8 @@ dependencies = [
 name = "shooter-sim"
 version = "0.1.0"
 dependencies = [
- "sim-combat",
- "sim-foundation",
+ "physics-engine",
+ "rapier3d",
 ]
 
 [[package]]
@@ -2902,27 +2896,6 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
-]
-
-[[package]]
-name = "sim-combat"
-version = "0.1.0"
-source = "git+https://github.com/moenarch-games/mmorpg.git?rev=45e1a357a8d62da921730d25f921fff5cf5043e8#45e1a357a8d62da921730d25f921fff5cf5043e8"
-dependencies = [
- "sim-foundation",
- "strum",
-]
-
-[[package]]
-name = "sim-foundation"
-version = "0.1.0"
-source = "git+https://github.com/moenarch-games/mmorpg.git?rev=45e1a357a8d62da921730d25f921fff5cf5043e8#45e1a357a8d62da921730d25f921fff5cf5043e8"
-dependencies = [
- "physics-engine",
- "rapier3d",
- "serde",
- "strum",
- "web-time",
 ]
 
 [[package]]
@@ -3033,7 +3006,7 @@ dependencies = [
 [[package]]
 name = "spatial-kernels"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/rust-kernels?rev=c219e947ad361e79c3c38e843854c73f8fbe9071#c219e947ad361e79c3c38e843854c73f8fbe9071"
+source = "git+https://github.com/moritzbrantner/rust-kernels?rev=eb807d2b8a4cc91098b9a77b82dbc612467d23c1#eb807d2b8a4cc91098b9a77b82dbc612467d23c1"
 
 [[package]]
 name = "spirv"
@@ -3061,27 +3034,6 @@ name = "strict-num"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
-
-[[package]]
-name = "strum"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
-dependencies = [
- "strum_macros",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
 
 [[package]]
 name = "subtle"
