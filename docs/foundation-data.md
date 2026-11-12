@@ -21,7 +21,7 @@ real players.
    | `--target` | Output | For |
    | --- | --- | --- |
    | `game-server` | The log in game-server's replay format, cut after `--to`, plus a `key=value` `.txt` manifest. It always starts at tick 0: the shooter's snapshot is not a restorable baseline | game-server's replay codec and runtime tests (`tests/fixtures/shooter/`) |
-   | `physics` | JSON: arena boxes and ramps, the character box, gravity, and for each tick `--from..=--to` every fighter's intent, position, velocity and ground contact | a physics-engine A/B scenario |
+   | `physics` | JSON: arena boxes and ramps, the character box with its contact offset and step-up, gravity, and for each tick `--from..=--to` every fighter's intent, the move its step handed the character controller (`move`: the displacement in units, gravity, ground settle and sliding around other fighters included; `null` without a body), and the position, velocity and ground contact after it | a physics-engine A/B scenario, driving each character with `move` |
    | `render` | JSON: one frame at `--to`. It has the camera at a person's eye, the arena, the fighters, rockets in flight, and the last 6 ticks of shots, beams, explosions and hits | a render-engine scene |
 
 4. **Hand it over:** open a PR on the foundation with the fixture and a test, or file an issue
@@ -74,7 +74,7 @@ scripts/profile.sh                       # all lanes; `scripts/profile.sh target
 | Foundation | State |
 | --- | --- |
 | game-server | 20 s deathmatch replay fixture with a codec and runtime-shape test: [game-server#84](https://github.com/moritzbrantner/game-server/pull/84) |
-| physics-engine | Proposed as an A/B scenario, ask-first: [physics-engine#558](https://github.com/moritzbrantner/physics-engine/issues/558) |
+| physics-engine | Accepted as the `shooter_window` A/B scenario ([physics-engine#558](https://github.com/moritzbrantner/physics-engine/issues/558)). Its window: `record --seed 33 --ticks 720`, then `promote --target physics --from 580 --to 699` (a rocket blast lifts slot 0 at tick 610, slot 3 launches off a jump pad at tick 634) |
 | render-engine | Proposed as a scene fixture: [render-engine#105](https://github.com/moritzbrantner/render-engine/issues/105) |
 | runtime-profiler | Pinned at `2110e16` (the `;` in Rust symbols fix, [runtime-profiler#149](https://github.com/moritzbrantner/runtime-profiler/issues/149)). The bot match collects `native-perf` hotspots. The native client stays on `process`: its perf report (lavapipe and wgpu stacks) exceeds the profiler's 8 MiB limit ([runtime-profiler#151](https://github.com/moritzbrantner/runtime-profiler/issues/151)) |
 

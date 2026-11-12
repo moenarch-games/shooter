@@ -6,16 +6,19 @@
 //!   log cannot start mid-match (the shooter's snapshot is not a restorable state), so it always
 //!   starts at tick 0.
 //! - [`physics`]: JSON for a physics A/B scenario: the arena's boxes and ramps, the character
-//!   box, gravity, and per tick every fighter's intent, position, velocity and ground contact
-//!   (physics-engine's consumer fixtures are JSON in `tests/fixtures`).
+//!   box, its contact offset and step-up, gravity, and per tick every fighter's intent, the move
+//!   its step handed the character controller, and the position, velocity and ground contact
+//!   after it (physics-engine's consumer fixtures are JSON in `tests/fixtures`).
 //! - [`render`]: JSON for one frame: the arena pieces and jump pads, every fighter's pose, the
 //!   rockets in flight, a camera at the first person's eye, and the shots, beams and explosions
 //!   of the last few ticks (the weapon lights and particles).
 
 use crate::replay::{Error, Replay};
 use shooter_sim::arena::Piece;
+use shooter_sim::physics::CONTACT_OFFSET_UNITS;
 use shooter_sim::physics::Vec3i;
-use shooter_sim::player::{EYE_HEIGHT_UNITS, GRAVITY, PLAYER_HALF_EXTENTS};
+use shooter_sim::player::{EYE_HEIGHT_UNITS, GRAVITY, PLAYER_HALF_EXTENTS, STEP_UP};
+use shooter_sim::session::body_of;
 use shooter_sim::{Controller, Event, SUBUNITS_PER_UNIT, Session, TICK_HZ};
 use std::fmt::Write;
 
@@ -159,14 +162,21 @@ pub fn physics(replay: &Replay, from: u64, to: u64, source: &str) -> Result<Stri
             return Ok(());
         }
         let snapshot = session.snapshot();
+        let moves = session.world.moves();
         let fighters: Vec<String> = session
             .fighters
             .iter()
             .filter_map(|fighter| {
                 let state = snapshot.slot(fighter.slot)?;
                 let intent = fighter.intent;
+                // The fighter's move this step (`null`: it had no body to move).
+                let body = body_of(fighter.slot);
+                let request = moves
+                    .iter()
+                    .find(|request| request.body == body)
+                    .map_or_else(|| "null".to_owned(), |request| floats(request.desired));
                 Some(format!(
-                    "{{\"slot\":{},\"alive\":{},\"intent\":{{\"forward\":{},\"strafe\":{},\"yaw\":{},\"jump\":{},\"sprint\":{},\"crouch\":{}}},\"position\":{},\"velocity\":{},\"grounded\":{}}}",
+                    "{{\"slot\":{},\"alive\":{},\"intent\":{{\"forward\":{},\"strafe\":{},\"yaw\":{},\"jump\":{},\"sprint\":{},\"crouch\":{}}},\"move\":{request},\"position\":{},\"velocity\":{},\"grounded\":{}}}",
                     fighter.slot,
                     state.alive,
                     intent.forward,
@@ -188,10 +198,12 @@ pub fn physics(replay: &Replay, from: u64, to: u64, source: &str) -> Result<Stri
         Ok(())
     })?;
     Ok(format!(
-        "{{\"schema\":\"shooter/physics-window/v1\",\"source\":\"{source}\",\"bot_seed\":{},\"tick_hz\":{TICK_HZ},\"subunits_per_unit\":{SUBUNITS_PER_UNIT},\"units\":\"centimetres, y up; positions are body centres; velocities units per tick\",\"gravity_subunits_per_tick2\":{},\"character_half_extents\":{},\"arena\":{},\"ticks\":[\n{}\n]}}\n",
+        "{{\"schema\":\"shooter/physics-window/v1\",\"source\":\"{source}\",\"bot_seed\":{},\"tick_hz\":{TICK_HZ},\"subunits_per_unit\":{SUBUNITS_PER_UNIT},\"units\":\"centimetres, y up; positions are body centres after the tick; velocities units per tick; move is the displacement this tick's step handed the character controller (gravity, ground settle and sliding around other fighters included), in units\",\"gravity_subunits_per_tick2\":{},\"character_half_extents\":{},\"character\":{{\"shape\":\"upright capsule inside the box\",\"contact_offset\":{CONTACT_OFFSET_UNITS},\"step_up\":{{\"max_height\":{},\"min_width\":{}}},\"max_slope_degrees\":45}},\"arena\":{},\"ticks\":[\n{}\n]}}\n",
         replay.seed,
         units(GRAVITY),
         units(PLAYER_HALF_EXTENTS),
+        STEP_UP.max_height,
+        STEP_UP.min_width,
         arena.unwrap_or_default(),
         ticks.join(",\n")
     ))
@@ -342,6 +354,12 @@ mod tests {
 
         let physics = physics(&replay, 100, 110, "test").unwrap();
         assert_eq!(physics.matches("\"tick\":").count(), 11);
+        // Every live fighter carries the move its step handed the controller.
+        assert!(physics.contains("\"move\":["));
+        assert_eq!(
+            physics.matches("\"move\":").count(),
+            physics.matches("\"position\":").count()
+        );
         let render = render(&replay, 200, "test").unwrap();
         assert!(render.contains("\"tick\":200"));
         assert!(render.contains("\"camera\":{\"slot\":"));

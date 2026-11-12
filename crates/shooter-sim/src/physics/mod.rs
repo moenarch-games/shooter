@@ -24,7 +24,7 @@ pub use crate::fixed::SUBUNITS_PER_UNIT;
 /// The gap a character keeps to everything it touches, in units. A moving body's backend
 /// position is its game centre raised by this, so a body resting on the ground has its feet
 /// exactly on the ground in game coordinates.
-const CONTACT_OFFSET_UNITS: f32 = 0.25;
+pub const CONTACT_OFFSET_UNITS: f32 = 0.25;
 /// Ground within the contact offset plus this (5 cm) counts as support, as in Rapier.
 const GROUND_PREDICTION_UNITS: f32 = 5.0;
 /// A ceiling stops a rising body when it realizes less than this much (units) of its rise.
