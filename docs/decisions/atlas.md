@@ -23,6 +23,11 @@ supersedes them. New entries take an issue-derived ID (parent ID + `i` + issue n
 - **D2.5** (owner, 2026-11-11): One of the guns is a **grapple hook**: fire it at arena geometry and
   get pulled or swing toward the hit point. It is a movement tool in the weapon rotation.
 - **D2.6** (owner, 2026-11-11): Players also have **melee weapons** alongside the guns.
+- **D2.7** (owner, 2026-11-12; answers Q1): Free-for-all deathmatch is the only mode for now.
+  Revisit other modes after people have played it live.
+- **D2.8** (owner, 2026-11-12; answers Q2): Keep the shipped bots: one beatable skill level
+  (0.35 s reactions, wandering aim error, weapon by range, blade up close, no grapple), seeded
+  and deterministic.
 
 ## 3. Platforms
 
@@ -50,12 +55,8 @@ supersedes them. New entries take an issue-derived ID (parent ID + `i` + issue n
 
 ## Questions
 
-- **Q1**: Game modes beyond deathmatch (team deathmatch, capture the flag, …). Not yet decided.
-  Default in use (shooter#3): free-for-all deathmatch only, 6 slots, 15 frags or 5 minutes.
-- **Q2**: Bot skill and behavior beyond "fills empty slots and is beatable".
-  Defaults in use (shooter#3, #6): one skill level; 0.35 s reaction, at most 360°/s turning, a few
-  degrees of wandering aim error; rifle up close, rockets mid range, rail gun far, blade within
-  2.2 m; they walk between spawn points and ignore the grapple. Seeded and deterministic.
+- **Q1**: Game modes beyond deathmatch (team deathmatch, capture the flag, …). Answered by D2.7.
+- **Q2**: Bot skill and behavior beyond "fills empty slots and is beatable". Answered by D2.8.
 - **Q3**: Weapon count and how distinct each one is; which melee weapons (energy blade, hammer, …);
   whether melee is a separate slot or part of the rotation.
   Defaults in use until decided (shooter#6): one melee weapon, an energy blade, as a quick melee
