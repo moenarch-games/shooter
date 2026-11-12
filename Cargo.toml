@@ -21,7 +21,7 @@ input-bindings-core = { git = "https://github.com/moritzbrantner/input-bindings.
 game-audio = { git = "https://github.com/moritzbrantner/game-audio.git", rev = "29739b442ee0ef3aedb61a82845645ceeb8c7342" }
 # Default features off here: native crates enable `transport` (the host and wtransport), the
 # browser build `browser-transport` (BrowserSession over the page's WebTransport).
-game-server = { git = "https://github.com/moritzbrantner/game-server.git", rev = "ec76dc2149b84d6be355a6ae3918ebf718a88264", default-features = false }
+game-server = { git = "https://github.com/moritzbrantner/game-server.git", rev = "0aba7cd370e6575a2524a80f5adc8dff0136f3a5", default-features = false }
 # Native clients and the host binary only; game-server pins wtransport (and tokio) itself.
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 wtransport = { version = "=0.7.2", default-features = false, features = ["quinn", "ring"] }
