@@ -19,7 +19,7 @@ weapons.
 | --- | --- |
 | Collision, character movement, rays, projectiles | physics-engine (Rapier A/B oracle in CI) |
 | Grapple rope on a character | shooter-sim stand-in until physics-engine has it (moritzbrantner/physics-engine#557) |
-| Melee reach, arc and height band | sim-combat (mmorpg); the coverage test is restated in shooter-sim until sim-combat shares it (moenarch-games/mmorpg#754) |
+| Melee reach, arc, height band and swing coverage | sim-combat (mmorpg), `sim_combat::swing::swing_covers` |
 | Lighting, particles (muzzle flashes, trims, impacts) | render-engine |
 | Positional gunfire and impacts, native and Web Audio | game-audio |
 | Mouse, keyboard, gamepad, pointer lock | input-bindings |

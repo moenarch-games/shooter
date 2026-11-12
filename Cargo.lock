@@ -2907,7 +2907,7 @@ dependencies = [
 [[package]]
 name = "sim-combat"
 version = "0.1.0"
-source = "git+https://github.com/moenarch-games/mmorpg.git?rev=eb58c43b5537dc3c156664f21cb5d5376d54be66#eb58c43b5537dc3c156664f21cb5d5376d54be66"
+source = "git+https://github.com/moenarch-games/mmorpg.git?rev=45e1a357a8d62da921730d25f921fff5cf5043e8#45e1a357a8d62da921730d25f921fff5cf5043e8"
 dependencies = [
  "sim-foundation",
  "strum",
@@ -2916,7 +2916,7 @@ dependencies = [
 [[package]]
 name = "sim-foundation"
 version = "0.1.0"
-source = "git+https://github.com/moenarch-games/mmorpg.git?rev=eb58c43b5537dc3c156664f21cb5d5376d54be66#eb58c43b5537dc3c156664f21cb5d5376d54be66"
+source = "git+https://github.com/moenarch-games/mmorpg.git?rev=45e1a357a8d62da921730d25f921fff5cf5043e8#45e1a357a8d62da921730d25f921fff5cf5043e8"
 dependencies = [
  "physics-engine",
  "rapier3d",
