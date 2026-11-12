@@ -585,3 +585,60 @@ fn the_flame_burns_other_fighters_never_its_owner() {
     assert_eq!(session.fighters[0].health, MAX_HEALTH);
     assert_eq!(session.fighters[1].deaths, 1);
 }
+
+#[test]
+fn the_flame_ignites_before_it_burns_a_fighter() {
+    // B stands 3 m in front of A: well inside the flame from the start.
+    let arena = Arena {
+        spawns: vec![Spawn {
+            feet: Vec3i::new(0, 0, -300),
+            yaw: 32_768,
+        }],
+        ..duel_arena()
+    };
+    let mut session = Session::with_rules(arena, duel_rules()).unwrap();
+    session.join(1).unwrap();
+    session.join(2).unwrap();
+    let mut burns = Vec::new();
+    for sequence in 1..60 {
+        let now = session.ticks();
+        // The trigger is let go once, on the 35th tick: the flame goes out and ignites anew.
+        let intent = Intent {
+            fire: sequence != 35,
+            select: Some(Weapon::Flamethrower),
+            ..Intent::IDLE
+        };
+        session.queue(
+            1,
+            Input {
+                sequence,
+                intent,
+                view_tick: now,
+            },
+        );
+        session.step().unwrap();
+        let burnt = session.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Hit {
+                    victim: 1,
+                    attacker: Some(0),
+                    ..
+                }
+            )
+        });
+        burns.push(burnt);
+    }
+    // The switch takes 12 ticks; then 15 ticks of ignition before the first burn.
+    let switch = weapons::SWITCH_TICKS as usize;
+    let ignition = weapons::FLAME_IGNITION_TICKS as usize;
+    let first = switch + ignition;
+    assert_eq!(burns.iter().position(|burnt| *burnt), Some(first));
+    assert!(burns[first..34].iter().all(|burnt| *burnt));
+    // After letting go on tick 35, it ignites again.
+    assert!(
+        burns[34..35 + ignition].iter().all(|burnt| !*burnt),
+        "{burns:?}"
+    );
+    assert!(burns[35 + ignition..].iter().all(|burnt| *burnt));
+}

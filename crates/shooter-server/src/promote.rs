@@ -220,6 +220,11 @@ fn effect(event: &Event) -> Option<String> {
             floats(*from),
             floats(*end)
         )),
+        Event::Pellet { from, at, .. } => Some(format!(
+            "{{\"kind\":\"beam\",\"weapon\":\"Shotgun\",\"from\":{},\"to\":{},\"struck\":true}}",
+            floats(*from),
+            floats(*at)
+        )),
         Event::Exploded { at } => {
             Some(format!("{{\"kind\":\"explosion\",\"at\":{}}}", floats(*at)))
         }

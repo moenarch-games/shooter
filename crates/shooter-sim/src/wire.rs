@@ -1,6 +1,7 @@
 //! The match on the wire, inside game-server's command and snapshot frames: a person's input
 //! (one per tick) and the shared snapshot every client gets each tick (the fighters with the
-//! exact physics state a client resumes prediction from, the rockets and the tick's events).
+//! exact physics state a client resumes prediction from, the rockets, the shotgun pellets and
+//! the tick's events).
 //! Little-endian; positions and velocities travel as exact `f32` bits.
 //!
 //! The in-process practice match builds the same [`Snapshot`], so both modes draw through one
@@ -12,7 +13,7 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 5;
+pub const WIRE_VERSION: u8 = 6;
 const NONE: u8 = u8::MAX;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +65,15 @@ pub struct RocketState {
     pub age: u32,
 }
 
+/// A shotgun pellet in flight: this tick's stretch of its path, for drawing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PelletState {
+    pub from: [f32; 3],
+    pub to: [f32; 3],
+    /// It was fired this tick (`from` is the shooter's eye).
+    pub launched: bool,
+}
+
 /// The whole match after a tick.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
@@ -72,6 +82,7 @@ pub struct Snapshot {
     pub frag_limit: i32,
     pub fighters: Vec<FighterState>,
     pub rockets: Vec<RocketState>,
+    pub pellets: Vec<PelletState>,
     pub events: Vec<Event>,
     /// The names people picked, by slot (slots without one show as "Player N").
     pub names: Vec<(u8, String)>,
@@ -151,6 +162,15 @@ impl Session {
                 .map(|rocket| RocketState {
                     position: rocket.position_units(),
                     age: rocket.age,
+                })
+                .collect(),
+            pellets: self
+                .pellets
+                .iter()
+                .map(|pellet| PelletState {
+                    from: pellet.from_units(),
+                    to: pellet.position_units(),
+                    launched: pellet.age == 1,
                 })
                 .collect(),
             events: self.events.clone(),
@@ -354,6 +374,18 @@ fn encode_event(out: &mut Out, event: &Event) {
             out.u8(2);
             out.vec3(at);
         }
+        Event::Pellet {
+            from,
+            at,
+            normal,
+            launched,
+        } => {
+            out.u8(8);
+            out.vec3(from);
+            out.vec3(at);
+            out.vec3(normal);
+            out.u8(u8::from(launched));
+        }
         Event::Damaged {
             dummy,
             at,
@@ -443,6 +475,12 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
         7 => Event::RoundOver {
             winner: input.option()?,
         },
+        8 => Event::Pellet {
+            from: input.vec3()?,
+            at: input.vec3()?,
+            normal: input.vec3()?,
+            launched: input.u8()? != 0,
+        },
         _ => return Err(WireError("unknown event")),
     })
 }
@@ -507,6 +545,12 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
     for rocket in snapshot.rockets.iter().take(usize::from(u8::MAX)) {
         out.vec3(rocket.position);
         out.u32(rocket.age);
+    }
+    out.u8(count(snapshot.pellets.len()));
+    for pellet in snapshot.pellets.iter().take(usize::from(u8::MAX)) {
+        out.vec3(pellet.from);
+        out.vec3(pellet.to);
+        out.u8(u8::from(pellet.launched));
     }
     out.u8(count(snapshot.events.len()));
     for event in snapshot.events.iter().take(usize::from(u8::MAX)) {
@@ -578,6 +622,15 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
             })
         })
         .collect::<Result<Vec<_>, WireError>>()?;
+    let pellets = (0..input.u8()?)
+        .map(|_| {
+            Ok(PelletState {
+                from: input.vec3()?,
+                to: input.vec3()?,
+                launched: input.u8()? != 0,
+            })
+        })
+        .collect::<Result<Vec<_>, WireError>>()?;
     let events = (0..input.u8()?)
         .map(|_| decode_event(&mut input))
         .collect::<Result<Vec<_>, _>>()?;
@@ -591,6 +644,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
         frag_limit,
         fighters,
         rockets,
+        pellets,
         events,
         names,
     })

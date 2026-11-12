@@ -392,6 +392,7 @@ impl App {
             if let (Some(gpu), Some(effects)) = (&mut self.gpu, &mut self.effects) {
                 effects.play(&mut gpu.world, &tick.events);
                 effects.rockets(&mut gpu.world, &snapshot.rockets);
+                effects.pellets(&mut gpu.world, &snapshot.pellets);
             }
         }
         true
