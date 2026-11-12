@@ -1,5 +1,5 @@
 //! The energy weapons on physics-engine: hitscan damage, walls stopping bolts, rocket splash and
-//! rocket jumping, and the greybox's dummies.
+//! rocket jumping, shotgun blasts, the laser and the flamethrower, and the greybox's dummies.
 
 use shooter_sim::dummies::DUMMY_HEALTH;
 use shooter_sim::player::PLAYER_HALF_EXTENTS;
@@ -129,7 +129,68 @@ fn a_hitscan_shot_reports_its_beam() {
 
 #[test]
 fn weapon_scenarios_replay_exactly() {
-    for scenario in [scenarios::ROCKET_JUMP, scenarios::SHOOTING_RANGE] {
+    for scenario in [
+        scenarios::ROCKET_JUMP,
+        scenarios::SHOOTING_RANGE,
+        scenarios::CLOSE_RANGE,
+    ] {
         assert_eq!(run(scenario).1, run(scenario).1, "{}", scenario.name);
     }
+}
+
+#[test]
+fn the_flamethrower_shotgun_and_laser_hurt_what_they_reach() {
+    let (session, samples) = run(scenarios::CLOSE_RANGE);
+    // Three damage a tick for half a second; the pillar keeps the west dummy unburnt.
+    assert_eq!(damage_in(&samples, "flame the south"), 30 * 3);
+    assert_eq!(damage_in(&samples, "flame the pillar"), 0);
+    assert_eq!(session.dummies[2].health, DUMMY_HEALTH);
+    // Four metres out, the aim and the inner ring hit; the outer ring's pellets fly past.
+    let blast = damage_in(&samples, "blast the south");
+    assert_eq!(blast, 6 * 9, "blast");
+    let fired = |leg: &str| {
+        samples
+            .iter()
+            .filter(|s| s.leg == leg && s.fired.is_some())
+            .count()
+    };
+    assert_eq!(fired("blast the south"), 1);
+    // The laser burns every tick it is held.
+    assert_eq!(fired("laser the east"), 30);
+    assert_eq!(damage_in(&samples, "laser the east"), 30 * 2);
+    assert_eq!(session.dummies[1].health, DUMMY_HEALTH - 60);
+    assert_eq!(session.dummies[0].health, DUMMY_HEALTH - 90 - blast);
+}
+
+#[test]
+fn a_shotgun_blast_is_a_fixed_pattern_of_pellet_beams() {
+    let mut session = Session::new((scenarios::CLOSE_RANGE.arena)()).unwrap();
+    let blast = Intent {
+        fire: true,
+        select: Some(Weapon::Shotgun),
+        ..Intent::IDLE
+    };
+    for _ in 0..13 {
+        session.tick(blast).unwrap();
+    }
+    let beams = |session: &Session| {
+        session
+            .events
+            .iter()
+            .filter_map(|event| match *event {
+                Event::Beam { weapon, end, .. } => Some((weapon, end)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = beams(&session);
+    assert_eq!(first.len(), shooter_sim::weapons::PELLETS.len());
+    assert!(first.iter().all(|(weapon, _)| *weapon == Weapon::Shotgun));
+    // The next blast waits out the refire, then repeats the pattern exactly.
+    for _ in 0..53 {
+        session.tick(blast).unwrap();
+        assert!(beams(&session).is_empty());
+    }
+    session.tick(blast).unwrap();
+    assert_eq!(beams(&session), first);
 }

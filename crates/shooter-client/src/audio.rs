@@ -21,6 +21,9 @@ const MANIFEST: &str = r#"{
     { "id": "latch", "source": { "tone": { "frequency_hz": 1900, "duration_ms": 40, "waveform": "square", "amplitude": 0.35 } } },
     { "id": "boom", "source": { "tone": { "frequency_hz": 60, "duration_ms": 450, "waveform": "noise", "amplitude": 0.9 } } },
     { "id": "hit", "source": { "tone": { "frequency_hz": 1400, "duration_ms": 35, "waveform": "sine", "amplitude": 0.3 } } },
+    { "id": "blast", "source": { "tone": { "frequency_hz": 120, "duration_ms": 180, "waveform": "noise", "amplitude": 0.6 } } },
+    { "id": "beam", "source": { "tone": { "frequency_hz": 1250, "duration_ms": 130, "waveform": "sine", "amplitude": 0.2 } } },
+    { "id": "flame", "source": { "tone": { "frequency_hz": 70, "duration_ms": 140, "waveform": "noise", "amplitude": 0.3 } } },
     { "id": "hurt", "source": { "tone": { "frequency_hz": 110, "duration_ms": 120, "waveform": "square", "amplitude": 0.4 } } }
   ],
   "cues": [
@@ -31,6 +34,9 @@ const MANIFEST: &str = r#"{
     { "kind": "weapon.rocketLauncher", "clips": ["rocket"], "max_voices": 2, "gain_db": -4, "spatial": true },
     { "kind": "weapon.grapple", "clips": ["grapple"], "max_voices": 2, "gain_db": -6, "spatial": true },
     { "kind": "weapon.energyBlade", "clips": ["slash"], "max_voices": 3, "gain_db": -4, "pitch_jitter": 0.1, "spatial": true },
+    { "kind": "weapon.shotgun", "clips": ["blast"], "max_voices": 2, "gain_db": -3, "pitch_jitter": 0.05, "spatial": true },
+    { "kind": "weapon.laser", "clips": ["beam"], "max_voices": 2, "gain_db": -8, "cooldown_ms": 110, "spatial": true },
+    { "kind": "weapon.flamethrower", "clips": ["flame"], "max_voices": 2, "gain_db": -6, "cooldown_ms": 120, "pitch_jitter": 0.1, "spatial": true },
     { "kind": "blade.strike", "clips": ["clang"], "max_voices": 3, "gain_db": -4, "pitch_jitter": 0.06, "spatial": true },
     { "kind": "grapple.latch", "clips": ["latch"], "max_voices": 2, "gain_db": -6, "spatial": true },
     { "kind": "rocket.explode", "clips": ["boom"], "priority": 70, "max_voices": 4, "pitch_jitter": 0.08, "spatial": true },
@@ -54,6 +60,9 @@ const fn fire_cue(weapon: Weapon) -> &'static str {
         Weapon::RocketLauncher => "weapon.rocketLauncher",
         Weapon::Grapple => "weapon.grapple",
         Weapon::EnergyBlade => "weapon.energyBlade",
+        Weapon::Shotgun => "weapon.shotgun",
+        Weapon::Laser => "weapon.laser",
+        Weapon::Flamethrower => "weapon.flamethrower",
     }
 }
 

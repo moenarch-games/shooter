@@ -1,14 +1,17 @@
-//! The energy weapons: a hitscan energy rifle, a high-damage rail gun and a rocket launcher whose
-//! rockets fly as projectiles and explode with splash damage and knockback (rocket jumping), and
-//! the grapple hook in the same rotation ([`crate::grapple`]); and the energy blade, a quick
-//! melee swing on its own key whatever gun is held ([`crate::melee`]).
+//! The energy weapons: a hitscan energy rifle, a high-damage rail gun, a rocket launcher whose
+//! rockets fly as projectiles and explode with splash damage and knockback (rocket jumping), a
+//! shotgun whose blast is a fixed pattern of pellet rays, a continuous laser that burns the first
+//! target in its beam every tick the trigger is held, and a flamethrower whose flame is a volume
+//! cut short by walls; the grapple hook in the same rotation ([`crate::grapple`]); and the energy
+//! blade, a quick melee swing on its own key whatever gun is held ([`crate::melee`]).
 //!
 //! Everything a shot decides is integer: the aim is a Q16 direction from the yaw and pitch
-//! steps, rockets fly in subunits per tick, splash distances are integer square roots. Rays and
-//! rocket sweeps go through the physics world's `cast_ray`, so physics-engine and the Rapier
-//! oracle answer them alike.
+//! steps (the shotgun's pellets add fixed yaw and pitch offsets, [`PELLETS`]), rockets fly in
+//! subunits per tick, splash distances are integer square roots. Rays and rocket sweeps go
+//! through the physics world's `cast_ray` and the flame through its `overlap_box`, so
+//! physics-engine and the Rapier oracle answer them alike.
 
-use sim_foundation::physics::{BodyId, RayHit, SUBUNITS_PER_UNIT, World};
+use sim_foundation::physics::{BodyId, PhysicsError, RayHit, SUBUNITS_PER_UNIT, World};
 use sim_foundation::{subunits_per_tick, trig};
 
 /// The guns a player carries.
@@ -26,6 +29,13 @@ pub enum Weapon {
     Grapple,
     /// The quick-melee energy blade: never held, swung on its own key ([`crate::melee`]).
     EnergyBlade,
+    /// A blast of [`PELLETS`] hitscan pellets in a fixed spread.
+    Shotgun,
+    /// A continuous beam: damage every tick the trigger is held.
+    Laser,
+    /// A short flame that burns every fighter and dummy in its volume each tick it is held
+    /// ([`flame`]).
+    Flamethrower,
 }
 
 /// How a weapon's shot reaches its target.
@@ -39,23 +49,33 @@ pub enum Delivery {
     Grapple,
     /// A [`crate::melee`] swing.
     Melee,
+    /// [`PELLETS`] hitscan rays, `damage` each, to the first target within `range_units`.
+    Pellets { damage: i32, range_units: i32 },
+    /// A flame ([`flame`]): `damage` to everything in it.
+    Flame { damage: i32 },
 }
 
 impl Weapon {
     /// Every weapon, in [`Weapon::index`] order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 8] = [
         Self::EnergyRifle,
         Self::RailGun,
         Self::RocketLauncher,
         Self::Grapple,
         Self::EnergyBlade,
+        Self::Shotgun,
+        Self::Laser,
+        Self::Flamethrower,
     ];
-    /// The weapons a player can hold (the 1 to 4 keys); the blade is swung, never held.
-    pub const ROTATION: [Self; 4] = [
+    /// The weapons a player can hold (the 1 to 7 keys); the blade is swung, never held.
+    pub const ROTATION: [Self; 7] = [
         Self::EnergyRifle,
         Self::RailGun,
         Self::RocketLauncher,
         Self::Grapple,
+        Self::Shotgun,
+        Self::Laser,
+        Self::Flamethrower,
     ];
 
     /// Its place in [`Weapon::ALL`] (the wire).
@@ -67,6 +87,9 @@ impl Weapon {
             Self::RocketLauncher => 2,
             Self::Grapple => 3,
             Self::EnergyBlade => 4,
+            Self::Shotgun => 5,
+            Self::Laser => 6,
+            Self::Flamethrower => 7,
         }
     }
 
@@ -79,6 +102,9 @@ impl Weapon {
             2 => Some(Self::RocketLauncher),
             3 => Some(Self::Grapple),
             4 => Some(Self::EnergyBlade),
+            5 => Some(Self::Shotgun),
+            6 => Some(Self::Laser),
+            7 => Some(Self::Flamethrower),
             _ => None,
         }
     }
@@ -96,6 +122,10 @@ impl Weapon {
             // 0.75 s from one hook to the next.
             Self::Grapple => 45,
             Self::EnergyBlade => crate::melee::SWING_TICKS,
+            // 0.9 s.
+            Self::Shotgun => 54,
+            // Continuous: every tick the trigger is held.
+            Self::Laser | Self::Flamethrower => 1,
         }
     }
 
@@ -113,9 +143,45 @@ impl Weapon {
             Self::RocketLauncher => Delivery::Rocket,
             Self::Grapple => Delivery::Grapple,
             Self::EnergyBlade => Delivery::Melee,
+            Self::Shotgun => Delivery::Pellets {
+                damage: 9,
+                range_units: 2_500,
+            },
+            Self::Laser => Delivery::Hitscan {
+                damage: 2,
+                range_units: 3_000,
+            },
+            Self::Flamethrower => Delivery::Flame { damage: 3 },
         }
     }
+
+    /// Whether it fires every tick the trigger is held (a beam or a flame, not single shots).
+    #[must_use]
+    pub const fn continuous(self) -> bool {
+        matches!(self, Self::Laser | Self::Flamethrower)
+    }
 }
+
+/// The shotgun's pellets: (yaw, pitch) offsets in `trig` angle steps (182 a degree) from the
+/// aim. One pellet on the aim, three on a 2° ring and six on a 4.5° ring: a fixed pattern, so a
+/// blast needs no randomness.
+pub const PELLETS: [(i16, i16); 10] = [
+    (0, 0),
+    (0, 364),
+    (315, -182),
+    (-315, -182),
+    (819, 0),
+    (410, 709),
+    (-410, 709),
+    (-819, 0),
+    (-410, -709),
+    (410, -709),
+];
+
+/// The flame reaches 6 m from the eye...
+pub const FLAME_REACH_UNITS: i32 = 600;
+/// ...and is 1.2 m across: everything within 60 units of its axis burns.
+pub const FLAME_RADIUS_UNITS: i32 = 60;
 
 /// Ticks after a switch before the new weapon can fire: 0.2 s.
 pub const SWITCH_TICKS: u32 = 12;
@@ -175,6 +241,16 @@ impl Arsenal {
     }
 }
 
+/// The Q16 directions of a shotgun blast's [`PELLETS`] aimed at `yaw` and `pitch`.
+#[must_use]
+pub fn pellets(yaw: u16, pitch: i16) -> [[i32; 3]; PELLETS.len()] {
+    PELLETS.map(|(turn, rise)| {
+        #[allow(clippy::cast_sign_loss)]
+        let yaw = yaw.wrapping_add(turn as u16);
+        aim(yaw, pitch.saturating_add(rise))
+    })
+}
+
 /// The Q16 unit aim direction `(x, y, z)` of a yaw and a pitch (up positive).
 #[must_use]
 pub fn aim(yaw: u16, pitch: i16) -> [i32; 3] {
@@ -222,6 +298,42 @@ pub fn trace(
         end: along(eye, translation, hit.map_or(1.0, |hit| hit.fraction)),
         hit,
     }
+}
+
+/// A flame from `eye` (units) along the Q16 `direction`, from `owner`: where it ends (the
+/// first body `burns` refuses, the arena's geometry, cuts it short within [`FLAME_REACH_UNITS`])
+/// and every body `burns` accepts in its volume, in ID order. The volume is the physics world's
+/// `overlap_box` round the flame, narrowed to bodies whose box comes within
+/// [`FLAME_RADIUS_UNITS`] of the flame's axis.
+pub fn flame(
+    world: &World,
+    eye: [f32; 3],
+    direction: [i32; 3],
+    owner: BodyId,
+    burns: impl Fn(BodyId) -> bool,
+) -> Result<(Trace, Vec<BodyId>), PhysicsError> {
+    let wall = trace(world, eye, direction, FLAME_REACH_UNITS, owner, |body| {
+        !burns(body)
+    });
+    let axis = [0, 1, 2].map(|axis| wall.end[axis] - eye[axis]);
+    #[allow(clippy::cast_precision_loss)]
+    let radius = FLAME_RADIUS_UNITS as f32;
+    let centre = [0, 1, 2].map(|index| eye[index] + axis[index] * 0.5);
+    let half = axis.map(|length| length.abs() * 0.5 + radius);
+    let burning = world
+        .overlap_box(centre, half)?
+        .into_iter()
+        .filter(|body| *body != owner && burns(*body))
+        .filter(|body| {
+            world.body(*body).is_some_and(|rigid| {
+                let extents = rigid.half_extents();
+                #[allow(clippy::cast_precision_loss)]
+                let inflated = [extents.x, extents.y, extents.z].map(|e| e as f32 + radius);
+                ray_box(eye, axis, rigid.exact_position(), inflated).is_some()
+            })
+        })
+        .collect();
+    Ok((wall, burning))
 }
 
 /// Where along `translation` (0..=1) a ray from `origin` enters the box at `center` with
