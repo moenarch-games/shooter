@@ -338,8 +338,9 @@ pub const SHOOTING_RANGE: Scenario = Scenario {
 };
 
 /// A close range: a dummy 4 m south, one off to the east and one to the west behind a pillar.
-/// The flamethrower burns the south one and stops at the pillar, a shotgun blast and the laser
-/// hit the south and east ones.
+/// The flamethrower ignites, then burns the south one and stops at the pillar; let go and
+/// pressed again, it ignites anew. A shotgun blast (its pellets reach the south one within their
+/// first tick, at full damage) and the laser hit the south and east ones.
 pub const CLOSE_RANGE: Scenario = Scenario {
     name: "close range",
     arena: || {
@@ -355,13 +356,15 @@ pub const CLOSE_RANGE: Scenario = Scenario {
     legs: &[
         stand("settle", 10),
         aim_with("take the flamethrower", SOUTH, Weapon::Flamethrower, 12),
-        shoot("flame the south", SOUTH, Weapon::Flamethrower, 30),
+        shoot("flame the south", SOUTH, Weapon::Flamethrower, 45),
         shoot(
             "flame the pillar",
             yaw_to(-300, -200),
             Weapon::Flamethrower,
             30,
         ),
+        aim_with("let go", SOUTH, Weapon::Flamethrower, 1),
+        shoot("ignite again", SOUTH, Weapon::Flamethrower, 15),
         aim_with("take the shotgun", SOUTH, Weapon::Shotgun, 12),
         shoot("blast the south", SOUTH, Weapon::Shotgun, 1),
         aim_with("take the laser", yaw_to(300, -200), Weapon::Laser, 54),

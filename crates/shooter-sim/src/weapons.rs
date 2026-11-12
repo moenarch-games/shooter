@@ -1,14 +1,16 @@
 //! The energy weapons: a hitscan energy rifle, a high-damage rail gun, a rocket launcher whose
 //! rockets fly as projectiles and explode with splash damage and knockback (rocket jumping), a
-//! shotgun whose blast is a fixed pattern of pellet rays, a continuous laser that burns the first
-//! target in its beam every tick the trigger is held, and a flamethrower whose flame is a volume
-//! cut short by walls; the grapple hook in the same rotation ([`crate::grapple`]); and the energy
+//! shotgun whose blast is a fixed pattern of fast pellets that slow down (and hurt less) as they
+//! fly, a continuous laser that burns the first target in its beam every tick the trigger is held,
+//! and a flamethrower whose flame, after a short ignition, is a volume cut short by walls; the
+//! grapple hook in the same rotation ([`crate::grapple`]); and the energy
 //! blade, a quick melee swing on its own key whatever gun is held ([`crate::melee`]).
 //!
 //! Everything a shot decides is integer: the aim is a Q16 direction from the yaw and pitch
 //! steps (the shotgun's pellets add fixed yaw and pitch offsets, [`PELLETS`]), rockets fly in
-//! subunits per tick, splash distances are integer square roots. Rays and rocket sweeps go
-//! through the physics world's `cast_ray` and the flame through its `overlap_box`, so
+//! rockets and pellets fly in subunits per tick (a pellet's drag and damage falloff are integer
+//! fractions of its speed), splash distances are integer square roots. Rays and rocket and pellet
+//! sweeps go through the physics world's `cast_ray` and the flame through its `overlap_box`, so
 //! physics-engine and the Rapier oracle answer them alike.
 
 use sim_foundation::physics::{BodyId, PhysicsError, RayHit, SUBUNITS_PER_UNIT, World};
@@ -29,12 +31,12 @@ pub enum Weapon {
     Grapple,
     /// The quick-melee energy blade: never held, swung on its own key ([`crate::melee`]).
     EnergyBlade,
-    /// A blast of [`PELLETS`] hitscan pellets in a fixed spread.
+    /// A blast of [`PELLETS`] [`Pellet`]s in a fixed spread.
     Shotgun,
     /// A continuous beam: damage every tick the trigger is held.
     Laser,
-    /// A short flame that burns every fighter and dummy in its volume each tick it is held
-    /// ([`flame`]).
+    /// A short flame that, after [`FLAME_IGNITION_TICKS`], burns every fighter and dummy in its
+    /// volume each tick it is held ([`flame`]).
     Flamethrower,
 }
 
@@ -49,8 +51,8 @@ pub enum Delivery {
     Grapple,
     /// A [`crate::melee`] swing.
     Melee,
-    /// [`PELLETS`] hitscan rays, `damage` each, to the first target within `range_units`.
-    Pellets { damage: i32, range_units: i32 },
+    /// [`PELLETS`] [`Pellet`]s, each `damage` at the muzzle's speed.
+    Pellets { damage: i32 },
     /// A flame ([`flame`]): `damage` to everything in it.
     Flame { damage: i32 },
 }
@@ -143,10 +145,7 @@ impl Weapon {
             Self::RocketLauncher => Delivery::Rocket,
             Self::Grapple => Delivery::Grapple,
             Self::EnergyBlade => Delivery::Melee,
-            Self::Shotgun => Delivery::Pellets {
-                damage: 9,
-                range_units: 2_500,
-            },
+            Self::Shotgun => Delivery::Pellets { damage: 9 },
             Self::Laser => Delivery::Hitscan {
                 damage: 2,
                 range_units: 3_000,
@@ -178,6 +177,19 @@ pub const PELLETS: [(i16, i16); 10] = [
     (410, -709),
 ];
 
+/// Pellets leave the muzzle at 240 m/s (4 m a tick)...
+pub const PELLET_SPEED_UNITS_PER_SECOND: i32 = 24_000;
+pub const PELLET_SPEED_SUBUNITS_PER_TICK: i32 = subunits_per_tick(PELLET_SPEED_UNITS_PER_SECOND);
+/// ...lose a sixteenth of their speed every tick (drag)...
+pub const PELLET_DRAG_DIVISOR: i32 = 16;
+/// ...and are spent once below 150 m/s...
+pub const PELLET_MIN_SPEED_SUBUNITS_PER_TICK: i32 = subunits_per_tick(15_000);
+/// ...or 25 m out (with this drag, both come about 8 ticks after the blast).
+pub const PELLET_RANGE_UNITS: i32 = 2_500;
+
+/// The flamethrower deals no damage for its first 15 ticks (0.25 s) of a continuous burst: it
+/// ignites. Letting go of the trigger (or switching away) puts it out again.
+pub const FLAME_IGNITION_TICKS: u32 = 15;
 /// The flame reaches 6 m from the eye...
 pub const FLAME_REACH_UNITS: i32 = 600;
 /// ...and is 1.2 m across: everything within 60 units of its axis burns.
@@ -209,6 +221,8 @@ pub struct Arsenal {
     pub held: Weapon,
     ready_at: u32,
     blade_ready_at: u32,
+    /// Ticks in a row the flamethrower has fired.
+    flaming: u32,
 }
 
 impl Arsenal {
@@ -227,17 +241,29 @@ impl Arsenal {
             self.held = weapon;
             self.ready_at = self.ready_at.max(tick + SWITCH_TICKS);
         }
-        if melee && tick >= self.blade_ready_at {
+        let fired = if melee && tick >= self.blade_ready_at {
             self.blade_ready_at = tick + Weapon::EnergyBlade.refire_ticks();
             self.ready_at = self.ready_at.max(tick + crate::melee::GUN_LOCKOUT_TICKS);
-            return Some(Weapon::EnergyBlade);
-        }
-        if fire && tick >= self.ready_at {
+            Some(Weapon::EnergyBlade)
+        } else if fire && tick >= self.ready_at {
             self.ready_at = tick + self.held.refire_ticks();
             Some(self.held)
         } else {
             None
-        }
+        };
+        self.flaming = if fired == Some(Weapon::Flamethrower) {
+            self.flaming.saturating_add(1)
+        } else {
+            0
+        };
+        fired
+    }
+
+    /// Whether the flame burns this tick: it has fired for more than [`FLAME_IGNITION_TICKS`]
+    /// ticks in a row. Before that it is still igniting.
+    #[must_use]
+    pub const fn ignited(&self) -> bool {
+        self.flaming > FLAME_IGNITION_TICKS
     }
 }
 
@@ -439,6 +465,108 @@ impl Rocket {
     }
 }
 
+/// A shotgun pellet in flight, in subunits: a fast projectile that slows down with drag and
+/// hurts less the slower it goes ([`Pellet::damage`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Pellet {
+    pub owner: BodyId,
+    pub position: [i32; 3],
+    /// Q16 unit direction.
+    pub direction: [i32; 3],
+    /// Subunits per tick.
+    pub speed: i32,
+    /// Subunits flown so far.
+    pub travelled: i32,
+    /// Its full damage, at the muzzle's speed.
+    pub damage: i32,
+    /// Where this tick's flight began (subunits): the eye on the tick it is fired.
+    pub from: [i32; 3],
+    /// Ticks flown.
+    pub age: u32,
+}
+
+/// Where a pellet went this tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Travel {
+    Flying,
+    /// It met a body at `at` (units) and deals `damage` there.
+    Struck {
+        at: [f32; 3],
+        normal: [f32; 3],
+        body: BodyId,
+        damage: i32,
+    },
+    /// Out of range or too slow: gone.
+    Spent,
+}
+
+impl Pellet {
+    /// A pellet of `damage` leaving `eye` (units) along the Q16 `direction`.
+    #[must_use]
+    pub fn launch(owner: BodyId, eye: [f32; 3], direction: [i32; 3], damage: i32) -> Self {
+        let position = subunits(eye);
+        Self {
+            owner,
+            position,
+            direction,
+            speed: PELLET_SPEED_SUBUNITS_PER_TICK,
+            travelled: 0,
+            damage,
+            from: position,
+            age: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn position_units(&self) -> [f32; 3] {
+        units(self.position)
+    }
+
+    #[must_use]
+    pub fn from_units(&self) -> [f32; 3] {
+        units(self.from)
+    }
+
+    /// What it deals at its current speed: its full damage scaled by the speed's share of the
+    /// muzzle's, rounded up (so a point-blank pellet deals all of it).
+    #[must_use]
+    pub fn damage(&self) -> i32 {
+        let scaled = i64::from(self.damage) * i64::from(self.speed);
+        let muzzle = i64::from(PELLET_SPEED_SUBUNITS_PER_TICK);
+        i32::try_from((scaled + muzzle - 1) / muzzle).unwrap_or(0)
+    }
+
+    /// One tick of flight: sweeps this tick's path (cut at [`PELLET_RANGE_UNITS`]) for the first
+    /// body other than the owner, then slows down by drag.
+    pub fn fly(&mut self, world: &World) -> Travel {
+        let range = PELLET_RANGE_UNITS * SUBUNITS_PER_UNIT;
+        let step = self.speed.min(range - self.travelled).max(0);
+        let velocity = self
+            .direction
+            .map(|unit| trig::checked_scale(step, unit).unwrap_or(0));
+        let origin = self.position_units();
+        let translation = units(velocity);
+        self.from = self.position;
+        if let Some(hit) = world.cast_ray(origin, translation, |body| body != self.owner) {
+            return Travel::Struck {
+                at: along(origin, translation, hit.fraction),
+                normal: hit.normal,
+                body: hit.body,
+                damage: self.damage(),
+            };
+        }
+        self.position = [0, 1, 2].map(|axis| self.position[axis] + velocity[axis]);
+        self.travelled += step;
+        self.speed -= self.speed / PELLET_DRAG_DIVISOR;
+        self.age += 1;
+        if self.travelled >= range || self.speed < PELLET_MIN_SPEED_SUBUNITS_PER_TICK {
+            Travel::Spent
+        } else {
+            Travel::Flying
+        }
+    }
+}
+
 /// What a blast does to a body whose centre is at `center` (units): damage and the knockback
 /// velocity (subunits per tick), or `None` out of reach.
 #[must_use]
@@ -512,6 +640,46 @@ mod tests {
         );
         assert_eq!(arsenal.trigger(None, true, false, 29), None);
         assert_eq!(arsenal.trigger(None, true, false, 30), blade);
+    }
+
+    #[test]
+    fn the_flame_ignites_while_the_trigger_stays_down() {
+        let mut arsenal = Arsenal::default();
+        let flame = Some(Weapon::Flamethrower);
+        arsenal.trigger(flame, false, false, 0);
+        let mut tick = SWITCH_TICKS;
+        for _ in 0..FLAME_IGNITION_TICKS {
+            assert_eq!(arsenal.trigger(None, false, true, tick), flame);
+            assert!(!arsenal.ignited(), "tick {tick}");
+            tick += 1;
+        }
+        assert_eq!(arsenal.trigger(None, false, true, tick), flame);
+        assert!(arsenal.ignited());
+        // Letting go puts it out: the next burst ignites from the start.
+        arsenal.trigger(None, false, false, tick + 1);
+        assert_eq!(arsenal.trigger(None, false, true, tick + 2), flame);
+        assert!(!arsenal.ignited());
+    }
+
+    #[test]
+    fn pellets_hurt_less_as_they_slow_down() {
+        let mut pellet = Pellet::launch(BodyId(0), [0.0; 3], [0, 0, trig::TRIG_ONE], 9);
+        assert_eq!(pellet.damage(), 9);
+        let mut damages = vec![pellet.damage()];
+        let mut ticks = 0;
+        let world = World::new(sim_foundation::physics::Vec3i::new(0, 0, 0));
+        while pellet.fly(&world) == Travel::Flying {
+            damages.push(pellet.damage());
+            ticks += 1;
+        }
+        // Never more on the way, and still two thirds at the end of its range.
+        assert!(
+            damages.windows(2).all(|pair| pair[1] <= pair[0]),
+            "{damages:?}"
+        );
+        assert_eq!(damages.last(), Some(&6), "{damages:?}");
+        assert_eq!(ticks, 7);
+        assert_eq!(pellet.travelled, PELLET_RANGE_UNITS * SUBUNITS_PER_UNIT);
     }
 
     #[test]

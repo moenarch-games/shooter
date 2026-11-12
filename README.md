@@ -91,9 +91,9 @@ The left mouse button fires; 1 to 7 pick the weapon:
 | 2 | Rail gun | One hitscan beam, 85 damage, every 1.2 s |
 | 3 | Rocket launcher | A 24 m/s rocket, every 0.8 s: up to 100 splash damage within 3 m, and a push |
 | 4 | Grapple hook | A hook that holds on the arena while the trigger is down and reels you in |
-| 5 | Shotgun | A blast of 10 hitscan pellets in a fixed 4.5° spread, 9 damage each within 25 m, every 0.9 s |
+| 5 | Shotgun | A blast of 10 pellets in a fixed 4.5° spread, every 0.9 s: 240 m/s projectiles slowed by drag, 9 damage each up close down to 6 at their 25 m range |
 | 6 | Laser | A continuous beam while the trigger is down: 2 damage a tick (120 a second) to the first target within 30 m |
-| 7 | Flamethrower | A 6 m flame, 1.2 m across, cut short by walls: 3 damage a tick (180 a second) to everyone in it |
+| 7 | Flamethrower | A 6 m flame, 1.2 m across, cut short by walls: after a 0.25 s ignition, 3 damage a tick (180 a second) to everyone in it |
 
 Rocket jump by firing at your feet as you jump: the blast throws you about 5 m up. Your own
 rocket hurts you at half damage (a rocket jump costs about 35 health).

@@ -195,7 +195,8 @@ pub mod online {
                     skipping = Some(slot) == local && weapon != Weapon::EnergyBlade;
                     return !skipping;
                 }
-                // Every beam of the shot: a shotgun blast's pellets come together.
+                // The shot's beam (a shotgun's pellets fly on the host and land as its own
+                // `Pellet` events, which stay).
                 Event::Beam { .. } => return !skipping,
                 _ => false,
             };
@@ -285,19 +286,16 @@ pub mod online {
                         struck,
                     } => {
                         let translation = [0, 1, 2].map(|axis| end[axis] - from[axis]);
-                        let hit = matches!(
-                            weapon.delivery(),
-                            Delivery::Hitscan { .. } | Delivery::Pellets { .. }
-                        )
-                        .then(|| {
-                            others
-                                .iter()
-                                .filter_map(|center| {
-                                    weapons::ray_box(from, translation, *center, HALF)
-                                })
-                                .reduce(f32::min)
-                        })
-                        .flatten();
+                        let hit = matches!(weapon.delivery(), Delivery::Hitscan { .. })
+                            .then(|| {
+                                others
+                                    .iter()
+                                    .filter_map(|center| {
+                                        weapons::ray_box(from, translation, *center, HALF)
+                                    })
+                                    .reduce(f32::min)
+                            })
+                            .flatten();
                         shots.push(match hit {
                             Some(fraction) => Event::Beam {
                                 weapon,

@@ -1,5 +1,6 @@
 //! Weapon effects as render-engine lights and particles: muzzle flashes, beam trails, impact
-//! sparks, blade strikes, the laser's beam, flames, rocket exhaust and explosions. The simulation's [`Event`]s start them;
+//! sparks, blade strikes, the laser's beam, flames and their ignition, shotgun pellet tracers,
+//! rocket exhaust and explosions. The simulation's [`Event`]s start them;
 //! they live on their own clock (presentation only, never fed back into the simulation).
 
 use crate::scene::{METRES_PER_UNIT, gun_pose};
@@ -10,7 +11,7 @@ use render_engine::particles::{
 };
 use render_engine::scene::PointLight;
 use render_engine::world::{EmitterId, World};
-use shooter_sim::wire::RocketState;
+use shooter_sim::wire::{PelletState, RocketState};
 use shooter_sim::{Event, Weapon};
 
 /// Rockets trail exhaust from this many ticks after launch (about 1.6 m out).
@@ -33,6 +34,25 @@ pub const fn tint(weapon: Weapon) -> Vec3 {
 
 fn units(value: [f32; 3]) -> Vec3 {
     Vec3::from(value) * METRES_PER_UNIT
+}
+
+/// Whether the flamethrower shot `Fired` at `index` of a tick's `events` is still igniting: no
+/// flame follows it (the simulation emits a burning flame's `Beam` right after its `Fired`).
+#[must_use]
+pub fn igniting(events: &[Event], index: usize) -> bool {
+    matches!(
+        events.get(index),
+        Some(Event::Fired {
+            weapon: Weapon::Flamethrower,
+            ..
+        })
+    ) && !matches!(
+        events.get(index + 1),
+        Some(Event::Beam {
+            weapon: Weapon::Flamethrower,
+            ..
+        })
+    )
 }
 
 /// A transform whose +Z points along `direction`, at `position`.
@@ -220,8 +240,8 @@ fn index(weapon: Weapon) -> usize {
 }
 
 /// Spacing of trail motes along a beam (metres) and their size and life, per weapon in
-/// [`Weapon::ALL`] order (only hitscan weapons draw trails; the rocket's, the blade's and the
-/// flamethrower's entries are unused).
+/// [`Weapon::ALL`] order (hitscan beams and shotgun pellets draw trails; the rocket's, the
+/// blade's and the flamethrower's entries are unused).
 const TRAIL: [(f32, f32, f32); WEAPONS] = [
     (0.5, 0.05, 0.12),
     (0.12, 0.07, 0.7),
@@ -325,7 +345,7 @@ impl Effects {
     /// Starts the effects of a tick's events. Shots leave the eye in the simulation but are drawn
     /// from the held gun's barrel.
     pub fn play(&mut self, world: &mut World, events: &[Event]) {
-        for event in events {
+        for (at, event) in events.iter().enumerate() {
             match *event {
                 // The blade has no muzzle: its swing is drawn by the actors.
                 Event::Fired {
@@ -362,7 +382,13 @@ impl Effects {
                         _ => (8, 150_000.0),
                     };
                     world.burst(self.muzzle[index(weapon)], count, facing(muzzle, direction));
-                    self.flash(muzzle, tint(weapon), lumens, 6.0, 0.07);
+                    if igniting(events, at) {
+                        // The ignition: a small pilot flame and a pale flicker at the nozzle.
+                        world.burst(self.flame, 1, Mat4::from_translation(muzzle));
+                        self.flash(muzzle, Vec3::new(0.5, 0.7, 1.0), 25_000.0, 2.0, 0.05);
+                    } else {
+                        self.flash(muzzle, tint(weapon), lumens, 6.0, 0.07);
+                    }
                 }
                 // The flame: puffs of fire along it, licking the wall that cuts it short.
                 Event::Beam {
@@ -410,20 +436,31 @@ impl Effects {
                         let normal = Vec3::from(normal);
                         let count = match weapon {
                             Weapon::RailGun => 40,
-                            Weapon::Shotgun | Weapon::Laser => 3,
+                            Weapon::Laser => 3,
                             _ => 10,
                         };
                         world.burst(self.impact, count, facing(end + normal * 0.02, normal));
-                        // One light per pellet or per beam tick would swamp the scene: the
-                        // laser's spot glows dimly, the shotgun's pellets share the muzzle's.
+                        // One light per beam tick would swamp the scene: the laser's spot glows
+                        // dimly.
                         match weapon {
-                            Weapon::Shotgun => {}
                             Weapon::Laser => {
                                 self.flash(end + normal * 0.1, tint(weapon), 20_000.0, 2.0, 0.04);
                             }
                             _ => self.flash(end + normal * 0.1, tint(weapon), 80_000.0, 4.0, 0.1),
                         }
                     }
+                }
+                // A pellet's last stretch and its sparks; pellets share the muzzle's light.
+                Event::Pellet {
+                    from,
+                    at,
+                    normal,
+                    launched,
+                } => {
+                    let (from, end) = (units(from), units(at));
+                    self.tracer(world, from, end, launched);
+                    let normal = Vec3::from(normal);
+                    world.burst(self.impact, 3, facing(end + normal * 0.02, normal));
                 }
                 Event::Exploded { at } => {
                     let at = units(at);
@@ -437,6 +474,36 @@ impl Effects {
                 | Event::Spawned { .. }
                 | Event::RoundOver { .. } => {}
             }
+        }
+    }
+
+    /// Trail motes along a pellet's stretch from `from` to `to` (from the gun's barrel when it
+    /// starts at the shooter's eye).
+    fn tracer(&mut self, world: &mut World, from: Vec3, to: Vec3, launched: bool) {
+        let start = if launched {
+            gun_pose(from, to - from).1
+        } else {
+            from
+        };
+        let (spacing, _, _) = TRAIL[index(Weapon::Shotgun)];
+        let span = to - start;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let steps = (span.length() / spacing).ceil() as u32;
+        for step in 0..steps {
+            #[allow(clippy::cast_precision_loss)]
+            let at = start + span * (step as f32 / steps as f32);
+            world.burst(
+                self.trail[index(Weapon::Shotgun)],
+                1,
+                Mat4::from_translation(at),
+            );
+        }
+    }
+
+    /// Tracers along each shotgun pellet's stretch this simulation tick.
+    pub fn pellets(&mut self, world: &mut World, pellets: &[PelletState]) {
+        for pellet in pellets {
+            self.tracer(world, units(pellet.from), units(pellet.to), pellet.launched);
         }
     }
 

@@ -23,6 +23,7 @@ const MANIFEST: &str = r#"{
     { "id": "hit", "source": { "tone": { "frequency_hz": 1400, "duration_ms": 35, "waveform": "sine", "amplitude": 0.3 } } },
     { "id": "blast", "source": { "tone": { "frequency_hz": 120, "duration_ms": 180, "waveform": "noise", "amplitude": 0.6 } } },
     { "id": "beam", "source": { "tone": { "frequency_hz": 1250, "duration_ms": 130, "waveform": "sine", "amplitude": 0.2 } } },
+    { "id": "ignite", "source": { "tone": { "frequency_hz": 600, "duration_ms": 220, "waveform": "saw", "amplitude": 0.2 } } },
     { "id": "flame", "source": { "tone": { "frequency_hz": 70, "duration_ms": 140, "waveform": "noise", "amplitude": 0.3 } } },
     { "id": "hurt", "source": { "tone": { "frequency_hz": 110, "duration_ms": 120, "waveform": "square", "amplitude": 0.4 } } }
   ],
@@ -36,6 +37,7 @@ const MANIFEST: &str = r#"{
     { "kind": "weapon.energyBlade", "clips": ["slash"], "max_voices": 3, "gain_db": -4, "pitch_jitter": 0.1, "spatial": true },
     { "kind": "weapon.shotgun", "clips": ["blast"], "max_voices": 2, "gain_db": -3, "pitch_jitter": 0.05, "spatial": true },
     { "kind": "weapon.laser", "clips": ["beam"], "max_voices": 2, "gain_db": -8, "cooldown_ms": 110, "spatial": true },
+    { "kind": "flame.ignite", "clips": ["ignite"], "max_voices": 2, "gain_db": -8, "cooldown_ms": 300, "spatial": true },
     { "kind": "weapon.flamethrower", "clips": ["flame"], "max_voices": 2, "gain_db": -6, "cooldown_ms": 120, "pitch_jitter": 0.1, "spatial": true },
     { "kind": "blade.strike", "clips": ["clang"], "max_voices": 3, "gain_db": -4, "pitch_jitter": 0.06, "spatial": true },
     { "kind": "grapple.latch", "clips": ["latch"], "max_voices": 2, "gain_db": -6, "spatial": true },
@@ -142,13 +144,17 @@ impl Sounds {
         if report.fired == Some(Weapon::EnergyBlade) {
             self.cue(fire_cue(Weapon::EnergyBlade), None, now_ms);
         }
-        for event in events {
+        for (index, event) in events.iter().enumerate() {
             match *event {
                 Event::Fired {
                     slot,
                     weapon: Weapon::EnergyBlade,
                     ..
                 } if Some(slot) == local => {}
+                // The flamethrower's ignition clicks once, then the flame roars.
+                Event::Fired { eye, .. } if crate::effects::igniting(events, index) => {
+                    self.cue("flame.ignite", Some(metres(eye)), now_ms);
+                }
                 Event::Fired { weapon, eye, .. } => {
                     self.cue(fire_cue(weapon), Some(metres(eye)), now_ms);
                 }
@@ -175,6 +181,7 @@ impl Sounds {
                     ..
                 } => self.cue("blade.strike", Some(metres(end)), now_ms),
                 Event::Beam { .. }
+                | Event::Pellet { .. }
                 | Event::Killed { .. }
                 | Event::Spawned { .. }
                 | Event::RoundOver { .. } => {}

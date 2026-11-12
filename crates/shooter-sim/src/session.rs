@@ -10,7 +10,9 @@
 //!
 //! Hitscan shots and blade swings are lag-compensated: a person's shot is checked against the
 //! fighters where that person saw them (the snapshot tick its command names, at most
-//! [`MAX_REWIND_TICKS`] back), while the arena's geometry blocks the ray as it is now.
+//! [`MAX_REWIND_TICKS`] back), while the arena's geometry blocks the ray as it is now. Rockets
+//! and shotgun pellets are projectiles: they fly through the world as it is each tick and meet
+//! fighters where they are then, like the flame.
 
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
 use crate::bots::{Bot, Sight};
@@ -20,7 +22,7 @@ use crate::melee;
 use crate::player::{
     EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player, STEP_UP,
 };
-use crate::weapons::{self, Arsenal, Delivery, Flight, Rocket, Weapon};
+use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
 use sim_foundation::physics::{BodyId, PhysicsError, Vec3i, World};
 use std::collections::VecDeque;
 
@@ -308,6 +310,14 @@ pub enum Event {
     },
     /// A rocket blew up at `at`.
     Exploded { at: [f32; 3] },
+    /// A shotgun pellet's last stretch, from `from` to where it struck a body at `at`;
+    /// `launched` when it was fired this tick (`from` is the shooter's eye).
+    Pellet {
+        from: [f32; 3],
+        at: [f32; 3],
+        normal: [f32; 3],
+        launched: bool,
+    },
     /// A dummy took damage.
     Damaged {
         dummy: usize,
@@ -367,6 +377,8 @@ pub struct Session {
     pub fighters: Vec<Fighter>,
     pub dummies: Vec<Dummy>,
     pub rockets: Vec<Rocket>,
+    /// Shotgun pellets in flight.
+    pub pellets: Vec<Pellet>,
     /// What the last tick did, in order.
     pub events: Vec<Event>,
     tick: u32,
@@ -414,6 +426,7 @@ impl Session {
             fighters,
             dummies: Vec::new(),
             rockets: Vec::new(),
+            pellets: Vec::new(),
             events: Vec::new(),
             tick: 0,
             history: VecDeque::new(),
@@ -732,6 +745,7 @@ impl Session {
                 }
             }
         }
+        self.fly_pellets();
 
         self.world.step()?;
         self.tick += 1;
@@ -870,6 +884,7 @@ impl Session {
             fighter.deaths = 0;
         }
         self.rockets.clear();
+        self.pellets.clear();
         self.phase = Phase::Playing {
             ends_at: (self.rules.time_limit_ticks > 0)
                 .then_some(self.tick + self.rules.time_limit_ticks),
@@ -963,8 +978,9 @@ impl Session {
         });
     }
 
-    /// Fires `weapon` from `slot`'s eye: a hitscan beam or a shotgun blast resolves now
-    /// (lag-compensated), a rocket starts flying, a flame burns what it touches now.
+    /// Fires `weapon` from `slot`'s eye: a hitscan beam resolves now (lag-compensated), a rocket
+    /// or a shotgun blast's pellets start flying, a flame burns what it touches now once it has
+    /// ignited.
     fn fire(&mut self, slot: usize, weapon: Weapon, intent: Intent) -> Result<(), PhysicsError> {
         let shooter = &self.fighters[slot];
         let body = shooter.player.body;
@@ -1002,14 +1018,14 @@ impl Session {
                 let shot = self.hitscan(slot, weapon, eye, direction, range_units);
                 self.land(slot, weapon, damage, &[shot]);
             }
-            Delivery::Pellets {
-                damage,
-                range_units,
-            } => {
-                let shots = weapons::pellets(intent.yaw, intent.pitch)
-                    .map(|pellet| self.hitscan(slot, weapon, eye, pellet, range_units));
-                self.land(slot, weapon, damage, &shots);
+            Delivery::Pellets { damage } => {
+                self.pellets.extend(
+                    weapons::pellets(intent.yaw, intent.pitch)
+                        .map(|pellet| Pellet::launch(body, eye, pellet, damage)),
+                );
             }
+            // Still igniting: the muzzle glows, nothing burns yet.
+            Delivery::Flame { .. } if !self.fighters[slot].arsenal.ignited() => {}
             Delivery::Flame { damage } => self.burn(slot, weapon, eye, direction, damage)?,
         }
         Ok(())
@@ -1079,6 +1095,42 @@ impl Session {
                 .and_then(|hit| self.dummy_of(hit.body))
                 .map_or(Target::Nothing, Target::Dummy),
             at: scenery.end,
+        }
+    }
+
+    /// One tick of every pellet's flight, in launch order: a pellet that meets a body ends there
+    /// ([`Event::Pellet`]) and hurts it if it is a fighter or a dummy.
+    fn fly_pellets(&mut self) {
+        let mut index = 0;
+        while index < self.pellets.len() {
+            match self.pellets[index].fly(&self.world) {
+                Travel::Flying => index += 1,
+                Travel::Spent => {
+                    self.pellets.remove(index);
+                }
+                Travel::Struck {
+                    at,
+                    normal,
+                    body,
+                    damage,
+                } => {
+                    let pellet = self.pellets.remove(index);
+                    self.events.push(Event::Pellet {
+                        from: pellet.from_units(),
+                        at,
+                        normal,
+                        launched: pellet.age == 0,
+                    });
+                    let Some(attacker) = slot_of(pellet.owner).map(usize::from) else {
+                        continue;
+                    };
+                    if let Some(victim) = slot_of(body) {
+                        self.hurt(usize::from(victim), attacker, damage, Weapon::Shotgun, at);
+                    } else if let Some(dummy) = self.dummy_of(body) {
+                        self.hurt_dummy(dummy, attacker, damage, at);
+                    }
+                }
+            }
         }
     }
 
