@@ -14,43 +14,82 @@ pub mod interpolation;
 pub mod net;
 pub mod scene;
 
-/// The match to play: natively `--connect <url> [--cert <pem>]` joins a hosted deathmatch (the
-/// certificate is a development host's self-signed one); in the browser the page's
-/// `?connect=<url>[&certHash=<sha-256 hex>]` does. Anything else is offline practice against
-/// bots.
+/// The match to play: natively `--connect <url> [--cert <pem>] [--name <name>]` joins a hosted
+/// deathmatch (the certificate is a development host's self-signed one; the name is remembered
+/// in the config directory for later runs, [`remembered_name`]); in the browser the page's
+/// `?connect=<url>[&certHash=<sha-256 hex>][&name=<name>]` does (the page remembers the name).
+/// Anything else is offline practice against bots.
 fn game() -> game::Game {
     #[cfg(not(target_arch = "wasm32"))]
-    let (url, trust) = {
+    let (url, trust, name) = {
         let mut args = std::env::args().skip(1);
-        let (mut url, mut cert) = (None, None);
+        let (mut url, mut cert, mut name) = (None, None, None);
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--connect" => url = args.next(),
                 "--cert" => cert = args.next().map(std::path::PathBuf::from),
+                "--name" => name = args.next(),
                 other => log(&format!("unknown argument {other}")),
             }
         }
-        (url, cert)
+        (url, cert, remembered_name(name))
     };
     #[cfg(target_arch = "wasm32")]
-    let (url, trust) = {
+    let (url, trust, name) = {
         let query = web::query("connect");
         let hash = web::query("certHash");
+        let name = web::query("name");
         match hash.as_deref().map(parse_hash) {
             Some(None) => {
                 fail("certHash is not a SHA-256 in hex");
-                (None, None)
+                (None, None, name)
             }
-            hash => (query, hash.flatten()),
+            hash => (query, hash.flatten(), name),
         }
     };
     if let Some(url) = url {
-        match game::online::Online::connect(url, trust) {
+        match game::online::Online::connect(url, trust, name.as_deref()) {
             Ok(online) => return game::Game::Online(Box::new(online)),
             Err(error) => fail(&error),
         }
     }
     game::Game::practice()
+}
+
+/// The player name file: `shooter/name` in `$XDG_CONFIG_HOME` (else `~/.config`, or
+/// `%APPDATA%` on Windows).
+#[cfg(not(target_arch = "wasm32"))]
+fn name_file() -> Option<std::path::PathBuf> {
+    let env = |key| std::env::var_os(key).filter(|value| !value.is_empty());
+    let config = env("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| env("HOME").map(|home| std::path::Path::new(&home).join(".config")))
+        .or_else(|| env("APPDATA").map(std::path::PathBuf::from))?;
+    Some(config.join("shooter").join("name"))
+}
+
+/// The name to play under: `given` (`--name`, then remembered for later runs) else the one
+/// remembered last time. A file that cannot be read or written only loses the memory.
+#[cfg(not(target_arch = "wasm32"))]
+fn remembered_name(given: Option<String>) -> Option<String> {
+    let file = name_file();
+    let given = given.and_then(|name| shooter_sim::names::sanitize(&name));
+    match (given, file) {
+        (Some(name), Some(file)) => {
+            let saved = file
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&file, &name));
+            if let Err(error) = saved {
+                log(&format!("could not remember the name: {error}"));
+            }
+            Some(name)
+        }
+        (given, None) => given,
+        (None, Some(file)) => std::fs::read_to_string(file)
+            .ok()
+            .and_then(|name| shooter_sim::names::sanitize(&name)),
+    }
 }
 
 /// A SHA-256 written in hex, colons allowed (as `openssl x509 -fingerprint -sha256` prints it).

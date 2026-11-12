@@ -62,6 +62,9 @@
         color: inherit;
         font: 13px ui-monospace, monospace;
       }
+      #join input.name {
+        width: 10em;
+      }
       #join button,
       #join a {
         padding: 6px 14px;
@@ -175,6 +178,15 @@
         · Tab for the scores · Esc to release the mouse
         <form id="join" method="get">
           <input
+            name="name"
+            placeholder="Your name"
+            aria-label="Your name"
+            maxlength="16"
+            autocomplete="nickname"
+            spellcheck="false"
+            class="name"
+          />
+          <input
             name="connect"
             placeholder="https://host:4433/shooter/matches/dm"
             aria-label="Hosted match URL"
@@ -198,6 +210,26 @@
       const join = document.getElementById("join");
       join.connect.value = query.get("connect") ?? "";
       join.certHash.value = query.get("certHash") ?? "";
+      // The player name (&name=…, the host sanitizes it) is remembered on this device only.
+      const NAME_KEY = "shooter.name";
+      const remembered = () => {
+        try {
+          return localStorage.getItem(NAME_KEY);
+        } catch {
+          return null;
+        }
+      };
+      const nameInput = join.elements.namedItem("name");
+      nameInput.value = query.get("name") ?? remembered() ?? "";
+      join.addEventListener("submit", () => {
+        const name = nameInput.value.trim();
+        try {
+          if (name) localStorage.setItem(NAME_KEY, name);
+          else localStorage.removeItem(NAME_KEY);
+        } catch {}
+        // An empty name stays out of the URL (the host shows "Player N").
+        nameInput.disabled = !name;
+      });
       if (query.get("connect")) {
         const host = URL.canParse(query.get("connect")) ? new URL(query.get("connect")).host : "?";
         document.getElementById("mode").textContent = `Click to play: online deathmatch at ${host}`;

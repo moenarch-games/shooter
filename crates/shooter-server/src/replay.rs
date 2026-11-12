@@ -164,7 +164,7 @@ pub fn record(script: Script) -> Result<Replay, Error> {
             if let Some(lease) = &leases[slot] {
                 sequences[slot] += 1;
                 let view_tick = tick.saturating_sub(script.latency_ticks);
-                let payload = encode_input(scripted_intent(index, tick), view_tick);
+                let payload = encode_input(scripted_intent(index, tick), view_tick, None);
                 runtime
                     .submit_command(
                         lease.player_id,

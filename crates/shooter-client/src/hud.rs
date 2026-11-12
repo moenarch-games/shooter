@@ -43,7 +43,9 @@ fn name(snapshot: &Snapshot, slot: u8, local: Option<u8>) -> String {
     }
     match snapshot.slot(slot).map(|fighter| fighter.controller) {
         Some(Controller::Bot) | None => format!("Bot {}", slot + 1),
-        Some(Controller::Human(_)) => format!("Player {}", slot + 1),
+        Some(Controller::Human(_)) => snapshot
+            .name(slot)
+            .map_or_else(|| format!("Player {}", slot + 1), str::to_owned),
     }
 }
 
@@ -160,7 +162,7 @@ impl Hud {
                 .enumerate()
                 .map(|(index, fighter)| {
                     format!(
-                        "{}. {:<10} {:>3} frags {:>3} deaths",
+                        "{}. {:<16} {:>3} frags {:>3} deaths",
                         index + 1,
                         name(snapshot, fighter.slot, local),
                         fighter.frags,

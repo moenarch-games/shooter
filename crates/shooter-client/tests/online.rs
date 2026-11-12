@@ -63,9 +63,9 @@ impl Host {
         }
     }
 
-    fn connect(&self) -> Game {
+    fn connect(&self, name: Option<&str>) -> Game {
         Game::Online(Box::new(
-            Online::connect(self.url.clone(), Some(self.cert.clone())).unwrap(),
+            Online::connect(self.url.clone(), Some(self.cert.clone()), name).unwrap(),
         ))
     }
 }
@@ -88,7 +88,7 @@ const FORWARD: Intent = Intent {
 #[test]
 fn two_clients_play_a_hosted_deathmatch() {
     let host = Host::start(0);
-    let (mut first, mut second) = (host.connect(), host.connect());
+    let (mut first, mut second) = (host.connect(Some("Ripley")), host.connect(None));
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut start = None;
     let mut moved = 0.0f32;
@@ -118,6 +118,9 @@ fn two_clients_play_a_hosted_deathmatch() {
     assert_eq!(humans, 2);
     let walker = snapshot.slot(a).unwrap();
     assert!(walker.ack > 0);
+    // The first client's name reached the host and everyone's snapshots.
+    assert_eq!(snapshot.name(a), Some("Ripley"));
+    assert_eq!(snapshot.name(b), None);
     // The second client draws the walker from its interpolation buffer.
     assert!(second.other_center(a, 0.5).is_some());
 }
@@ -127,7 +130,7 @@ fn two_clients_play_a_hosted_deathmatch() {
 #[test]
 fn a_lost_connection_rejoins_its_slot() {
     let host = Host::start(1);
-    let mut game = host.connect();
+    let mut game = host.connect(None);
     let play = |game: &mut Game, until: &dyn Fn(&Game) -> bool| {
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline && !until(game) {

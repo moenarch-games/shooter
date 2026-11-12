@@ -145,6 +145,7 @@ pub mod online {
     use crate::interpolation::{Interpolation, ONLINE_DELAY_TICKS};
     use crate::net::{Connection, NetEvent, Trust};
     use shooter_sim::grapple::Hook;
+    use shooter_sim::names;
     use shooter_sim::player::Motion;
     use shooter_sim::session::{HALF, MAX_HEALTH};
     use shooter_sim::weapons::{self, Delivery};
@@ -167,6 +168,8 @@ pub mod online {
 
     pub struct Online {
         connection: Connection,
+        /// The name picked for this match (sanitized as the host does).
+        name: Option<String>,
         player_id: Option<u32>,
         predictor: Session,
         predicting: bool,
@@ -204,10 +207,15 @@ pub mod online {
         /// # Errors
         ///
         /// If the arena does not build.
-        pub fn connect(url: String, certificate: Trust) -> Result<Self, String> {
+        pub fn connect(
+            url: String,
+            certificate: Trust,
+            name: Option<&str>,
+        ) -> Result<Self, String> {
             let status = format!("connecting to {url}");
             Ok(Self {
                 connection: Connection::open(url, certificate),
+                name: name.and_then(names::sanitize),
                 player_id: None,
                 predictor: Session::new(Arena::greybox()).map_err(|error| error.to_string())?,
                 predicting: false,
@@ -465,8 +473,14 @@ pub mod online {
             if self.player_id.is_some() && self.status.is_none() {
                 self.sequence += 1;
                 let view_tick = self.others.view_tick().unwrap_or(0);
+                // The name rides along until a snapshot shows it (inputs are unreliable).
+                let shown = self.latest.as_ref().and_then(|latest| {
+                    let me = latest.of_player(self.player_id?)?;
+                    latest.name(me.slot)
+                });
+                let name = self.name.as_deref().filter(|name| shown != Some(*name));
                 self.connection
-                    .send(self.sequence, &encode_input(intent, view_tick));
+                    .send(self.sequence, &encode_input(intent, view_tick, name));
                 if self.predicting {
                     report = self.predict(intent)?;
                     let shots = self.predicted_shots();
