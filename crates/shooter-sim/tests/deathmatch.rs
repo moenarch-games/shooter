@@ -450,11 +450,18 @@ fn inputs_and_snapshots_round_trip() {
         select: Some(Weapon::RocketLauncher),
     };
     assert_eq!(
-        decode_input(&encode_input(intent, 77)).unwrap(),
-        (intent, 77)
+        decode_input(&encode_input(intent, 77, None)).unwrap(),
+        (intent, 77, None)
+    );
+    assert_eq!(
+        decode_input(&encode_input(intent, 77, Some("Ripley"))).unwrap(),
+        (intent, 77, Some("Ripley".to_owned()))
     );
     let mut session = bot_match(5, 0);
-    session.join(9).unwrap();
+    let slot = session.join(9).unwrap().unwrap();
+    assert!(session.rename(9, "  <Rip>  ley!  "));
+    assert!(!session.rename(10, "Nobody"));
+    assert_eq!(session.snapshot().name(slot), Some("Rip ley"));
     let mut saw_events = false;
     for _ in 0..1_200 {
         session.step().unwrap();

@@ -59,8 +59,15 @@ cargo run -p shooter-client --release -- --connect https://localhost:4433/shoote
 **Join from the browser.** The page practises offline by default. `?connect=<match URL>` joins a
 hosted deathmatch over the browser's WebTransport (game-server's `BrowserSession`), with
 `&certHash=<SHA-256 hex>` for a development host's self-signed certificate (colons allowed);
-the overlay's join field fills these in, and "Practice offline" goes back. A host with a publicly
+the overlay's join fields fill these in, and "Practice offline" goes back. A host with a publicly
 trusted certificate needs no hash.
+
+**Player names.** No accounts: `&name=<name>` in the browser (the join overlay's name field,
+remembered in the browser's `localStorage`) or `--name <name>` natively (remembered in
+`~/.config/shooter/name`, `$XDG_CONFIG_HOME`/`%APPDATA%` respected) names you on the
+scoreboard and kill feed. Names are up to 16 ASCII letters, digits, spaces, `-`, `_` and `.`;
+the host sanitizes whatever arrives (`shooter_sim::names`). Without one a person shows as
+"Player N"; bots stay "Bot N".
 
 The host is authoritative: clients (native and browser alike) send one input per tick, predict
 their own movement and correct it from the snapshots, and see and hear their own shots at once.

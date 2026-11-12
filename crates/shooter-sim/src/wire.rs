@@ -12,7 +12,7 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 3;
+pub const WIRE_VERSION: u8 = 4;
 const NONE: u8 = u8::MAX;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,9 +73,20 @@ pub struct Snapshot {
     pub fighters: Vec<FighterState>,
     pub rockets: Vec<RocketState>,
     pub events: Vec<Event>,
+    /// The names people picked, by slot (slots without one show as "Player N").
+    pub names: Vec<(u8, String)>,
 }
 
 impl Snapshot {
+    /// The name `slot`'s person picked.
+    #[must_use]
+    pub fn name(&self, slot: u8) -> Option<&str> {
+        self.names
+            .iter()
+            .find(|(named, _)| *named == slot)
+            .map(|(_, name)| name.as_str())
+    }
+
     /// The fighter person `id` plays.
     #[must_use]
     pub fn of_player(&self, id: u32) -> Option<&FighterState> {
@@ -143,6 +154,12 @@ impl Session {
                 })
                 .collect(),
             events: self.events.clone(),
+            names: self
+                .fighters
+                .iter()
+                .filter(|fighter| fighter.human().is_some())
+                .filter_map(|fighter| Some((fighter.slot, fighter.name.clone()?)))
+                .collect(),
         }
     }
 }
@@ -173,6 +190,15 @@ impl Out {
     }
     fn weapon(&mut self, weapon: Weapon) {
         self.u8(weapon.index());
+    }
+    /// A length byte, then up to 255 bytes of UTF-8 (cut at a character boundary).
+    fn text(&mut self, text: &str) {
+        let mut end = text.len().min(usize::from(u8::MAX));
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.u8(count(end));
+        self.0.extend_from_slice(&text.as_bytes()[..end]);
     }
 }
 
@@ -212,6 +238,15 @@ impl In<'_> {
     fn weapon(&mut self) -> Result<Weapon, WireError> {
         Weapon::from_index(self.u8()?).ok_or(WireError("unknown weapon"))
     }
+    fn text(&mut self) -> Result<String, WireError> {
+        let length = usize::from(self.u8()?);
+        if self.0.len() < length {
+            return Err(WireError("truncated"));
+        }
+        let (text, rest) = self.0.split_at(length);
+        self.0 = rest;
+        String::from_utf8(text.to_vec()).map_err(|_| WireError("text is not UTF-8"))
+    }
     fn finish(self) -> Result<(), WireError> {
         if self.0.is_empty() {
             Ok(())
@@ -227,9 +262,11 @@ const CROUCH: u8 = 4;
 const FIRE: u8 = 8;
 const MELEE: u8 = 16;
 
-/// One tick of a person's controls and the snapshot tick it was made against.
+/// One tick of a person's controls and the snapshot tick it was made against, and the name the
+/// person picked while the host has not shown it yet (datagrams are unreliable, so the client
+/// repeats it until a snapshot does).
 #[must_use]
-pub fn encode_input(intent: Intent, view_tick: u32) -> Vec<u8> {
+pub fn encode_input(intent: Intent, view_tick: u32, name: Option<&str>) -> Vec<u8> {
     let mut out = Out::default();
     out.u8(WIRE_VERSION);
     out.0.push(intent.forward.to_le_bytes()[0]);
@@ -248,11 +285,12 @@ pub fn encode_input(intent: Intent, view_tick: u32) -> Vec<u8> {
     .fold(0, |flags, (_, flag)| flags | flag));
     out.option(intent.select.map(Weapon::index));
     out.u32(view_tick);
+    out.text(name.unwrap_or_default());
     out.0
 }
 
-/// Inverse of [`encode_input`].
-pub fn decode_input(bytes: &[u8]) -> Result<(Intent, u32), WireError> {
+/// Inverse of [`encode_input`] (the name as sent: the host sanitizes it).
+pub fn decode_input(bytes: &[u8]) -> Result<(Intent, u32, Option<String>), WireError> {
     let mut input = In(bytes);
     if input.u8()? != WIRE_VERSION {
         return Err(WireError("unknown version"));
@@ -267,6 +305,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<(Intent, u32), WireError> {
         None => None,
     };
     let view_tick = input.u32()?;
+    let name = Some(input.text()?).filter(|name| !name.is_empty());
     input.finish()?;
     let intent = Intent {
         forward: forward.clamp(-1, 1),
@@ -280,7 +319,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<(Intent, u32), WireError> {
         melee: flags & MELEE != 0,
         select,
     };
-    Ok((intent, view_tick))
+    Ok((intent, view_tick, name))
 }
 
 fn encode_event(out: &mut Out, event: &Event) {
@@ -473,6 +512,11 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
     for event in snapshot.events.iter().take(usize::from(u8::MAX)) {
         encode_event(&mut out, event);
     }
+    out.u8(count(snapshot.names.len()));
+    for (slot, name) in snapshot.names.iter().take(usize::from(u8::MAX)) {
+        out.u8(*slot);
+        out.text(name);
+    }
     out.0
 }
 
@@ -537,6 +581,9 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
     let events = (0..input.u8()?)
         .map(|_| decode_event(&mut input))
         .collect::<Result<Vec<_>, _>>()?;
+    let names = (0..input.u8()?)
+        .map(|_| Ok((input.u8()?, input.text()?)))
+        .collect::<Result<Vec<_>, WireError>>()?;
     input.finish()?;
     Ok(Snapshot {
         tick,
@@ -545,5 +592,6 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
         fighters,
         rockets,
         events,
+        names,
     })
 }

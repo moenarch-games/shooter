@@ -87,12 +87,15 @@ impl GameSimulation for DeathmatchHost {
         sequence: u32,
         payload: &[u8],
     ) -> Result<(), SimulationError> {
-        let (intent, view_tick) = decode_input(payload).map_err(failed)?;
+        let (intent, view_tick, name) = decode_input(payload).map_err(failed)?;
         let input = Input {
             sequence,
             intent,
             view_tick,
         };
+        if let Some(name) = name {
+            self.session.rename(player_id, &name);
+        }
         if self.session.queue(player_id, input) {
             Ok(())
         } else {
@@ -171,7 +174,7 @@ mod tests {
             ..Intent::IDLE
         };
         for sequence in 1..=60 {
-            let payload = encode_input(forward, 0);
+            let payload = encode_input(forward, 0, Some("Ripley"));
             runtime
                 .submit_command(first.player_id, first.connection_epoch, sequence, &payload)
                 .unwrap();
@@ -182,7 +185,9 @@ mod tests {
         assert_eq!(snapshot.fighters.len(), usize::from(DEATHMATCH_SLOTS));
         let me = snapshot.of_player(first.player_id).unwrap();
         assert_eq!(me.ack, 60);
-        assert!(snapshot.of_player(second.player_id).is_some());
+        assert_eq!(snapshot.name(me.slot), Some("Ripley"));
+        let other = snapshot.of_player(second.player_id).unwrap();
+        assert_eq!(snapshot.name(other.slot), None);
         let bots = snapshot
             .fighters
             .iter()

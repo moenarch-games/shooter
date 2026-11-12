@@ -152,6 +152,8 @@ pub struct Input {
 pub struct Fighter {
     pub slot: u8,
     pub pilot: Pilot,
+    /// The name its person picked ([`crate::names`]); cleared when the slot changes hands.
+    pub name: Option<String>,
     pub player: Player,
     pub arsenal: Arsenal,
     /// The grapple's hook while it is set.
@@ -180,6 +182,7 @@ impl Fighter {
         Self {
             slot,
             pilot,
+            name: None,
             player: Player {
                 body: body_of(slot),
                 motion: crate::player::Motion::default(),
@@ -589,6 +592,18 @@ impl Session {
             inputs.pop_front();
         }
         inputs.push_back(input);
+        true
+    }
+
+    /// Names person `id`'s fighter `raw`, sanitized ([`crate::names::sanitize`]; nothing left
+    /// keeps the old name). Whether `id` holds a slot.
+    pub fn rename(&mut self, id: u32, raw: &str) -> bool {
+        let Some(slot) = self.slot_of_player(id) else {
+            return false;
+        };
+        if let Some(name) = crate::names::sanitize(raw) {
+            self.fighters[usize::from(slot)].name = Some(name);
+        }
         true
     }
 
