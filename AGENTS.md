@@ -1,8 +1,11 @@
 # Agent Instructions
 
-A fast first-person sci-fi arena shooter, native (wgpu) and browser (WebGPU on Pages), built on
-the owner's foundation crates. Read `README.md`, the Decision Atlas (`docs/decisions/atlas.md`)
-and `.conventions/index.md` before a task. Follow Decisions; ask the owner only an open Question
+A sci-fi arena shooter, native (wgpu) and browser (WebGPU on Pages), built on the owner's
+foundation crates. What ships today is a first-person, six-slot deathmatch on one greybox arena
+with box fighters and placeholder guns. The robot beta (third-person, modular robots, about 12
+slots, three arenas; Atlas D1.i46.1 and D2.i46.\*, tracker #45) is intent, not implementation:
+describe shipped behaviour as it is until a feature lands. Read `README.md`, the Decision Atlas
+(`docs/decisions/atlas.md`) and `.conventions/index.md` before a task. Follow Decisions; ask the owner only an open Question
 that materially changes the task.
 
 ## Layout
