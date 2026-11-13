@@ -4,7 +4,11 @@ A fast first-person sci-fi arena shooter for native and browser, built on the mo
 foundation crates. It is experimental. Its second purpose is to give those crates a new,
 demanding consumer: every gap or regression it finds is filed on the crate that owns it.
 
-Product intent lives in the [Decision Atlas](docs/decisions/atlas.md).
+Product intent lives in the [Decision Atlas](docs/decisions/atlas.md). The owner has set a beta
+direction (Atlas D1.i46.1, D2.i46.\*, tracker #45): a third-person arena shooter with modular
+robots, about 12 slots and three arenas. None of that is implemented yet; everything below
+describes what works today: a first-person, six-slot deathmatch on one greybox arena with box
+fighters.
 
 ## What a player does
 
@@ -23,7 +27,7 @@ weapons.
 | Positional gunfire and impacts, native and Web Audio | game-audio |
 | Mouse, keyboard, gamepad, pointer lock | input-bindings |
 | Authoritative matches, lag-compensated hits, WebTransport | game-server |
-| Arena kit, weapons, character | asset-tooling |
+| Arena kit, weapons, character | asset-tooling (beta kits: moritzbrantner/asset-tooling#593, #594, #595) |
 | Frame and tick traces | runtime-profiler |
 
 ## Play
