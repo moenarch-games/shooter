@@ -1,7 +1,8 @@
 //! The match on the wire, inside game-server's command and snapshot frames: a person's input
 //! (one per tick) and the shared snapshot every client gets each tick (the fighters with the
-//! exact physics state a client resumes prediction from, the rockets, the shotgun pellets and
-//! the tick's events).
+//! exact physics state a client resumes prediction from and their robot builds, the rockets, the
+//! shotgun pellets and the tick's events). Robot builds travel as raw codes and are decoded
+//! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored.
 //! Little-endian; positions and velocities travel as exact `f32` bits.
 //!
 //! The in-process practice match builds the same [`Snapshot`], so both modes draw through one
@@ -9,19 +10,27 @@
 
 use crate::grapple::Hook;
 use crate::player::{Intent, Motion};
+use crate::robot::{Assembly, AssemblyError, BETA, Candidate};
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 6;
+pub const WIRE_VERSION: u8 = 7;
 const NONE: u8 = u8::MAX;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WireError(&'static str);
+pub enum WireError {
+    Malformed(&'static str),
+    /// A well-formed robot build that breaks a build rule.
+    Build(AssemblyError),
+}
 
 impl fmt::Display for WireError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "malformed shooter message: {}", self.0)
+        match self {
+            Self::Malformed(reason) => write!(formatter, "malformed shooter message: {reason}"),
+            Self::Build(error) => write!(formatter, "rejected robot build: {error}"),
+        }
     }
 }
 
@@ -57,6 +66,10 @@ pub struct FighterState {
     pub respawn_in: u32,
     /// The last input sequence applied (people only).
     pub ack: u32,
+    /// The robot it is built as this life.
+    pub build: Assembly,
+    /// The build it comes back as at its next spawn.
+    pub configured: Assembly,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,6 +153,8 @@ fn state_of(session: &Session, fighter: &Fighter) -> Option<FighterState> {
             .respawn_at
             .map_or(0, |at| at.saturating_sub(session.ticks())),
         ack: fighter.ack,
+        build: fighter.build,
+        configured: fighter.configured,
     })
 }
 
@@ -211,6 +226,18 @@ impl Out {
     fn weapon(&mut self, weapon: Weapon) {
         self.u8(weapon.index());
     }
+    /// A robot build in canonical order: a count and `(socket, component)` codes, then a count
+    /// and `(hardpoint, weapon)` codes.
+    fn build(&mut self, build: &Assembly) {
+        let candidate = build.candidate();
+        for pairs in [&candidate.parts, &candidate.mounts] {
+            self.u8(count(pairs.len()));
+            for &(at, code) in pairs {
+                self.u8(at);
+                self.u8(code);
+            }
+        }
+    }
     /// A length byte, then up to 255 bytes of UTF-8 (cut at a character boundary).
     fn text(&mut self, text: &str) {
         let mut end = text.len().min(usize::from(u8::MAX));
@@ -229,7 +256,7 @@ impl In<'_> {
         let (head, rest) = self
             .0
             .split_first_chunk::<N>()
-            .ok_or(WireError("truncated"))?;
+            .ok_or(WireError::Malformed("truncated"))?;
         self.0 = rest;
         Ok(*head)
     }
@@ -256,22 +283,34 @@ impl In<'_> {
         Ok(Some(self.u8()?).filter(|value| *value != NONE))
     }
     fn weapon(&mut self) -> Result<Weapon, WireError> {
-        Weapon::from_index(self.u8()?).ok_or(WireError("unknown weapon"))
+        Weapon::from_index(self.u8()?).ok_or(WireError::Malformed("unknown weapon"))
     }
     fn text(&mut self) -> Result<String, WireError> {
         let length = usize::from(self.u8()?);
         if self.0.len() < length {
-            return Err(WireError("truncated"));
+            return Err(WireError::Malformed("truncated"));
         }
         let (text, rest) = self.0.split_at(length);
         self.0 = rest;
-        String::from_utf8(text.to_vec()).map_err(|_| WireError("text is not UTF-8"))
+        String::from_utf8(text.to_vec()).map_err(|_| WireError::Malformed("text is not UTF-8"))
+    }
+    /// Inverse of `Out::build`, validated against [`BETA`].
+    fn build(&mut self) -> Result<Assembly, WireError> {
+        let mut pairs = || {
+            (0..self.u8()?)
+                .map(|_| Ok((self.u8()?, self.u8()?)))
+                .collect::<Result<Vec<_>, WireError>>()
+        };
+        let parts = pairs()?;
+        let mounts = pairs()?;
+        BETA.validate(&Candidate { parts, mounts })
+            .map_err(WireError::Build)
     }
     fn finish(self) -> Result<(), WireError> {
         if self.0.is_empty() {
             Ok(())
         } else {
-            Err(WireError("trailing bytes"))
+            Err(WireError::Malformed("trailing bytes"))
         }
     }
 }
@@ -282,11 +321,28 @@ const CROUCH: u8 = 4;
 const FIRE: u8 = 8;
 const MELEE: u8 = 16;
 
+/// A person's command as the host decoded it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Command {
+    pub intent: Intent,
+    /// The snapshot tick it was made against.
+    pub view_tick: u32,
+    /// The name as sent (the host sanitizes it).
+    pub name: Option<String>,
+    /// The robot build the person asks to come back as, already validated.
+    pub build: Option<Assembly>,
+}
+
 /// One tick of a person's controls and the snapshot tick it was made against, and the name the
-/// person picked while the host has not shown it yet (datagrams are unreliable, so the client
-/// repeats it until a snapshot does).
+/// person picked and the build they configured while the host has not shown them yet (datagrams
+/// are unreliable, so the client repeats them until a snapshot does).
 #[must_use]
-pub fn encode_input(intent: Intent, view_tick: u32, name: Option<&str>) -> Vec<u8> {
+pub fn encode_input(
+    intent: Intent,
+    view_tick: u32,
+    name: Option<&str>,
+    build: Option<&Assembly>,
+) -> Vec<u8> {
     let mut out = Out::default();
     out.u8(WIRE_VERSION);
     out.0.push(intent.forward.to_le_bytes()[0]);
@@ -306,14 +362,27 @@ pub fn encode_input(intent: Intent, view_tick: u32, name: Option<&str>) -> Vec<u
     out.option(intent.select.map(Weapon::index));
     out.u32(view_tick);
     out.text(name.unwrap_or_default());
+    match build {
+        Some(build) => {
+            out.u8(1);
+            out.build(build);
+        }
+        None => out.u8(0),
+    }
     out.0
 }
 
-/// Inverse of [`encode_input`] (the name as sent: the host sanitizes it).
-pub fn decode_input(bytes: &[u8]) -> Result<(Intent, u32, Option<String>), WireError> {
+/// Inverse of [`encode_input`]. The build goes through [`crate::robot::Catalog::validate`]: a
+/// client's build is untrusted.
+///
+/// # Errors
+///
+/// [`WireError::Build`] for a well-formed build that breaks a build rule, else
+/// [`WireError::Malformed`].
+pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
     let mut input = In(bytes);
     if input.u8()? != WIRE_VERSION {
-        return Err(WireError("unknown version"));
+        return Err(WireError::Malformed("unknown version"));
     }
     let forward = i8::from_le_bytes(input.take()?);
     let strafe = i8::from_le_bytes(input.take()?);
@@ -321,11 +390,18 @@ pub fn decode_input(bytes: &[u8]) -> Result<(Intent, u32, Option<String>), WireE
     let pitch = i16::from_le_bytes(input.take()?);
     let flags = input.u8()?;
     let select = match input.option()? {
-        Some(index) => Some(Weapon::from_index(index).ok_or(WireError("unknown weapon"))?),
+        Some(index) => {
+            Some(Weapon::from_index(index).ok_or(WireError::Malformed("unknown weapon"))?)
+        }
         None => None,
     };
     let view_tick = input.u32()?;
     let name = Some(input.text()?).filter(|name| !name.is_empty());
+    let build = match input.u8()? {
+        0 => None,
+        1 => Some(input.build()?),
+        _ => return Err(WireError::Malformed("unknown build flag")),
+    };
     input.finish()?;
     let intent = Intent {
         forward: forward.clamp(-1, 1),
@@ -339,7 +415,12 @@ pub fn decode_input(bytes: &[u8]) -> Result<(Intent, u32, Option<String>), WireE
         melee: flags & MELEE != 0,
         select,
     };
-    Ok((intent, view_tick, name))
+    Ok(Command {
+        intent,
+        view_tick,
+        name,
+        build,
+    })
 }
 
 fn encode_event(out: &mut Out, event: &Event) {
@@ -464,7 +545,9 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
             victim: input.u8()?,
             killer: input.option()?,
             weapon: match input.option()? {
-                Some(index) => Some(Weapon::from_index(index).ok_or(WireError("unknown weapon"))?),
+                Some(index) => {
+                    Some(Weapon::from_index(index).ok_or(WireError::Malformed("unknown weapon"))?)
+                }
                 None => None,
             },
         },
@@ -481,7 +564,7 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
             normal: input.vec3()?,
             launched: input.u8()? != 0,
         },
-        _ => return Err(WireError("unknown event")),
+        _ => return Err(WireError::Malformed("unknown event")),
     })
 }
 
@@ -540,6 +623,13 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         }
         out.u32(fighter.respawn_in);
         out.u32(fighter.ack);
+        out.build(&fighter.build);
+        if fighter.configured == fighter.build {
+            out.u8(0);
+        } else {
+            out.u8(1);
+            out.build(&fighter.configured);
+        }
     }
     out.u8(count(snapshot.rockets.len()));
     for rocket in snapshot.rockets.iter().take(usize::from(u8::MAX)) {
@@ -568,7 +658,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
 pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
     let mut input = In(bytes);
     if input.u8()? != WIRE_VERSION {
-        return Err(WireError("unknown version"));
+        return Err(WireError::Malformed("unknown version"));
     }
     let tick = input.u32()?;
     let phase = match input.u8()? {
@@ -579,17 +669,17 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
             winner: input.option()?,
             restarts_at: input.u32()?,
         },
-        _ => return Err(WireError("unknown phase")),
+        _ => return Err(WireError::Malformed("unknown phase")),
     };
     let frag_limit = input.i32()?;
     let fighters = (0..input.u8()?)
         .map(|_| {
-            Ok(FighterState {
+            let mut fighter = FighterState {
                 slot: input.u8()?,
                 controller: match input.u8()? {
                     1 => Controller::Human(input.u32()?),
                     2 => Controller::Bot,
-                    _ => return Err(WireError("unknown controller")),
+                    _ => return Err(WireError::Malformed("unknown controller")),
                 },
                 alive: input.u8()? != 0,
                 health: input.i32()?,
@@ -607,11 +697,19 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                         anchor: [input.i32()?, input.i32()?, input.i32()?],
                         length: input.i32()?,
                     }),
-                    _ => return Err(WireError("unknown hook state")),
+                    _ => return Err(WireError::Malformed("unknown hook state")),
                 },
                 respawn_in: input.u32()?,
                 ack: input.u32()?,
-            })
+                build: input.build()?,
+                configured: Assembly::default(),
+            };
+            fighter.configured = match input.u8()? {
+                0 => fighter.build,
+                1 => input.build()?,
+                _ => return Err(WireError::Malformed("unknown build state")),
+            };
+            Ok(fighter)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let rockets = (0..input.u8()?)

@@ -23,6 +23,7 @@ use crate::physics::{BodyId, PhysicsError, Vec3i, World};
 use crate::player::{
     EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player, STEP_UP,
 };
+use crate::robot::Assembly;
 use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
 use std::collections::VecDeque;
 
@@ -158,6 +159,10 @@ pub struct Fighter {
     pub name: Option<String>,
     pub player: Player,
     pub arsenal: Arsenal,
+    /// The robot it is built as this life ([`crate::robot`]).
+    pub build: Assembly,
+    /// The build it comes back as at its next spawn (D2.i46.7: rebuilt only between lives).
+    pub configured: Assembly,
     /// The grapple's hook while it is set.
     pub hook: Option<Hook>,
     pub health: i32,
@@ -190,6 +195,8 @@ impl Fighter {
                 motion: crate::player::Motion::default(),
             },
             arsenal: Arsenal::default(),
+            build: Assembly::default(),
+            configured: Assembly::default(),
             hook: None,
             health: 0,
             respawn_at: None,
@@ -474,6 +481,7 @@ impl Session {
         let fighter = &mut self.fighters[slot];
         fighter.player = Player::spawn(&mut self.world, fighter.player.body, at.feet)?;
         fighter.arsenal = Arsenal::default();
+        fighter.build = fighter.configured;
         fighter.hook = None;
         fighter.health = MAX_HEALTH;
         fighter.respawn_at = None;
@@ -632,6 +640,17 @@ impl Session {
         if let Some(name) = crate::names::sanitize(raw) {
             self.fighters[usize::from(slot)].name = Some(name);
         }
+        true
+    }
+
+    /// Person `id`'s robot comes back as `build` at its next spawn; the robot alive now keeps
+    /// its build (D2.i46.7). `build` is validated ([`crate::robot::Catalog::validate`]).
+    /// Whether `id` holds a slot.
+    pub fn configure(&mut self, id: u32, build: Assembly) -> bool {
+        let Some(slot) = self.slot_of_player(id) else {
+            return false;
+        };
+        self.fighters[usize::from(slot)].configured = build;
         true
     }
 
