@@ -482,7 +482,7 @@ pub mod online {
                 });
                 let name = self.name.as_deref().filter(|name| shown != Some(*name));
                 self.connection
-                    .send(self.sequence, &encode_input(intent, view_tick, name));
+                    .send(self.sequence, &encode_input(intent, view_tick, name, None));
                 if self.predicting {
                     report = self.predict(intent)?;
                     let shots = self.predicted_shots();

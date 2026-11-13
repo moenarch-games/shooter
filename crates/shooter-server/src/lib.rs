@@ -1,7 +1,8 @@
 //! The shooter's deathmatch on game-server: [`DeathmatchHost`] is the `GameSimulation` game-server
 //! runs for a match. People join a slot (taking it from a bot), every command is one tick of
-//! their controls ([`shooter_sim::wire::decode_input`]), and every tick goes out to all clients
-//! as one shared snapshot ([`shooter_sim::wire::encode_snapshot`]). [`replay`] records scripted
+//! their controls ([`shooter_sim::wire::decode_input`], rejected whole when it carries an invalid
+//! robot build), and every tick goes out to all clients as one shared snapshot
+//! ([`shooter_sim::wire::encode_snapshot`]). [`replay`] records scripted
 //! matches in game-server's replay format; [`promote`] turns them into foundation fixtures.
 
 pub mod promote;
@@ -87,14 +88,17 @@ impl GameSimulation for DeathmatchHost {
         sequence: u32,
         payload: &[u8],
     ) -> Result<(), SimulationError> {
-        let (intent, view_tick, name) = decode_input(payload).map_err(failed)?;
+        let command = decode_input(payload).map_err(failed)?;
         let input = Input {
             sequence,
-            intent,
-            view_tick,
+            intent: command.intent,
+            view_tick: command.view_tick,
         };
-        if let Some(name) = name {
+        if let Some(name) = command.name {
             self.session.rename(player_id, &name);
+        }
+        if let Some(build) = command.build {
+            self.session.configure(player_id, build);
         }
         if self.session.queue(player_id, input) {
             Ok(())
@@ -174,7 +178,7 @@ mod tests {
             ..Intent::IDLE
         };
         for sequence in 1..=60 {
-            let payload = encode_input(forward, 0, Some("Ripley"));
+            let payload = encode_input(forward, 0, Some("Ripley"), None);
             runtime
                 .submit_command(first.player_id, first.connection_epoch, sequence, &payload)
                 .unwrap();

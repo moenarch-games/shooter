@@ -10,7 +10,9 @@ real players.
    `MatchRuntime` with replay capture on. It has six slots of seeded bots and scripted people
    (`--people`, default 2). The people join one second apart and send one command per tick at a
    fixed input latency (`--latency`, default 6 ticks = 100 ms), so their shots are
-   lag-compensated. Every second person leaves three quarters of the way in. The replay file is
+   lag-compensated. The first person's first command asks for the heavy robot build
+   (`shooter_sim::robot::HEAVY`), which it comes back as after its first death. Every second
+   person leaves three quarters of the way in. The replay file is
    the bot seed followed by game-server's own replay log: admissions, commands, removals and a
    digest of every tick's snapshot.
 2. **Verify** it: `shooter-replay verify` replays the log into a fresh match through

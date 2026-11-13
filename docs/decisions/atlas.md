@@ -134,5 +134,12 @@ implemented yet.
 - **Q2.i46.3**: How long pickup modules last once taken, and when they respawn (D2.i46.9).
 - **Q2.i46.4**: The exact engineering budgets (weight, power, cooling), attachment rules and build
   point values (D2.i46.5).
+  Defaults in use until decided (shooter#47): provisional, tunable catalog data in
+  `shooter_sim::robot::BETA`. Sockets for torso, head, two arms and locomotion (torso, head and
+  locomotion required); a hand hardpoint per arm and two shoulder hardpoints on the torso, each
+  light or heavy; the blade mounts only on a hand; a weapon mounts at most once. The locomotion
+  carries the mass of everything else, the torso supplies the power everything draws, the parts'
+  cooling sheds the weapons' heat, and a build costs at most 120 build points. Two of each part
+  (light and heavy) and the eight shipped weapons, all available from the start.
 - **Q2.i46.5**: Layout details of the three arenas: topology, destructible pieces, pickup points
   and each map's player capacity (D2.i46.11, D2.i46.12).

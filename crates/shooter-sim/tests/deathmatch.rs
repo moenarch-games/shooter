@@ -450,14 +450,11 @@ fn inputs_and_snapshots_round_trip() {
         melee: true,
         select: Some(Weapon::RocketLauncher),
     };
-    assert_eq!(
-        decode_input(&encode_input(intent, 77, None)).unwrap(),
-        (intent, 77, None)
-    );
-    assert_eq!(
-        decode_input(&encode_input(intent, 77, Some("Ripley"))).unwrap(),
-        (intent, 77, Some("Ripley".to_owned()))
-    );
+    let command = decode_input(&encode_input(intent, 77, None, None)).unwrap();
+    assert_eq!((command.intent, command.view_tick), (intent, 77));
+    assert_eq!((command.name, command.build), (None, None));
+    let command = decode_input(&encode_input(intent, 77, Some("Ripley"), None)).unwrap();
+    assert_eq!(command.name.as_deref(), Some("Ripley"));
     let mut session = bot_match(5, 0);
     let slot = session.join(9).unwrap().unwrap();
     assert!(session.rename(9, "  <Rip>  ley!  "));

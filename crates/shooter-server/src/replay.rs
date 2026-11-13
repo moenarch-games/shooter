@@ -1,8 +1,9 @@
 //! Deterministic match replays, recorded in game-server's own replay format.
 //!
 //! A replay is a scripted deathmatch hosted through game-server's [`MatchRuntime`] with replay
-//! capture on: the seeded bots plus a few scripted people who join, play with a fixed input
-//! latency (so their shots are lag-compensated) and leave. game-server's [`ReplayLog`] holds every
+//! capture on: the seeded bots plus a few scripted people who join (the first asking for a
+//! heavy robot build), play with a fixed input latency (so their shots are lag-compensated) and
+//! leave. game-server's [`ReplayLog`] holds every
 //! admission, command and removal and a digest of every tick's snapshot; with the bot seed that is
 //! the whole match, and [`verify`] replays it into a fresh [`DeathmatchHost`] and checks every
 //! tick. Nothing here comes from real players.
@@ -16,7 +17,7 @@ use game_server::{
     ReplayRecord, ReplayVerification, SimulationError, verify_replay,
 };
 use shooter_sim::Session;
-use shooter_sim::scenarios::scripted_intent;
+use shooter_sim::scenarios::{scripted_build, scripted_intent};
 use shooter_sim::wire::encode_input;
 use std::fmt;
 
@@ -135,7 +136,13 @@ pub fn record(script: Script) -> Result<Replay, Error> {
             if let Some(lease) = &leases[slot] {
                 sequences[slot] += 1;
                 let view_tick = tick.saturating_sub(script.latency_ticks);
-                let payload = encode_input(scripted_intent(index, tick), view_tick, None);
+                let build = scripted_build(index).filter(|_| sequences[slot] == 1);
+                let payload = encode_input(
+                    scripted_intent(index, tick),
+                    view_tick,
+                    None,
+                    build.as_ref(),
+                );
                 runtime
                     .submit_command(
                         lease.player_id,
@@ -254,6 +261,7 @@ pub fn verify(replay: &Replay) -> Result<ReplayVerification, Error> {
 mod tests {
     use super::*;
     use shooter_sim::Event;
+    use shooter_sim::robot::HEAVY;
 
     fn short() -> Script {
         Script {
@@ -294,10 +302,14 @@ mod tests {
             count(|r| matches!(r, ReplayRecord::PlayerRemoved { .. })),
             1
         );
-        let (mut shots, mut ticks) = (0, 0);
+        let (mut shots, mut ticks, mut heavy) = (0, 0, false);
         replay
             .play(u64::MAX, |session| {
                 ticks += 1;
+                heavy |= session
+                    .fighters
+                    .iter()
+                    .any(|fighter| fighter.human().is_some() && fighter.configured == HEAVY);
                 shots += session
                     .events
                     .iter()
@@ -308,5 +320,6 @@ mod tests {
             .unwrap();
         assert_eq!(ticks, Script::DEFAULT.ticks);
         assert!(shots > 20, "{shots} shots from slots 0 and 1");
+        assert!(heavy, "the first person's build request is in the replay");
     }
 }
