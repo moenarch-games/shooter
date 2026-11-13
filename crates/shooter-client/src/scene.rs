@@ -577,11 +577,12 @@ impl Actors {
 /// The native health bar's full length (metres, half a metre ahead of the camera).
 const HEALTH_BAR_LENGTH: f32 = 0.12;
 
-/// The health bar low in the view, shrunk to `health` from its left end.
+/// The health bar low and right of the view's centre, clear of the fighter over whose shoulder
+/// the camera looks, shrunk to `health` from its left end.
 fn health_bar_pose(camera: Vec3, forward: Vec3, health: f32) -> Mat4 {
     let (forward, right, up) = basis(forward);
     let health = health.clamp(0.0, 1.0);
-    let left = camera + forward * 0.5 - up * 0.2 - right * (HEALTH_BAR_LENGTH / 2.0);
+    let left = camera + forward * 0.5 - up * 0.25 + right * 0.12;
     let center = left + right * (HEALTH_BAR_LENGTH * health / 2.0);
     let rotation = Quat::from_mat3(&Mat3::from_cols(-right, up, forward));
     Mat4::from_scale_rotation_translation(Vec3::new(health.max(0.001), 1.0, 1.0), rotation, center)

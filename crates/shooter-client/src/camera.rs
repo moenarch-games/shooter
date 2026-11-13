@@ -24,11 +24,11 @@ use crate::scene::METRES_PER_UNIT;
 /// Vertical field of view (radians).
 pub const FOV_Y: f32 = 1.2;
 /// How far behind the eye the camera sits (metres, along the aim).
-pub const DISTANCE: f32 = 3.2;
+pub const DISTANCE: f32 = 3.5;
 /// How far right of the eye (metres).
 pub const SHOULDER: f32 = 0.6;
 /// How far above the eye (metres).
-pub const LIFT: f32 = 0.25;
+pub const LIFT: f32 = 0.3;
 /// How far the camera stays from anything it is pulled in by (metres), and how far apart the
 /// rays that find it run.
 pub const CLEARANCE: f32 = 0.2;

@@ -97,7 +97,7 @@ kill feed) is the page's overlay in the browser and the window title plus a heal
 until render-engine draws screen overlays.
 
 **Camera and aim.** Native and browser clients share one third-person follow camera
-(`shooter-client`'s `camera`): 3.2 m behind the eye along the aim, 0.6 m right of it and 0.25 m
+(`shooter-client`'s `camera`): 3.5 m behind the eye along the aim, 0.6 m right of it and 0.3 m
 above, a 1.2 rad (69°) vertical field of view. It keeps 0.2 m clear of the arena (it is pulled
 in at once in front of a wall, floor or ceiling and eases back out), never through it; fighters
 do not push it, and your own fighter is not drawn while the camera is inside it. Shots and
