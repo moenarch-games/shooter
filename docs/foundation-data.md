@@ -12,10 +12,12 @@ real players.
    fixed input latency (`--latency`, default 6 ticks = 100 ms), so their shots are
    lag-compensated. The first person's first command asks for the heavy robot build
    (`shooter_sim::robot::HEAVY`), which it comes back as after its first death. Every second
-   person leaves three quarters of the way in. The replay file is
+   person leaves three quarters of the way in. It plays the default map
+   (`--map` picks another catalogued one). The replay file is the map ID and
    the bot seed followed by game-server's own replay log: admissions, commands, removals and a
    digest of every tick's snapshot.
-2. **Verify** it: `shooter-replay verify` replays the log into a fresh match through
+2. **Verify** it: `shooter-replay verify` replays the log into a fresh match on the recorded map
+   (a file naming a map this build does not know is rejected) through
    game-server's `verify_replay`, and every tick must match its digest. Recording the same
    script twice gives identical bytes (`crates/shooter-server/src/replay.rs` tests).
 3. **Promote** a window into a foundation's fixture format (`shooter-replay promote`):
@@ -36,6 +38,7 @@ real players.
    the top ones to `bot-match/hotspots.md`. `native-perf` needs `perf` and
    `kernel.perf_event_paranoid` at 2 or lower (user-space cycles). `profiles/native-client.yaml` runs
    `shooter-client --frames 600`: the native client draws 600 frames (10 s) of a practice match
+   (on the default map; `--map <id>` picks another, and the summary line names it)
    offscreen at 1280x720, one tick per frame, with the local fighter played by the replays'
    scripted person 0. The script runs it once more to record its frame times (mean, p50, p95,
    max). `WGPU_FORCE_FALLBACK_ADAPTER=1` picks lavapipe, as CI does. `profile.yml` runs it on
@@ -45,7 +48,7 @@ real players.
 
    The web lane builds `web/dist` and captures `profiles/web-client.yaml`, a `browser-journey`
    (collector `browser-chromium`). `scripts/profile-web-journey.mjs` serves `web/dist` on
-   loopback and opens `?frames=120`: the page's profile run plays the same scripted practice
+   loopback and opens `?frames=120` (`&map=<id>` picks the map, which `window.shooterProfile` names): the page's profile run plays the same scripted practice
    match, one tick per animation frame, in the profiler's 1280x720 headless Chromium. Each frame
    is a `runtime-profiler:js-to-wasm:frame` User Timing measure, so the bundle's trace summary
    lists the frames as JS-to-WASM boundary evidence. When done the page sets

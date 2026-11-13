@@ -18,6 +18,7 @@ use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
 use crate::bots::{Bot, Sight};
 use crate::dummies::Dummy;
 use crate::grapple::Hook;
+use crate::maps::MapId;
 use crate::melee;
 use crate::physics::{BodyId, PhysicsError, Vec3i, World};
 use crate::player::{
@@ -376,6 +377,8 @@ struct Frame {
 
 #[derive(Debug)]
 pub struct Session {
+    /// The catalogued map `arena` is ([`Session::on_map`]); `None` for a scripted arena.
+    pub map: Option<MapId>,
     pub arena: Arena,
     pub world: World,
     pub rules: Rules,
@@ -408,6 +411,14 @@ impl Session {
         Self::with_rules(arena, Rules::solo())
     }
 
+    /// A match on the catalogued `map`: its arena for every round, respawn and snapshot.
+    pub fn on_map(map: MapId, rules: Rules) -> Result<Self, PhysicsError> {
+        let mut session = Self::with_rules(map.arena(), rules)?;
+        session.map = Some(map);
+        Ok(session)
+    }
+
+    /// A match in `arena`, outside the catalog (the scripted moves and test arenas).
     pub fn with_rules(arena: Arena, rules: Rules) -> Result<Self, PhysicsError> {
         let mut world = arena.build_world(GRAVITY)?;
         world.set_step_up(Some(STEP_UP));
@@ -424,6 +435,7 @@ impl Session {
             })
             .collect();
         let mut session = Self {
+            map: None,
             arena,
             world,
             rules,

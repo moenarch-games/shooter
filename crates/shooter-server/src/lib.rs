@@ -1,5 +1,5 @@
 //! The shooter's deathmatch on game-server: [`DeathmatchHost`] is the `GameSimulation` game-server
-//! runs for a match. People join a slot (taking it from a bot), every command is one tick of
+//! runs for a match, on the map the host chose for it ([`MatchSpec`]). People join a slot (taking it from a bot), every command is one tick of
 //! their controls ([`shooter_sim::wire::decode_input`], rejected whole when it carries an invalid
 //! robot build), and every tick goes out to all clients as one shared snapshot
 //! ([`shooter_sim::wire::encode_snapshot`]). [`replay`] records scripted
@@ -14,7 +14,7 @@ use game_server::{
 };
 use shooter_sim::session::DEATHMATCH_SLOTS;
 use shooter_sim::wire::{decode_input, encode_snapshot};
-use shooter_sim::{Arena, Input, Rules, Session, TICK_HZ};
+use shooter_sim::{Input, MapId, Rules, Session, TICK_HZ, UnknownMap};
 
 /// One hosted deathmatch.
 #[derive(Debug)]
@@ -33,13 +33,13 @@ pub fn seed_of(match_id: &str) -> u64 {
 }
 
 impl DeathmatchHost {
-    /// A greybox deathmatch full of bots, seeded `seed`.
+    /// A deathmatch on `map` full of bots, seeded `seed`.
     ///
     /// # Errors
     ///
     /// If the arena does not build.
-    pub fn new(seed: u64) -> Result<Self, SimulationError> {
-        Session::with_rules(Arena::greybox(), Rules::deathmatch(seed))
+    pub fn new(map: MapId, seed: u64) -> Result<Self, SimulationError> {
+        Session::on_map(map, Rules::deathmatch(seed))
             .map(|session| Self { session })
             .map_err(failed)
     }
@@ -119,6 +119,29 @@ impl GameSimulation for DeathmatchHost {
     }
 }
 
+/// One match a host serves: its route ID and its map. Written `<id>` (on [`MapId::DEFAULT`])
+/// or `<id>=<map>`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatchSpec {
+    pub id: String,
+    pub map: MapId,
+}
+
+impl std::str::FromStr for MatchSpec {
+    type Err = UnknownMap;
+
+    fn from_str(spec: &str) -> Result<Self, UnknownMap> {
+        let (id, map) = match spec.split_once('=') {
+            Some((id, map)) => (id.trim(), map.trim().parse()?),
+            None => (spec.trim(), MapId::DEFAULT),
+        };
+        Ok(Self {
+            id: id.to_owned(),
+            map,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum BuildError {
     MatchId(MatchIdError),
@@ -138,19 +161,20 @@ impl std::fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
-/// A host serving one deathmatch per ID in `match_ids`, each seeded from its ID.
+/// A host serving one deathmatch per spec in `matches`, each on its map and seeded from its ID.
 ///
 /// # Errors
 ///
 /// If an ID is not a valid game-server match ID, repeats, or the arena does not build.
 pub fn build_host(
-    match_ids: &[String],
+    matches: &[MatchSpec],
     reconnect_grace_ticks: u64,
 ) -> Result<MatchHost<DeathmatchHost>, BuildError> {
-    let mut host = MatchHost::new(match_ids.len()).map_err(BuildError::Host)?;
-    for id in match_ids {
-        let route = MatchId::new(id.clone()).map_err(BuildError::MatchId)?;
-        let simulation = DeathmatchHost::new(seed_of(id)).map_err(BuildError::Simulation)?;
+    let mut host = MatchHost::new(matches.len()).map_err(BuildError::Host)?;
+    for spec in matches {
+        let route = MatchId::new(spec.id.clone()).map_err(BuildError::MatchId)?;
+        let simulation =
+            DeathmatchHost::new(spec.map, seed_of(&spec.id)).map_err(BuildError::Simulation)?;
         host.insert(route, MatchRuntime::new(simulation, reconnect_grace_ticks))
             .map_err(|failure| BuildError::Host(failure.into_parts().0))?;
     }
@@ -166,7 +190,10 @@ mod tests {
 
     #[test]
     fn two_people_join_a_bot_match_and_move() {
-        let mut runtime = MatchRuntime::new(DeathmatchHost::new(seed_of("dm")).unwrap(), 300);
+        let mut runtime = MatchRuntime::new(
+            DeathmatchHost::new(MapId::Greybox, seed_of("dm")).unwrap(),
+            300,
+        );
         let first = runtime
             .admit(ReconnectToken([1; RECONNECT_TOKEN_BYTES]))
             .unwrap();
@@ -186,6 +213,7 @@ mod tests {
         }
         let snapshot = decode_snapshot(&runtime.snapshot().unwrap().payload).unwrap();
         assert_eq!(snapshot.tick, 60);
+        assert_eq!(snapshot.map, Some(MapId::Greybox));
         assert_eq!(snapshot.fighters.len(), usize::from(DEATHMATCH_SLOTS));
         let me = snapshot.of_player(first.player_id).unwrap();
         assert_eq!(me.ack, 60);
@@ -201,11 +229,30 @@ mod tests {
         assert!(runtime.disconnect(first.player_id, first.connection_epoch));
     }
 
+    fn specs(specs: &[&str]) -> Vec<MatchSpec> {
+        specs.iter().map(|spec| spec.parse().unwrap()).collect()
+    }
+
     #[test]
     fn a_host_serves_each_match_id() {
-        let host = build_host(&["dm".to_owned(), "dm-2".to_owned()], 120).unwrap();
+        let host = build_host(&specs(&["dm", "dm-2=greybox"]), 120).unwrap();
         assert_eq!(host.len(), 2);
-        assert!(build_host(&["bad id!".to_owned()], 120).is_err());
+        assert!(build_host(&specs(&["bad id!"]), 120).is_err());
         assert_ne!(seed_of("dm"), seed_of("dm-2"));
+    }
+
+    #[test]
+    fn a_match_spec_names_its_map() {
+        let spec = |text: &str| text.parse::<MatchSpec>();
+        assert_eq!(
+            spec("dm"),
+            Ok(MatchSpec {
+                id: "dm".to_owned(),
+                map: MapId::DEFAULT
+            })
+        );
+        assert_eq!(spec(" arena = greybox ").unwrap().map, MapId::Greybox);
+        assert_eq!(spec("dm=nowhere"), Err(UnknownMap("nowhere".to_owned())));
+        assert!(spec("dm=").is_err());
     }
 }

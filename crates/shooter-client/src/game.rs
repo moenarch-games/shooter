@@ -1,11 +1,12 @@
 //! Where the client's match comes from: offline practice runs the deathmatch in-process
 //! (`shooter-sim`, the local player in slot 0 against bots), online play (native and in the
 //! browser) follows a game-server host and predicts the local fighter. Both hand the frame the
-//! same [`Snapshot`] of the match, so drawing and the HUD do not care which it is.
+//! same [`Snapshot`] of the match, so drawing and the HUD do not care which it is. Practice
+//! plays the map it is given; online, the host's snapshots name the map.
 
 use crate::interpolation::Interpolation;
 use shooter_sim::session::LOCAL_PLAYER;
-use shooter_sim::{Arena, Event, Intent, Rules, Session, Snapshot, StepReport};
+use shooter_sim::{Event, Intent, MapId, Rules, Session, Snapshot, StepReport};
 
 /// The practice match's bot seed.
 pub const PRACTICE_SEED: u64 = 1;
@@ -27,15 +28,15 @@ pub enum Game {
 }
 
 impl Game {
-    /// Offline practice against bots.
+    /// Offline practice against bots on `map`.
     ///
     /// # Panics
     ///
-    /// If the greybox arena does not build.
+    /// If the map's arena does not build.
     #[must_use]
-    pub fn practice() -> Self {
-        let session = Session::with_rules(Arena::greybox(), Rules::practice(PRACTICE_SEED))
-            .expect("the greybox arena builds");
+    pub fn practice(map: MapId) -> Self {
+        let session =
+            Session::on_map(map, Rules::practice(PRACTICE_SEED)).expect("a catalogued map builds");
         let snapshot = session.snapshot();
         Self::Practice {
             session: Box::new(session),
@@ -63,6 +64,15 @@ impl Game {
                 })
             }
             Self::Online(online) => online.tick(intent),
+        }
+    }
+
+    /// The map the match is played on, once it is known (online: from the first snapshot).
+    #[must_use]
+    pub fn map(&self) -> Option<MapId> {
+        match self {
+            Self::Practice { session, .. } => session.map,
+            Self::Online(online) => online.map(),
         }
     }
 
@@ -137,7 +147,7 @@ impl Game {
 
 pub mod online {
     //! Following a hosted match: inputs go out once a tick, the local fighter is predicted by a
-    //! one-fighter session of the same arena and reconciled with every snapshot (reset to the
+    //! one-fighter session of the map the host's snapshots name, and reconciled with every snapshot (reset to the
     //! server's state at the acknowledged input and the unacknowledged inputs replayed, when the
     //! prediction was off).
 
@@ -150,7 +160,7 @@ pub mod online {
     use shooter_sim::session::{HALF, MAX_HEALTH};
     use shooter_sim::weapons::{self, Delivery};
     use shooter_sim::wire::encode_input;
-    use shooter_sim::{Arena, Event, Intent, Session, Snapshot, StepReport, Weapon};
+    use shooter_sim::{Event, Intent, MapId, Rules, Session, Snapshot, StepReport, Weapon};
     use std::collections::VecDeque;
 
     /// A prediction further than this (units, any axis) from the server's state is corrected.
@@ -171,7 +181,8 @@ pub mod online {
         /// The name picked for this match (sanitized as the host does).
         name: Option<String>,
         player_id: Option<u32>,
-        predictor: Session,
+        /// A one-fighter session on the host's map, from the first snapshot on.
+        predictor: Option<Session>,
         predicting: bool,
         pending: VecDeque<Pending>,
         sequence: u32,
@@ -206,20 +217,14 @@ pub mod online {
     }
 
     impl Online {
-        /// # Errors
-        ///
-        /// If the arena does not build.
-        pub fn connect(
-            url: String,
-            certificate: Trust,
-            name: Option<&str>,
-        ) -> Result<Self, String> {
+        #[must_use]
+        pub fn connect(url: String, certificate: Trust, name: Option<&str>) -> Self {
             let status = format!("connecting to {url}");
-            Ok(Self {
+            Self {
                 connection: Connection::open(url, certificate),
                 name: name.and_then(names::sanitize),
                 player_id: None,
-                predictor: Session::new(Arena::greybox()).map_err(|error| error.to_string())?,
+                predictor: None,
                 predicting: false,
                 pending: VecDeque::new(),
                 sequence: 0,
@@ -228,7 +233,38 @@ pub mod online {
                 events: Vec::new(),
                 status: Some(status),
                 resumed: 0,
-            })
+            }
+        }
+
+        /// The host's map, once a snapshot has named it.
+        pub fn map(&self) -> Option<MapId> {
+            self.predictor.as_ref()?.map
+        }
+
+        /// The predictor for the map `snapshot` names, made (or remade, if the map is another)
+        /// on the first snapshot.
+        fn follow_map(&mut self, snapshot: &Snapshot) -> Result<(), String> {
+            let map = snapshot
+                .map
+                .ok_or("the host plays an arena outside the map catalog")?;
+            if self.map() != Some(map) {
+                self.predictor =
+                    Some(Session::on_map(map, Rules::solo()).map_err(|error| error.to_string())?);
+                self.predicting = false;
+                self.pending.clear();
+            }
+            Ok(())
+        }
+
+        /// The predictor while it predicts the local fighter.
+        fn live(&self) -> Option<&Session> {
+            self.predictor.as_ref().filter(|_| self.predicting)
+        }
+
+        fn predictor_mut(&mut self) -> Result<&mut Session, String> {
+            self.predictor
+                .as_mut()
+                .ok_or_else(|| "no snapshot has named the map yet".to_owned())
         }
 
         /// Drops the connection without closing it, as a network loss would (testing the
@@ -263,7 +299,11 @@ pub mod online {
                 .filter_map(|fighter| self.others.center(fighter.slot, 0.0))
                 .collect();
             let mut shots = Vec::new();
-            for event in &self.predictor.events {
+            for event in self
+                .live()
+                .into_iter()
+                .flat_map(|predictor| &predictor.events)
+            {
                 match *event {
                     Event::Fired { weapon, .. } | Event::Beam { weapon, .. }
                         if weapon == Weapon::EnergyBlade => {}
@@ -346,34 +386,35 @@ pub mod online {
         }
 
         pub fn local_center(&self) -> Option<[f32; 3]> {
-            self.predicting
-                .then(|| self.predictor.local().player.center(&self.predictor.world))
+            self.live()
+                .map(|predictor| predictor.local().player.center(&predictor.world))
         }
 
         pub fn sliding(&self) -> bool {
-            self.predicting && self.predictor.local().player.motion.sliding
+            self.live()
+                .is_some_and(|predictor| predictor.local().player.motion.sliding)
         }
 
         fn predict(&mut self, intent: Intent) -> Result<StepReport, String> {
-            self.predictor.fighters[0].health = MAX_HEALTH;
-            self.predictor
-                .tick(intent)
-                .map_err(|error| error.to_string())
+            let predictor = self.predictor_mut()?;
+            predictor.fighters[0].health = MAX_HEALTH;
+            predictor.tick(intent).map_err(|error| error.to_string())
         }
 
         fn state(&self) -> ([f32; 3], Motion, Option<Hook>) {
-            let local = self.predictor.local();
-            (
-                local.player.center(&self.predictor.world),
-                local.player.motion,
-                local.hook,
-            )
+            self.live()
+                .map_or(([0.0; 3], Motion::default(), None), |predictor| {
+                    let local = predictor.local();
+                    (
+                        local.player.center(&predictor.world),
+                        local.player.motion,
+                        local.hook,
+                    )
+                })
         }
 
         pub fn hook(&self) -> Option<[f32; 3]> {
-            self.predicting
-                .then(|| self.predictor.local().hook.map(|hook| hook.anchor_units()))
-                .flatten()
+            self.live()?.local().hook.map(|hook| hook.anchor_units())
         }
 
         fn reconcile(&mut self, snapshot: &Snapshot) -> Result<(), String> {
@@ -391,7 +432,7 @@ pub mod online {
                     .map_err(|error| error.to_string())
             };
             if !self.predicting {
-                place(&mut self.predictor)?;
+                place(self.predictor_mut()?)?;
                 self.predicting = true;
                 self.pending.clear();
                 return Ok(());
@@ -417,7 +458,7 @@ pub mod online {
                 || acked.motion != me.motion
                 || acked.hook != me.hook;
             if off {
-                place(&mut self.predictor)?;
+                place(self.predictor_mut()?)?;
                 let replay: Vec<Pending> = self.pending.drain(..).collect();
                 for mut pending in replay {
                     self.predict(pending.intent)?;
@@ -454,6 +495,7 @@ pub mod online {
                             .map(|me| me.slot);
                         self.events
                             .extend(without_own_shots(&snapshot.events, local));
+                        self.follow_map(&snapshot)?;
                         self.reconcile(&snapshot)?;
                         self.others.push(&snapshot);
                         self.latest = Some(*snapshot);

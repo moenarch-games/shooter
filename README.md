@@ -42,6 +42,16 @@ sounds are placeholders until asset-tooling delivers models and clips.
 **Practice offline.** The native client without arguments, and the browser build (Pages), run the
 same simulation in-process: you in slot 0 against five bots, no server needed.
 
+**Maps.** Every match is played on a map from one catalog in the simulation
+(`shooter_sim::maps`), which both clients and the host share: a stable ID (`greybox`), its arena
+(geometry, collision, spawn points, jump pads) and the player count it is laid out for (the
+greybox: 2 to 8). The greybox is the only map so far; the beta's three arenas will join it. The
+recommended capacity never changes the slot count (six). The host picks each match's map
+(`SHOOTER_MATCH_IDS=dm=greybox`, [docs/hosting.md](docs/hosting.md)) and its snapshots name it,
+so a joining client builds and predicts on that map; practice takes `--map <id>` natively or
+`?map=<id>` in the browser. Replays record their map and restore it; an unknown map ID is
+refused everywhere.
+
 ```sh
 cargo run -p shooter-client --release      # native window, practice
 scripts/build-web.sh                       # browser build into web/dist (needs a WebGPU browser)

@@ -4,7 +4,7 @@
 //! | --- | --- | --- |
 //! | `SHOOTER_PORT` | 4433 | UDP port |
 //! | `SHOOTER_CERT_PEM`, `SHOOTER_KEY_PEM` | `cert.pem`, `key.pem` | TLS identity |
-//! | `SHOOTER_MATCH_IDS` | `dm` | comma-separated match IDs, one deathmatch each |
+//! | `SHOOTER_MATCH_IDS` | `dm` | comma-separated matches, one deathmatch each: `<id>` (on the greybox) or `<id>=<map>` |
 //! | `SHOOTER_ROUTE_PREFIX` | `/shooter` | matches are at `<prefix>/matches/<id>` |
 //! | `SHOOTER_ALLOWED_ORIGINS` | none | comma-separated browser origins (unset: any client) |
 //!
@@ -14,7 +14,7 @@ use game_server::{
     BrowserOriginAllowlist, BrowserRoutePrefix, DEFAULT_RECONNECT_GRACE_TICKS,
     MatchHostWebTransportConfig, serve_match_host_with_shutdown,
 };
-use shooter_server::build_host;
+use shooter_server::{MatchSpec, build_host};
 use std::env;
 use std::error::Error;
 use std::path::PathBuf;
@@ -37,10 +37,13 @@ fn list(value: &str) -> Vec<String> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let port: u16 = setting("SHOOTER_PORT", "4433").parse()?;
-    let match_ids = list(&setting("SHOOTER_MATCH_IDS", "dm"));
+    let matches = list(&setting("SHOOTER_MATCH_IDS", "dm"))
+        .iter()
+        .map(|spec| spec.parse())
+        .collect::<Result<Vec<MatchSpec>, _>>()?;
     let prefix = setting("SHOOTER_ROUTE_PREFIX", "/shooter");
     let origins = list(&setting("SHOOTER_ALLOWED_ORIGINS", ""));
-    let host = build_host(&match_ids, DEFAULT_RECONNECT_GRACE_TICKS)?;
+    let host = build_host(&matches, DEFAULT_RECONNECT_GRACE_TICKS)?;
     let config = MatchHostWebTransportConfig {
         port,
         certificate_pem: PathBuf::from(setting("SHOOTER_CERT_PEM", "cert.pem")),
@@ -53,8 +56,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         drain_grace: Duration::from_millis(500),
     };
-    for id in &match_ids {
-        println!("deathmatch at https://localhost:{port}{prefix}/matches/{id}");
+    for spec in &matches {
+        println!(
+            "deathmatch on {} ({} players recommended) at https://localhost:{port}{prefix}/matches/{}",
+            spec.map,
+            spec.map.capacity(),
+            spec.id
+        );
     }
     let (shutdown, requests) = mpsc::channel(1);
     tokio::spawn(async move {

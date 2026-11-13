@@ -14,12 +14,14 @@ pub mod interpolation;
 pub mod net;
 pub mod scene;
 
+use shooter_sim::MapId;
+
 /// The match to play: natively `--connect <url> [--cert <pem>] [--name <name>]` joins a hosted
 /// deathmatch (the certificate is a development host's self-signed one; the name is remembered
 /// in the config directory for later runs, [`remembered_name`]); in the browser the page's
 /// `?connect=<url>[&certHash=<sha-256 hex>][&name=<name>]` does (the page remembers the name).
-/// Anything else is offline practice against bots.
-fn game(#[cfg(not(target_arch = "wasm32"))] args: Args) -> game::Game {
+/// Anything else is offline practice against bots on `map`. Online, the host picks the map.
+fn game(#[cfg(not(target_arch = "wasm32"))] args: Args, map: MapId) -> game::Game {
     #[cfg(not(target_arch = "wasm32"))]
     let (url, trust, name) = (args.connect, args.cert, remembered_name(args.name));
     #[cfg(target_arch = "wasm32")]
@@ -36,12 +38,26 @@ fn game(#[cfg(not(target_arch = "wasm32"))] args: Args) -> game::Game {
         }
     };
     if let Some(url) = url {
-        match game::online::Online::connect(url, trust, name.as_deref()) {
-            Ok(online) => return game::Game::Online(Box::new(online)),
-            Err(error) => fail(&error),
-        }
+        return game::Game::Online(Box::new(game::online::Online::connect(
+            url,
+            trust,
+            name.as_deref(),
+        )));
     }
-    game::Game::practice()
+    game::Game::practice(map)
+}
+
+/// The practice and profile-run map: natively `--map <id>`, in the browser `?map=<id>`, else
+/// [`MapId::DEFAULT`]. An ID outside the catalog is refused.
+///
+/// # Errors
+///
+/// If `requested` names no catalogued map.
+pub fn practice_map(requested: Option<&str>) -> Result<MapId, String> {
+    requested.map_or(Ok(MapId::DEFAULT), |id| {
+        id.parse()
+            .map_err(|error: shooter_sim::UnknownMap| error.to_string())
+    })
 }
 
 /// The native command line.
@@ -51,6 +67,8 @@ struct Args {
     connect: Option<String>,
     cert: Option<std::path::PathBuf>,
     name: Option<String>,
+    /// `--map <id>`: the practice map ([`practice_map`]).
+    map: Option<String>,
     /// `--frames <n>`: the offscreen profile run instead of a window ([`offscreen`]).
     frames: Option<u32>,
 }
@@ -65,6 +83,7 @@ impl Args {
                 "--connect" => parsed.connect = args.next(),
                 "--cert" => parsed.cert = args.next().map(std::path::PathBuf::from),
                 "--name" => parsed.name = args.next(),
+                "--map" => parsed.map = args.next(),
                 "--frames" => parsed.frames = args.next().and_then(|n| n.parse().ok()),
                 other => log(&format!("unknown argument {other}")),
             }
@@ -76,7 +95,8 @@ impl Args {
 /// The offscreen profile run's frame size.
 pub const OFFSCREEN_SIZE: (u32, u32) = (1280, 720);
 
-/// The profile run (`shooter-client --frames <n>`): `frames` frames of a practice match at one
+/// The profile run (`shooter-client --frames <n> [--map <id>]`): `frames` frames of a practice
+/// match on `map` at one
 /// tick per frame, the local fighter played by the replays' scripted person 0
 /// ([`shooter_sim::scenarios::scripted_intent`]), drawn to an offscreen [`OFFSCREEN_SIZE`]
 /// target with no window, as fast as the GPU finishes them. Prints frame times; nothing gates
@@ -86,10 +106,10 @@ pub const OFFSCREEN_SIZE: (u32, u32) = (1280, 720);
 ///
 /// If there is no GPU adapter or the match fails.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn offscreen(frames: u32) -> Result<(), String> {
+pub fn offscreen(frames: u32, map: MapId) -> Result<(), String> {
     let (width, height) = OFFSCREEN_SIZE;
     let gpu = gpu::Gpu::offscreen(width, height)?;
-    let mut app = app::App::scripted(game::Game::practice(), gpu);
+    let mut app = app::App::scripted(game::Game::practice(map), gpu);
     let mut times = Vec::with_capacity(frames as usize);
     let started = std::time::Instant::now();
     for _ in 0..frames {
@@ -100,7 +120,7 @@ pub fn offscreen(frames: u32) -> Result<(), String> {
     let total = started.elapsed().as_secs_f64();
     let stats = FrameStats::of(times);
     println!(
-        "offscreen {width}x{height}: {frames} frames in {total:.2} s; frame ms mean {:.2} p50 {:.2} p95 {:.2} max {:.2}",
+        "offscreen {width}x{height} on {map}: {frames} frames in {total:.2} s; frame ms mean {:.2} p50 {:.2} p95 {:.2} max {:.2}",
         stats.mean, stats.p50, stats.p95, stats.max
     );
     Ok(())
@@ -210,8 +230,22 @@ pub fn run() {
     #[cfg(not(target_arch = "wasm32"))]
     let args = Args::parse();
     #[cfg(not(target_arch = "wasm32"))]
+    let requested = args.map.clone();
+    #[cfg(target_arch = "wasm32")]
+    let requested = web::query("map");
+    let map = match practice_map(requested.as_deref()) {
+        Ok(map) => map,
+        Err(error) => {
+            fail(&error);
+            #[cfg(not(target_arch = "wasm32"))]
+            std::process::exit(2);
+            #[cfg(target_arch = "wasm32")]
+            return;
+        }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(frames) = args.frames {
-        if let Err(error) = offscreen(frames) {
+        if let Err(error) = offscreen(frames, map) {
             fail(&error);
             std::process::exit(1);
         }
@@ -225,11 +259,11 @@ pub fn run() {
     let profile = web::query("frames").and_then(|n| n.parse::<u32>().ok());
     #[cfg(target_arch = "wasm32")]
     let game = match profile {
-        Some(_) => game::Game::practice(),
-        None => game(),
+        Some(_) => game::Game::practice(map),
+        None => game(map),
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let game = game(args);
+    let game = game(args, map);
     let app = app::App::new(event_loop.create_proxy(), game);
     #[cfg(target_arch = "wasm32")]
     let app = match profile {
@@ -329,12 +363,13 @@ pub(crate) mod web {
     /// JS-to-WASM boundary (its `runtime-profiler:js-to-wasm:<label>` convention).
     const FRAME_MEASURE: &str = "runtime-profiler:js-to-wasm:frame";
 
-    /// The browser profile run (`?frames=<n>`): like the native `--frames`, `frames` frames of
-    /// a practice match at one tick per animation frame, the local fighter played by the
+    /// The browser profile run (`?frames=<n>[&map=<id>]`): like the native `--frames`, `frames`
+    /// frames of a practice match on `map` at one tick per animation frame, the local fighter played by the
     /// replays' scripted person 0. When done it sets `window.shooterProfile` to its frame
     /// times; nothing gates on them.
     pub struct Profile {
         pub frames: u32,
+        map: shooter_sim::MapId,
         /// Milliseconds in the frame's work (the tick, the scene and the GPU submission).
         work: Vec<f64>,
         /// Milliseconds between consecutive frames' starts (including waiting on the GPU).
@@ -345,9 +380,10 @@ pub(crate) mod web {
 
     impl Profile {
         #[must_use]
-        pub fn new(frames: u32) -> Self {
+        pub fn new(frames: u32, map: shooter_sim::MapId) -> Self {
             Self {
                 frames,
+                map,
                 work: Vec::with_capacity(frames as usize),
                 intervals: Vec::with_capacity(frames as usize),
                 first: None,
@@ -404,8 +440,9 @@ pub(crate) mod web {
                 })
                 .unwrap_or_default();
             publish(&format!(
-                r#"{{"frames":{},"width":{width},"height":{height},"seconds":{total:.3},"workMs":{},"intervalMs":{}}}"#,
+                r#"{{"frames":{},"map":"{}","width":{width},"height":{height},"seconds":{total:.3},"workMs":{},"intervalMs":{}}}"#,
                 self.work.len(),
+                self.map,
                 json(crate::FrameStats::of(self.work.clone())),
                 json(crate::FrameStats::of(self.intervals.clone())),
             ));
@@ -437,5 +474,17 @@ mod tests {
         assert_eq!(super::parse_hash(&colons), Some(expected));
         assert_eq!(super::parse_hash("abc"), None);
         assert_eq!(super::parse_hash(&"zz".repeat(32)), None);
+    }
+
+    #[test]
+    fn the_practice_map_is_the_default_or_a_catalogued_one() {
+        use super::{MapId, practice_map};
+        assert_eq!(practice_map(None), Ok(MapId::DEFAULT));
+        assert_eq!(practice_map(Some("greybox")), Ok(MapId::Greybox));
+        let refused = practice_map(Some("nowhere")).unwrap_err();
+        assert!(
+            refused.contains("nowhere") && refused.contains("greybox"),
+            "{refused}"
+        );
     }
 }

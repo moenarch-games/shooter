@@ -1,7 +1,7 @@
 //! Records, verifies and promotes deterministic match replays (docs/foundation-data.md).
 //!
 //! ```text
-//! shooter-replay record [--seed N] [--ticks N] [--people N] [--latency N] [-o FILE]
+//! shooter-replay record [--map ID] [--seed N] [--ticks N] [--people N] [--latency N] [-o FILE]
 //! shooter-replay verify FILE
 //! shooter-replay promote FILE --target game-server|physics|render [--from T] [--to T] -o OUT
 //! ```
@@ -19,7 +19,7 @@ use std::time::Instant;
 use std::{env, fs};
 
 const USAGE: &str =
-    "usage: shooter-replay record [--seed N] [--ticks N] [--people N] [--latency N] [-o FILE]
+    "usage: shooter-replay record [--map ID] [--seed N] [--ticks N] [--people N] [--latency N] [-o FILE]
        shooter-replay verify FILE
        shooter-replay promote FILE --target game-server|physics|render [--from T] [--to T] -o OUT";
 
@@ -71,6 +71,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     match command.as_str() {
         "record" => {
             let script = Script {
+                map: args
+                    .flags
+                    .get("map")
+                    .map_or(Ok(Script::DEFAULT.map), |map| map.parse())?,
                 seed: args.number("seed", Script::DEFAULT.seed)?,
                 ticks: args.number("ticks", Script::DEFAULT.ticks)?,
                 people: args.number("people", Script::DEFAULT.people)?,
@@ -81,7 +85,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             let elapsed = started.elapsed();
             let bytes = replay.encode()?;
             println!(
-                "{} ticks, {} records, {} bytes, {:.1} ms ({:.3} ms a tick)",
+                "{}: {} ticks, {} records, {} bytes, {:.1} ms ({:.3} ms a tick)",
+                replay.map,
                 replay.ticks(),
                 replay.log.records().len(),
                 bytes.len(),
@@ -95,9 +100,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         "verify" => {
             let path = args.positional.first().ok_or(USAGE)?;
-            let verified = verify(&load(Path::new(path))?)?;
+            let replay = load(Path::new(path))?;
+            let verified = verify(&replay)?;
             println!(
-                "{path}: {} records, {} ticks verified, final tick {}",
+                "{path}: on {}, {} records, {} ticks verified, final tick {}",
+                replay.map,
                 verified.records_verified,
                 verified.checkpoints_verified,
                 verified.final_snapshot.tick

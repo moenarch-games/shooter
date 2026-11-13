@@ -12,7 +12,7 @@ use render_engine::glam::Vec3;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
 use shooter_sim::scenarios::scripted_intent;
 use shooter_sim::session::MAX_HEALTH;
-use shooter_sim::{Arena, Event, Intent, TICK_HZ, Weapon};
+use shooter_sim::{Event, Intent, MapId, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -59,7 +59,8 @@ pub struct App {
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
     game: Game,
-    arena: Arena,
+    /// The map drawn in the GPU's world, once the game knows it and the GPU is up.
+    drawn: Option<MapId>,
     controls: Controls,
     look: Look,
     pads: Option<gilrs::Gilrs>,
@@ -96,7 +97,6 @@ pub struct App {
 impl App {
     #[must_use]
     pub fn new(proxy: EventLoopProxy<GpuReady>, game: Game) -> Self {
-        let arena = Arena::greybox();
         let now = Instant::now();
         let center = game.local_center().unwrap_or_default();
         Self {
@@ -104,9 +104,9 @@ impl App {
             scripted: None,
             window: None,
             gpu: None,
+            look: Look::new(radians(game.map().map_or(0, |map| map.arena().spawn_yaw))),
             game,
-            look: Look::new(radians(arena.spawn_yaw)),
-            arena,
+            drawn: None,
             controls: Controls::new(),
             pads: gilrs::Gilrs::new()
                 .inspect_err(|error| crate::log(&format!("gamepads unavailable: {error}")))
@@ -139,7 +139,10 @@ impl App {
     #[must_use]
     pub fn profiled(mut self, frames: u32) -> Self {
         self.scripted = Some(0);
-        self.profile = Some(crate::web::Profile::new(frames));
+        self.profile = Some(crate::web::Profile::new(
+            frames,
+            self.game.map().unwrap_or(MapId::DEFAULT),
+        ));
         self
     }
 
@@ -172,7 +175,6 @@ impl App {
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn scripted(game: Game, gpu: Gpu) -> Self {
-        let arena = Arena::greybox();
         let now = Instant::now();
         let center = game.local_center().unwrap_or_default();
         let mut app = Self {
@@ -180,9 +182,9 @@ impl App {
             scripted: Some(0),
             window: None,
             gpu: None,
+            look: Look::new(radians(game.map().map_or(0, |map| map.arena().spawn_yaw))),
             game,
-            look: Look::new(radians(arena.spawn_yaw)),
-            arena,
+            drawn: None,
             controls: Controls::new(),
             pads: None,
             sounds: Sounds::new(),
@@ -222,9 +224,8 @@ impl App {
         }
     }
 
-    /// The GPU is up: the arena, effects and actors go into its world.
+    /// The GPU is up: the effects and actors go into its world (and the arena, once known).
     fn attach(&mut self, mut gpu: Gpu) {
-        scene::build(&mut gpu.world, &self.arena);
         self.effects = Some(Effects::new(&mut gpu.world));
         self.actors = Some(Actors::new(&mut gpu.world));
         if let Some(window) = &self.window {
@@ -233,7 +234,18 @@ impl App {
             window.request_redraw();
         }
         self.gpu = Some(gpu);
+        self.draw_map();
         self.last_frame = Instant::now();
+    }
+
+    /// Puts the match's arena into the GPU's world the first time both are there. A host keeps
+    /// a match on one map, so it is drawn once.
+    fn draw_map(&mut self) {
+        let (Some(gpu), Some(map), None) = (&mut self.gpu, self.game.map(), self.drawn) else {
+            return;
+        };
+        scene::build(&mut gpu.world, &map.arena());
+        self.drawn = Some(map);
     }
 
     fn capture(&mut self, captured: bool) {
@@ -432,6 +444,7 @@ impl App {
             }
         }
         let ticks = ticks.min(MAX_TICKS_PER_FRAME);
+        self.draw_map();
 
         let blend = self.accumulator / tick;
         let center = Vec3::from(self.previous_center).lerp(Vec3::from(self.center), blend);

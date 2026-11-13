@@ -9,7 +9,7 @@ use game_server::{
 };
 use shooter_client::game::Game;
 use shooter_client::game::online::Online;
-use shooter_sim::{Controller, Intent};
+use shooter_sim::{Controller, Intent, MapId};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use wtransport::Identity;
@@ -47,7 +47,7 @@ impl Host {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async {
                 // A 5 s reconnect grace.
-                let host = shooter_server::build_host(&["dm".to_owned()], 300).unwrap();
+                let host = shooter_server::build_host(&["dm".parse().unwrap()], 300).unwrap();
                 serve_match_host_with_shutdown(host, config, requests)
                     .await
                     .unwrap();
@@ -64,9 +64,11 @@ impl Host {
     }
 
     fn connect(&self, name: Option<&str>) -> Game {
-        Game::Online(Box::new(
-            Online::connect(self.url.clone(), Some(self.cert.clone()), name).unwrap(),
-        ))
+        Game::Online(Box::new(Online::connect(
+            self.url.clone(),
+            Some(self.cert.clone()),
+            name,
+        )))
     }
 }
 
@@ -106,6 +108,9 @@ fn two_clients_play_a_hosted_deathmatch() {
         std::thread::sleep(Duration::from_millis(16));
     }
     assert!(first.status().is_none(), "{:?}", first.status());
+    // Both follow the host's map, which the snapshots name.
+    assert_eq!(first.map(), Some(MapId::Greybox));
+    assert_eq!(second.map(), Some(MapId::Greybox));
     let (a, b) = (first.local_slot().unwrap(), second.local_slot().unwrap());
     assert_ne!(a, b);
     assert!(moved > 300.0, "the first client walked {moved} units");

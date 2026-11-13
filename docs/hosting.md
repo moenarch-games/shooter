@@ -1,7 +1,7 @@
 # Hosting the deathmatch
 
 `shooter-server` is the whole host: game-server's WebTransport listener with one deathmatch per
-match ID. It needs no database and keeps no state across restarts (a restart starts fresh
+match ID, each on the map the host chose for it (clients follow the map its snapshots name). It needs no database and keeps no state across restarts (a restart starts fresh
 rounds full of bots).
 
 ## Locally
@@ -18,7 +18,7 @@ the development certificate by that SHA-256, through WebTransport's `serverCerti
 | --- | --- | --- |
 | `SHOOTER_PORT` | 4433 | UDP port of the WebTransport listener |
 | `SHOOTER_CERT_PEM`, `SHOOTER_KEY_PEM` | `cert.pem`, `key.pem` | TLS identity (a publicly trusted certificate in production) |
-| `SHOOTER_MATCH_IDS` | `dm` | comma-separated match IDs; each is one deathmatch seeded from its ID |
+| `SHOOTER_MATCH_IDS` | `dm` | comma-separated matches; each is one deathmatch seeded from its ID: `<id>` plays the default map (`greybox`), `<id>=<map>` a catalogued map (`shooter_sim::maps`). An unknown map stops the host at startup |
 | `SHOOTER_ROUTE_PREFIX` | `/shooter` | a match is at `https://<host>:<port><prefix>/matches/<id>` |
 | `SHOOTER_ALLOWED_ORIGINS` | unset | browser origins allowed to connect (e.g. `https://moenarch-games.github.io`); unset admits any client. It only gates sessions that send an Origin (browsers always do), so native clients, which send none, are always admitted |
 
