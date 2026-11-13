@@ -50,6 +50,7 @@ pub fn game_server(replay: &Replay, to: u64, source: &str) -> Result<(Vec<u8>, S
          input latency (lag-compensated shots), one leaves and is removed after the grace"
     );
     let _ = writeln!(manifest, "tick_hz={TICK_HZ}");
+    let _ = writeln!(manifest, "map={}", replay.map);
     let _ = writeln!(manifest, "bot_seed={}", replay.seed);
     let _ = writeln!(manifest, "replay_format_version={}", bytes[4]);
     let _ = writeln!(manifest, "replay_bytes={}", bytes.len());

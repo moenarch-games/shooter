@@ -1,5 +1,6 @@
 //! The match on the wire, inside game-server's command and snapshot frames: a person's input
-//! (one per tick) and the shared snapshot every client gets each tick (the fighters with the
+//! (one per tick) and the shared snapshot every client gets each tick (the match's map, the
+//! fighters with the
 //! exact physics state a client resumes prediction from and their robot builds, the rockets, the
 //! shotgun pellets and the tick's events). Robot builds travel as raw codes and are decoded
 //! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored.
@@ -9,13 +10,14 @@
 //! path.
 
 use crate::grapple::Hook;
+use crate::maps::MapId;
 use crate::player::{Intent, Motion};
 use crate::robot::{Assembly, AssemblyError, BETA, Candidate};
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 7;
+pub const WIRE_VERSION: u8 = 8;
 const NONE: u8 = u8::MAX;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,6 +93,9 @@ pub struct PelletState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub tick: u32,
+    /// The catalogued map the match is played on (`None`: a scripted arena outside the
+    /// catalog); a client builds its arena from it ([`MapId::arena`]).
+    pub map: Option<MapId>,
     pub phase: Phase,
     pub frag_limit: i32,
     pub fighters: Vec<FighterState>,
@@ -164,6 +169,7 @@ impl Session {
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             tick: self.ticks(),
+            map: self.map,
             phase: self.phase,
             frag_limit: self.rules.frag_limit,
             fighters: self
@@ -578,6 +584,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
     let mut out = Out::default();
     out.u8(WIRE_VERSION);
     out.u32(snapshot.tick);
+    out.u8(snapshot.map.map_or(0, MapId::tag));
     match snapshot.phase {
         Phase::Playing { ends_at } => {
             out.u8(0);
@@ -661,6 +668,10 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
         return Err(WireError::Malformed("unknown version"));
     }
     let tick = input.u32()?;
+    let map = match input.u8()? {
+        0 => None,
+        tag => Some(MapId::from_tag(tag).ok_or(WireError::Malformed("unknown map"))?),
+    };
     let phase = match input.u8()? {
         0 => Phase::Playing {
             ends_at: Some(input.u32()?).filter(|at| *at != u32::MAX),
@@ -738,6 +749,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
     input.finish()?;
     Ok(Snapshot {
         tick,
+        map,
         phase,
         frag_limit,
         fighters,

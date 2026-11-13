@@ -143,3 +143,6 @@ implemented yet.
   (light and heavy) and the eight shipped weapons, all available from the start.
 - **Q2.i46.5**: Layout details of the three arenas: topology, destructible pieces, pickup points
   and each map's player capacity (D2.i46.11, D2.i46.12).
+  Defaults in use until decided (shooter#48): the map catalog (`shooter_sim::maps`) holds only
+  the greybox, a test and A/B fixture recommending 2 to 8 players (one per spawn point); a map's
+  recommended capacity does not change the slot count.
