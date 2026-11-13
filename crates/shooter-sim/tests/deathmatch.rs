@@ -2,15 +2,17 @@
 //! from bots, lag-compensated hitscan, the round's end and restart, rocket self-damage, and the
 //! wire round trip.
 
+use shooter_sim::aim;
 use shooter_sim::melee;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::scenarios;
-use shooter_sim::session::{MAX_HEALTH, SELF_SPLASH_PERCENT};
+use shooter_sim::session::{MAX_HEALTH, SELF_SPLASH_PERCENT, body_of, slot_of};
 use shooter_sim::tour::run_legs;
 use shooter_sim::weapons;
+use shooter_sim::weapons::Delivery;
 use shooter_sim::wire::{decode_input, decode_snapshot, encode_input, encode_snapshot};
 use shooter_sim::{
-    Arena, Controller, Event, Input, Intent, Phase, Pilot, Rules, Session, Spawn, Weapon,
+    Arena, Controller, Event, Input, Intent, Phase, Piece, Pilot, Rules, Session, Spawn, Weapon,
 };
 
 fn bot_match(seed: u64, ticks: u32) -> Session {
@@ -166,6 +168,105 @@ fn duel_shot(seen_ticks_ago: u32) -> bool {
 fn hitscan_is_lag_compensated() {
     assert!(!duel_shot(0), "B has moved out of the line of fire");
     assert!(duel_shot(12), "A saw B in the line of fire 12 ticks ago");
+}
+
+/// The third-person reticle is drawn where [`aim::sight`] ends for the fighter's eye and aim:
+/// the hosted rifle beam ends exactly there, on B, on a pillar, on the floor or at its range.
+#[test]
+fn the_reticle_sight_is_where_the_hosted_beam_ends() {
+    let mut arena = duel_arena();
+    // A pillar 1 m left of the line between A and B, halfway.
+    arena.pieces.push(Piece::Block {
+        center: Vec3i::new(-100, 150, 0),
+        half: Vec3i::new(20, 150, 20),
+    });
+    let mut session = Session::with_rules(arena, duel_rules()).unwrap();
+    assert_eq!(session.join(1).unwrap(), Some(0));
+    assert_eq!(session.join(2).unwrap(), Some(1));
+    let Delivery::Hitscan { range_units, .. } = Weapon::EnergyRifle.delivery() else {
+        panic!("the rifle is hitscan");
+    };
+    let mut sequence = 0;
+    let mut step = |session: &mut Session, intent: Intent| {
+        sequence += 1;
+        let view_tick = session.ticks();
+        for (player, intent) in [
+            (1, intent),
+            (
+                2,
+                Intent {
+                    yaw: 32_768,
+                    ..Intent::IDLE
+                },
+            ),
+        ] {
+            session.queue(
+                player,
+                Input {
+                    sequence,
+                    intent,
+                    view_tick,
+                },
+            );
+        }
+        session.step().unwrap();
+    };
+    // B, the pillar, the floor, nothing in range.
+    let aims: [(u16, i16, bool); 4] = [
+        (0, 0, true),
+        (0_u16.wrapping_sub(1_722), 0, false),
+        (0, -3_000, false),
+        (0, 4_000, false),
+    ];
+    let mut met = Vec::new();
+    for (yaw, pitch, on_b) in aims {
+        let aiming = Intent {
+            yaw,
+            pitch,
+            ..Intent::IDLE
+        };
+        for _ in 0..20 {
+            step(&mut session, aiming);
+        }
+        let sight = aim::sight(
+            &session.world,
+            session.fighters[0].player.eye(&session.world),
+            weapons::aim(yaw, pitch),
+            range_units,
+            body_of(0),
+            |body| slot_of(body).is_none(),
+            [(1, session.fighters[1].player.center(&session.world))],
+        );
+        assert_eq!(sight.fighter.is_some(), on_b, "{yaw} {pitch}");
+        step(
+            &mut session,
+            Intent {
+                fire: true,
+                ..aiming
+            },
+        );
+        let beam = session
+            .events
+            .iter()
+            .find_map(|event| match *event {
+                Event::Beam { end, struck, .. } => Some((end, struck)),
+                _ => None,
+            })
+            .expect("the rifle fired");
+        assert_eq!(beam.0, sight.end, "{yaw} {pitch}");
+        assert_eq!(beam.1, sight.scenery.hit.is_some() || on_b, "{yaw} {pitch}");
+        let hit = session
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::Hit { victim: 1, .. }));
+        assert_eq!(hit, on_b, "{yaw} {pitch}");
+        met.push(sight.scenery.hit.is_some());
+    }
+    assert_eq!(
+        met,
+        [false, true, true, false],
+        "B, the pillar, the floor, the sky"
+    );
 }
 
 /// A (slot 0) and B (slot 1) face each other 2 m apart; B strafes for 24 ticks (out of the
