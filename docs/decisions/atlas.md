@@ -78,7 +78,8 @@ implemented yet.
   tests' over-budget armory build fires them.
   Since shooter#96 (owner, 2026-11-14) a fifth named loadout, `pyro`, mounts the laser (with a
   long barrel) and the flamethrower beside the blade and the grapple, so every weapon stays
-  playable until the builder.
+  playable until the builder. A fighter spawns holding its build's first weapon in the rotation
+  that is not the grapple; the grapple, then the blade, only when it carries nothing else.
 - **D2.i46.9** (owner, 2026-11-13): Some powerful weapon and movement modules spawn as pickups at
   contested arena points. Any robot can use them, with no compatibility gate; a build may exploit
   one better (for example grapple plus a sniper position). Their lifetime is open (Q2.i46.3).

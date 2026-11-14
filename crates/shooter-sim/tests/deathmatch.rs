@@ -875,9 +875,9 @@ fn the_flame_ignites_before_it_burns_a_fighter() {
     assert!(burns[35 + ignition..].iter().all(|burnt| *burnt));
 }
 
-/// The pyro loadout (shooter#96) plays its laser and its flamethrower in a match: it spawns
-/// holding the grapple (first of its weapons in the rotation), takes up the laser and burns B
-/// with it, then the flamethrower and burns B with that.
+/// The pyro loadout (shooter#96) plays its laser and its flamethrower in a match: it holds the
+/// laser from the start (not the grapple, though that comes first in the rotation) and burns B
+/// with it, then takes up the flamethrower and burns B with that.
 #[test]
 fn the_pyro_fires_its_laser_and_its_flamethrower() {
     // B stands 3 m in front of A: in the laser's reach and the flame's.
@@ -892,7 +892,7 @@ fn the_pyro_fires_its_laser_and_its_flamethrower() {
     session.join(1).unwrap();
     session.join(2).unwrap();
     equip(&mut session, 0, PYRO);
-    assert_eq!(session.fighters[0].arsenal.held, Weapon::Grapple);
+    assert_eq!(session.fighters[0].arsenal.held, Weapon::Laser);
     let mut sequence = 0;
     // What A's hits on B dealt, while firing `weapon` for `ticks`.
     let mut fire = |session: &mut Session, weapon: Weapon, ticks: u32| {

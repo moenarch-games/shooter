@@ -1178,6 +1178,51 @@ fn the_host_accepts_every_named_loadout() {
     }
 }
 
+/// The weapon A holds when it comes back as `build`, configured on the host, after B kills it.
+fn respawned_holding(build: Assembly) -> Weapon {
+    let mut session = duel();
+    assert!(session.configure(1, build));
+    while session.fighters[0].deaths == 0 {
+        let (yaw, pitch) = at_chassis(&session, 1, 0);
+        let intent = Intent {
+            yaw,
+            pitch,
+            fire: true,
+            ..Intent::IDLE
+        };
+        let sequence = session.fighters[1].ack + 1;
+        let view_tick = session.ticks();
+        session.queue(
+            2,
+            Input {
+                sequence,
+                intent,
+                view_tick,
+            },
+        );
+        session.step().unwrap();
+    }
+    while !session.fighters[0].alive() {
+        session.step().unwrap();
+    }
+    assert_eq!(session.fighters[0].build, build);
+    session.fighters[0].arsenal.held
+}
+
+#[test]
+fn a_robot_spawns_holding_its_first_weapon_that_is_not_the_grapple() {
+    // The grapple comes before the laser in the rotation, but the pyro spawns with the laser
+    // (shooter#96); the other loadouts with their first gun.
+    assert_eq!(respawned_holding(PYRO), Weapon::Laser);
+    assert_eq!(respawned_holding(STANDARD), Weapon::EnergyRifle);
+    assert_eq!(respawned_holding(HEAVY), Weapon::RailGun);
+    // Nothing but the grapple and the blade: the grapple.
+    let mut hooked = PYRO.candidate();
+    hooked.parts.retain(|part| part.id != 7 && part.id != 9);
+    let hooked = BETA.validate(&hooked).unwrap();
+    assert_eq!(respawned_holding(hooked), Weapon::Grapple);
+}
+
 #[test]
 fn a_configured_modded_build_applies_at_the_next_spawn() {
     let mut session = duel();

@@ -306,12 +306,11 @@ impl Fighter {
         }
     }
 
-    /// The weapon it takes up at spawn: the first its build lets it hold
-    /// ([`weapons::holdable`]), the energy rifle when it has none.
+    /// The weapon it takes up at spawn: the first its build lets it hold that is not the grapple,
+    /// else the grapple, else the blade ([`weapons::spawn_weapon`]), the energy rifle when it has
+    /// none.
     fn first_weapon(&self) -> Weapon {
-        weapons::holdable(|weapon| self.parts.armed(&self.build, weapon))
-            .next()
-            .unwrap_or_default()
+        weapons::spawn_weapon(|weapon| self.parts.armed(&self.build, weapon)).unwrap_or_default()
     }
 
     /// Its root chassis' health: its life ([`crate::damage`]).

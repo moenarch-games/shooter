@@ -194,7 +194,9 @@ one rejects the command) and applies at that fighter's next spawn, never while i
 Snapshots carry each fighter's build and the one it comes back as. The cell size, chassis sizes,
 part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part keys await the
 asset kits, and a build does not yet change movement, but it is the arsenal: a fighter spawns
-holding its build's first weapon and fires only what the build mounts (#92). The `pyro` loadout
+holding its build's first weapon in the rotation that is not the grapple (the grapple, then the
+blade, only when it carries nothing else; #96) and fires only what the build mounts (#92). The
+`pyro` loadout
 carries the laser and the flamethrower (#96); the tests' over-budget `ARMORY` build carries every
 weapon. There is no builder screen yet.
 
@@ -318,7 +320,7 @@ field): `standard`, `heavy` (with a battery: 160 energy), `skirmisher` (rapid-cy
 efficiency-coiled shotgun), `marksman` (long-barrel rifle, overcharged rail gun: three hits a
 front kill instead of four, on the root chassis) or `pyro` (long-barrel laser reaching 45 m,
 flamethrower, blade and grapple on the small chassis: 180 kg, 79 of 110 points, the root
-chassis' 100 energy; it spawns holding the grapple, the first of its weapons in the rotation),
+chassis' 100 energy; it spawns holding the laser),
 each a two-legged component tree with a sensor
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. Practice
