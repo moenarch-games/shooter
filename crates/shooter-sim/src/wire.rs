@@ -2,15 +2,18 @@
 //! (one per tick) and the shared snapshot every client gets each tick (the match's map, the
 //! fighters with the
 //! exact physics state a client resumes prediction from, their robot builds, the charge in each
-//! one's energy pool and the module each carries, the rockets, the shotgun pellets, the module
+//! one's energy pool, every part's health (what it has lost follows from them,
+//! [`crate::damage`]) and the module each carries, the rockets, the shotgun pellets, the module
 //! pads and the tick's events). Robot builds travel as raw codes and are decoded
 //! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored; a
-//! charge above its build's capacity is malformed.
+//! part health above its catalog health, or a charge above the capacity of the parts still
+//! connected, is malformed.
 //! Little-endian; positions and velocities travel as exact `f32` bits.
 //!
 //! The in-process practice match builds the same [`Snapshot`], so both modes draw through one
 //! path.
 
+use crate::damage::PartDamage;
 use crate::energy::Pool;
 use crate::grapple::Hook;
 use crate::maps::MapId;
@@ -21,12 +24,12 @@ use crate::physics::Vec3i;
 use crate::physics::articulated::{Motion as BodyMotion, Pose};
 use crate::pickups::{ArenaModule, Carried};
 use crate::player::{Intent, Motion};
-use crate::robot::{Assembly, AssemblyError, BETA, Candidate, RawMount, RawPart};
+use crate::robot::{Assembly, AssemblyError, BETA, Candidate, PartId, RawMount, RawPart};
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 12;
+pub const WIRE_VERSION: u8 = 13;
 const NONE: u8 = u8::MAX;
 
 /// A build part's flags: it has a parent, it is turned, it carries a mod.
@@ -65,7 +68,6 @@ pub struct FighterState {
     pub slot: u8,
     pub controller: Controller,
     pub alive: bool,
-    pub health: i32,
     pub frags: i32,
     pub deaths: i32,
     pub held: Weapon,
@@ -88,9 +90,20 @@ pub struct FighterState {
     pub configured: Assembly,
     /// The module pickup it carries and the uses it has left.
     pub carried: Option<Carried>,
-    /// The charge in its shared energy pool, milli-units ([`crate::energy`]); its build's
-    /// [`crate::energy::Pool`] has the capacity.
+    /// The charge in its shared energy pool, milli-units ([`crate::energy`]); the pool of its
+    /// build's connected parts ([`crate::energy::Pool::attached`]) has the capacity.
     pub energy: u32,
+    /// Its part healths this life and, following from them, the parts it has lost
+    /// ([`crate::damage`]); the core's health is its life.
+    pub parts: PartDamage,
+}
+
+impl FighterState {
+    /// Its core's health.
+    #[must_use]
+    pub fn core_health(&self) -> u16 {
+        self.parts.core_health(&self.build)
+    }
 }
 
 /// A module pad: where it lies (units, the map's anchor), its module and the ticks until the
@@ -174,7 +187,6 @@ fn state_of(session: &Session, fighter: &Fighter) -> Option<FighterState> {
         slot: fighter.slot,
         controller,
         alive: fighter.alive(),
-        health: fighter.health,
         frags: fighter.frags,
         deaths: fighter.deaths,
         held: fighter.arsenal.held,
@@ -192,6 +204,7 @@ fn state_of(session: &Session, fighter: &Fighter) -> Option<FighterState> {
         configured: fighter.configured,
         carried: fighter.carried,
         energy: fighter.energy,
+        parts: fighter.parts,
     })
 }
 
@@ -589,14 +602,26 @@ fn encode_event(out: &mut Out, event: &Event) {
         Event::Hit {
             victim,
             attacker,
+            part,
             damage,
             at,
         } => {
             out.u8(4);
             out.u8(victim);
             out.option(attacker);
+            out.u8(part.0);
             out.i32(damage);
             out.vec3(at);
+        }
+        Event::Detached {
+            slot,
+            part,
+            destroyed,
+        } => {
+            out.u8(11);
+            out.u8(slot);
+            out.u8(part.0);
+            out.u8(u8::from(destroyed));
         }
         Event::Killed {
             victim,
@@ -656,6 +681,7 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
         4 => Event::Hit {
             victim: input.u8()?,
             attacker: input.option()?,
+            part: PartId(input.u8()?),
             damage: input.i32()?,
             at: input.vec3()?,
         },
@@ -690,6 +716,11 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
         10 => Event::ModuleSpent {
             slot: input.u8()?,
             module: input.module()?,
+        },
+        11 => Event::Detached {
+            slot: input.u8()?,
+            part: PartId(input.u8()?),
+            destroyed: input.u8()? != 0,
         },
         _ => return Err(WireError::Malformed("unknown event")),
     })
@@ -732,7 +763,6 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
             Controller::Bot => out.u8(2),
         }
         out.u8(u8::from(fighter.alive));
-        out.i32(fighter.health);
         out.i32(fighter.frags);
         out.i32(fighter.deaths);
         out.weapon(fighter.held);
@@ -767,6 +797,9 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
             None => out.u8(0),
         }
         out.u32(fighter.energy);
+        for health in fighter.parts.health() {
+            out.u16(*health);
+        }
     }
     out.u8(count(snapshot.rockets.len()));
     for rocket in snapshot.rockets.iter().take(usize::from(u8::MAX)) {
@@ -831,7 +864,6 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                     _ => return Err(WireError::Malformed("unknown controller")),
                 },
                 alive: input.u8()? != 0,
-                health: input.i32()?,
                 frags: input.i32()?,
                 deaths: input.i32()?,
                 held: input.weapon()?,
@@ -854,6 +886,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 configured: Assembly::default(),
                 carried: None,
                 energy: 0,
+                parts: PartDamage::default(),
             };
             fighter.configured = match input.u8()? {
                 0 => fighter.build,
@@ -869,7 +902,12 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 _ => return Err(WireError::Malformed("unknown module state")),
             };
             fighter.energy = input.u32()?;
-            if fighter.energy > Pool::of(&fighter.build).capacity {
+            let health = (0..fighter.build.parts().len())
+                .map(|_| input.u16())
+                .collect::<Result<Vec<_>, _>>()?;
+            fighter.parts =
+                PartDamage::from_health(&fighter.build, &health).map_err(WireError::Malformed)?;
+            if fighter.energy > Pool::attached(&fighter.build, &fighter.parts).capacity {
                 return Err(WireError::Malformed("energy above the build's capacity"));
             }
             Ok(fighter)

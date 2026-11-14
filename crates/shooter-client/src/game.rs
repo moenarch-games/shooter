@@ -58,7 +58,7 @@ impl Game {
             } => {
                 if let Some(slot) = session.slot_of_player(LOCAL_PLAYER) {
                     let local = &mut session.fighters[usize::from(slot)];
-                    local.build = build;
+                    local.rebuild(build);
                     local.configured = build;
                     **snapshot = session.snapshot();
                 }
@@ -186,11 +186,11 @@ pub mod online {
     use super::Tick;
     use crate::interpolation::{Interpolation, ONLINE_DELAY_TICKS};
     use crate::net::{Connection, NetEvent, Trust};
+    use shooter_sim::damage::{Hitboxes, PartDamage};
     use shooter_sim::grapple::Hook;
     use shooter_sim::names;
     use shooter_sim::player::Motion;
-    use shooter_sim::session::{HALF, MAX_HEALTH};
-    use shooter_sim::weapons::{self, Delivery};
+    use shooter_sim::weapons::Delivery;
     use shooter_sim::wire::encode_input;
     use shooter_sim::{
         Assembly, Event, Intent, MapId, Rules, Session, Snapshot, StepReport, Weapon,
@@ -218,6 +218,8 @@ pub mod online {
         name: Option<String>,
         /// The loadout asked of the host, if any.
         build: Option<Assembly>,
+        /// The local fighter's part damage as the host last said (the predictor keeps it).
+        parts: PartDamage,
         player_id: Option<u32>,
         /// A one-fighter session on the host's map, from the first snapshot on.
         predictor: Option<Session>,
@@ -262,6 +264,7 @@ pub mod online {
                 connection: Connection::open(url, certificate),
                 name: name.and_then(names::sanitize),
                 build: None,
+                parts: PartDamage::default(),
                 player_id: None,
                 predictor: None,
                 predicting: false,
@@ -341,12 +344,20 @@ pub mod online {
             let Some(local) = self.local_slot() else {
                 return Vec::new();
             };
-            let others: Vec<[f32; 3]> = self
+            let others: Vec<Hitboxes> = self
                 .latest
                 .iter()
                 .flat_map(|snapshot| &snapshot.fighters)
-                .filter(|fighter| fighter.slot != local)
-                .filter_map(|fighter| self.others.center(fighter.slot, 0.0))
+                .filter(|fighter| fighter.slot != local && fighter.alive)
+                .filter_map(|fighter| {
+                    let center = self.others.center(fighter.slot, 0.0)?;
+                    Some(Hitboxes::place(
+                        &fighter.build,
+                        &fighter.parts,
+                        center,
+                        fighter.yaw,
+                    ))
+                })
                 .collect();
             let mut shots = Vec::new();
             for event in self
@@ -380,9 +391,7 @@ pub mod online {
                             .then(|| {
                                 others
                                     .iter()
-                                    .filter_map(|center| {
-                                        weapons::ray_box(from, translation, *center, HALF)
-                                    })
+                                    .filter_map(|parts| parts.first(from, translation))
                                     .reduce(f32::min)
                             })
                             .flatten();
@@ -446,8 +455,10 @@ pub mod online {
         }
 
         fn predict(&mut self, intent: Intent) -> Result<StepReport, String> {
+            let parts = self.parts;
             let predictor = self.predictor_mut()?;
-            predictor.fighters[0].health = MAX_HEALTH;
+            // Part damage is the host's alone: the predicted fighter keeps the host's last word.
+            predictor.fighters[0].parts = parts;
             predictor.tick(intent).map_err(|error| error.to_string())
         }
 
@@ -478,9 +489,13 @@ pub mod online {
             }
             // Predicted shots fire at the host's pace for this life's build (its weapon mods)
             // and module, and jumps leave as the host's do; the pads are as the host has them.
-            // The energy pool is predicted like the body: reset to the host's charge with it.
+            // The energy pool is predicted like the body: reset to the host's charge with it. The
+            // part damage is the host's: a lost weapon does not fire and a robot without
+            // connected locomotion does not walk in the prediction either.
+            self.parts = me.parts;
             if let Some(predictor) = self.predictor.as_mut() {
                 predictor.fighters[0].build = me.build;
+                predictor.fighters[0].parts = me.parts;
                 predictor.fighters[0].carried = me.carried;
                 for (pickup, host) in predictor.pickups.iter_mut().zip(&snapshot.pickups) {
                     pickup.ready_in = host.ready_in;

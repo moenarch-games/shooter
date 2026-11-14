@@ -12,7 +12,7 @@
 //! | strafe | the same clip | **missing animation**: the kit has no sideways clip |
 //! | jump or fall, grapple | tucked: hip, knee and ankle turned within the kit's ranges | procedural |
 //! | slide | crouched, the body lowered so the feet stay down | procedural |
-//! | death | the robot topples over backwards until it respawns | procedural (part loss is shooter#56) |
+//! | death | the robot topples over backwards until it respawns | procedural (lost parts lie where they fell) |
 //!
 //! Firing kicks the held weapon back and flashes it; a blade swing is **missing animation** (the
 //! arm is rigid and the kit has no swing clip); the energy blade's sweep is still drawn by the
@@ -26,9 +26,11 @@
 //! on it turn about the simulation's anchor, so the plate stays flush under the child. For a
 //! rotor both pivots lie on its axis, so they agree exactly.
 //!
-//! **Lost parts** ([`PartStates::detached`]): a detached part and everything mounted on it draw
-//! where the authoritative state puts them, at rest relative to each other; the rest of the robot
-//! keeps animating without them. Nothing in the match detaches parts yet (shooter#56).
+//! **Lost parts** ([`PartStates::detached`]): every part the authoritative state says the robot
+//! has lost (`shooter_sim::damage`: a destroyed part and what hung from it) draws at rest where
+//! its entry puts its robot frame ([`super::track`] lets it fall from where it came off to the
+//! floor); the rest of the robot keeps animating without them. The entries name each lost part,
+//! not subtrees: when a core's ancestor is destroyed, the core stays and the rest falls away.
 
 use super::kit::{KitData, Rig};
 use super::model::{Model, Visual};
@@ -216,7 +218,8 @@ pub fn advance_phase(phase: f32, model: &Model, state: &RobotState, seconds: f32
 /// Per-part state from the authoritative match: lost parts, damaged armor and joint angles.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PartStates<'a> {
-    /// Each detached part, with where its subtree's robot frame is in the world.
+    /// Each lost part (every one, not only the root of a lost branch), with where its robot
+    /// frame is in the world.
     pub detached: &'a [(PartId, Mat4)],
     /// Parts drawn in their damaged variant, where the kit has one.
     pub damaged: &'a [PartId],
@@ -286,13 +289,11 @@ pub fn pose(
 ) -> Posed {
     let animation = Animation::of(state);
     let count = model.parts.len();
-    // Lost subtrees.
+    // Lost parts.
     let mut lost: Vec<Option<Mat4>> = vec![None; count];
     for (part, world_from_robot) in parts.detached {
         if let Some(index) = model.parts.iter().position(|p| p.id == *part) {
-            for at in model.subtree(index) {
-                lost[at] = Some(*world_from_robot);
-            }
+            lost[index] = Some(*world_from_robot);
         }
     }
     // Joint motions (robot frame) and every part's palette.

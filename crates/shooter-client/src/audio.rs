@@ -186,7 +186,8 @@ impl Sounds {
                 | Event::Spawned { .. }
                 | Event::RoundOver { .. }
                 | Event::ModuleTaken { .. }
-                | Event::ModuleSpent { .. } => {}
+                | Event::ModuleSpent { .. }
+                | Event::Detached { .. } => {}
             }
         }
     }

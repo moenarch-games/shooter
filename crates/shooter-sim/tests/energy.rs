@@ -288,7 +288,7 @@ fn tuned_weapons_pay_their_tuned_cost() {
         (SKIRMISHER, Weapon::Shotgun, 7_200),
     ] {
         let mut session = duel();
-        session.fighters[0].build = build;
+        session.fighters[0].rebuild(build);
         session.fighters[0].energy = Pool::of(&build).capacity;
         let mut sequence = 0;
         let aim = Intent {
