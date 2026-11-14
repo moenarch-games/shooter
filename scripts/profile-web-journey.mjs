@@ -44,6 +44,17 @@ export async function run({ page }) {
   await readFile(path.join(root, "shooter_client_bg.wasm")).catch(() => {
     throw new Error("web/dist has no wasm build: run scripts/build-web.sh first");
   });
+  // SwiftShader intermittently refuses mapped-at-creation mesh buffers. Keep this
+  // profile journey deterministic: reject that upload path even on lucky runs.
+  await page.addInitScript(() => {
+    const createBuffer = GPUDevice.prototype.createBuffer;
+    GPUDevice.prototype.createBuffer = function (descriptor) {
+      if (descriptor.label?.startsWith("mesh ") && descriptor.mappedAtCreation) {
+        throw new Error("mesh uploads must not map GPU buffers at creation");
+      }
+      return createBuffer.call(this, descriptor);
+    };
+  });
   const server = await serve();
   try {
     const { port } = server.address();
