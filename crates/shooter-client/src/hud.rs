@@ -1,10 +1,11 @@
 //! The heads-up display, a stopgap until render-engine draws screen overlays
 //! (moritzbrantner/render-engine#101): the text is built here once, then shown by the page's DOM
 //! in the browser and in the window title natively (the native health bar is drawn in the scene,
-//! see `scene::Actors`). Health, energy (charge and capacity), weapon (with its mod), frags and place, the equipped weapon mods, the module pickup carried (with
+//! see `scene::Actors`). The core's health (the bar), the parts damaged and lost, energy (charge and capacity), weapon (with its mod), frags and place, the equipped weapon mods, the module pickup carried (with
 //! its uses left), the round clock, a feed of kills and module pickups, a respawn
 //! or connection banner, and the scoreboard (held Tab, or between rounds).
 
+use shooter_sim::damage::PartDamage;
 use shooter_sim::energy::{MILLI, Pool};
 use shooter_sim::robot::{BETA, ModId};
 use shooter_sim::{
@@ -62,8 +63,57 @@ fn mod_name(id: ModId) -> &'static str {
 
 /// The charge in the shared energy pool against its capacity, in whole units: "⚡ 87/160".
 fn energy(me: &FighterState) -> String {
-    let pool = Pool::of(&me.build);
+    let pool = Pool::attached(&me.build, &me.parts);
     format!("⚡ {}/{}", me.energy / MILLI, pool.capacity / MILLI)
+}
+
+/// The core's health against its whole: "⬢ core 62/100" (the core is the robot's life).
+fn core(me: &FighterState) -> String {
+    let whole = PartDamage::fresh(&me.build).core_health(&me.build);
+    format!("⬢ core {}/{}", me.core_health(), whole)
+}
+
+/// The core's share of its health (0..=1): the health bar.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn core_share(me: &FighterState) -> f32 {
+    let whole = PartDamage::fresh(&me.build).core_health(&me.build);
+    f32::from(me.core_health()) / f32::from(whole.max(1))
+}
+
+/// The robot's other parts: how many are damaged, and the ones it has lost this life, "   parts
+/// 9/11, 2 damaged, lost: beam.20x20x80, energy-blade", or nothing while it is whole.
+fn parts(me: &FighterState) -> String {
+    let fresh = PartDamage::fresh(&me.build);
+    let all = me.build.parts();
+    let lost: Vec<&str> = all
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !me.parts.attached(*index))
+        .filter_map(|(_, part)| BETA.part_type(part.kind))
+        .map(|part| {
+            part.key
+                .strip_prefix("robot.")
+                .or_else(|| part.key.strip_prefix("weapon."))
+                .unwrap_or(part.key)
+        })
+        .collect();
+    let damaged = (0..all.len())
+        .filter(|&index| {
+            me.parts.attached(index) && me.parts.health()[index] < fresh.health()[index]
+        })
+        .count();
+    if lost.is_empty() && damaged == 0 {
+        return String::new();
+    }
+    let mut line = format!("   parts {}/{}", all.len() - lost.len(), all.len());
+    if damaged > 0 {
+        line.push_str(&format!(", {damaged} damaged"));
+    }
+    if !lost.is_empty() {
+        line.push_str(&format!(", lost: {}", lost.join(", ")));
+    }
+    line
 }
 
 /// The held weapon with its mod in `build`, if any: "Rail gun + overcharger".
@@ -205,8 +255,8 @@ impl Hud {
         };
         let status_line = me.map_or_else(String::new, |me| {
             format!(
-                "♥ {}   {}   {}   {} frags (to {})   #{} of {}   {}{}{}",
-                me.health.max(0),
+                "{}   {}   {}   {} frags (to {})   #{} of {}   {}{}{}{}",
+                core(me),
                 energy(me),
                 held(me.held, &me.build),
                 me.frags,
@@ -215,7 +265,8 @@ impl Hud {
                 ranked.len(),
                 round,
                 carrying(me.carried),
-                equipped(&me.build)
+                equipped(&me.build),
+                parts(me)
             )
         });
         let banner = if let Some(status) = status {
@@ -255,9 +306,7 @@ impl Hud {
                 .collect()
         });
         #[allow(clippy::cast_precision_loss)]
-        let health = me
-            .filter(|me| me.alive)
-            .map(|me| me.health as f32 / shooter_sim::session::MAX_HEALTH as f32);
+        let health = me.filter(|me| me.alive).map(core_share);
         HudText {
             health,
             status: status_line,

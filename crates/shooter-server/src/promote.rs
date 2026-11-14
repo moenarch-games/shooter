@@ -306,13 +306,13 @@ pub fn render(replay: &Replay, at: u64, source: &str) -> Result<String, Error> {
                 .filter(|f| f.alive)
                 .map(|f| {
                     format!(
-                        "{{\"slot\":{},\"center\":{},\"yaw\":{},\"pitch\":{},\"held\":\"{:?}\",\"health\":{}}}",
+                        "{{\"slot\":{},\"center\":{},\"yaw\":{},\"pitch\":{},\"held\":\"{:?}\",\"core_health\":{}}}",
                         f.slot,
                         floats(f.position),
                         f.yaw,
                         f.pitch,
                         f.held,
-                        f.health
+                        f.core_health()
                     )
                 })
                 .collect();

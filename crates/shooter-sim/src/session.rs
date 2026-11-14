@@ -3,42 +3,46 @@
 //! tick at a time. The offline practice mode runs it in the client; game-server runs the same
 //! state for a hosted match (`shooter-server`), and the clients draw it and play its [`Event`]s.
 //!
-//! A deathmatch: every fighter has [`MAX_HEALTH`], a kill scores a frag for the killer and a
-//! death for the victim (a suicide, by a fall or one's own rocket, costs a frag), the dead come
-//! back at the spawn point farthest from everyone else after [`Rules::respawn_ticks`], and a
-//! round ends at the frag limit or the time limit, followed by an intermission and a fresh round.
+//! A deathmatch: every fighter is its robot build with per-part health ([`crate::damage`]);
+//! strikes land on the parts they meet, destroyed parts fall away with what hung from them, and
+//! destroying the core is the kill. A kill scores a frag for the killer and a death for the
+//! victim (a suicide, by a fall, one's own rocket or one's own battery's blast, costs a frag),
+//! the dead come back as their configured build, whole, at the spawn point farthest from
+//! everyone else after [`Rules::respawn_ticks`], and a round ends at the frag limit or the time
+//! limit, followed by an intermission and a fresh round.
 //!
 //! Hitscan shots and blade swings are lag-compensated: a person's shot is checked against the
-//! fighters where that person saw them (the snapshot tick its command names, at most
-//! [`MAX_REWIND_TICKS`] back), while the arena's geometry blocks the ray as it is now. Rockets
-//! and shotgun pellets are projectiles: they fly through the world as it is each tick and meet
-//! fighters where they are then, like the flame.
+//! fighters' parts where that person saw them (their centre and yaw at the snapshot tick its
+//! command names, at most [`MAX_REWIND_TICKS`] back; the parts they have now), while the
+//! arena's geometry blocks the ray as it is now. Rockets and shotgun pellets are projectiles:
+//! they fly through the world as it is each tick and meet fighters' parts where they are then,
+//! like the flame.
 //!
 //! Module pickups lie on the map's pads; the host resolves who takes them, applies, expires and
 //! clears their effects and brings the pads back ([`crate::pickups`] has the rules).
 //!
 //! Every fighter has a shared energy pool from its build; its jumps, swings and shots ask it for
 //! energy first come, first served and it regenerates after them each tick ([`crate::energy`]).
+//! A lost battery takes its capacity and its share of the charge with it.
 
 use crate::aim;
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
 use crate::bots::{Bot, Sight};
+use crate::damage::{BATTERY_BLAST_DAMAGE, BATTERY_BLAST_RADIUS_UNITS, Blow, Hitboxes, PartDamage};
 use crate::dummies::Dummy;
 use crate::energy::{self, Pool};
 use crate::grapple::Hook;
 use crate::maps::MapId;
 use crate::melee;
-use crate::physics::{BodyId, PhysicsError, Vec3i, World};
+use crate::physics::{BodyId, PhysicsError, RayHit, Vec3i, World};
 use crate::pickups::{self, ArenaModule, Carried, PAD_RESPAWN_TICKS, Pickup};
 use crate::player::{
     EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player, STEP_UP,
 };
-use crate::robot::{Assembly, BETA, Tuning};
+use crate::robot::{Assembly, BETA, Kind, PartId, Tuning};
 use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
 use std::collections::VecDeque;
 
-/// A fighter's health pool (large, Atlas D2.3).
-pub const MAX_HEALTH: i32 = 200;
 /// Ticks a fighter stays dead: 2 s.
 pub const RESPAWN_TICKS: u32 = 120;
 /// A rocket's splash hurts its owner at this share of the damage (rocket jumps cost health).
@@ -181,7 +185,9 @@ pub struct Fighter {
     /// The charge in its shared energy pool, milli-units ([`crate::energy`]; its build's
     /// [`Fighter::pool`] bounds it).
     pub energy: u32,
-    pub health: i32,
+    /// Its build's part healths and lost parts this life ([`crate::damage`]); the core's
+    /// health is its life.
+    pub parts: PartDamage,
     /// While dead: the tick it comes back.
     pub respawn_at: Option<u32>,
     pub frags: i32,
@@ -216,7 +222,7 @@ impl Fighter {
             hook: None,
             carried: None,
             energy: 0,
-            health: 0,
+            parts: PartDamage::default(),
             respawn_at: None,
             frags: 0,
             deaths: 0,
@@ -287,7 +293,26 @@ impl Fighter {
     /// Its shared energy pool: its build's capacity and regeneration ([`crate::energy`]).
     #[must_use]
     pub fn pool(&self) -> Pool {
-        Pool::of(&self.build)
+        Pool::attached(&self.build, &self.parts)
+    }
+
+    /// It is `build` this life, whole (practice and scripts; a hosted fighter changes build only
+    /// at a spawn, [`Session::configure`]).
+    pub fn rebuild(&mut self, build: Assembly) {
+        self.build = build;
+        self.parts = PartDamage::fresh(&build);
+    }
+
+    /// Its core's health: its life ([`crate::damage`]).
+    #[must_use]
+    pub fn core_health(&self) -> u16 {
+        self.parts.core_health(&self.build)
+    }
+
+    /// Its connected parts as hitboxes on a capsule centred at `center` facing `yaw`.
+    #[must_use]
+    pub fn hitboxes(&self, center: [f32; 3], yaw: u16) -> Hitboxes {
+        Hitboxes::place(&self.build, &self.parts, center, yaw)
     }
 }
 
@@ -314,6 +339,46 @@ fn spend_module(fighter: &mut Fighter, events: &mut Vec<Event>) {
 #[must_use]
 pub const fn body_of(slot: u8) -> BodyId {
     BodyId(FIRST_PLAYER_BODY + slot as u64)
+}
+
+/// The first thing a projectile of `owner` meets on its path from `origin` along `translation`:
+/// the scenery and dummies in `world` (the fighters' capsules ignored), or a fighter's part
+/// (`boxes`, by slot; the owner's own robot excepted), whichever is nearer. A part hit is
+/// reported on its fighter's body, its normal against the path.
+fn projectile_hit(
+    world: &World,
+    boxes: &[Option<Hitboxes>],
+    owner: BodyId,
+    origin: [f32; 3],
+    translation: [f32; 3],
+) -> Option<RayHit> {
+    let scenery = world.cast_ray(origin, translation, |body| {
+        body != owner && slot_of(body).is_none()
+    });
+    let mut best = scenery;
+    for (slot, parts) in boxes.iter().enumerate() {
+        let Some(parts) = parts else { continue };
+        let body = body_of(u8::try_from(slot).unwrap_or(u8::MAX));
+        if body == owner {
+            continue;
+        }
+        if let Some(fraction) = parts.first(origin, translation)
+            && best.is_none_or(|hit| fraction < hit.fraction)
+        {
+            let length = translation
+                .iter()
+                .map(|axis| axis * axis)
+                .sum::<f32>()
+                .sqrt()
+                .max(f32::EPSILON);
+            best = Some(RayHit {
+                body,
+                fraction,
+                normal: translation.map(|axis| -axis / length),
+            });
+        }
+    }
+    best
 }
 
 /// The slot whose fighter owns `body`, if it is a fighter's.
@@ -381,12 +446,21 @@ pub enum Event {
         damage: i32,
         downed: bool,
     },
-    /// A fighter took damage from `attacker` (itself for its own rocket; `None`: the arena).
+    /// A fighter's `part` was struck for `damage` (its health stops at zero) at `at` by
+    /// `attacker` (itself for its own rocket; `None`: the arena) ([`crate::damage`]).
     Hit {
         victim: u8,
         attacker: Option<u8>,
+        part: PartId,
         damage: i32,
         at: [f32; 3],
+    },
+    /// `slot`'s `part` came off its robot for the rest of the life: `destroyed` at zero
+    /// health, or carried away with a destroyed part it hung from.
+    Detached {
+        slot: u8,
+        part: PartId,
+        destroyed: bool,
     },
     /// A fighter died: `killer` scored (`None` or the victim itself: a suicide).
     Killed {
@@ -409,26 +483,36 @@ pub enum Event {
 }
 
 /// What a hitscan ray struck.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Target {
-    Fighter(usize),
+    /// A fighter's parts, each with its share of the damage.
+    Fighter(usize, Vec<Blow>),
     Dummy(usize),
     Nothing,
 }
 
 /// One resolved hitscan ray: its beam event, what it struck and where.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Shot {
     beam: Event,
     target: Target,
     at: [f32; 3],
 }
 
-/// The fighters' centres after a tick (`None` while dead), for lag-compensated shots.
+/// The fighters' centres and yaws after a tick (`None` while dead), for lag-compensated shots.
 #[derive(Clone, Debug)]
 struct Frame {
     tick: u32,
-    centers: Vec<Option<[f32; 3]>>,
+    poses: Vec<Option<([f32; 3], u16)>>,
+}
+
+/// A destroyed battery's blast waiting to go off this tick: where, and who and what destroyed
+/// the battery.
+#[derive(Clone, Copy, Debug)]
+struct Blast {
+    at: [f32; 3],
+    attacker: usize,
+    weapon: Weapon,
 }
 
 #[derive(Debug)]
@@ -453,9 +537,11 @@ pub struct Session {
     history: VecDeque<Frame>,
     /// Damage each slot dealt to others this tick.
     dealt: Vec<i32>,
+    /// Battery blasts set off and not yet resolved.
+    blasts: VecDeque<Blast>,
 }
 
-/// A fighter's half extents (units) as lag-compensated shots see it ([`weapons::ray_box`]).
+/// A fighter's capsule half extents (units): its collision box in the arena.
 #[allow(clippy::cast_precision_loss)]
 pub const HALF: [f32; 3] = [
     PLAYER_HALF_EXTENTS.x as f32,
@@ -509,6 +595,7 @@ impl Session {
             tick: 0,
             history: VecDeque::new(),
             dealt: vec![0; usize::from(rules.slots)],
+            blasts: VecDeque::new(),
         };
         session.reset_pickups();
         session.spawn_everyone()?;
@@ -556,8 +643,9 @@ impl Session {
         fighter.build = fighter.configured;
         fighter.hook = None;
         fighter.carried = None;
+        // Respawn restores the configured build whole (D2.i70.8).
+        fighter.parts = PartDamage::fresh(&fighter.build);
         fighter.energy = fighter.pool().capacity;
-        fighter.health = MAX_HEALTH;
         fighter.respawn_at = None;
         fighter.intent = Intent {
             yaw: at.yaw,
@@ -665,7 +753,7 @@ impl Session {
     }
 
     /// Puts `slot`'s fighter alive at an exact physics state: a client resuming its prediction
-    /// from a snapshot.
+    /// from a snapshot (its build and part damage are the caller's to set).
     pub fn place(
         &mut self,
         slot: u8,
@@ -687,7 +775,6 @@ impl Session {
         fighter.arsenal.held = held;
         fighter.hook = hook;
         fighter.respawn_at = None;
-        fighter.health = MAX_HEALTH;
         Ok(())
     }
 
@@ -769,7 +856,9 @@ impl Session {
             if !fighter.alive() {
                 continue;
             }
-            let intent = if playing {
+            // Without a connected leg, wheel or track nothing walks, jumps or slides it
+            // ([`crate::damage`]); it still turns, falls, is pushed and reels in on its hook.
+            let intent = if playing && fighter.parts.mobile(&fighter.build) {
                 fighter.intent
             } else {
                 Intent {
@@ -811,9 +900,10 @@ impl Session {
             let intent = fighter.intent;
             // A set hook holds while the trigger stays down: no second hook until it is let go.
             let hooked = fighter.hook.is_some();
-            let (build, carried) = (fighter.build, fighter.carried);
+            let (build, carried, parts) = (fighter.build, fighter.carried, fighter.parts);
             // The swing, then the gun, ask the shared pool for their energy, first come, first
-            // served ([`crate::energy`]).
+            // served ([`crate::energy`]); a weapon part the robot has lost cannot ask
+            // ([`crate::damage`]), so it neither fires nor spends a cooldown.
             let charge = &mut fighter.energy;
             let fired = fighter.arsenal.trigger_tuned(
                 intent.select,
@@ -821,9 +911,17 @@ impl Session {
                 intent.fire && playing && !hooked,
                 self.tick,
                 |weapon| tuning_of(&build, carried, weapon).refire_ticks(weapon),
-                |weapon| energy::spend(charge, tuning_of(&build, carried, weapon).energy(weapon)),
+                |weapon| {
+                    !parts.weapon_lost(&build, weapon)
+                        && energy::spend(charge, tuning_of(&build, carried, weapon).energy(weapon))
+                },
             );
-            if hooked && !(intent.fire && playing && fighter.arsenal.held == Weapon::Grapple) {
+            if hooked
+                && !(intent.fire
+                    && playing
+                    && fighter.arsenal.held == Weapon::Grapple
+                    && !parts.weapon_lost(&build, Weapon::Grapple))
+            {
                 fighter.hook = None;
             }
             if let Some(weapon) = fired {
@@ -856,8 +954,14 @@ impl Session {
 
         let mut exploded = false;
         let mut index = 0;
+        let mut boxes = self.hitboxes_now();
         while index < self.rockets.len() {
-            match self.rockets[index].fly(&self.world) {
+            let owner = self.rockets[index].owner;
+            let world = &self.world;
+            let flight = self.rockets[index].fly(|origin, translation| {
+                projectile_hit(world, &boxes, owner, origin, translation)
+            });
+            match flight {
                 Flight::Flying => index += 1,
                 Flight::Fizzled => {
                     self.rockets.remove(index);
@@ -866,6 +970,7 @@ impl Session {
                     let owner = self.rockets.remove(index).owner;
                     exploded = true;
                     self.explode(at, owner)?;
+                    boxes = self.hitboxes_now();
                 }
             }
         }
@@ -918,6 +1023,18 @@ impl Session {
                     .then(|| self.world.body(fighter.player.body))
                     .flatten()
                     .map(crate::physics::RigidBody::position);
+                // Where its core is now: what a bot aims at, the one part whose loss kills.
+                #[allow(clippy::cast_possible_truncation)]
+                let core = center.and_then(|_| {
+                    let boxes =
+                        fighter.hitboxes(fighter.player.center(&self.world), fighter.intent.yaw);
+                    let core = boxes.get(PartDamage::core(&fighter.build)?)?.center;
+                    Some(Vec3i::new(
+                        core[0].round() as i32,
+                        core[1].round() as i32,
+                        core[2].round() as i32,
+                    ))
+                });
                 Sight {
                     center,
                     eye: center.map(|center| {
@@ -927,7 +1044,9 @@ impl Session {
                             center.z,
                         )
                     }),
-                    health: fighter.health,
+                    core,
+                    armed: Weapon::ALL
+                        .map(|weapon| !fighter.parts.weapon_lost(&fighter.build, weapon)),
                 }
             })
             .collect();
@@ -1066,28 +1185,66 @@ impl Session {
     }
 
     fn record(&mut self) {
-        let centers = self
+        let poses = self
             .fighters
             .iter()
-            .map(|fighter| fighter.alive().then(|| fighter.player.center(&self.world)))
+            .map(|fighter| {
+                fighter
+                    .alive()
+                    .then(|| (fighter.player.center(&self.world), fighter.intent.yaw))
+            })
             .collect();
         if self.history.len() > MAX_REWIND_TICKS as usize {
             self.history.pop_front();
         }
         self.history.push_back(Frame {
             tick: self.tick,
-            centers,
+            poses,
         });
     }
 
-    /// The fighters' centres at `tick`, or at the oldest (newest) kept tick before (after) it.
-    fn centers_at(&self, tick: u32) -> &[Option<[f32; 3]>] {
+    /// The fighters' centres and yaws at `tick`, or at the oldest (newest) kept tick before
+    /// (after) it.
+    fn poses_at(&self, tick: u32) -> &[Option<([f32; 3], u16)>] {
         let frame = self
             .history
             .iter()
             .find(|frame| frame.tick >= tick)
             .or_else(|| self.history.back());
-        frame.map_or(&[], |frame| frame.centers.as_slice())
+        frame.map_or(&[], |frame| frame.poses.as_slice())
+    }
+
+    /// Every living fighter's connected parts where it is now, by slot (`None`: dead or open).
+    fn hitboxes_now(&self) -> Vec<Option<Hitboxes>> {
+        self.fighters
+            .iter()
+            .map(|fighter| {
+                fighter.alive().then(|| {
+                    fighter.hitboxes(fighter.player.center(&self.world), fighter.intent.yaw)
+                })
+            })
+            .collect()
+    }
+
+    /// The other living fighters as `slot`'s person saw them (lag compensation: their centres
+    /// and yaws at the snapshot tick of its input, at most [`MAX_REWIND_TICKS`] back), each
+    /// with its centre and its connected parts placed there.
+    fn seen_by(&self, slot: usize) -> Vec<(usize, [f32; 3], Hitboxes)> {
+        let rewind = self
+            .tick
+            .saturating_sub(self.fighters[slot].view_tick)
+            .min(MAX_REWIND_TICKS);
+        self.poses_at(self.tick - rewind)
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| {
+                *other != slot && self.fighters.get(*other).is_some_and(Fighter::alive)
+            })
+            .filter_map(|(other, pose)| {
+                let (center, yaw) = (*pose)?;
+                Some((other, center, self.fighters[other].hitboxes(center, yaw)))
+            })
+            .collect()
     }
 
     fn dummy_of(&self, body: BodyId) -> Option<usize> {
@@ -1109,24 +1266,98 @@ impl Session {
         });
     }
 
-    fn hurt(&mut self, victim: usize, attacker: usize, damage: i32, weapon: Weapon, at: [f32; 3]) {
+    /// One strike's `blows` on `victim`'s parts from `attacker`'s `weapon`, in order, then
+    /// every battery blast they set off.
+    fn strike(&mut self, victim: usize, attacker: usize, blows: &[Blow], weapon: Weapon) {
+        for blow in blows {
+            self.hurt_part(victim, attacker, *blow, weapon);
+        }
+        self.settle_blasts();
+    }
+
+    /// One blow on one of `victim`'s parts ([`crate::damage`]): its health goes down; at zero
+    /// it comes off with what hung from it, a lost battery takes its capacity and its share of
+    /// the charge, a destroyed one queues its blast, and a destroyed core kills.
+    #[allow(clippy::cast_possible_truncation)]
+    fn hurt_part(&mut self, victim: usize, attacker: usize, blow: Blow, weapon: Weapon) {
+        let center = {
+            let fighter = &self.fighters[victim];
+            if !fighter.alive() {
+                return;
+            }
+            fighter.player.center(&self.world)
+        };
         let fighter = &mut self.fighters[victim];
-        if !fighter.alive() || damage <= 0 {
+        let build = fighter.build;
+        let before = fighter.pool();
+        let Some(change) = fighter.parts.hurt(&build, blow.index, blow.damage) else {
             return;
-        }
-        fighter.health -= damage;
+        };
+        fighter.energy = before.shrink(fighter.pool(), fighter.energy);
+        let core = fighter.core_health() == 0;
         if attacker != victim {
-            self.dealt[attacker] += damage;
+            self.dealt[attacker] += blow.damage;
         }
-        #[allow(clippy::cast_possible_truncation)]
         self.events.push(Event::Hit {
             victim: victim as u8,
             attacker: Some(attacker as u8),
-            damage,
-            at,
+            part: build.parts()[blow.index].id,
+            damage: blow.damage,
+            at: blow.at,
         });
-        if self.fighters[victim].health <= 0 {
+        if core {
             self.kill(victim, Some(attacker), Some(weapon));
+            return;
+        }
+        let destroyed = change.destroyed.then_some(blow.index);
+        for (index, part) in build.parts().iter().enumerate() {
+            if change.lost & (1 << index) == 0 {
+                continue;
+            }
+            self.events.push(Event::Detached {
+                slot: victim as u8,
+                part: part.id,
+                destroyed: destroyed == Some(index),
+            });
+        }
+        let battery = destroyed.filter(|&index| {
+            BETA.part_type(build.parts()[index].kind)
+                .is_some_and(|part| part.kind == Kind::Battery)
+        });
+        if let Some(index) = battery {
+            // Where the battery was: the whole build placed as it stands.
+            let fighter = &self.fighters[victim];
+            let whole = Hitboxes::place(
+                &build,
+                &PartDamage::fresh(&build),
+                center,
+                fighter.intent.yaw,
+            );
+            if let Some(part) = whole.get(index) {
+                self.blasts.push_back(Blast {
+                    at: part.center,
+                    attacker,
+                    weapon,
+                });
+            }
+        }
+    }
+
+    /// The queued battery blasts, in order: each damages every connected part within its
+    /// small radius through the same resolution as a rocket's splash, and a battery it
+    /// destroys queues its own (each battery blasts at most once a life).
+    fn settle_blasts(&mut self) {
+        while let Some(blast) = self.blasts.pop_front() {
+            self.events.push(Event::Exploded { at: blast.at });
+            for (victim, parts) in self.hitboxes_now().into_iter().enumerate() {
+                let Some(parts) = parts else {
+                    continue;
+                };
+                let blows = parts.blast(blast.at, BATTERY_BLAST_RADIUS_UNITS, BATTERY_BLAST_DAMAGE);
+                for blow in blows {
+                    self.hurt_part(victim, blast.attacker, blow, blast.weapon);
+                }
+            }
         }
     }
 
@@ -1136,7 +1367,6 @@ impl Session {
     fn kill(&mut self, victim: usize, killer: Option<usize>, weapon: Option<Weapon>) {
         let fighter = &mut self.fighters[victim];
         self.world.remove_body(fighter.player.body);
-        fighter.health = 0;
         fighter.hook = None;
         // A carried module ends with its carrier; nothing is dropped.
         fighter.carried = None;
@@ -1192,8 +1422,8 @@ impl Session {
                 damage,
                 range_units,
             } => {
-                let shot = self.hitscan(slot, weapon, eye, direction, range_units);
-                self.land(slot, weapon, damage, &[shot]);
+                let shot = self.hitscan(slot, weapon, eye, direction, range_units, damage);
+                self.land(slot, weapon, damage, shot);
             }
             Delivery::Pellets { damage } => {
                 self.pellets.extend(
@@ -1209,7 +1439,8 @@ impl Session {
     }
 
     /// Where one hitscan ray from `slot`'s `eye` along the Q16 `direction` ends and what it
-    /// strikes: the arena (and the dummies) as they are now, fighters where the shooter saw them.
+    /// strikes: the arena (and the dummies) as they are now, fighters' parts where the shooter
+    /// saw them, `damage` shared among the parts it meets ([`Hitboxes::pierce`]).
     fn hitscan(
         &self,
         slot: usize,
@@ -1217,17 +1448,10 @@ impl Session {
         eye: [f32; 3],
         direction: [i32; 3],
         range_units: i32,
+        damage: i32,
     ) -> Shot {
         let shooter = &self.fighters[slot];
-        let rewind = self
-            .tick
-            .saturating_sub(shooter.view_tick)
-            .min(MAX_REWIND_TICKS);
-        let seen = self.centers_at(self.tick - rewind);
-        let fighters = seen.iter().enumerate().filter_map(|(other, center)| {
-            let alive = self.fighters.get(other).is_some_and(Fighter::alive);
-            (other != slot && alive).then_some((other, (*center)?))
-        });
+        let seen = self.seen_by(slot);
         let sight = aim::sight(
             &self.world,
             eye,
@@ -1235,11 +1459,18 @@ impl Session {
             range_units,
             shooter.player.body,
             |hit| slot_of(hit).is_none(),
-            fighters,
+            seen.iter().map(|(other, _, parts)| (*other, parts)),
         );
-        if let Some((victim, _)) = sight.fighter {
+        #[allow(clippy::cast_precision_loss)]
+        let unit = direction.map(|axis| axis as f32 / crate::trig::TRIG_ONE as f32);
+        if let Some((victim, _)) = sight.fighter
+            && let Some((_, _, parts)) = seen.iter().find(|(other, _, _)| *other == victim)
+        {
+            // Up to the scenery: a plate passes damage on only to parts in front of the wall.
+            let reach = sight.scenery.hit.map_or(1.0, |hit| hit.fraction);
             #[allow(clippy::cast_precision_loss)]
-            let unit = direction.map(|axis| axis as f32 / crate::trig::TRIG_ONE as f32);
+            let translation = unit.map(|axis| axis * range_units as f32 * reach);
+            let blows = parts.pierce(eye, translation, damage, weapon.penetration());
             return Shot {
                 beam: Event::Beam {
                     weapon,
@@ -1248,7 +1479,7 @@ impl Session {
                     normal: unit.map(|axis| -axis),
                     struck: true,
                 },
-                target: Target::Fighter(victim),
+                target: Target::Fighter(victim, blows),
                 at: sight.end,
             };
         }
@@ -1269,12 +1500,18 @@ impl Session {
         }
     }
 
-    /// One tick of every pellet's flight, in launch order: a pellet that meets a body ends there
-    /// ([`Event::Pellet`]) and hurts it if it is a fighter or a dummy.
+    /// One tick of every pellet's flight, in launch order: a pellet that meets a robot's part,
+    /// a dummy or the arena ends there ([`Event::Pellet`]) and hurts the part or the dummy.
     fn fly_pellets(&mut self) {
+        let mut boxes = self.hitboxes_now();
         let mut index = 0;
         while index < self.pellets.len() {
-            match self.pellets[index].fly(&self.world) {
+            let owner = self.pellets[index].owner;
+            let world = &self.world;
+            let travel = self.pellets[index].fly(|origin, translation| {
+                projectile_hit(world, &boxes, owner, origin, translation)
+            });
+            match travel {
                 Travel::Flying => index += 1,
                 Travel::Spent => {
                     self.pellets.remove(index);
@@ -1284,8 +1521,18 @@ impl Session {
                     normal,
                     body,
                     damage,
+                    origin,
+                    translation,
                 } => {
                     let pellet = self.pellets.remove(index);
+                    let victim = slot_of(body).map(usize::from);
+                    let blows = victim
+                        .and_then(|victim| boxes.get(victim)?.as_ref())
+                        .map(|parts| {
+                            parts.pierce(origin, translation, damage, Weapon::Shotgun.penetration())
+                        })
+                        .unwrap_or_default();
+                    let at = blows.first().map_or(at, |blow| blow.at);
                     self.events.push(Event::Pellet {
                         from: pellet.from_units(),
                         at,
@@ -1295,8 +1542,9 @@ impl Session {
                     let Some(attacker) = slot_of(pellet.owner).map(usize::from) else {
                         continue;
                     };
-                    if let Some(victim) = slot_of(body) {
-                        self.hurt(usize::from(victim), attacker, damage, Weapon::Shotgun, at);
+                    if let Some(victim) = victim {
+                        self.strike(victim, attacker, &blows, Weapon::Shotgun);
+                        boxes = self.hitboxes_now();
                     } else if let Some(dummy) = self.dummy_of(body) {
                         self.hurt_dummy(dummy, attacker, damage, at);
                     }
@@ -1305,20 +1553,19 @@ impl Session {
         }
     }
 
-    /// Shows every shot's beam, then deals `damage` for each one that struck.
-    fn land(&mut self, slot: usize, weapon: Weapon, damage: i32, shots: &[Shot]) {
-        self.events.extend(shots.iter().map(|shot| shot.beam));
-        for shot in shots {
-            match shot.target {
-                Target::Fighter(victim) => self.hurt(victim, slot, damage, weapon, shot.at),
-                Target::Dummy(index) => self.hurt_dummy(index, slot, damage, shot.at),
-                Target::Nothing => {}
-            }
+    /// Shows the shot's beam, then deals its damage to what it struck.
+    fn land(&mut self, slot: usize, weapon: Weapon, damage: i32, shot: Shot) {
+        self.events.push(shot.beam);
+        match shot.target {
+            Target::Fighter(victim, blows) => self.strike(victim, slot, &blows, weapon),
+            Target::Dummy(index) => self.hurt_dummy(index, slot, damage, shot.at),
+            Target::Nothing => {}
         }
     }
 
     /// One tick of `slot`'s flame from `eye` along the Q16 `direction` ([`weapons::flame`]):
-    /// `damage` to every fighter and dummy in it as they are now, the owner excepted.
+    /// `damage` to every dummy in it and to the part of every fighter in it nearest the eye, as
+    /// they are now, the owner excepted.
     fn burn(
         &mut self,
         slot: usize,
@@ -1342,16 +1589,24 @@ impl Session {
             .into_iter()
             .filter_map(|body| {
                 let center = self.world.body(body)?.exact_position();
-                let target = match slot_of(body) {
-                    Some(victim) => Target::Fighter(usize::from(victim)),
-                    None => Target::Dummy(self.dummy_of(body)?),
-                };
-                Some((target, melee::contact(eye, center)))
+                Some(match slot_of(body) {
+                    Some(victim) => {
+                        let fighter = self.fighters.get(usize::from(victim))?;
+                        let (index, at) =
+                            fighter.hitboxes(center, fighter.intent.yaw).nearest(eye)?;
+                        let blow = Blow { index, damage, at };
+                        (Target::Fighter(usize::from(victim), vec![blow]), at)
+                    }
+                    None => (
+                        Target::Dummy(self.dummy_of(body)?),
+                        melee::contact(eye, center),
+                    ),
+                })
             })
             .collect();
         for (target, at) in targets {
             match target {
-                Target::Fighter(victim) => self.hurt(victim, slot, damage, weapon, at),
+                Target::Fighter(victim, blows) => self.strike(victim, slot, &blows, weapon),
                 Target::Dummy(index) => self.hurt_dummy(index, slot, damage, at),
                 Target::Nothing => {}
             }
@@ -1361,8 +1616,8 @@ impl Session {
 
     /// `slot`'s energy blade swung toward `yaw` from `eye` (units): every fighter (where the
     /// swinger saw it, like hitscan) and dummy it covers ([`melee::covers`]) and sees past the
-    /// arena is struck, shoved and hurt; a swing that strikes nobody may still spark on a wall
-    /// within reach.
+    /// arena is struck (a fighter on its part nearest the eye), shoved and hurt; a swing that
+    /// strikes nobody may still spark on a wall within reach.
     fn swing(
         &mut self,
         slot: usize,
@@ -1373,10 +1628,6 @@ impl Session {
         let swinger = &self.fighters[slot];
         let body = swinger.player.body;
         let feet = swinger.player.feet(&self.world);
-        let rewind = self
-            .tick
-            .saturating_sub(swinger.view_tick)
-            .min(MAX_REWIND_TICKS);
         let in_sight = |world: &World, center: [f32; 3]| {
             let along = [0, 1, 2].map(|axis| center[axis] - eye[axis]);
             world
@@ -1384,15 +1635,21 @@ impl Session {
                 .is_none()
         };
         let covered = |center: [f32; 3]| melee::covers(feet, yaw, center);
-        let fighters: Vec<(usize, [f32; 3])> = self
-            .centers_at(self.tick - rewind)
-            .iter()
-            .enumerate()
-            .filter(|(other, _)| {
-                *other != slot && self.fighters.get(*other).is_some_and(Fighter::alive)
+        let fighters: Vec<(usize, Blow)> = self
+            .seen_by(slot)
+            .into_iter()
+            .filter(|(_, center, _)| covered(*center) && in_sight(&self.world, *center))
+            .filter_map(|(other, _, parts)| {
+                let (index, at) = parts.nearest(eye)?;
+                Some((
+                    other,
+                    Blow {
+                        index,
+                        damage: melee::DAMAGE,
+                        at,
+                    },
+                ))
             })
-            .filter_map(|(other, center)| Some((other, (*center)?)))
-            .filter(|(_, center)| covered(*center) && in_sight(&self.world, *center))
             .collect();
         let dummies: Vec<(usize, [f32; 3])> = (0..self.dummies.len())
             .filter_map(|index| Some((index, self.dummies[index].center(&self.world)?)))
@@ -1429,13 +1686,12 @@ impl Session {
             }
             return Ok(());
         }
-        for (victim, center) in fighters {
-            let at = melee::contact(eye, center);
-            self.events.push(strike(at));
+        for (victim, blow) in fighters {
+            self.events.push(strike(blow.at));
             self.fighters[victim]
                 .player
                 .push(&mut self.world, melee::knockback(yaw))?;
-            self.hurt(victim, slot, melee::DAMAGE, Weapon::EnergyBlade, at);
+            self.strike(victim, slot, &[blow], Weapon::EnergyBlade);
         }
         for (index, center) in dummies {
             let at = melee::contact(eye, center);
@@ -1446,8 +1702,9 @@ impl Session {
     }
 
     /// A blast at `at` from `owner`'s rocket: splash damage and knockback to every standing
-    /// dummy and fighter in reach. The owner takes [`SELF_SPLASH_PERCENT`] of its share (and the
-    /// full push: rocket jumps).
+    /// dummy, and to every fighter in reach knockback (by its centre) and splash damage on each
+    /// of its parts within reach ([`Hitboxes::blast`]). The owner takes [`SELF_SPLASH_PERCENT`]
+    /// of its share (and the full push: rocket jumps).
     fn explode(&mut self, at: [f32; 3], owner: BodyId) -> Result<(), PhysicsError> {
         self.events.push(Event::Exploded { at });
         let attacker = slot_of(owner).map_or(0, usize::from);
@@ -1465,16 +1722,24 @@ impl Session {
             }
             let player = self.fighters[slot].player;
             let center = player.center(&self.world);
-            let Some((damage, push)) = weapons::splash(at, center) else {
-                continue;
-            };
-            player.push(&mut self.world, push)?;
-            let damage = if slot == attacker {
-                damage * SELF_SPLASH_PERCENT / 100
-            } else {
-                damage
-            };
-            self.hurt(slot, attacker, damage, Weapon::RocketLauncher, center);
+            if let Some((_, push)) = weapons::splash(at, center) {
+                player.push(&mut self.world, push)?;
+            }
+            let fighter = &self.fighters[slot];
+            let blows: Vec<Blow> = fighter
+                .hitboxes(center, fighter.intent.yaw)
+                .blast(at, weapons::SPLASH_RADIUS_UNITS, weapons::SPLASH_DAMAGE)
+                .into_iter()
+                .map(|blow| Blow {
+                    damage: if slot == attacker {
+                        blow.damage * SELF_SPLASH_PERCENT / 100
+                    } else {
+                        blow.damage
+                    },
+                    ..blow
+                })
+                .collect();
+            self.strike(slot, attacker, &blows, Weapon::RocketLauncher);
         }
         Ok(())
     }

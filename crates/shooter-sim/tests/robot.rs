@@ -5,6 +5,7 @@
 //! match (configured while alive, applied at the next spawn, carried in snapshots, replayed
 //! exactly, firing with their weapon mods).
 
+use shooter_sim::damage::PartDamage;
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{
@@ -17,7 +18,8 @@ use shooter_sim::robot::{
     LONG_BARREL, MARKSMAN, MAX_PARTS, ModId, OVERCHARGER, Orientation, PartId, PartType,
     RAPID_CYCLER, RawMount, RawPart, SKIRMISHER, STANDARD, SocketId, Tuning, loadout,
 };
-use shooter_sim::session::MAX_HEALTH;
+
+use shooter_sim::trig;
 use shooter_sim::weapons::Delivery;
 use shooter_sim::wire::{WireError, decode_input, decode_snapshot, encode_input, encode_snapshot};
 use shooter_sim::{Arena, Assembly, Event, Input, Intent, Rules, Session, Spawn, Weapon};
@@ -762,9 +764,7 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
     );
     let (refire, rail) = fire(&MARKSMAN, Weapon::RailGun);
     assert_eq!(refire, 94);
-    assert!(
-        matches!(rail, Delivery::Hitscan { damage, .. } if damage == 106 && 2 * damage >= MAX_HEALTH)
-    );
+    assert!(matches!(rail, Delivery::Hitscan { damage, .. } if damage == 106));
     for weapon in Weapon::ALL {
         assert_eq!(
             fire(&STANDARD, weapon),
@@ -900,14 +900,39 @@ fn duel() -> Session {
     session
 }
 
-/// Person 1 holds the rail gun's trigger for `ticks` ticks.
+/// The yaw and pitch from `from`'s eye to the centre of `to`'s core, where the host places it
+/// (straight ahead while `to` is dead).
+#[allow(clippy::cast_possible_truncation)]
+fn at_core(session: &Session, from: usize, to: usize) -> (u16, i16) {
+    let target = &session.fighters[to];
+    if !target.alive() {
+        return (if from == 0 { 0 } else { 32_768 }, 0);
+    }
+    let eye = session.fighters[from].player.eye(&session.world);
+    let parts = target.hitboxes(target.player.center(&session.world), target.intent.yaw);
+    let core = parts
+        .get(PartDamage::core(&target.build).unwrap())
+        .unwrap()
+        .center;
+    let d = [0, 1, 2].map(|axis| core[axis] - eye[axis]);
+    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
+    let run = d[0].hypot(d[2]).round() as i32;
+    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
+    (yaw, pitch)
+}
+
+/// Person 1 holds the rail gun's trigger for `ticks` ticks, aimed at person 2's core (through
+/// whatever is in front of it).
 fn rail(session: &mut Session, ticks: u32) {
-    let intent = Intent {
-        fire: true,
-        select: Some(Weapon::RailGun),
-        ..Intent::IDLE
-    };
     for _ in 0..ticks {
+        let (yaw, pitch) = at_core(session, 0, 1);
+        let intent = Intent {
+            fire: true,
+            yaw,
+            pitch,
+            select: Some(Weapon::RailGun),
+            ..Intent::IDLE
+        };
         let sequence = session.fighters[0].ack + 1;
         let view_tick = session.ticks();
         session.queue(
@@ -986,7 +1011,7 @@ fn matches_with_configured_builds_replay_exactly() {
     let dog = BETA.validate(&robo_dog()).unwrap();
     let play = || {
         let mut session = duel();
-        session.fighters[0].build = MARKSMAN;
+        session.fighters[0].rebuild(MARKSMAN);
         session.configure(2, dog);
         let mut snapshots = Vec::new();
         for _ in 0..600 {
@@ -1004,7 +1029,7 @@ fn matches_with_configured_builds_replay_exactly() {
 /// held at person 2, and person 2's deaths.
 fn rail_record(build: Assembly, ticks: u32) -> (Vec<u32>, i32) {
     let mut session = duel();
-    session.fighters[0].build = build;
+    session.fighters[0].rebuild(build);
     let mut fired = Vec::new();
     for _ in 0..ticks {
         let tick = session.ticks();
@@ -1028,11 +1053,13 @@ fn rail_record(build: Assembly, ticks: u32) -> (Vec<u32>, i32) {
 
 #[test]
 fn the_overcharged_rail_gun_kills_in_fewer_hits_and_fires_slower() {
-    // Shipped: 72 ticks apart, three hits a kill (the heavy build's rail gun has no mod).
+    // Shipped: 72 ticks apart, four hits a kill aimed at the core from the front: two break the
+    // chassis in front of it (120), which falls away with all but the core, two the core (100);
+    // the heavy build's rail gun has no mod.
     assert_eq!(rail_record(STANDARD, 120), (vec![12, 84], 0));
-    assert_eq!(rail_record(HEAVY, 200), (vec![12, 84, 156], 1));
-    // Overcharged: 94 ticks apart, two hits a kill.
-    assert_eq!(rail_record(MARKSMAN, 120), (vec![12, 106], 1));
+    assert_eq!(rail_record(HEAVY, 300), (vec![12, 84, 156, 228], 1));
+    // Overcharged (106): 94 ticks apart, three hits a kill (two for the chassis, one the core).
+    assert_eq!(rail_record(MARKSMAN, 220), (vec![12, 106, 200], 1));
 }
 
 #[test]
@@ -1041,13 +1068,15 @@ fn a_configured_modded_build_applies_at_the_next_spawn() {
     assert!(session.configure(1, MARKSMAN));
     let rail_tuning = |session: &Session| BETA.tuning(&session.fighters[0].build, Weapon::RailGun);
     assert_eq!(rail_tuning(&session), Tuning::BASE);
-    let intent = Intent {
-        yaw: 32_768,
-        fire: true,
-        select: Some(Weapon::RailGun),
-        ..Intent::IDLE
-    };
     while session.fighters[0].deaths == 0 {
+        let (yaw, pitch) = at_core(&session, 1, 0);
+        let intent = Intent {
+            yaw,
+            pitch,
+            fire: true,
+            select: Some(Weapon::RailGun),
+            ..Intent::IDLE
+        };
         let sequence = session.fighters[1].ack + 1;
         let view_tick = session.ticks();
         session.queue(

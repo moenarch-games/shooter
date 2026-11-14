@@ -3,12 +3,15 @@
 //! wire round trip.
 
 use shooter_sim::aim;
+use shooter_sim::damage::PartDamage;
 use shooter_sim::melee;
 use shooter_sim::physics::Vec3i;
+use shooter_sim::robot::parts::CORE;
 use shooter_sim::robot::{MARKSMAN, SKIRMISHER, STANDARD};
 use shooter_sim::scenarios;
-use shooter_sim::session::{MAX_HEALTH, SELF_SPLASH_PERCENT, body_of, slot_of};
+use shooter_sim::session::{SELF_SPLASH_PERCENT, body_of, slot_of};
 use shooter_sim::tour::run_legs;
+use shooter_sim::trig;
 use shooter_sim::weapons;
 use shooter_sim::weapons::Delivery;
 use shooter_sim::wire::{decode_input, decode_snapshot, encode_input, encode_snapshot};
@@ -57,7 +60,7 @@ fn bots_fight_score_and_respawn() {
     assert!(deaths > 0);
     for fighter in &session.fighters {
         assert!(matches!(fighter.pilot, Pilot::Bot(_)));
-        assert!((0..=MAX_HEALTH).contains(&fighter.health));
+        assert!(fighter.core_health() <= CORE.health);
     }
 }
 
@@ -78,7 +81,10 @@ fn people_take_slots_from_bots_and_give_them_back() {
     assert_eq!(session.join(41).unwrap(), Some(0));
     assert_eq!(session.fighters[0].pilot, Pilot::Human { id: 41 });
     assert!(session.fighters[0].alive());
-    assert_eq!(session.fighters[0].health, MAX_HEALTH);
+    assert_eq!(
+        session.fighters[0].parts,
+        PartDamage::fresh(&session.fighters[0].build)
+    );
     let snapshot = session.snapshot();
     assert_eq!(snapshot.of_player(42).unwrap().slot, 1);
     assert!(session.leave(41).unwrap());
@@ -125,12 +131,35 @@ fn duel_shot(seen_ticks_ago: u32) -> bool {
     modded_duel_shot(seen_ticks_ago, STANDARD, Weapon::EnergyRifle).is_some()
 }
 
+/// The pitch from A's eye to the middle of B's chassis 12 m off (a standard robot's chassis
+/// centre is 120 units above its feet, the eye 165).
+fn chest_pitch() -> i16 {
+    trig::yaw_from_vector(-45, 1_190).unwrap() as i16
+}
+
+/// The yaw and pitch from `from`'s eye to the centre of `to`'s core, where the host places it.
+#[allow(clippy::cast_possible_truncation)]
+fn at_core(session: &Session, from: usize, to: usize) -> (u16, i16) {
+    let eye = session.fighters[from].player.eye(&session.world);
+    let target = &session.fighters[to];
+    let parts = target.hitboxes(target.player.center(&session.world), target.intent.yaw);
+    let core = parts
+        .get(PartDamage::core(&target.build).unwrap())
+        .unwrap()
+        .center;
+    let d = [0, 1, 2].map(|axis| core[axis] - eye[axis]);
+    let run = d[0].hypot(d[2]);
+    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
+    let pitch = trig::yaw_from_vector(d[1].round() as i32, run.round() as i32).unwrap() as i16;
+    (yaw, pitch)
+}
+
 /// [`duel_shot`] with A built as `build` and firing `weapon`: the damage B took, if hit.
 fn modded_duel_shot(seen_ticks_ago: u32, build: Assembly, weapon: Weapon) -> Option<i32> {
     let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
     assert_eq!(session.join(1).unwrap(), Some(0));
     assert_eq!(session.join(2).unwrap(), Some(1));
-    session.fighters[0].build = build;
+    session.fighters[0].rebuild(build);
     let mut sequence = 0;
     let mut step = |session: &mut Session, a: Intent, b: Intent, view_tick: u32| {
         sequence += 1;
@@ -168,8 +197,10 @@ fn modded_duel_shot(seen_ticks_ago: u32, build: Assembly, weapon: Weapon) -> Opt
         let now = session.ticks();
         step(&mut session, Intent::IDLE, strafe, now);
     }
+    // Level with B's chassis, which is all of B at that height (the arms are above it).
     let fire = Intent {
         fire: true,
+        pitch: chest_pitch(),
         ..Intent::IDLE
     };
     let seen = session.ticks() - seen_ticks_ago;
@@ -268,6 +299,8 @@ fn the_reticle_sight_is_where_the_hosted_beam_ends() {
         for _ in 0..20 {
             step(&mut session, aiming);
         }
+        let b = &session.fighters[1];
+        let parts = b.hitboxes(b.player.center(&session.world), b.intent.yaw);
         let sight = aim::sight(
             &session.world,
             session.fighters[0].player.eye(&session.world),
@@ -275,7 +308,7 @@ fn the_reticle_sight_is_where_the_hosted_beam_ends() {
             range_units,
             body_of(0),
             |body| slot_of(body).is_none(),
-            [(1, session.fighters[1].player.center(&session.world))],
+            [(1, &parts)],
         );
         assert_eq!(sight.fighter.is_some(), on_b, "{yaw} {pitch}");
         step(
@@ -365,7 +398,7 @@ fn melee_duel(seen_ticks_ago: u32) -> bool {
             event,
             Event::Hit {
                 victim: 1,
-                damage: melee::DAMAGE,
+                attacker: Some(0),
                 ..
             }
         )
@@ -379,7 +412,7 @@ fn blade_swings_are_lag_compensated() {
 }
 
 #[test]
-fn the_blade_kills_in_four_swings_whatever_gun_is_held() {
+fn the_blade_strikes_the_nearest_part_whatever_gun_is_held() {
     let arena = Arena {
         spawn: Vec3i::new(0, 0, -100),
         spawns: vec![Spawn {
@@ -392,7 +425,7 @@ fn the_blade_kills_in_four_swings_whatever_gun_is_held() {
     session.join(1).unwrap();
     session.join(2).unwrap();
     session.step().unwrap();
-    let mut killed_at = None;
+    let (mut strikes, mut lost) = (Vec::new(), Vec::new());
     for sequence in 1..=120 {
         let now = session.ticks();
         // A follows B up after each shove, stopping 1.5 m short.
@@ -413,22 +446,35 @@ fn the_blade_kills_in_four_swings_whatever_gun_is_held() {
             },
         );
         session.step().unwrap();
-        if session.events.iter().any(|event| {
-            matches!(
-                event,
-                Event::Killed {
+        for event in &session.events {
+            match *event {
+                Event::Hit {
                     victim: 1,
-                    killer: Some(0),
-                    weapon: Some(Weapon::EnergyBlade),
-                }
-            )
-        }) {
-            killed_at = Some(sequence);
-            break;
+                    attacker: Some(0),
+                    part,
+                    damage,
+                    ..
+                } => strikes.push((sequence, part, damage)),
+                Event::Detached {
+                    slot: 1,
+                    part,
+                    destroyed,
+                } => lost.push((sequence, part, destroyed)),
+                _ => {}
+            }
         }
     }
-    // Swings at ticks 0, 30, 60 and 90; A walks after the shoves.
-    assert_eq!(killed_at, Some(91));
+    // Swings at ticks 0, 30, 60 and 90, each on one part: B's part nearest A's eye.
+    let ticks: Vec<u32> = strikes.iter().map(|(tick, _, _)| *tick).collect();
+    assert_eq!(ticks, [1, 31, 61, 91]);
+    assert!(
+        strikes
+            .iter()
+            .all(|(_, _, damage)| *damage <= melee::DAMAGE)
+    );
+    // A light part takes one swing: it is destroyed and comes off.
+    assert!(lost.iter().any(|(_, _, destroyed)| *destroyed), "{lost:?}");
+    assert!(session.fighters[1].alive(), "the core is on B's back");
     assert_eq!(session.fighters[0].arsenal.held, Weapon::RocketLauncher);
 }
 
@@ -460,15 +506,23 @@ fn rail_kills_score_and_the_round_ends_and_restarts() {
     let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
     session.join(1).unwrap();
     session.join(2).unwrap();
-    let rail = Intent {
-        fire: true,
-        select: Some(Weapon::RailGun),
-        ..Intent::IDLE
-    };
     let mut kills = 0;
     let mut over = false;
-    for sequence in 1..400 {
+    // A aims at B's core: the shots break what is in front of it (the chassis), then the core.
+    for sequence in 1..4_000 {
         let now = session.ticks();
+        let (yaw, pitch) = if session.fighters[1].alive() {
+            at_core(&session, 0, 1)
+        } else {
+            (0, 0)
+        };
+        let rail = Intent {
+            fire: true,
+            yaw,
+            pitch,
+            select: Some(Weapon::RailGun),
+            ..Intent::IDLE
+        };
         session.queue(
             1,
             Input {
@@ -516,11 +570,22 @@ fn a_rocket_jump_costs_health() {
     let scenario = scenarios::ROCKET_JUMP;
     let mut session = Session::new((scenario.arena)()).unwrap();
     run_legs(&mut session, scenario.legs).unwrap();
-    let lost = MAX_HEALTH - session.local().health;
+    let local = session.local();
+    assert!(local.alive());
+    // The blast at its feet hurts every part within reach, each by at most half the splash.
+    let fresh = PartDamage::fresh(&local.build);
+    let lost: Vec<i32> = fresh
+        .health()
+        .iter()
+        .zip(local.parts.health())
+        .map(|(whole, now)| i32::from(*whole) - i32::from(*now))
+        .collect();
+    let most = lost.iter().copied().max().unwrap_or(0);
     assert!(
-        (20..=100 * SELF_SPLASH_PERCENT / 100).contains(&lost),
-        "lost {lost}"
+        (20..=100 * SELF_SPLASH_PERCENT / 100).contains(&most),
+        "lost {lost:?}"
     );
+    assert!(local.core_health() > 0);
 }
 
 /// The grapple scenario played by a person on a host: the host sets the hook, the snapshot
@@ -677,15 +742,22 @@ fn the_flame_burns_other_fighters_never_its_owner() {
     let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
     session.join(1).unwrap();
     session.join(2).unwrap();
-    let flame = Intent {
-        forward: 1,
-        fire: true,
-        select: Some(Weapon::Flamethrower),
-        ..Intent::IDLE
-    };
     let (mut burnt, mut first) = (0, None);
-    for sequence in 1..240 {
+    // A walks up to 3 m short of B, burning the parts nearest it (the front), then the core once
+    // nothing is left in front of it.
+    for sequence in 1..1_200 {
+        if session.fighters[1].deaths > 0 {
+            break;
+        }
         let now = session.ticks();
+        let gap = session.fighters[1].player.center(&session.world)[2]
+            - session.fighters[0].player.center(&session.world)[2];
+        let flame = Intent {
+            forward: i8::from(gap > 300.0),
+            fire: true,
+            select: Some(Weapon::Flamethrower),
+            ..Intent::IDLE
+        };
         session.queue(
             1,
             Input {
@@ -719,8 +791,11 @@ fn the_flame_burns_other_fighters_never_its_owner() {
         first.is_some_and(|gap| gap <= reach && gap > reach - 60.0),
         "first burn {first:?} apart"
     );
-    assert!(burnt >= MAX_HEALTH, "burnt {burnt}");
-    assert_eq!(session.fighters[0].health, MAX_HEALTH);
+    assert!(burnt >= i32::from(CORE.health), "burnt {burnt}");
+    assert_eq!(
+        session.fighters[0].parts,
+        PartDamage::fresh(&session.fighters[0].build)
+    );
     assert_eq!(session.fighters[1].deaths, 1);
 }
 

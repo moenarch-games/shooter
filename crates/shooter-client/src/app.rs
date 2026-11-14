@@ -10,14 +10,16 @@ use crate::gpu::Gpu;
 use crate::hud::{Hud, HudText};
 use crate::robots::{self, RobotState, RobotView, Robots, track::Tracker};
 use crate::scene::{self, Actors, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT, SWING_SECONDS};
-use render_engine::glam::Vec3;
+use render_engine::glam::{Mat4, Vec3};
 use shooter_sim::aim::{self, RETICLE_RANGE_UNITS};
+use shooter_sim::damage::{Hitboxes, PartDamage};
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
+use shooter_sim::robot::PartId;
 use shooter_sim::scenarios::scripted_intent;
-use shooter_sim::session::MAX_HEALTH;
+
 use shooter_sim::session::{body_of, slot_of};
 use shooter_sim::weapons;
-use shooter_sim::{ArenaModule, Event, Intent, MapId, TICK_HZ, Weapon};
+use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -591,7 +593,7 @@ impl App {
                     .then(|| center * METRES_PER_UNIT),
                 eye_above_center: eye_above_center * METRES_PER_UNIT,
                 forward,
-                health: me.health as f32 / MAX_HEALTH as f32,
+                health: crate::hud::core_share(me),
                 glow: self.glows[usize::from(me.slot)],
                 held: me.held,
                 hook: self
@@ -608,6 +610,8 @@ impl App {
         if let (Some(me), Some(view)) = (alive, fighters.first()) {
             let at = center * METRES_PER_UNIT;
             self.tracker.seen(me.slot, at, forward, me.build, me.held);
+            let frame = robots::track::rest_frame(&me.build, at, forward);
+            self.tracker.parts(me.slot, &me.build, &me.parts, frame);
             if view.center.is_some() {
                 let moved = Vec3::from(self.center) - Vec3::from(self.previous_center);
                 robot_views.push(RobotView {
@@ -629,7 +633,7 @@ impl App {
                 });
             }
         }
-        // Where the others are drawn (units), which is where the host checks a hitscan shot.
+        // Where the others' parts are drawn (units), which is where the host checks a hitscan shot.
         let mut seen = Vec::new();
         #[allow(clippy::cast_precision_loss)]
         for fighter in snapshot.iter().flat_map(|snapshot| &snapshot.fighters) {
@@ -642,7 +646,7 @@ impl App {
                 center: drawn.map(|center| Vec3::from(center) * METRES_PER_UNIT),
                 eye_above_center: EYE_ABOVE_CENTER,
                 forward: looking(fighter.yaw, fighter.pitch),
-                health: fighter.health as f32 / MAX_HEALTH as f32,
+                health: crate::hud::core_share(fighter),
                 glow: self.glows[slot],
                 held: fighter.held,
                 hook: fighter
@@ -654,10 +658,16 @@ impl App {
                 grapple_from: None,
             };
             if let Some(center) = drawn.filter(|_| fighter.alive) {
-                seen.push((slot, center));
+                seen.push((
+                    slot,
+                    Hitboxes::place(&fighter.build, &fighter.parts, center, fighter.yaw),
+                ));
                 let at = Vec3::from(center) * METRES_PER_UNIT;
                 self.tracker
                     .seen(fighter.slot, at, view.forward, fighter.build, fighter.held);
+                let frame = robots::track::rest_frame(&fighter.build, at, view.forward);
+                self.tracker
+                    .parts(fighter.slot, &fighter.build, &fighter.parts, frame);
                 robot_views.push(RobotView {
                     slot: fighter.slot,
                     build: fighter.build,
@@ -710,7 +720,7 @@ impl App {
                     RETICLE_RANGE_UNITS,
                     body_of(me.slot),
                     |body| slot_of(body).is_none(),
-                    seen,
+                    seen.iter().map(|(slot, parts)| (*slot, parts)),
                 );
                 Some(camera::reticle(
                     camera,
@@ -721,6 +731,31 @@ impl App {
             _ => None,
         };
 
+        // Each robot's lost parts (falling or fallen where they came off) and its damaged ones,
+        // from the host's part state.
+        let part_states: Vec<(Detached, Vec<PartId>)> = robot_views
+            .iter()
+            .map(|view| {
+                let damaged = snapshot
+                    .and_then(|snapshot| snapshot.slot(view.slot))
+                    .filter(|fighter| fighter.alive && view.state.dead_for.is_none())
+                    .map(damaged_parts)
+                    .unwrap_or_default();
+                (self.tracker.detached(view.slot), damaged)
+            })
+            .collect();
+        let robot_views: Vec<RobotView> = robot_views
+            .iter()
+            .zip(&part_states)
+            .map(|(view, (detached, damaged))| RobotView {
+                parts: robots::PartStates {
+                    detached,
+                    damaged,
+                    ..view.parts
+                },
+                ..*view
+            })
+            .collect();
         let drawn = match (&mut self.gpu, &mut self.robots) {
             (Some(gpu), Some(robots)) => robots.update(&mut gpu.world, &robot_views, seconds),
             _ => Ok(Vec::new()),
@@ -781,6 +816,26 @@ impl App {
         }
         true
     }
+}
+
+/// A robot's lost parts and where each one's robot frame is ([`robots::PartStates::detached`]).
+type Detached = Vec<(PartId, Mat4)>;
+
+/// The parts `fighter` still has that have taken damage (drawn in their damaged variant where
+/// the kit has one).
+fn damaged_parts(fighter: &FighterState) -> Vec<PartId> {
+    let whole = PartDamage::fresh(&fighter.build);
+    fighter
+        .build
+        .parts()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            fighter.parts.attached(*index)
+                && fighter.parts.health()[*index] < whole.health()[*index]
+        })
+        .map(|(_, part)| part.id)
+        .collect()
 }
 
 /// The HUD's robot line for the local fighter: its animation state and its placeholder parts,

@@ -269,6 +269,13 @@ mod tests {
         let world = world(&[([0, 200, 120], [20, 200, 20])]);
         let eye = [0.0, 165.0, 0.0];
         let enemy = [0.0, 165.0 - 75.0, 1_000.0];
+        let build = shooter_sim::Assembly::default();
+        let parts = shooter_sim::damage::Hitboxes::place(
+            &build,
+            &shooter_sim::damage::PartDamage::fresh(&build),
+            enemy,
+            32_768,
+        );
         let shot = sight(
             &world,
             eye,
@@ -276,7 +283,7 @@ mod tests {
             RETICLE_RANGE_UNITS,
             OWNER,
             |_| true,
-            [(1, enemy)],
+            [(1, &parts)],
         );
         assert_eq!(shot.fighter, None, "the pillar stops the shot");
         assert!((shot.end[2] - 100.0).abs() < 1.0, "{:?}", shot.end);

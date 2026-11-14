@@ -121,9 +121,12 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   Since shooter#72's first half (split approved by the owner, 2026-11-14) the pool ships
   (`shooter_sim::energy`): the core's capacity and regeneration, batteries adding stored capacity,
   weapon activations and the pickup boosts paying first come, first served (Q2.i70.4), host-owned,
-  in snapshots, predicted and replayed. Still open on shooter#72: a destroyed battery losing its
-  charge and capacity and its local blast (needs per-part damage, shooter#56). Since shooter#73's
-  first half, motors draw from the pool too: a flat cost each commanded tick, in part-ID order
+  in snapshots, predicted and replayed. Its second half, a destroyed battery losing its charge
+  and capacity and its local blast, needed per-part damage and ships with it: since shooter#56 a
+  lost battery (destroyed, or carried off with a destroyed part it hung from) takes its capacity
+  and its share of the charge once, and a destroyed one sets off a small blast through the
+  ordinary part damage (a battery it destroys blasts in turn, once each; no chain-reaction
+  subsystem). Since shooter#73's first half, motors draw from the pool too: a flat cost each commanded tick, in part-ID order
   (provisional).
 - **D2.i70.4** (owner, 2026-11-13; shooter#70; supersedes D2.i46.5's cooling constraint): The beta
   has no heat or cooling mechanic: weapons and parts are limited by energy (D2.i70.3) and
@@ -170,6 +173,16 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   destroyed and detached for the rest of that life, and the branch below it in the component tree
   disconnects. Destroyed parts never come back mid-life; respawn restores the configured build.
   Owner: shooter#56.
+  Since shooter#56 this ships (`shooter_sim::damage`): every part has health, the host resolves
+  hitscan, pellet, rocket, splash, blade and flame strikes onto the parts placed at the fighter's
+  (rewound) centre and facing, each part at most once a strike; plates are boxes like the rest
+  and a penetrating weapon passes a share of the damage to the part behind. Lost means no longer
+  connected to the core through the tree (the core is a leaf: when one of its ancestors is
+  destroyed, it is the rest that falls away). A lost weapon part does not fire, and a robot with
+  no connected locomotion part does not walk; how surviving legs and wheels move it waits on the
+  mechanical robots in the match (shooter#73's second half). The core's destruction is the kill
+  (D2.i70.2), replacing fighter health. Snapshots, prediction and replays carry the part
+  healths. Field repair is shooter#61, collision damage and physical debris shooter#75.
 - **D2.i70.9** (owner, 2026-11-13 and 2026-11-14; shooter#61; answers Q2.i46.2): Repair is done by
   physically mounted repair modules (mass, health, build points) that the player activates
   manually. A module restores, over time and for energy from the shared pool (D2.i70.3), a
@@ -334,9 +347,16 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   core 10, sensor 5, leg 7, wheel 6, track 12, armor plate 4; the weapons and mods keep their
   shipped points. Energy since shooter#72 (`shooter_sim::energy`, milli-unit fixed point): the
   core stores 100 and regenerates 24 a second (0.4 a tick); a battery (`robot.battery`, 20 × 40 ×
-  20 cm, 20 kg, 5 points, 60 component health for shooter#56) stores 60. Activations: rifle bolt
+  20 cm, 20 kg, 5 points) stores 60. Activations: rifle bolt
   2, rail shot 30, rocket 20, grapple hook 10, blade swing 5, shotgun blast 12, laser 0.6 and
   flamethrower 0.5 a tick; cooldowns are the weapons' shipped refire times.
+  Part damage since shooter#56 (`shooter_sim::damage`): component health chassis 120, 160 and
+  200 by size, beams 50 (short) and 60 (long), hinge and rotor 40, core 100, battery 60, sensor
+  30, leg 70, wheel 50, track 90, armor plate 120, light weapons 40 and heavy ones (rail gun,
+  rocket launcher) 60. Penetration, the share of a strike's damage an armor plate passes to the
+  part behind it: rail gun 50 %, energy rifle and laser 20 %, every other weapon 0. The weapons'
+  damage is unchanged (rifle 12, rail 85, rocket splash up to 100 within 3 m, pellets 9, laser
+  2 and flame 3 a tick, blade 50); the old 200 fighter health is gone.
 - **Q2.i70.2**: The predetermined chassis sizes and their costs, and whether the 20 cm socket cell
   is final (D2.i70.1).
   Defaults in use until decided (shooter#71): a 20 cm cell; chassis sections of 20 × 40 × 80,
@@ -360,6 +380,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
 - **Q2.i70.5**: Impact thresholds: the speed, impulse and fall heights at which collisions start to
   damage, how damage scales above them, and the battery blast's radius and damage (D2.i70.3,
   D2.i70.10).
+  Defaults in use until decided (shooter#56): a destroyed battery's blast reaches 80 units
+  (0.8 m) from its centre and deals 40 there, falling off linearly to nothing at its edge, to
+  every connected part of every robot within reach; it pushes nothing.
 - **Q2.i70.6**: Performance limits: parts per robot, articulated bodies and active debris per match,
   debris lifetime, and the representative multi-robot scenes they are measured on (D2.i70.1,
   D2.i70.5, D2.i70.10).
