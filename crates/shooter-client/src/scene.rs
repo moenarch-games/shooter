@@ -623,5 +623,6 @@ pub fn frame(camera: Vec3, forward: Vec3, point_lights: Vec<PointLight>) -> Scen
         },
         environment: None,
         fog: None,
+        overlay: Vec::new(),
     }
 }
