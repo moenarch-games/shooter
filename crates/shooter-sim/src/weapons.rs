@@ -132,6 +132,25 @@ impl Weapon {
         }
     }
 
+    /// The energy one activation costs from the robot's shared pool, in milli-units
+    /// ([`crate::energy`]): a shot, a swing, a hook, or one tick of a continuous weapon.
+    /// Provisional (Atlas Q2.i70.1). With a 24-a-second core the rifle (20 a second), rockets
+    /// (25), rail gun (25) and shotgun (13) can almost or fully keep firing; the laser (36) and
+    /// flamethrower (30) drain the pool.
+    #[must_use]
+    pub const fn energy(self) -> u32 {
+        match self {
+            Self::EnergyRifle => 2_000,
+            Self::RailGun => 30_000,
+            Self::RocketLauncher => 20_000,
+            Self::Grapple => 10_000,
+            Self::EnergyBlade => 5_000,
+            Self::Shotgun => 12_000,
+            Self::Laser => 600,
+            Self::Flamethrower => 500,
+        }
+    }
+
     #[must_use]
     pub const fn delivery(self) -> Delivery {
         match self {
@@ -236,11 +255,13 @@ impl Arsenal {
         fire: bool,
         tick: u32,
     ) -> Option<Weapon> {
-        self.trigger_tuned(select, melee, fire, tick, Weapon::refire_ticks)
+        self.trigger_tuned(select, melee, fire, tick, Weapon::refire_ticks, |_| true)
     }
 
     /// [`Arsenal::trigger`] with each weapon's refire from `refire` (its mod's,
-    /// [`crate::robot::Tuning::refire_ticks`]).
+    /// [`crate::robot::Tuning::refire_ticks`]), and each activation first asking `spend` for its
+    /// energy ([`crate::energy`]): the swing first, then the gun. A refused activation does not
+    /// happen and spends no cooldown; a refused swing leaves the gun its turn.
     pub fn trigger_tuned(
         &mut self,
         select: Option<Weapon>,
@@ -248,6 +269,7 @@ impl Arsenal {
         fire: bool,
         tick: u32,
         refire: impl Fn(Weapon) -> u32,
+        mut spend: impl FnMut(Weapon) -> bool,
     ) -> Option<Weapon> {
         if let Some(weapon) =
             select.filter(|weapon| *weapon != self.held && Weapon::ROTATION.contains(weapon))
@@ -255,11 +277,11 @@ impl Arsenal {
             self.held = weapon;
             self.ready_at = self.ready_at.max(tick + SWITCH_TICKS);
         }
-        let fired = if melee && tick >= self.blade_ready_at {
+        let fired = if melee && tick >= self.blade_ready_at && spend(Weapon::EnergyBlade) {
             self.blade_ready_at = tick + refire(Weapon::EnergyBlade);
             self.ready_at = self.ready_at.max(tick + crate::melee::GUN_LOCKOUT_TICKS);
             Some(Weapon::EnergyBlade)
-        } else if fire && tick >= self.ready_at {
+        } else if fire && tick >= self.ready_at && spend(self.held) {
             self.ready_at = tick + refire(self.held);
             Some(self.held)
         } else {

@@ -5,16 +5,17 @@
 //! match (configured while alive, applied at the next spawn, carried in snapshots, replayed
 //! exactly, firing with their weapon mods).
 
+use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{
-    ARMOR_PLATE, BEAM_LONG, BEAM_SHORT, CHASSIS_L, CHASSIS_M, CHASSIS_S, CORE, ENERGY_BLADE,
-    ENERGY_RIFLE, GRAPPLE, HINGE, LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER, ROTOR, SENSOR, SHOTGUN,
-    TRACK, WHEEL,
+    ARMOR_PLATE, BATTERY, BEAM_LONG, BEAM_SHORT, CHASSIS_L, CHASSIS_M, CHASSIS_S, CORE,
+    ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, HINGE, LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER, ROTOR,
+    SENSOR, SHOTGUN, TRACK, WHEEL,
 };
 use shooter_sim::robot::{
-    AssemblyError, BETA, Candidate, Catalog, Face, HEAT_SINK, HEAVY, Kind, LOADOUTS, LONG_BARREL,
-    MARKSMAN, MAX_PARTS, ModId, OVERCHARGER, Orientation, PartId, PartType, RAPID_CYCLER, RawMount,
-    RawPart, SKIRMISHER, STANDARD, SocketId, Tuning, loadout,
+    AssemblyError, BETA, Candidate, Catalog, EFFICIENCY_COIL, Face, HEAVY, Kind, LOADOUTS,
+    LONG_BARREL, MARKSMAN, MAX_PARTS, ModId, OVERCHARGER, Orientation, PartId, PartType,
+    RAPID_CYCLER, RawMount, RawPart, SKIRMISHER, STANDARD, SocketId, Tuning, loadout,
 };
 use shooter_sim::session::MAX_HEALTH;
 use shooter_sim::weapons::Delivery;
@@ -516,7 +517,7 @@ fn mods_and_weapons_follow_their_rules() {
     with(&mut unknown, 7).modification = Some(99);
     assert_eq!(reject(unknown), AssemblyError::UnknownMod(99));
     let mut cored = standard();
-    with(&mut cored, 1).modification = Some(HEAT_SINK.0);
+    with(&mut cored, 1).modification = Some(EFFICIENCY_COIL.0);
     assert_eq!(reject(cored), AssemblyError::NotAWeapon(PartId(1)));
     let mut grapple = standard();
     with(&mut grapple, 9).modification = Some(OVERCHARGER.0);
@@ -549,90 +550,148 @@ fn every_mod_trades_something_away() {
     assert_eq!(
         BETA.mods.len(),
         4,
-        "a cooling, an energy, a firing and a mount mod"
+        "two firing mods, a mount mod and an energy mod"
     );
+    // No mod is pure upkeep any more: every one changes the fire, and none is strictly better
+    // (damage, refire, range and energy a shot all count).
     for modification in BETA.mods {
         let key = modification.key;
         assert!(key.starts_with("mod."), "{key}");
         assert!(!modification.fits.is_empty(), "{key} fits something");
         assert!(modification.points > 0 && modification.mass > 0, "{key}");
         let tuning = modification.tuning;
-        if tuning != Tuning::BASE {
-            assert!(
-                tuning.damage_percent < 100
-                    || tuning.refire_percent > 100
-                    || tuning.range_percent < 100,
-                "{key} is strictly better"
-            );
+        assert_ne!(tuning, Tuning::BASE, "{key} changes nothing");
+        assert!(
+            tuning.damage_percent < 100
+                || tuning.refire_percent > 100
+                || tuning.range_percent < 100
+                || tuning.energy_percent > 100,
+            "{key} is strictly better"
+        );
+    }
+    // The heat sink is gone with heat (shooter#72); its code stays retired.
+    assert!(BETA.mods.iter().all(|m| m.key != "mod.heat-sink"));
+    assert_eq!(BETA.modification(ModId(4)), None);
+    let coil = BETA.modification(EFFICIENCY_COIL).unwrap();
+    assert_eq!(coil.key, "mod.efficiency-coil");
+    assert_eq!(
+        (coil.tuning.energy_percent, coil.tuning.refire_percent),
+        (60, 125)
+    );
+}
+
+#[test]
+fn the_core_and_batteries_make_the_energy_pool() {
+    // The core alone: 100 stored, 24 a second; a battery adds 60 stored and nothing else.
+    let standard = BETA.budget(&STANDARD);
+    assert_eq!((standard.capacity, standard.regen), (100, 24));
+    let heavy = BETA.budget(&HEAVY);
+    assert_eq!((heavy.capacity, heavy.regen), (160, 24));
+    assert_eq!(BATTERY.key, "robot.battery");
+    assert_eq!(BATTERY.kind, Kind::Battery);
+    assert_eq!(
+        (
+            BATTERY.capacity,
+            BATTERY.regen,
+            BATTERY.points,
+            BATTERY.mass
+        ),
+        (60, 0, 5, 20)
+    );
+    assert_eq!(BATTERY.health, 60, "a battery is a damageable component");
+    assert_eq!(BATTERY.cells, [1, 2, 1], "a two-cell footprint");
+    // Batteries stack; each one takes its footprint and build points.
+    let mut charged = MARKSMAN.candidate();
+    charged
+        .parts
+        .push(on(11, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0));
+    let charged = BETA.validate(&charged).unwrap();
+    assert_eq!(BETA.budget(&charged).capacity, 160);
+    assert_eq!(BETA.budget(&charged).points, 120);
+    let mut overlapping = charged.candidate();
+    overlapping
+        .parts
+        .push(on(12, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 1));
+    assert_eq!(
+        BETA.validate(&overlapping),
+        Err(AssemblyError::Overlap(PartId(11), PartId(12)))
+    );
+    let mut second = charged.candidate();
+    second
+        .parts
+        .push(on(12, &BATTERY, 0, &CHASSIS_M, Face::NegX, 0, 0));
+    assert_eq!(
+        BETA.validate(&second),
+        Err(AssemblyError::OverBudget {
+            points: 125,
+            build_points: 120
+        })
+    );
+    let roomy = Catalog {
+        build_points: 125,
+        ..BETA
+    };
+    let second = roomy.validate(&second).unwrap();
+    assert_eq!(roomy.budget(&second).capacity, 220);
+    // Every part type's capacity and regeneration: only the core regenerates, only it and the
+    // battery store.
+    for part in BETA.parts {
+        match part.kind {
+            Kind::Core => assert_eq!((part.capacity, part.regen), (100, 24)),
+            Kind::Battery => assert_eq!(part.regen, 0),
+            _ => assert_eq!((part.capacity, part.regen), (0, 0), "{}", part.key),
         }
     }
 }
 
 #[test]
 fn budgets_hold_exactly_at_their_limits_and_fail_one_over() {
-    // Build points: the heavy build costs 110.
+    // Build points: the heavy build (with its battery) costs 115.
     let heavy = BETA.budget(&HEAVY);
-    assert_eq!(heavy.points, 110);
+    assert_eq!(heavy.points, 115);
     let exact = Catalog {
-        build_points: 110,
+        build_points: 115,
         ..BETA
     };
     assert_eq!(exact.validate(&HEAVY.candidate()), Ok(HEAVY));
     let short = Catalog {
-        build_points: 109,
+        build_points: 114,
         ..BETA
     };
     assert_eq!(
         short.validate(&HEAVY.candidate()),
         Err(AssemblyError::OverBudget {
-            points: 110,
-            build_points: 109
+            points: 115,
+            build_points: 114
         })
     );
-    // Two plates fit the beta's 120 on the heavy build, a third passes it.
+    // One plate fits the beta's 120 on the heavy build, a second passes it.
     let mut plated = HEAVY.candidate();
-    for (id, face) in [(11, Face::NegX), (12, Face::PosY)] {
-        plated
-            .parts
-            .push(on(id, &ARMOR_PLATE, 0, &CHASSIS_M, face, 0, 0));
-    }
+    plated
+        .parts
+        .push(on(12, &ARMOR_PLATE, 0, &CHASSIS_M, Face::NegX, 0, 0));
     assert!(BETA.validate(&plated).is_ok());
     plated
         .parts
-        .push(on(13, &ARMOR_PLATE, 0, &CHASSIS_M, Face::NegY, 0, 0));
+        .push(on(13, &ARMOR_PLATE, 0, &CHASSIS_M, Face::PosY, 0, 0));
     assert_eq!(
         BETA.validate(&plated),
         Err(AssemblyError::OverBudget {
-            points: 122,
+            points: 123,
             build_points: 120
         })
     );
-    // Power: the core supplies 130; the marksman draws 124, a leg more is 136.
-    assert_eq!(
-        (BETA.budget(&MARKSMAN).draw, BETA.budget(&MARKSMAN).power),
-        (124, 130)
-    );
-    let mut legged = MARKSMAN.candidate();
-    legged
+    // No power or heat budget is left (D2.i70.3, D2.i70.4): the builds those once rejected (the
+    // marksman with a second sensor, which overdrew the core's 130 power, and the skirmisher's
+    // cycler without a heat sink) are valid; energy limits them in play instead.
+    let mut sensed = MARKSMAN.candidate();
+    sensed
         .parts
-        .push(on(11, &LEG, 0, &CHASSIS_M, Face::PosY, 0, 0));
-    assert_eq!(
-        BETA.validate(&legged),
-        Err(AssemblyError::Underpowered {
-            draw: 136,
-            power: 130
-        })
-    );
-    // Heat: the rapid cycler overheats the small chassis without the heat sink.
-    let mut hot = SKIRMISHER.candidate();
-    with(&mut hot.parts, 10).modification = None;
-    assert_eq!(
-        BETA.validate(&hot),
-        Err(AssemblyError::Overheated {
-            heat: 55,
-            cooling: 50
-        })
-    );
+        .push(on(11, &SENSOR, 0, &CHASSIS_M, Face::PosY, 0, 0));
+    assert!(BETA.validate(&sensed).is_ok());
+    let mut bare = SKIRMISHER.candidate();
+    with(&mut bare.parts, 10).modification = None;
+    assert!(BETA.validate(&bare).is_ok());
 }
 
 #[test]
@@ -641,7 +700,7 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         assert_eq!(BETA.validate(&build.candidate()), Ok(build), "{name}");
         assert_eq!(loadout(name), Some(build));
         let budget = BETA.budget(&build);
-        assert!(budget.draw <= budget.power && budget.heat <= budget.cooling);
+        assert!(budget.capacity >= 100 && budget.regen == 24, "{name}");
         assert!(budget.points <= budget.build_points);
         // The arsenal they mount, once each.
         let weapons: Vec<Weapon> = BETA.weapons(&build).map(|(_, weapon)| weapon).collect();
@@ -656,7 +715,11 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         BETA.mod_on(&SKIRMISHER, Weapon::EnergyRifle),
         Some(RAPID_CYCLER)
     );
-    assert_eq!(BETA.mod_on(&SKIRMISHER, Weapon::Shotgun), Some(HEAT_SINK));
+    assert_eq!(
+        BETA.mod_on(&SKIRMISHER, Weapon::Shotgun),
+        Some(EFFICIENCY_COIL)
+    );
+    assert_eq!(HEAVY.parts().len(), 12, "the heavy build carries a battery");
     assert_eq!(BETA.mod_on(&MARKSMAN, Weapon::RailGun), Some(OVERCHARGER));
     assert_eq!(
         BETA.mod_on(&MARKSMAN, Weapon::EnergyRifle),
@@ -708,12 +771,25 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
             (weapon.refire_ticks(), weapon.delivery())
         );
     }
-    for (build, weapon) in [(SKIRMISHER, Weapon::Shotgun), (MARKSMAN, Weapon::Laser)] {
-        assert_eq!(
-            fire(&build, weapon),
-            (weapon.refire_ticks(), weapon.delivery())
-        );
+    assert_eq!(
+        fire(&MARKSMAN, Weapon::Laser),
+        (Weapon::Laser.refire_ticks(), Weapon::Laser.delivery())
+    );
+    // The skirmisher's efficiency-coiled shotgun blasts as hard, a quarter slower, for 60 % of
+    // the energy.
+    assert_eq!(
+        fire(&SKIRMISHER, Weapon::Shotgun),
+        (68, Weapon::Shotgun.delivery())
+    );
+    // What each activation costs (milli-units): the shipped weapons' own, the mods' tuned.
+    let energy = |build: &Assembly, weapon: Weapon| BETA.tuning(build, weapon).energy(weapon);
+    for weapon in Weapon::ALL {
+        assert_eq!(energy(&STANDARD, weapon), weapon.energy());
     }
+    assert_eq!(energy(&SKIRMISHER, Weapon::Shotgun), 7_200);
+    assert_eq!(energy(&SKIRMISHER, Weapon::EnergyRifle), 2_000);
+    assert_eq!(energy(&MARKSMAN, Weapon::RailGun), 45_000);
+    assert_eq!(energy(&MARKSMAN, Weapon::EnergyRifle), 2_000);
 }
 
 /// The bytes `build` travels as (after an input's build flag).
@@ -874,6 +950,8 @@ fn a_configured_build_applies_at_the_next_spawn_and_travels_in_snapshots() {
     }
     assert_eq!(session.fighters[1].build, tank);
     assert_eq!(session.fighters[0].build, STANDARD);
+    // Back with the new build's energy pool full.
+    assert_eq!(session.fighters[1].energy, Pool::of(&tank).capacity);
     let snapshot = session.snapshot();
     assert_eq!(snapshot.slot(1).unwrap().build, tank);
     assert_eq!(

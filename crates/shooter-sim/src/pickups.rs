@@ -16,11 +16,14 @@
 //! - **Lifetime.** A collected module lasts for the rest of its carrier's life, until the carrier
 //!   dies or the round ends (owner decision on #62, 14 Nov 2026), not on a timer. A fighter
 //!   carries at most one; taking another replaces it with a full one.
-//! - **Uses.** A powerful module is not free: it holds a limited number of uses
-//!   ([`ArenaModule::uses`]). The rail capacitor boosts [`RAIL_CAPACITOR_SHOTS`] rail shots, the
-//!   thrusters [`THRUSTER_JUMPS`] jumps; each boosted shot or jump spends one, and the last one
-//!   spends the module ([`crate::Event::ModuleSpent`]). The shared robot energy pool (#72) does
-//!   not exist yet, so no module draws energy.
+//! - **Uses and energy.** A powerful module is not free: it holds a limited number of uses
+//!   ([`ArenaModule::uses`]), and each boost is paid from the robot's shared energy pool
+//!   ([`crate::energy`], owner option B on #62). The rail capacitor boosts
+//!   [`RAIL_CAPACITOR_SHOTS`] rail shots, each costing [`RAIL_CAPACITOR_ENERGY_PERCENT`] of the
+//!   shot's energy (a shot the pool cannot pay does not fire); the thrusters boost
+//!   [`THRUSTER_JUMPS`] jumps for [`THRUSTER_JUMP_ENERGY`] each (a jump the pool cannot pay is a
+//!   plain jump and spends no use). Each boosted shot or jump spends one use, and the last one
+//!   spends the module ([`crate::Event::ModuleSpent`]).
 //! - **Death and round end.** Death removes the module at once and drops nothing; a fresh round
 //!   (or a match on another map) clears every module and readies every pad.
 //! - **Pad respawn.** A pad comes back [`PAD_RESPAWN_TICKS`] (30 s) after it was taken.
@@ -50,8 +53,12 @@ pub const THRUSTER_JUMP_UNITS_PER_SECOND: i32 = 900;
 pub const THRUSTER_JUMP_SUBUNITS_PER_TICK: i32 = subunits_per_tick(THRUSTER_JUMP_UNITS_PER_SECOND);
 /// The rail capacitor's rail gun: 150 % damage...
 pub const RAIL_CAPACITOR_DAMAGE_PERCENT: u16 = 150;
-/// ...and 75 % of the time between shots.
+/// ...and 75 % of the time between shots...
 pub const RAIL_CAPACITOR_REFIRE_PERCENT: u16 = 75;
+/// ...for 150 % of the energy a shot.
+pub const RAIL_CAPACITOR_ENERGY_PERCENT: u16 = 150;
+/// The energy (milli-units, [`crate::energy`]) a thruster jump costs: 15.
+pub const THRUSTER_JUMP_ENERGY: u32 = 15_000;
 
 /// What a module changes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -116,6 +123,7 @@ impl ArenaModule {
             (Self::RailCapacitor, Weapon::RailGun) => Tuning {
                 damage_percent: scale(tuning.damage_percent, RAIL_CAPACITOR_DAMAGE_PERCENT),
                 refire_percent: scale(tuning.refire_percent, RAIL_CAPACITOR_REFIRE_PERCENT),
+                energy_percent: scale(tuning.energy_percent, RAIL_CAPACITOR_ENERGY_PERCENT),
                 ..tuning
             },
             _ => tuning,
@@ -183,12 +191,21 @@ impl Carried {
     }
 }
 
-/// The upward velocity a jump sets for a fighter carrying `carried`.
+/// The upward velocity a jump sets for a fighter carrying `carried` with `charge` milli-units of
+/// energy, and whether it is a boosted jump (the module's use and energy are spent if it
+/// happens): a boost the pool cannot pay leaves a plain jump.
 #[must_use]
-pub const fn jump_velocity(carried: Option<Carried>) -> i32 {
+pub const fn jump(carried: Option<Carried>, charge: u32) -> (i32, bool) {
     match carried {
-        Some(carried) => carried.module.jump_velocity(),
-        None => JUMP_VELOCITY_SUBUNITS_PER_TICK,
+        Some(carried) if carried.module.spent_by_jump() => {
+            if charge >= THRUSTER_JUMP_ENERGY {
+                (carried.module.jump_velocity(), true)
+            } else {
+                (JUMP_VELOCITY_SUBUNITS_PER_TICK, false)
+            }
+        }
+        Some(carried) => (carried.module.jump_velocity(), false),
+        None => (JUMP_VELOCITY_SUBUNITS_PER_TICK, false),
     }
 }
 

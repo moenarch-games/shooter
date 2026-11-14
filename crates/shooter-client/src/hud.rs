@@ -1,10 +1,11 @@
 //! The heads-up display, a stopgap until render-engine draws screen overlays
 //! (moritzbrantner/render-engine#101): the text is built here once, then shown by the page's DOM
 //! in the browser and in the window title natively (the native health bar is drawn in the scene,
-//! see `scene::Actors`). Health, weapon (with its mod), frags and place, the equipped weapon mods, the module pickup carried (with
+//! see `scene::Actors`). Health, energy (charge and capacity), weapon (with its mod), frags and place, the equipped weapon mods, the module pickup carried (with
 //! its uses left), the round clock, a feed of kills and module pickups, a respawn
 //! or connection banner, and the scoreboard (held Tab, or between rounds).
 
+use shooter_sim::energy::{MILLI, Pool};
 use shooter_sim::robot::{BETA, ModId};
 use shooter_sim::{
     ArenaModule, Assembly, Carried, Controller, Event, FighterState, Phase, Snapshot, TICK_HZ,
@@ -51,9 +52,15 @@ fn mod_name(id: ModId) -> &'static str {
         Some("mod.rapid-cycler") => "rapid cycler",
         Some("mod.overcharger") => "overcharger",
         Some("mod.long-barrel") => "long barrel",
-        Some("mod.heat-sink") => "heat sink",
+        Some("mod.efficiency-coil") => "efficiency coil",
         _ => "mod",
     }
+}
+
+/// The charge in the shared energy pool against its capacity, in whole units: "⚡ 87/160".
+fn energy(me: &FighterState) -> String {
+    let pool = Pool::of(&me.build);
+    format!("⚡ {}/{}", me.energy / MILLI, pool.capacity / MILLI)
 }
 
 /// The held weapon with its mod in `build`, if any: "Rail gun + overcharger".
@@ -64,7 +71,7 @@ fn held(weapon: Weapon, build: &Assembly) -> String {
     )
 }
 
-/// The equipped mods, "mods: Energy rifle + rapid cycler, Shotgun + heat sink", or nothing.
+/// The equipped mods, "mods: Energy rifle + rapid cycler, Shotgun + efficiency coil", or nothing.
 fn equipped(build: &Assembly) -> String {
     let mods: Vec<String> = BETA
         .mods(build)
@@ -195,8 +202,9 @@ impl Hud {
         };
         let status_line = me.map_or_else(String::new, |me| {
             format!(
-                "♥ {}   {}   {} frags (to {})   #{} of {}   {}{}{}",
+                "♥ {}   {}   {}   {} frags (to {})   #{} of {}   {}{}{}",
                 me.health.max(0),
+                energy(me),
                 held(me.held, &me.build),
                 me.frags,
                 snapshot.frag_limit,

@@ -118,10 +118,19 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   components through the ordinary component damage (D2.i70.8), with no chain-reaction mechanic.
   Batteries raising the maximum output, and arena charging stations, are later. Strong pickup
   modules also pay from this pool (owner, 2026-11-14, shooter#62). Owner: shooter#72.
+  Since shooter#72's first half (split approved by the owner, 2026-11-14) the pool ships
+  (`shooter_sim::energy`): the core's capacity and regeneration, batteries adding stored capacity,
+  weapon activations and the pickup boosts paying first come, first served (Q2.i70.4), host-owned,
+  in snapshots, predicted and replayed. Still open on shooter#72: a destroyed battery losing its
+  charge and capacity and its local blast (needs per-part damage, shooter#56). Continuous motor
+  draw comes with shooter#73.
 - **D2.i70.4** (owner, 2026-11-13; shooter#70; supersedes D2.i46.5's cooling constraint): The beta
   has no heat or cooling mechanic: weapons and parts are limited by energy (D2.i70.3) and
   cooldowns, not heat accumulation or cooling modules. The heat and cooling that ship today stay
   until an explicit migration replaces them (D2.i70.12, shooter#72).
+  Migrated by shooter#72: the schema has no heat, cooling, power or draw left, the heat sink mod
+  is removed (its code retired) and replaced by the efficiency coil, and the other mods trade
+  energy a shot instead of heat (Q2.i46.4).
 - **D2.i70.5** (owner, 2026-11-13; shooter#70): Robots move mechanically. Rigidly joined parts form
   one compound rigid body with per-part hitboxes and health; movable joints create separate
   articulated bodies. Mass at its actual mounting position sets the centre of mass, rotational
@@ -188,9 +197,10 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   Since shooter#71 the assembly ships as D2.i70.1 and D2.i70.2 describe (the socket-grid component
   tree, one core, the build points and part ceiling), replacing the anatomical sockets and
   hardpoints in place; the named loadouts are humanoid component trees with their mods on their
-  weapon parts. Still shipped until shooter#72: power (now supplied by the core) and heat and
-  cooling (made by weapons and mods, shed by chassis sections, the core, the sensor and the heat
-  sink). The legs' load budget is gone (D2.i70.1 rejects no build for its locomotion).
+  weapon parts. The legs' load budget is gone (D2.i70.1 rejects no build for its locomotion).
+  Since shooter#72 the power, heat and cooling budgets are gone too, replaced by the shared energy
+  pool (D2.i70.3, D2.i70.4); the heat sink became the efficiency coil and the heavy loadout carries
+  a battery.
 
 ## 3. Platforms
 
@@ -270,7 +280,8 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   drop on death. Defaults in use until decided (shooter#62): `shooter_sim::pickups`, pads as map
   data (`Arena::module_pads`); the rail capacitor (rail gun 150% damage, 75% refire time, 5
   boosted shots) and thrusters (9 m/s jumps instead of 6, 6 boosted jumps); one module per robot,
-  a new one replaces it; no energy cost until the shared pool exists; nothing dropped on death; a
+  a new one replaces it; since shooter#72 a boosted rail shot costs 150% of the shot's energy and
+  a thruster jump 15 energy (a jump the pool cannot pay is a plain one); nothing dropped on death; a
   pad is back 30 s after it was taken and every pad is ready at a round's or map's start; a pad
   contested in one tick goes to the nearest living robot, then the lowest slot.
 - **Q2.i46.4**: The exact engineering budgets (weight, power, cooling), attachment rules and build
@@ -290,8 +301,14 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   heavy, skirmisher, marksman), sent through the existing build request.
   Attachment rules answered by D2.i70.1 and D2.i70.2, cooling superseded by D2.i70.4; the numbers
   remain open as Q2.i70.1 and Q2.i70.2. The defaults above stay shipped until migrated
-  (D2.i70.12). The sockets, hardpoints and load budget were migrated by shooter#71; the mods, the
-  named loadouts and the power and heat budgets remain (see Q2.i70.1).
+  (D2.i70.12). The sockets, hardpoints and load budget were migrated by shooter#71; the power and
+  heat budgets by shooter#72, which also rebalanced the mods on energy (provisional): a mod costs
+  points and mass only and tunes damage, refire, range and energy a shot; rapid cycler 75%
+  damage, 65% refire time (half again the energy a second); overcharger 125% damage, 130% refire
+  time, 150% energy a shot; long barrel unchanged; the heat sink (code 4, retired) replaced by
+  the efficiency coil (code 5: rifle, rail gun, rockets, shotgun; 60% energy a shot, 125% refire
+  time, 6 kg, 5 points). Loadouts: the heavy build gains a battery (115 points), the skirmisher's
+  shotgun carries the efficiency coil instead of the heat sink, standard and marksman unchanged.
 - **Q2.i46.5**: Layout details of the three arenas: topology, destructible pieces, pickup points
   and each map's player capacity (D2.i46.11, D2.i46.12).
   Defaults in use until decided (shooter#48): the map catalog (`shooter_sim::maps`) holds only
@@ -307,8 +324,11 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   Defaults in use until decided (shooter#71, `shooter_sim::robot::BETA`): 120 build points and
   a ceiling of 32 parts. Points: chassis 10, 20 and 30 by size, beams 2 and 3, hinge 5, rotor 6,
   core 10, sensor 5, leg 7, wheel 6, track 12, armor plate 4; the weapons and mods keep their
-  shipped points. Until shooter#72 the core supplies 130 power, and the shipped heat stays: the
-  chassis sections shed 30, 45 and 60, the core and the sensor 10 each.
+  shipped points. Energy since shooter#72 (`shooter_sim::energy`, milli-unit fixed point): the
+  core stores 100 and regenerates 24 a second (0.4 a tick); a battery (`robot.battery`, 20 × 40 ×
+  20 cm, 20 kg, 5 points, 60 component health for shooter#56) stores 60. Activations: rifle bolt
+  2, rail shot 30, rocket 20, grapple hook 10, blade swing 5, shotgun blast 12, laser 0.6 and
+  flamethrower 0.5 a tick; cooldowns are the weapons' shipped refire times.
 - **Q2.i70.2**: The predetermined chassis sizes and their costs, and whether the 20 cm socket cell
   is final (D2.i70.1).
   Defaults in use until decided (shooter#71): a 20 cm cell; chassis sections of 20 × 40 × 80,
@@ -323,6 +343,12 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
 - **Q2.i70.4**: The details of first-come-first-served energy requests: how requests in the same
   tick are ordered, how continuous motor draws and one-off activations share a tick, and whether
   a request can be granted in part (D2.i70.3).
+  Defaults in use until decided (shooter#72): every robot has its own pool, so robots never
+  compete; a robot's requests are granted in the order its tick resolves them, a thruster jump
+  (during movement), then the blade swing, then the gun (a refused swing leaves the gun its
+  turn); regeneration follows every request of the tick. A request is granted whole or refused,
+  never in part, and a refused one costs nothing and spends no cooldown. Motor draw (shooter#73)
+  and repairs (shooter#61) are not ordered yet.
 - **Q2.i70.5**: Impact thresholds: the speed, impulse and fall heights at which collisions start to
   damage, how damage scales above them, and the battery blast's radius and damage (D2.i70.3,
   D2.i70.10).

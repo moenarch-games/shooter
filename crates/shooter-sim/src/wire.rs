@@ -1,15 +1,17 @@
 //! The match on the wire, inside game-server's command and snapshot frames: a person's input
 //! (one per tick) and the shared snapshot every client gets each tick (the match's map, the
 //! fighters with the
-//! exact physics state a client resumes prediction from, their robot builds and the module each
-//! carries, the rockets, the shotgun pellets, the module pads and the tick's events). Robot builds
-//! travel as raw codes and are decoded
-//! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored.
+//! exact physics state a client resumes prediction from, their robot builds, the charge in each
+//! one's energy pool and the module each carries, the rockets, the shotgun pellets, the module
+//! pads and the tick's events). Robot builds travel as raw codes and are decoded
+//! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored; a
+//! charge above its build's capacity is malformed.
 //! Little-endian; positions and velocities travel as exact `f32` bits.
 //!
 //! The in-process practice match builds the same [`Snapshot`], so both modes draw through one
 //! path.
 
+use crate::energy::Pool;
 use crate::grapple::Hook;
 use crate::maps::MapId;
 use crate::physics::Vec3i;
@@ -20,7 +22,7 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 11;
+pub const WIRE_VERSION: u8 = 12;
 const NONE: u8 = u8::MAX;
 
 /// A build part's flags: it has a parent, it is turned, it carries a mod.
@@ -82,6 +84,9 @@ pub struct FighterState {
     pub configured: Assembly,
     /// The module pickup it carries and the uses it has left.
     pub carried: Option<Carried>,
+    /// The charge in its shared energy pool, milli-units ([`crate::energy`]); its build's
+    /// [`crate::energy::Pool`] has the capacity.
+    pub energy: u32,
 }
 
 /// A module pad: where it lies (units, the map's anchor), its module and the ticks until the
@@ -182,6 +187,7 @@ fn state_of(session: &Session, fighter: &Fighter) -> Option<FighterState> {
         build: fighter.build,
         configured: fighter.configured,
         carried: fighter.carried,
+        energy: fighter.energy,
     })
 }
 
@@ -756,6 +762,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
             }
             None => out.u8(0),
         }
+        out.u32(fighter.energy);
     }
     out.u8(count(snapshot.rockets.len()));
     for rocket in snapshot.rockets.iter().take(usize::from(u8::MAX)) {
@@ -842,6 +849,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 build: input.build()?,
                 configured: Assembly::default(),
                 carried: None,
+                energy: 0,
             };
             fighter.configured = match input.u8()? {
                 0 => fighter.build,
@@ -856,6 +864,10 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 }),
                 _ => return Err(WireError::Malformed("unknown module state")),
             };
+            fighter.energy = input.u32()?;
+            if fighter.energy > Pool::of(&fighter.build).capacity {
+                return Err(WireError::Malformed("energy above the build's capacity"));
+            }
             Ok(fighter)
         })
         .collect::<Result<Vec<_>, _>>()?;
