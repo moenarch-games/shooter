@@ -3,6 +3,7 @@
 //! rocket exhaust and explosions. The simulation's [`Event`]s start them;
 //! they live on their own clock (presentation only, never fed back into the simulation).
 
+use crate::robots::Drawn;
 use crate::scene::{METRES_PER_UNIT, gun_pose};
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::particles::{
@@ -342,9 +343,10 @@ impl Effects {
         });
     }
 
-    /// Starts the effects of a tick's events. Shots leave the eye in the simulation but are drawn
-    /// from the held gun's barrel.
-    pub fn play(&mut self, world: &mut World, events: &[Event]) {
+    /// Starts the effects of the ticks accumulated this frame. Hits remain authoritative from
+    /// the simulation's eye ray; the laser's visible beam leaves the posed, mounted barrel.
+    pub fn play(&mut self, world: &mut World, events: &[Event], robots: &[Drawn]) {
+        let mut latest_laser: Option<([f32; 3], Vec3)> = None;
         for (at, event) in events.iter().enumerate() {
             match *event {
                 // The blade has no muzzle: its swing is drawn by the actors.
@@ -367,13 +369,24 @@ impl Effects {
                     self.flash(end + normal * 0.15, blade, 200_000.0, 5.0, 0.15);
                 }
                 Event::Fired {
+                    slot,
                     weapon,
                     eye,
                     direction,
                     ..
                 } => {
                     let direction = Vec3::from(direction);
-                    let muzzle = gun_pose(units(eye), direction).1;
+                    let muzzle = if weapon == Weapon::Laser {
+                        let mounted = robots
+                            .iter()
+                            .find(|robot| robot.slot == slot)
+                            .and_then(|robot| robot.laser_muzzle);
+                        let at = mounted.unwrap_or_else(|| gun_pose(units(eye), direction).1);
+                        latest_laser = Some((eye, at));
+                        at
+                    } else {
+                        gun_pose(units(eye), direction).1
+                    };
                     // Continuous weapons fire every tick: a light glow, not a flash.
                     let (count, lumens) = match weapon {
                         Weapon::RailGun => (24, 400_000.0),
@@ -422,7 +435,13 @@ impl Effects {
                     struck,
                 } => {
                     let (from, end) = (units(from), units(end));
-                    let muzzle = gun_pose(from, end - from).1;
+                    let muzzle = if weapon == Weapon::Laser {
+                        latest_laser
+                            .filter(|(eye, _)| (units(*eye) - from).length_squared() < 1e-6)
+                            .map_or_else(|| gun_pose(from, end - from).1, |(_, tip)| tip)
+                    } else {
+                        gun_pose(from, end - from).1
+                    };
                     let (spacing, _, _) = TRAIL[index(weapon)];
                     let span = end - muzzle;
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

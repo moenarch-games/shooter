@@ -10,7 +10,8 @@ use render_engine::material::{AlphaMode, StandardMaterial};
 use render_engine::mesh::{MeshData, Shape};
 use render_engine::world::{Instance, InstanceId, MaterialId, MeshId, SkinId, TextureId, World};
 use shooter_sim::Assembly;
-use shooter_sim::robot::LOADOUTS;
+use shooter_sim::Weapon;
+use shooter_sim::robot::{Kind, LOADOUTS};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -43,6 +44,8 @@ pub struct Drawn {
     pub placeholders: Vec<(&'static str, &'static str)>,
     /// Where its grapple weapon is (the cable's start).
     pub grapple: Option<Vec3>,
+    /// The pointed laser barrel tip, if the build has a mounted laser.
+    pub laser_muzzle: Option<Vec3>,
 }
 
 struct SlotRobot {
@@ -68,6 +71,8 @@ pub struct Robots {
     placeholder: MaterialId,
     placeholder_held: MaterialId,
     placeholder_flash: MaterialId,
+    placeholder_laser: MaterialId,
+    battery: StandardMaterial,
     marker_mesh: MeshId,
     marker_material: MaterialId,
     models: HashMap<Assembly, Rc<Model>>,
@@ -143,6 +148,12 @@ impl Robots {
             placeholder_held: world.add_material(&glowing(purple.with_w(0.75), 3_000.0)),
             placeholder_flash: world
                 .add_material(&glowing(Vec4::new(1.0, 0.85, 1.0, 0.9), 30_000.0)),
+            // Laser remains a declared weapon-kit placeholder, but its green housing makes the
+            // aim-tracking turret distinguishable from the other unmodelled weapon modules.
+            placeholder_laser: world
+                .add_material(&glowing(Vec4::new(0.14, 0.8, 0.34, 0.8), 2_000.0)),
+            // Recolour the real asset-tooling battery mesh, retaining its shape and stable ID.
+            battery: glowing(Vec4::new(1.0, 0.38, 0.04, 1.0), 650.0),
             marker_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::splat(MARKER_SIZE)))),
             marker_material: world.add_material(&glowing(Vec4::new(1.0, 0.0, 0.8, 1.0), 20_000.0)),
             kit,
@@ -179,6 +190,7 @@ impl Robots {
         let materials: Vec<MaterialId> = self
             .materials
             .iter()
+            .chain(std::iter::once(&self.battery))
             .map(|material| world.add_material(material))
             .collect();
         let instances = model
@@ -275,7 +287,12 @@ impl Robots {
                 // The copies are in kit order: tinted toward red and glowing brighter when hit.
                 robot.glow = Some(glow);
                 let glow = f32::from(glow) / 8.0;
-                for (base, id) in self.materials.iter().zip(&robot.materials) {
+                for (base, id) in self
+                    .materials
+                    .iter()
+                    .chain(std::iter::once(&self.battery))
+                    .zip(&robot.materials)
+                {
                     let mut lit = *base;
                     lit.base_color *= Vec4::ONE.lerp(Vec4::new(1.0, 0.45, 0.35, 1.0), glow);
                     lit.emissive *= 1.0 + 3.0 * glow;
@@ -298,13 +315,19 @@ impl Robots {
                         };
                         (
                             self.meshes[entry],
-                            robot.materials[self.kit.entries[entry].material],
+                            if part.kind == Kind::Battery {
+                                robot.materials[self.materials.len()]
+                            } else {
+                                robot.materials[self.kit.entries[entry].material]
+                            },
                         )
                     }
                     Visual::Placeholder { .. } => (
                         self.placeholder_mesh,
                         if posed_part.flash {
                             self.placeholder_flash
+                        } else if part.kind == Kind::Weapon(Weapon::Laser) {
+                            self.placeholder_laser
                         } else if posed_part.held {
                             self.placeholder_held
                         } else {
@@ -343,6 +366,7 @@ impl Robots {
                 label: posed.animation.label(&robot.model),
                 placeholders: robot.model.placeholders(),
                 grapple: posed.grapple,
+                laser_muzzle: posed.laser_muzzle,
             });
         }
         for (slot, robot) in self.slots.iter().enumerate() {

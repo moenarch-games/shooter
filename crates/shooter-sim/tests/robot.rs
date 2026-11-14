@@ -387,21 +387,29 @@ fn larger_parts_reserve_their_footprint_and_turn_it_with_their_yaw() {
         Err(AssemblyError::Overlap(PartId(2), PartId(9)))
     );
     // A 40 cm plate on the chest covers the shotgun's cell.
-    let mut plated = standard();
+    // Keep the old torso's face free: this test isolates reservation against the shotgun,
+    // whereas the current standard has three additional batteries across that face.
+    let bare = || {
+        standard()
+            .into_iter()
+            .filter(|part| part.id < 11)
+            .collect::<Vec<_>>()
+    };
+    let mut plated = bare();
     plated.push(on(11, &ARMOR_PLATE, 0, &CHASSIS_S, Face::PosX, 0, 2));
     assert_eq!(
         BETA.validate(&build(plated)),
         Err(AssemblyError::Overlap(PartId(10), PartId(11)))
     );
     // Two parts on one socket.
-    let mut stacked = standard();
+    let mut stacked = bare();
     stacked.push(on(11, &SENSOR, 0, &CHASSIS_S, Face::PosZ, 0, 0));
     assert_eq!(
         BETA.validate(&build(stacked)),
         Err(AssemblyError::Overlap(PartId(2), PartId(11)))
     );
     // A long barrel makes the rifle a two-cell module: below the shotgun it reaches its cell.
-    let mut barrel = standard();
+    let mut barrel = bare();
     *with(&mut barrel, 7) = on(7, &ENERGY_RIFLE, 0, &CHASSIS_S, Face::PosX, 1, 2);
     assert!(BETA.validate(&build(barrel.clone())).is_ok());
     *with(&mut barrel, 7) = modded(*with(&mut barrel, 7), LONG_BARREL);
@@ -410,7 +418,7 @@ fn larger_parts_reserve_their_footprint_and_turn_it_with_their_yaw() {
         Err(AssemblyError::Overlap(PartId(7), PartId(10)))
     );
     // Overhanging the face's edge is fine: the rail gun on the arm's one-cell tip.
-    let mut overhang = standard();
+    let mut overhang = bare();
     *with(&mut overhang, 7) = on(7, &RAIL_GUN, 3, &BEAM_LONG, Face::PosZ, 0, 0);
     assert!(BETA.validate(&build(overhang)).is_ok());
 }
@@ -423,7 +431,7 @@ fn broken_structures_are_rejected() {
     let mut coreless = standard();
     coreless.retain(|part| part.id != 1);
     assert_eq!(reject(coreless), AssemblyError::NoCore);
-    let mut two = standard();
+    let mut two: Vec<_> = standard().into_iter().filter(|part| part.id < 11).collect();
     two.push(on(11, &CORE, 0, &CHASSIS_S, Face::PosX, 0, 0));
     assert_eq!(
         reject(two),
@@ -539,7 +547,7 @@ fn mods_and_weapons_follow_their_rules() {
         reject(shotgun),
         AssemblyError::DoesNotFit(LONG_BARREL, Weapon::Shotgun)
     );
-    let mut twice = standard();
+    let mut twice: Vec<_> = standard().into_iter().filter(|part| part.id < 11).collect();
     twice.push(on(11, &ENERGY_RIFLE, 0, &CHASSIS_S, Face::PosX, 0, 0));
     assert_eq!(
         reject(twice),
@@ -586,7 +594,7 @@ fn every_mod_trades_something_away() {
 fn the_core_and_batteries_make_the_energy_pool() {
     // The core alone: 100 stored, 24 a second; a battery adds 60 stored and nothing else.
     let standard = BETA.budget(&STANDARD);
-    assert_eq!((standard.capacity, standard.regen), (100, 24));
+    assert_eq!((standard.capacity, standard.regen), (280, 24));
     let heavy = BETA.budget(&HEAVY);
     assert_eq!((heavy.capacity, heavy.regen), (160, 24));
     assert_eq!(BATTERY.key, "robot.battery");
@@ -706,12 +714,29 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         assert!(budget.points <= budget.build_points);
         // The arsenal they mount, once each.
         let weapons: Vec<Weapon> = BETA.weapons(&build).map(|(_, weapon)| weapon).collect();
-        assert_eq!(weapons.len(), 4, "{name}");
+        assert_eq!(
+            weapons.len(),
+            if name == "standard" { 5 } else { 4 },
+            "{name}"
+        );
     }
     assert_eq!(loadout(" Marksman "), Some(MARKSMAN));
     assert_eq!(loadout("sniper"), None);
-    assert_eq!(STANDARD.parts().len(), 11);
-    assert_eq!(BETA.budget(&STANDARD).points, 85);
+    assert_eq!(STANDARD.parts().len(), 15);
+    assert_eq!(BETA.budget(&STANDARD).points, 115);
+    assert_eq!(BETA.budget(&STANDARD).capacity, 280);
+    assert_eq!(
+        STANDARD
+            .parts()
+            .iter()
+            .filter(|part| part.kind == BATTERY.id)
+            .count(),
+        3
+    );
+    assert!(
+        BETA.weapons(&STANDARD)
+            .any(|(_, weapon)| weapon == Weapon::Laser)
+    );
     assert_eq!(BETA.budget(&SKIRMISHER).points, 100);
     assert_eq!(
         BETA.mod_on(&SKIRMISHER, Weapon::EnergyRifle),
@@ -814,7 +839,7 @@ fn builds_from_untrusted_bytes_are_validated() {
     let standard = build_bytes(&STANDARD);
     assert_eq!(forged(&standard).unwrap().build, Some(STANDARD));
     // Count, then per part: ID, type, flags, [parent, socket], [angles], [mod].
-    assert_eq!(&standard[..4], &[11, 0, CHASSIS_S.id.0, 0]);
+    assert_eq!(&standard[..4], &[15, 0, CHASSIS_S.id.0, 0]);
     let mut unknown = standard.clone();
     unknown[2] = 99;
     assert_eq!(

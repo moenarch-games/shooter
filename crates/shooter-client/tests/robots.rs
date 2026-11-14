@@ -126,6 +126,7 @@ fn loadouts_draw_their_own_parts_with_labelled_placeholders() {
             ("weapon.energy-blade", "asset-tooling#594"),
             ("weapon.grapple-hook", "asset-tooling#594"),
             ("weapon.shotgun", "asset-tooling#594"),
+            ("weapon.laser", "asset-tooling#594"),
         ]
     );
     // A heavy mod lengthens its weapon's placeholder like its footprint.
@@ -143,6 +144,40 @@ fn loadouts_draw_their_own_parts_with_labelled_placeholders() {
             .element_product()
     };
     assert!(rifle(&marksman) > rifle(&skirmisher) * 1.9);
+}
+
+#[test]
+fn the_side_mounted_laser_tracks_pitch_without_moving_its_mount() {
+    let model = Model::of(&STANDARD, kit()).unwrap();
+    let index = model
+        .parts
+        .iter()
+        .position(|part| part.key == "weapon.laser")
+        .unwrap();
+    let mut state = standing();
+    state.held = Weapon::Laser;
+    state.forward = Vec3::new(0.8, 0.5, -0.2).normalize();
+    let up = pose::pose(&model, kit(), &state, 0.0, &PartStates::default());
+    let barrel = up.parts[index].world_from_local;
+    let origin = barrel.transform_point3(Vec3::ZERO);
+    let muzzle = up.laser_muzzle.expect("the standard build mounts a laser");
+    assert!(muzzle.distance(barrel.transform_point3(Vec3::Z * 0.5)) < 1e-5);
+    assert!((muzzle - origin).normalize().distance(state.forward) < 1e-5);
+    assert!(
+        muzzle.distance(state.center) > 0.2,
+        "the muzzle is mounted on the arm"
+    );
+
+    state.forward = Vec3::new(0.8, -0.5, -0.2).normalize();
+    let down = pose::pose(&model, kit(), &state, 0.0, &PartStates::default());
+    let lowered = down.parts[index].world_from_local;
+    assert!(origin.distance(lowered.transform_point3(Vec3::ZERO)) < 1e-5);
+    assert!(
+        (down.laser_muzzle.unwrap() - origin)
+            .normalize()
+            .distance(state.forward)
+            < 1e-5
+    );
 }
 
 /// The robot-frame bounds of a kit entry's mesh placed by `robot_from_local`.
@@ -414,16 +449,17 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
 }
 
 #[test]
-fn a_detached_arm_falls_away_with_its_blade_while_the_legs_keep_walking() {
+fn a_detached_arm_carries_its_blade_and_laser_while_the_legs_keep_walking() {
     let kit = kit();
     let model = Model::of(&STANDARD, kit).unwrap();
-    // The authoritative state (`shooter_sim::damage`; a fixture here) has lost the right arm and
-    // the blade on it, both lying on the floor beside the robot.
+    // The authoritative damage state lists every lost part separately: the right arm, the
+    // blade and the laser that hung from it all lie on the floor beside the robot.
     let arm = PartId(4);
     let blade = PartId(8);
+    let laser = PartId(14);
     let fallen = Mat4::from_translation(Vec3::new(3.0, 0.5, 3.0))
         * Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2);
-    let detached = [(arm, fallen), (blade, fallen)];
+    let detached = [(arm, fallen), (blade, fallen), (laser, fallen)];
     let running = RobotState {
         velocity: Vec3::new(0.0, 0.0, 6.0),
         ..standing()
@@ -435,7 +471,7 @@ fn a_detached_arm_falls_away_with_its_blade_while_the_legs_keep_walking() {
     let whole = pose::pose(&model, kit, &running, 0.3, &PartStates::default());
     let lost = pose::pose(&model, kit, &running, 0.3, &states);
     for (index, part) in model.parts.iter().enumerate() {
-        let off = part.id == arm || part.id == blade;
+        let off = part.id == arm || part.id == blade || part.id == laser;
         assert_eq!(lost.parts[index].detached, off, "{}", part.key);
         if off {
             let expected = fallen * part.robot_from_local;
@@ -448,6 +484,11 @@ fn a_detached_arm_falls_away_with_its_blade_while_the_legs_keep_walking() {
             assert_eq!(lost.parts[index], whole.parts[index], "{}", part.key);
         }
     }
+    assert!(whole.laser_muzzle.is_some());
+    assert!(
+        lost.laser_muzzle.is_none(),
+        "a lost turret cannot emit from the arm"
+    );
     // A damaged plate draws its damaged variant (the plate is in the kit, none in a loadout).
     assert!(model.parts.iter().all(|p| p.key != "robot.armor.plate"));
 }

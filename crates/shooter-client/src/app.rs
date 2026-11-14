@@ -103,6 +103,8 @@ pub struct App {
     board: bool,
     /// Weapon effects and the moving actors, once the GPU is up.
     effects: Option<Effects>,
+    /// Tick events staged until the robot's actual mounted muzzle is posed for this frame.
+    pending_effects: Vec<Event>,
     actors: Option<Actors>,
     /// The fighters drawn as their robot builds, once the kit is in the GPU's world.
     robots: Option<Robots>,
@@ -159,6 +161,7 @@ impl App {
             shown: HudText::default(),
             board: false,
             effects: None,
+            pending_effects: Vec::new(),
             actors: None,
             robots: None,
             kit_status: Some(KIT_LOADING.to_owned()),
@@ -241,6 +244,7 @@ impl App {
             shown: HudText::default(),
             board: false,
             effects: None,
+            pending_effects: Vec::new(),
             actors: None,
             robots: None,
             kit_status: Some(KIT_LOADING.to_owned()),
@@ -498,7 +502,7 @@ impl App {
         if let Some(snapshot) = self.game.snapshot() {
             self.hud.events(snapshot, &tick.events, local);
             if let (Some(gpu), Some(effects)) = (&mut self.gpu, &mut self.effects) {
-                effects.play(&mut gpu.world, &tick.events);
+                self.pending_effects.extend_from_slice(&tick.events);
                 effects.rockets(&mut gpu.world, &snapshot.rockets);
                 effects.pellets(&mut gpu.world, &snapshot.pellets);
             }
@@ -767,6 +771,10 @@ impl App {
             self.kit_status = Some(format!("{error}: box placeholders stand in"));
             Vec::new()
         });
+        if let (Some(gpu), Some(effects)) = (&mut self.gpu, &mut self.effects) {
+            effects.play(&mut gpu.world, &self.pending_effects, &drawn);
+        }
+        self.pending_effects.clear();
         for robot in &drawn {
             if let Some(view) = fighters.iter_mut().find(|view| view.slot == robot.slot) {
                 view.robot = true;

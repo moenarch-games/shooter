@@ -9,7 +9,7 @@ use shooter_sim::damage::{BATTERY_BLAST_DAMAGE, PartDamage};
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{ARMOR_PLATE, CHASSIS_S};
-use shooter_sim::robot::{BETA, Face, HEAVY, PartId, RawMount, RawPart, STANDARD};
+use shooter_sim::robot::{BETA, Face, HEAVY, PartId, RawMount, RawPart, SKIRMISHER, STANDARD};
 use shooter_sim::trig;
 use shooter_sim::weapons::{SPLASH_DAMAGE, Weapon};
 use shooter_sim::wire::{decode_snapshot, encode_snapshot};
@@ -223,7 +223,27 @@ fn a_rocket_splash_strikes_each_part_in_reach_once() {
     let mut hits = Vec::new();
     for _ in 0..120 {
         step(&mut session, Intent::IDLE, facing(32_768));
-        hits = struck(&session.events);
+        // A front-mounted battery can ignite secondary explosions. The rocket's own splash
+        // must strike each part once; any later battery blasts are separate strikes.
+        let mut explosions = 0;
+        hits = session
+            .events
+            .iter()
+            .filter_map(|event| match *event {
+                Event::Exploded { .. } => {
+                    explosions += 1;
+                    None
+                }
+                Event::Hit {
+                    victim: 1,
+                    attacker: Some(0),
+                    part,
+                    damage,
+                    ..
+                } if explosions == 1 => Some((part, damage)),
+                _ => None,
+            })
+            .collect();
         if !hits.is_empty() {
             break;
         }
@@ -242,10 +262,11 @@ fn a_rocket_splash_strikes_each_part_in_reach_once() {
     assert!(hits.iter().all(|(_, damage)| *damage <= leg), "{hits:?}");
 }
 
-/// The standard build with an armor plate (part 11) over the front of its chassis, between the
-/// chest's shotgun and the legs.
+/// The battery-free skirmisher with an armor plate (part 11) over the front of its chassis,
+/// between the chest's shotgun and the legs. The standard's new front batteries occupy this
+/// space, so this isolates armor penetration from battery blast interactions.
 fn plated() -> Assembly {
-    let mut candidate = STANDARD.candidate();
+    let mut candidate = SKIRMISHER.candidate();
     candidate.parts.push(RawPart {
         id: 11,
         kind: ARMOR_PLATE.id.0,
@@ -279,6 +300,7 @@ fn armor_plates_stop_strikes_and_penetrating_beams_pass_a_share() {
     assert_eq!(Weapon::EnergyBlade.penetration(), 0);
     // Without the plate the rail's whole beam lands on the chassis.
     let mut session = duel();
+    rebuild(&mut session, 1, SKIRMISHER);
     let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
     assert_eq!(struck(&events), [(PartId(0), 85)]);
 }
@@ -292,18 +314,22 @@ fn several_parts_come_off_at_once_and_lost_weapons_cannot_fire() {
     });
     assert_eq!(struck(&events), [(PartId(3), 85)]);
     assert_eq!(detached(&events), [(PartId(3), true), (PartId(7), false)]);
-    // Then the right arm and the blade.
+    // Then the right arm takes both the blade and its mounted laser.
     let events = shoot(&mut session, Weapon::RailGun, 32_768, |session| {
         part_center(session, 1, PartId(4))
     });
-    assert_eq!(detached(&events), [(PartId(4), true), (PartId(8), false)]);
+    assert_eq!(
+        detached(&events),
+        [(PartId(4), true), (PartId(8), false), (PartId(14), false)]
+    );
     let b = &session.fighters[1];
     assert!(b.alive());
     assert_eq!(b.parts.health()[3], 0);
     assert_eq!(b.parts.health()[7], 40, "carried off whole, not destroyed");
-    assert_eq!(b.parts.lost().count_ones(), 4);
+    assert_eq!(b.parts.lost().count_ones(), 5);
     assert!(b.parts.weapon_lost(&b.build, Weapon::EnergyRifle));
     assert!(b.parts.weapon_lost(&b.build, Weapon::EnergyBlade));
+    assert!(b.parts.weapon_lost(&b.build, Weapon::Laser));
     assert!(!b.parts.weapon_lost(&b.build, Weapon::Shotgun));
     // B can no longer fire the rifle or swing the blade, but its shotgun still fires, and a gun
     // its build never carried fires as shipped.
@@ -332,7 +358,7 @@ fn several_parts_come_off_at_once_and_lost_weapons_cannot_fire() {
         }
     }
     fired.dedup();
-    assert_eq!(fired, [Weapon::Shotgun, Weapon::Laser]);
+    assert_eq!(fired, [Weapon::Shotgun]);
 }
 
 #[test]

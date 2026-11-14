@@ -221,7 +221,7 @@ mod tests {
     fn a_lost_part_falls_to_the_floor_and_is_gone_at_respawn() {
         let build = Assembly::default();
         let mut parts = PartDamage::fresh(&build);
-        // The right arm (part 4) breaks: it and the blade on it come off.
+        // The right arm (part 4) breaks: it carries its blade and mounted laser with it.
         let arm = build
             .parts()
             .iter()
@@ -233,7 +233,7 @@ mod tests {
         tracker.parts(2, &build, &parts, frame);
         tracker.parts(2, &build, &parts, Mat4::IDENTITY);
         let lost: Vec<PartId> = tracker.detached(2).iter().map(|(id, _)| *id).collect();
-        assert_eq!(lost, [PartId(4), PartId(8)]);
+        assert_eq!(lost, [PartId(4), PartId(8), PartId(14)]);
         assert_eq!(
             tracker.detached(2)[0].1,
             frame,

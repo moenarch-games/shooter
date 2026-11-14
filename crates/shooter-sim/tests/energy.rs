@@ -103,12 +103,13 @@ fn a_request_is_granted_whole_or_not_at_all() {
 #[test]
 fn the_core_and_batteries_set_the_pool_and_a_life_starts_full() {
     assert_eq!(
-        Pool::of(&STANDARD),
+        Pool::of(&SKIRMISHER),
         Pool {
             capacity: 100 * MILLI,
             regen: 400
         }
     );
+    assert_eq!(Pool::of(&STANDARD).capacity, 280 * MILLI);
     assert_eq!(Pool::of(&HEAVY).capacity, 160 * MILLI);
     assert_eq!(
         Pool::of(&HEAVY).regen,
@@ -117,16 +118,16 @@ fn the_core_and_batteries_set_the_pool_and_a_life_starts_full() {
     );
     // Regeneration stops at the capacity.
     let mut charge = 99_800;
-    Pool::of(&STANDARD).regenerate(&mut charge);
+    Pool::of(&SKIRMISHER).regenerate(&mut charge);
     assert_eq!(charge, 100 * MILLI);
-    Pool::of(&STANDARD).regenerate(&mut charge);
+    Pool::of(&SKIRMISHER).regenerate(&mut charge);
     assert_eq!(charge, 100 * MILLI);
 
     // Fighters spawn with their own build's pool full (a configured build's at its next spawn:
     // `tests/robot.rs`).
     let session = duel();
-    assert_eq!(session.fighters[0].energy, 100 * MILLI);
-    assert_eq!(session.fighters[1].energy, 100 * MILLI);
+    assert_eq!(session.fighters[0].energy, 280 * MILLI);
+    assert_eq!(session.fighters[1].energy, 280 * MILLI);
 }
 
 /// The fixed order within a tick: a thruster jump asks first, then the blade swing, then the gun;
@@ -231,6 +232,9 @@ fn regeneration_restarts_a_starved_weapon() {
     // The laser drains the pool (0.6 a tick against 0.4) and, once it is dry, sputters at what
     // regeneration pays: it never fires on a charge it cannot pay.
     let mut session = duel();
+    // Exercise the 100-unit core alone: the displayed standard now carries three batteries.
+    session.fighters[0].build = SKIRMISHER;
+    session.fighters[0].energy = Pool::of(&SKIRMISHER).capacity;
     let mut sequence = 0;
     let laser = Intent {
         yaw: 32_768,
@@ -339,7 +343,7 @@ fn the_charge_travels_in_snapshots_and_is_checked_against_the_build() {
     assert_eq!(decoded, snapshot);
 
     // A charge above what the build can hold is malformed.
-    session.fighters[0].energy = 100 * MILLI + 1;
+    session.fighters[0].energy = Pool::of(&STANDARD).capacity + 1;
     let bytes = encode_snapshot(&session.snapshot());
     assert!(matches!(
         decode_snapshot(&bytes),

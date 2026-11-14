@@ -425,7 +425,7 @@ fn the_blade_strikes_the_nearest_part_whatever_gun_is_held() {
     session.join(1).unwrap();
     session.join(2).unwrap();
     session.step().unwrap();
-    let (mut strikes, mut lost) = (Vec::new(), Vec::new());
+    let (mut strikes, mut direct_strikes, mut lost) = (Vec::new(), Vec::new(), Vec::new());
     for sequence in 1..=120 {
         let now = session.ticks();
         // A follows B up after each shove, stopping 1.5 m short.
@@ -446,15 +446,24 @@ fn the_blade_strikes_the_nearest_part_whatever_gun_is_held() {
             },
         );
         session.step().unwrap();
+        // A direct blade hit may destroy a front battery; its resulting explosion adds more
+        // hits on the same tick, but those must not be confused with extra blade strikes.
+        let mut secondary_blast = false;
         for event in &session.events {
             match *event {
+                Event::Exploded { .. } => secondary_blast = true,
                 Event::Hit {
                     victim: 1,
                     attacker: Some(0),
                     part,
                     damage,
                     ..
-                } => strikes.push((sequence, part, damage)),
+                } => {
+                    strikes.push((sequence, part, damage));
+                    if !secondary_blast {
+                        direct_strikes.push((sequence, part, damage));
+                    }
+                }
                 Event::Detached {
                     slot: 1,
                     part,
@@ -465,7 +474,7 @@ fn the_blade_strikes_the_nearest_part_whatever_gun_is_held() {
         }
     }
     // Swings at ticks 0, 30, 60 and 90, each on one part: B's part nearest A's eye.
-    let ticks: Vec<u32> = strikes.iter().map(|(tick, _, _)| *tick).collect();
+    let ticks: Vec<u32> = direct_strikes.iter().map(|(tick, _, _)| *tick).collect();
     assert_eq!(ticks, [1, 31, 61, 91]);
     assert!(
         strikes

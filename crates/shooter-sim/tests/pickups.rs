@@ -5,6 +5,7 @@
 //! different builds, and the wire.
 
 use shooter_sim::damage::PartDamage;
+use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::pickups::{
     PAD_RESPAWN_TICKS, RAIL_CAPACITOR_DAMAGE_PERCENT, RAIL_CAPACITOR_SHOTS,
@@ -472,9 +473,9 @@ fn at_core(session: &Session) -> (u16, i16) {
     (yaw, pitch)
 }
 
-/// With the capacitor two rail hits kill and score (one through B's chassis, which falls away
-/// with all but the core, one on the core), recharging in three quarters of the time; the
-/// carrier's frags count like any other.
+/// The capacitor's boosted rail hits still kill and score, with three hits against the standard
+/// build's new front-mounted batteries (which shield the chassis and core). Its shorter refire
+/// time applies between every shot, and the carrier's frags count like any other.
 #[test]
 fn rail_capacitor_kills_score() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::RailCapacitor)]);
@@ -520,14 +521,15 @@ fn rail_capacitor_kills_score() {
         }
     }
     assert_eq!(kills, 1);
-    assert_eq!(shots.len(), 2, "{shots:?}");
+    assert_eq!(shots.len(), 3, "{shots:?}");
     // 72 ticks shipped, 54 with the capacitor.
     assert_eq!(shots[1] - shots[0], 54);
+    assert_eq!(shots[2] - shots[1], 54);
     assert_eq!(session.fighters[0].frags, 1);
     assert_eq!(session.fighters[1].deaths, 1);
     assert_eq!(
         session.fighters[0].carried.map(|c| c.uses_left),
-        Some(RAIL_CAPACITOR_SHOTS - 2)
+        Some(RAIL_CAPACITOR_SHOTS - 3)
     );
 }
 
@@ -536,6 +538,13 @@ fn rail_capacitor_kills_score() {
 #[test]
 fn the_rail_capacitor_is_spent_by_its_rail_shots() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::RailCapacitor)]);
+    // Isolate the core's recharge-limited cadence: the current standard carries three
+    // additional batteries, which would mask the intended energy constraint.
+    let mut core_only = STANDARD.candidate();
+    core_only.parts.retain(|part| part.id < 11);
+    let core_only = BETA.validate(&core_only).unwrap();
+    session.fighters[0].build = core_only;
+    session.fighters[0].energy = Pool::of(&core_only).capacity;
     // Facing away from B, at the wall.
     let shoot = |weapon| Intent {
         yaw: 32_768,
