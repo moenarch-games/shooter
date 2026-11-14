@@ -2,16 +2,20 @@
 //! or a hosted match), render out.
 
 use crate::audio::Sounds;
+use crate::camera::{self, Follow};
 use crate::controls::{Controls, Look, PRIMARY_BUTTON, PadState, standard};
 use crate::effects::Effects;
 use crate::game::Game;
 use crate::gpu::Gpu;
 use crate::hud::{Hud, HudText};
-use crate::scene::{self, Actors, FighterView, METRES_PER_UNIT, SWING_SECONDS};
+use crate::scene::{self, Actors, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT, SWING_SECONDS};
 use render_engine::glam::Vec3;
+use shooter_sim::aim::{self, RETICLE_RANGE_UNITS};
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
 use shooter_sim::scenarios::scripted_intent;
 use shooter_sim::session::MAX_HEALTH;
+use shooter_sim::session::{body_of, slot_of};
+use shooter_sim::weapons;
 use shooter_sim::{Event, Intent, MapId, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
@@ -87,6 +91,8 @@ pub struct App {
     /// Eye height above the feet (units), dipping while sliding.
     previous_eye: f32,
     eye: f32,
+    /// The third-person camera following the local fighter.
+    follow: Follow,
     /// The pointer is locked to the game (native: grabbed; web: Pointer Lock).
     captured: bool,
     /// The browser profile run (`?frames=<n>`), timing each animation frame.
@@ -127,6 +133,7 @@ impl App {
             center,
             previous_eye: EYE,
             eye: EYE,
+            follow: Follow::default(),
             captured: false,
             #[cfg(target_arch = "wasm32")]
             profile: None,
@@ -203,6 +210,7 @@ impl App {
             center,
             previous_eye: EYE,
             eye: EYE,
+            follow: Follow::default(),
             captured: false,
         };
         app.attach(gpu);
@@ -366,6 +374,7 @@ impl App {
         if let Some(center) = self.game.local_center() {
             if respawned {
                 self.previous_center = center;
+                self.follow.reset();
             }
             self.center = center;
         }
@@ -453,9 +462,10 @@ impl App {
             - PLAYER_HALF_EXTENTS.y as f32;
         let eye = (center + Vec3::Y * eye_above_center) * METRES_PER_UNIT;
         let forward = Vec3::from(self.look.forward());
-        let (_, right, _) = scene::basis(forward);
+        let (_, right, _) = camera::basis(forward);
         self.sounds.listen(eye.to_array(), right.to_array());
         self.sounds.pump();
+        let camera = self.follow.place(self.game.world(), eye, forward, seconds);
 
         let local = self.game.local_slot();
         let snapshot = self.game.snapshot();
@@ -468,36 +478,73 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        #[allow(clippy::cast_precision_loss)]
-        let fighters: Vec<FighterView> = snapshot
-            .map(|snapshot| {
-                snapshot
-                    .fighters
-                    .iter()
-                    .filter(|fighter| Some(fighter.slot) != local)
-                    .map(|fighter| {
-                        let slot = usize::from(fighter.slot);
-                        let center = self
-                            .game
-                            .other_center(fighter.slot, blend)
-                            .map(|center| Vec3::from(center) * METRES_PER_UNIT);
-                        FighterView {
-                            center,
-                            forward: looking(fighter.yaw, fighter.pitch),
-                            health: fighter.health as f32 / MAX_HEALTH as f32,
-                            glow: self.glows[slot],
-                            held: fighter.held,
-                            hook: fighter
-                                .hook
-                                .map(|hook| Vec3::from(hook.anchor_units()) * METRES_PER_UNIT),
-                            swing: swing_progress(self.swings[slot]),
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         let me = local.and_then(|slot| snapshot.and_then(|snapshot| snapshot.slot(slot)));
-        let held = me.filter(|me| me.alive).map(|me| me.held);
+        let alive = me.filter(|me| me.alive && self.game.local_center().is_some());
+        #[allow(clippy::cast_precision_loss)]
+        let mut fighters: Vec<FighterView> = alive
+            .map(|me| FighterView {
+                // Not drawn while the camera is pulled into it.
+                center: (self.follow.reach() >= camera::HIDE_WITHIN)
+                    .then(|| center * METRES_PER_UNIT),
+                eye_above_center: eye_above_center * METRES_PER_UNIT,
+                forward,
+                health: me.health as f32 / MAX_HEALTH as f32,
+                glow: self.glows[usize::from(me.slot)],
+                held: me.held,
+                hook: self
+                    .game
+                    .local_hook()
+                    .map(|hook| Vec3::from(hook) * METRES_PER_UNIT),
+                swing: swing_progress(self.local_swing),
+            })
+            .into_iter()
+            .collect();
+        // Where the others are drawn (units), which is where the host checks a hitscan shot.
+        let mut seen = Vec::new();
+        #[allow(clippy::cast_precision_loss)]
+        for fighter in snapshot.iter().flat_map(|snapshot| &snapshot.fighters) {
+            if Some(fighter.slot) == local {
+                continue;
+            }
+            let slot = usize::from(fighter.slot);
+            let drawn = self.game.other_center(fighter.slot, blend);
+            if let Some(center) = drawn.filter(|_| fighter.alive) {
+                seen.push((slot, center));
+            }
+            fighters.push(FighterView {
+                center: drawn.map(|center| Vec3::from(center) * METRES_PER_UNIT),
+                eye_above_center: EYE_ABOVE_CENTER,
+                forward: looking(fighter.yaw, fighter.pitch),
+                health: fighter.health as f32 / MAX_HEALTH as f32,
+                glow: self.glows[slot],
+                held: fighter.held,
+                hook: fighter
+                    .hook
+                    .map(|hook| Vec3::from(hook.anchor_units()) * METRES_PER_UNIT),
+                swing: swing_progress(self.swings[slot]),
+            });
+        }
+        // The reticle covers what a shot fired now meets: from the eye along the aim the
+        // simulation gets, against the arena and the others as drawn.
+        let reticle = match (alive, self.game.world()) {
+            (Some(me), Some(world)) => {
+                let sight = aim::sight(
+                    world,
+                    (eye / METRES_PER_UNIT).to_array(),
+                    weapons::aim(self.look.sim_yaw(), self.look.sim_pitch()),
+                    RETICLE_RANGE_UNITS,
+                    body_of(me.slot),
+                    |body| slot_of(body).is_none(),
+                    seen,
+                );
+                Some(camera::reticle(
+                    camera,
+                    Vec3::from(sight.end) * METRES_PER_UNIT,
+                    forward,
+                ))
+            }
+            _ => None,
+        };
         let text = self
             .hud
             .text(snapshot, local, self.game.status(), self.board, seconds);
@@ -513,7 +560,7 @@ impl App {
             .as_mut()
             .map(|effects| effects.lights(seconds, &rockets))
             .unwrap_or_default();
-        let scene = scene::frame(eye, forward, point_lights);
+        let scene = scene::frame(camera, forward, point_lights);
         let Some(gpu) = &mut self.gpu else {
             return true;
         };
@@ -522,14 +569,10 @@ impl App {
                 &mut gpu.world,
                 &fighters,
                 &rockets,
-                held,
-                swing_progress(self.local_swing),
                 text.health,
-                self.game
-                    .local_hook()
-                    .map(|hook| Vec3::from(hook) * METRES_PER_UNIT),
-                eye,
+                camera,
                 forward,
+                reticle,
             );
         }
         if let Err(error) = gpu.render(&scene, ticks) {

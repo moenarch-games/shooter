@@ -2,6 +2,7 @@
 //! exact), a checkered floor for a sense of speed, glowing jump pads, and the hall's lighting;
 //! and the [`Actors`] that move over it.
 
+use crate::camera::{self, basis};
 use crate::effects::tint;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use render_engine::material::StandardMaterial;
@@ -209,14 +210,6 @@ pub fn build(world: &mut World, arena: &Arena) {
 /// Where something moving is drawn hidden: under the floor.
 const HIDDEN: Mat4 = Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::Z, Vec4::new(0.0, -100.0, 0.0, 1.0));
 
-/// The first-person camera's basis: forward, right (yaw 0 faces +Z, its right is -X) and up.
-#[must_use]
-pub fn basis(forward: Vec3) -> (Vec3, Vec3, Vec3) {
-    let forward = forward.normalize_or(Vec3::Z);
-    let right = forward.cross(Vec3::Y).normalize_or(Vec3::NEG_X);
-    (forward, right, right.cross(forward))
-}
-
 /// The placeholder gun's length (metres) and where it sits relative to the eye.
 const GUN_LENGTH: f32 = 0.3;
 
@@ -253,11 +246,19 @@ pub fn blade_pose(eye: Vec3, forward: Vec3, progress: f32) -> Mat4 {
     Mat4::from_rotation_translation(rotation, hilt + direction * (BLADE_LENGTH / 2.0))
 }
 
-/// One other fighter as drawn this frame.
+/// How far above its body centre a fighter's eye is drawn (metres), unless it is sliding.
+#[allow(clippy::cast_precision_loss)]
+pub const EYE_ABOVE_CENTER: f32 = (shooter_sim::player::EYE_HEIGHT_UNITS
+    - shooter_sim::player::PLAYER_HALF_EXTENTS.y) as f32
+    * METRES_PER_UNIT;
+
+/// One fighter as drawn this frame, the local one included.
 #[derive(Clone, Copy, Debug)]
 pub struct FighterView {
-    /// Body centre in metres, or `None` while it is dead.
+    /// Body centre in metres, or `None` while it is dead (or the camera is inside it).
     pub center: Option<Vec3>,
+    /// How far above the centre its eye is (metres): where its gun and blade are held.
+    pub eye_above_center: f32,
     /// Where it looks.
     pub forward: Vec3,
     /// Remaining health, 0..=1.
@@ -297,7 +298,7 @@ fn fighter_material(health: f32, glow: f32) -> StandardMaterial {
     }
 }
 
-/// One other fighter's instances: its body (coloured by health), its gun and its blade.
+/// One fighter's instances: its body (coloured by health), its gun and its blade.
 struct FighterInstances {
     body: InstanceId,
     material: MaterialId,
@@ -309,27 +310,25 @@ struct FighterInstances {
     blade: InstanceId,
 }
 
-/// The moving things drawn over the arena: the other fighters, rockets, the held gun, the swung
-/// blade and (natively; the page draws its own) a crosshair and a health bar. Placeholder
-/// primitives until asset-tooling delivers the weapon and character models.
+/// The moving things drawn over the arena: every fighter (the local one too, seen from the
+/// third-person camera) with its gun, swung blade and grapple cable, the rockets, the reticle
+/// and (natively; the page draws its own) a health bar. Placeholder primitives until
+/// asset-tooling delivers the weapon and robot models.
 pub struct Actors {
     fighters: Vec<FighterInstances>,
     fighter_mesh: MeshId,
     rocket_mesh: MeshId,
     rocket_material: MaterialId,
     rockets: Vec<InstanceId>,
-    gun: InstanceId,
     gun_mesh: MeshId,
     gun_materials: [MaterialId; Weapon::ALL.len()],
-    /// The local energy blade, drawn only through a swing.
-    blade: InstanceId,
     blade_mesh: MeshId,
     blade_material: MaterialId,
     cable_mesh: MeshId,
     cable_material: MaterialId,
     /// Grapple cables, reused frame to frame (hidden when unused).
     cables: Vec<InstanceId>,
-    crosshair: Option<InstanceId>,
+    reticle: InstanceId,
     /// Natively: the health bar's mesh, material and instance (HUD stopgap).
     health_bar: Option<(MeshId, MaterialId, InstanceId)>,
 }
@@ -347,6 +346,9 @@ fn gun_material(materials: &[MaterialId; Weapon::ALL.len()], held: Weapon) -> Ma
     materials[usize::from(held.index())]
 }
 
+/// The reticle's radius (metres, [`camera::RETICLE_DISTANCE`] ahead of the camera).
+const RETICLE_RADIUS: f32 = 0.0009;
+
 impl Actors {
     pub fn new(world: &mut World) -> Self {
         let fighter_mesh =
@@ -362,28 +364,15 @@ impl Actors {
         ))));
         let gun_materials =
             Weapon::ALL.map(|weapon| world.add_material(&glowing(tint(weapon), 1_200.0)));
-        let gun = world.add_instance(Instance {
-            mesh: gun_mesh,
-            material: gun_materials[0],
-            world_from_local: HIDDEN,
-            skin: None,
-        });
         let blade_mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
             0.012,
             0.05,
             BLADE_LENGTH,
         ))));
         let blade_material = world.add_material(&glowing(tint(Weapon::EnergyBlade), 8_000.0));
-        let blade = world.add_instance(Instance {
-            mesh: blade_mesh,
-            material: blade_material,
-            world_from_local: HIDDEN,
-            skin: None,
-        });
-        let native = !cfg!(target_arch = "wasm32");
-        let crosshair = native.then(|| {
+        let reticle = {
             let mesh = world.add_mesh(&MeshData::shape(Shape::Sphere {
-                radius: 0.0015,
+                radius: RETICLE_RADIUS,
                 sectors: 8,
                 stacks: 6,
             }));
@@ -394,8 +383,8 @@ impl Actors {
                 world_from_local: HIDDEN,
                 skin: None,
             })
-        });
-        let health_bar = native.then(|| {
+        };
+        let health_bar = (!cfg!(target_arch = "wasm32")).then(|| {
             let mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
                 HEALTH_BAR_LENGTH,
                 0.004,
@@ -416,10 +405,8 @@ impl Actors {
             rocket_mesh,
             rocket_material,
             rockets: Vec::new(),
-            gun,
             gun_mesh,
             gun_materials,
-            blade,
             blade_mesh,
             blade_material,
             cable_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
@@ -429,7 +416,7 @@ impl Actors {
             )))),
             cable_material: world.add_material(&glowing(tint(Weapon::Grapple), 6_000.0)),
             cables: Vec::new(),
-            crosshair,
+            reticle,
             health_bar,
         }
     }
@@ -452,33 +439,26 @@ impl Actors {
         );
     }
 
-    /// Places everything for this frame. `eye`/`forward` is the local camera; `held` is `None`
-    /// while the local fighter is dead (no gun in view); `health` is its health (0..=1);
-    /// `hook` is where its grapple holds (metres), while set; `swing` how far through a blade
-    /// swing it is (0..=1), while swinging.
+    /// Places everything for this frame. `camera`/`forward` is the camera; `reticle` where the
+    /// reticle is drawn ([`camera::reticle`]), while the local fighter is alive; `health` is its
+    /// health (0..=1).
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         world: &mut World,
         fighters: &[FighterView],
         rockets: &[Vec3],
-        held: Option<Weapon>,
-        swing: Option<f32>,
         health: Option<f32>,
-        hook: Option<Vec3>,
-        eye: Vec3,
+        camera: Vec3,
         forward: Vec3,
+        reticle: Option<Vec3>,
     ) {
         let cables: Vec<(Vec3, Vec3)> = fighters
             .iter()
             .filter_map(|view| {
-                let fighter_eye = view.center? + Vec3::Y * 0.75;
+                let fighter_eye = view.center? + Vec3::Y * view.eye_above_center;
                 Some((gun_pose(fighter_eye, view.forward).1, view.hook?))
             })
-            .chain(
-                hook.filter(|_| held.is_some())
-                    .map(|hook| (gun_pose(eye, forward).1, hook)),
-            )
             .collect();
         while self.cables.len() < cables.len() {
             let instance = world.add_instance(Instance {
@@ -536,7 +516,7 @@ impl Actors {
                         instances.shown = Some(look);
                     }
                     let center = view.center.unwrap_or_default();
-                    let fighter_eye = center + Vec3::Y * 0.75;
+                    let fighter_eye = center + Vec3::Y * view.eye_above_center;
                     (
                         Mat4::from_translation(center),
                         gun_pose(fighter_eye, view.forward).0,
@@ -552,9 +532,11 @@ impl Actors {
                 instances.material,
                 body_at,
             );
+            // Through a swing the blade sweeps across the fighter's front and the gun is put
+            // away.
             let swinging = view.and_then(|view| Some((view, view.swing?)));
             let blade_at = swinging.map_or(HIDDEN, |(view, swing)| {
-                let fighter_eye = view.center.unwrap_or_default() + Vec3::Y * 0.75;
+                let fighter_eye = view.center.unwrap_or_default() + Vec3::Y * view.eye_above_center;
                 blade_pose(fighter_eye, view.forward, swing)
             });
             let gun_at = if swinging.is_some() { HIDDEN } else { gun_at };
@@ -582,51 +564,39 @@ impl Actors {
                 .map_or(HIDDEN, |at| Mat4::from_translation(*at));
             Self::place(world, *instance, self.rocket_mesh, self.rocket_material, at);
         }
-        // Through a swing the blade sweeps across the view and the gun is put away.
-        let swing = swing.filter(|_| held.is_some());
-        let material = gun_material(&self.gun_materials, held.unwrap_or_default());
-        let at = if held.is_some() && swing.is_none() {
-            gun_pose(eye, forward).0
-        } else {
-            HIDDEN
-        };
-        Self::place(world, self.gun, self.gun_mesh, material, at);
-        let at = swing.map_or(HIDDEN, |swing| blade_pose(eye, forward, swing));
-        Self::place(world, self.blade, self.blade_mesh, self.blade_material, at);
-        if let Some(crosshair) = self.crosshair {
-            let mut instance = world.instance(crosshair);
-            instance.world_from_local = Mat4::from_translation(eye + forward * 0.5);
-            world.set_instance(crosshair, instance);
-        }
+        let mut instance = world.instance(self.reticle);
+        instance.world_from_local = reticle.map_or(HIDDEN, Mat4::from_translation);
+        world.set_instance(self.reticle, instance);
         if let Some((mesh, material, instance)) = self.health_bar {
-            let at = health.map_or(HIDDEN, |health| health_bar_pose(eye, forward, health));
+            let at = health.map_or(HIDDEN, |health| health_bar_pose(camera, forward, health));
             Self::place(world, instance, mesh, material, at);
         }
     }
 }
 
-/// The native health bar's full length (metres, half a metre ahead of the eye).
+/// The native health bar's full length (metres, half a metre ahead of the camera).
 const HEALTH_BAR_LENGTH: f32 = 0.12;
 
-/// The health bar low in the view, shrunk to `health` from its left end.
-fn health_bar_pose(eye: Vec3, forward: Vec3, health: f32) -> Mat4 {
+/// The health bar low and right of the view's centre, clear of the fighter over whose shoulder
+/// the camera looks, shrunk to `health` from its left end.
+fn health_bar_pose(camera: Vec3, forward: Vec3, health: f32) -> Mat4 {
     let (forward, right, up) = basis(forward);
     let health = health.clamp(0.0, 1.0);
-    let left = eye + forward * 0.5 - up * 0.2 - right * (HEALTH_BAR_LENGTH / 2.0);
+    let left = camera + forward * 0.5 - up * 0.25 + right * 0.12;
     let center = left + right * (HEALTH_BAR_LENGTH * health / 2.0);
     let rotation = Quat::from_mat3(&Mat3::from_cols(-right, up, forward));
     Mat4::from_scale_rotation_translation(Vec3::new(health.max(0.001), 1.0, 1.0), rotation, center)
 }
 
-/// The frame's camera and the hall's light: a high sun through an open roof and soft ambient,
-/// plus the weapons' flashes.
+/// The frame's camera ([`camera`]) and the hall's light: a high sun through an open roof and
+/// soft ambient, plus the weapons' flashes.
 #[must_use]
-pub fn frame(eye: Vec3, forward: Vec3, point_lights: Vec<PointLight>) -> Scene {
+pub fn frame(camera: Vec3, forward: Vec3, point_lights: Vec<PointLight>) -> Scene {
     Scene {
         camera: Camera {
-            eye,
-            target: eye + forward,
-            fov_y: 1.2,
+            eye: camera,
+            target: camera + forward,
+            fov_y: camera::FOV_Y,
             near: 0.05,
             ev100: 13.0,
             shadow_filter: ShadowFilter::Gaussian,
@@ -653,5 +623,6 @@ pub fn frame(eye: Vec3, forward: Vec3, point_lights: Vec<PointLight>) -> Scene {
         },
         environment: None,
         fog: None,
+        overlay: Vec::new(),
     }
 }

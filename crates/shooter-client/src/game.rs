@@ -5,6 +5,7 @@
 //! plays the map it is given; online, the host's snapshots name the map.
 
 use crate::interpolation::Interpolation;
+use shooter_sim::physics::World;
 use shooter_sim::session::LOCAL_PLAYER;
 use shooter_sim::{Event, Intent, MapId, Rules, Session, Snapshot, StepReport};
 
@@ -92,6 +93,16 @@ impl Game {
         match self {
             Self::Practice { others, .. } => others.center(slot, blend),
             Self::Online(online) => online.other_center(slot, blend),
+        }
+    }
+
+    /// The physics world of the match's map, once it is known: the practice match's own, or
+    /// online the predictor's. The camera keeps clear of its arena and the reticle traces it.
+    #[must_use]
+    pub fn world(&self) -> Option<&World> {
+        match self {
+            Self::Practice { session, .. } => Some(&session.world),
+            Self::Online(online) => online.world(),
         }
     }
 
@@ -254,6 +265,11 @@ pub mod online {
                 self.pending.clear();
             }
             Ok(())
+        }
+
+        /// The predictor's world, once a snapshot has named the map.
+        pub fn world(&self) -> Option<&shooter_sim::physics::World> {
+            self.predictor.as_ref().map(|predictor| &predictor.world)
         }
 
         /// The predictor while it predicts the local fighter.
