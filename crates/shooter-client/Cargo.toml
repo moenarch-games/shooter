@@ -17,6 +17,13 @@ input-bindings-core.workspace = true
 winit = "0.30.13"
 gilrs = "0.11.2"
 web-time = "1.1.0"
+# The asset-tooling robot kit (crate::robots::kit): glTF read with the gltf crate, its KTX2 (Basis
+# Universal) textures transcoded by basisu (pure Rust, so the browser build uses it too) and the
+# bundle's content pins checked with sha2, as render-engine's kit_showcase and the mmorpg client.
+gltf = { version = "=1.4.1", default-features = false, features = ["utils", "names", "allow_empty_texture"] }
+basisu = "=0.1.0"
+serde_json = "1.0.154"
+sha2 = "0.11.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Linux builds need ALSA headers (libasound2-dev) for kira's cpal output.
@@ -36,7 +43,7 @@ wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4"
 # The page timer between reconnect attempts; the profile run's result on `window`.
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Document", "Element", "HtmlElement", "Location", "Performance", "UrlSearchParams", "Window", "console"] }
+web-sys = { version = "0.3", features = ["AbortSignal", "Document", "Element", "Headers", "HtmlElement", "Location", "Performance", "Request", "RequestInit", "Response", "UrlSearchParams", "Window", "console"] }
 console_error_panic_hook = "0.1.7"
 
 [lints]

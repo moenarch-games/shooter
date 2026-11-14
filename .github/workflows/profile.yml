@@ -11,6 +11,7 @@ on:
       - "crates/**"
       - "profiles/**"
       - "scripts/**"
+      - "assets/**"
       - "web/**"
       - "package.json"
       - "bun.lock"

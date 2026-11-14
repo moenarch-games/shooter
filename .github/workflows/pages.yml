@@ -8,6 +8,8 @@ on:
       - "crates/**"
       - "web/**"
       - "scripts/build-web.sh"
+      - "scripts/fetch-robot-kit.sh"
+      - "assets/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"

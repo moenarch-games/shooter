@@ -27,6 +27,7 @@ if [[ "$mode" == web ]]; then
   scripts/build-web.sh
   cargo build --release --locked -p shooter-server
 else
+  scripts/fetch-robot-kit.sh
   cargo build --release --locked -p shooter-server -p shooter-client
 fi
 
