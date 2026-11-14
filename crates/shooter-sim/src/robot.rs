@@ -72,8 +72,8 @@
 
 use crate::weapons::{Delivery, Weapon};
 use parts::{
-    BATTERY, BEAM_LONG, CHASSIS_M, CHASSIS_S, CORE, ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, LEG,
-    RAIL_GUN, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    BATTERY, BEAM_LONG, CHASSIS_M, CHASSIS_S, CORE, ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, LASER,
+    LEG, RAIL_GUN, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
 
@@ -828,19 +828,30 @@ const fn along_arm(id: u8, weapon: &PartType, arm: u8) -> Part {
     Part::on(id, weapon, arm, &BEAM_LONG, Face::PosX, 0, 2)
 }
 
-/// The build every fighter starts with (re-expressing the shipped standard build): the small
-/// chassis as the torso, with the energy rifle on the left arm's tip, the blade on the right
-/// arm's tip, the grapple on top beside the sensor and the shotgun on the chest. Valid in
-/// [`BETA`].
-pub const STANDARD: Assembly = with_weapons(
-    frame(&CHASSIS_S),
-    [
+/// The build every fighter starts with: the small torso with three batteries exposed on the
+/// front (left upper/lower, right lower), the laser turret on the right arm, the energy rifle on
+/// the left, the blade on the right tip, the grapple above and the shotgun on the upper right of
+/// the chest. The batteries provide 180 extra energy, not decorative panels.
+pub const STANDARD: Assembly = {
+    let [a, b, c, d, e, f, g] = frame(&CHASSIS_S);
+    authored(&[
+        a,
+        b,
+        c,
+        d,
+        e,
+        f,
+        g,
         in_hand(7, &ENERGY_RIFLE, 3),
         in_hand(8, &ENERGY_BLADE, 4),
         Part::on(9, &GRAPPLE, 0, &CHASSIS_S, Face::PosZ, 0, 1),
         Part::on(10, &SHOTGUN, 0, &CHASSIS_S, Face::PosX, 1, 3),
-    ],
-);
+        Part::on(11, &BATTERY, 0, &CHASSIS_S, Face::PosX, 0, 2),
+        Part::on(12, &BATTERY, 0, &CHASSIS_S, Face::PosX, 0, 0),
+        Part::on(13, &BATTERY, 0, &CHASSIS_S, Face::PosX, 1, 0),
+        along_arm(14, &LASER, 4),
+    ])
+};
 
 /// A heavy build: the medium chassis, the rail gun along the left arm, the blade on the right
 /// arm's tip, the rocket launcher on top, the grapple on the chest and, for the energy its rail

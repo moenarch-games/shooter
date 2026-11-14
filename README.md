@@ -103,9 +103,10 @@ until render-engine draws screen overlays.
 (`shooter-client`'s `camera`): 3.5 m behind the eye along the aim, 0.6 m right of it and 0.3 m
 above, a 1.2 rad (69°) vertical field of view. It keeps 0.2 m clear of the arena (it is pulled
 in at once in front of a wall, floor or ceiling and eases back out), never through it; fighters
-do not push it, and your own fighter is not drawn while the camera is inside it. Shots and
-swings still leave the fighter, not the camera: every shot from the eye along the aim, the blade
-from the feet, exactly as before (`shooter_sim::aim`). The reticle is drawn where that shot
+do not push it, and your own fighter is not drawn while the camera is inside it. Authoritative shots
+and swings still leave the fighter, not the camera: every shot from the eye along the aim, the blade
+from the feet (`shooter_sim::aim`). The laser's *visual* beam instead begins at its mounted,
+aim-tracking barrel and reaches that same hit point. The reticle is drawn where the eye shot
 meets the arena or another fighter as you see them, the same function the host resolves
 hitscan with, so it sits slightly off the screen's centre (more for close targets) and lands on
 cover in front of your fighter even where the camera sees past it.
@@ -156,11 +157,15 @@ part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part key
 asset kits, and a build does not yet change movement or the arsenal: every fighter still carries
 every weapon, and there is no builder screen yet.
 
+The standard build mounts three batteries down the front of the torso, an energy rifle on the left
+arm and an aim-tracking laser on the right arm alongside its blade, plus a grapple and shotgun.
+The orange battery packs are real energy-storage parts, not decorative armor.
+
 **Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
 D2.i70.4): the control core stores 100 and regenerates 24 a second, and each battery (a
 20 × 40 × 20 cm part, 5 build points, 20 kg) adds 60 stored energy and nothing else. A robot
-spawns with its pool full. Every activation pays from it: a rifle bolt 2, a rail shot 30, a
-rocket 20, a grapple hook 10, a blade swing 5, a shotgun blast 12, and the laser and the
+spawns with its pool full (standard 280, heavy 160). Every activation pays from it: a rifle bolt 2,
+a rail shot 30, a rocket 20, a grapple hook 10, a blade swing 5, a shotgun blast 12, and the laser and the
 flamethrower 0.6 and 0.5 every tick they burn (36 and 30 a second, more than the core
 regenerates). A request is granted whole or not at all: with too little energy the shot, swing or
 hook simply does not happen (no cooldown is spent) and works again once regeneration has paid for
@@ -205,10 +210,11 @@ Every file is checked against the bundle's pins and bounds (4 MiB a file, 8 MiB 
 request in the browser), every kit key must be a catalog part and every catalog part a kit entry
 or a declared placeholder; otherwise the load fails, the HUD says why and the fighters stay
 boxes. Each part sits where the simulation places it (`mechanics::placements`), so loadouts look
-different. Weapons (asset-tooling#594), wheels and tracks (#634) are not modelled yet: they draw
-as translucent purple boxes of their cells (the held weapon brighter) and the HUD lists them. The
-robot stands on its capsule's feet and faces its look; its legs rest when idle, walk the kit's
-clips when running (at most 2.5 cycles a second, so feet slide at full speed), tuck while
+different. Weapons (asset-tooling#594), wheels and tracks (#634) are not modelled yet: most draw
+as translucent purple boxes of their cells (the held weapon brighter), while the mounted laser
+is green and tracks the full look direction; the HUD lists their asset issues. The battery kit
+mesh is orange. The robot stands on its capsule's feet and faces its look; its legs rest when idle,
+walk the kit's clips when running (at most 2.5 cycles a second, so feet slide at full speed), tuck while
 airborne or grappling and crouch in a slide. Firing kicks and flashes the held weapon, the
 grapple cable starts at the grapple, and a dead robot topples over until it respawns. Strafing
 (no sideways clip) and the blade swing (no swing clip, the arm is rigid) are missing animations:

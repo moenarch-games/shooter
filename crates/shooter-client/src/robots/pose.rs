@@ -249,6 +249,9 @@ pub struct Posed {
     pub marker: Vec3,
     /// Where its grapple weapon is (the cable's start), if it has one attached.
     pub grapple: Option<Vec3>,
+    /// The tip of the mounted laser, which points along the player's full aim (including pitch).
+    /// Only presentation uses this; authoritative hits still use `shooter_sim::aim`.
+    pub laser_muzzle: Option<Vec3>,
 }
 
 /// A rotation of `angle` about `axis` through `pivot`.
@@ -396,6 +399,7 @@ pub fn pose(
 
     let recoil = (RECOIL_SECONDS - state.since_fired).max(0.0) / RECOIL_SECONDS * RECOIL;
     let mut grapple = None;
+    let mut laser_muzzle = None;
     let posed = model
         .parts
         .iter()
@@ -403,7 +407,7 @@ pub fn pose(
         .map(|(index, part)| {
             let held = part.kind == Kind::Weapon(state.held);
             let firing = held && animation.action == Action::Fire;
-            let world_from_local = match lost[index] {
+            let mounted = match lost[index] {
                 Some(world) => world * model.parts[index].robot_from_local,
                 None if firing => {
                     world_from_robot
@@ -412,6 +416,20 @@ pub fn pose(
                 }
                 None => world_from_robot * robot_from_local[index],
             };
+            // The laser's gunner tracks the same full look as the reticle. Only its visible
+            // placeholder turns, not the chassis or its physical mounting point; independent
+            // joint commands are still owned by shooter#74.
+            let world_from_local =
+                if part.kind == Kind::Weapon(Weapon::Laser) && lost[index].is_none() {
+                    let (scale, _, pivot) = mounted.to_scale_rotation_translation();
+                    let aim = state.forward.normalize_or(Vec3::X);
+                    let turn = Quat::from_rotation_arc(Vec3::Z, aim);
+                    let aimed = Mat4::from_scale_rotation_translation(scale, turn, pivot);
+                    laser_muzzle = Some(aimed.transform_point3(Vec3::new(0.0, 0.0, 0.5)));
+                    aimed
+                } else {
+                    mounted
+                };
             if part.kind == Kind::Weapon(Weapon::Grapple) && lost[index].is_none() {
                 grapple = Some(world_from_local.transform_point3(Vec3::ZERO));
             }
@@ -438,5 +456,6 @@ pub fn pose(
         world_from_robot,
         parts: posed,
         grapple,
+        laser_muzzle,
     }
 }

@@ -4,6 +4,7 @@
 //! transitions, the rail capacitor's lag-compensated hits and frags, thrusters, fighters of
 //! different builds, and the wire.
 
+use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::pickups::{
     PAD_RESPAWN_TICKS, RAIL_CAPACITOR_DAMAGE_PERCENT, RAIL_CAPACITOR_SHOTS,
@@ -498,6 +499,13 @@ fn rail_capacitor_kills_score() {
 #[test]
 fn the_rail_capacitor_is_spent_by_its_rail_shots() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::RailCapacitor)]);
+    // Isolate the core's recharge-limited cadence: the current standard carries three
+    // additional batteries, which would mask the intended energy constraint.
+    let mut core_only = STANDARD.candidate();
+    core_only.parts.retain(|part| part.id < 11);
+    let core_only = BETA.validate(&core_only).unwrap();
+    session.fighters[0].build = core_only;
+    session.fighters[0].energy = Pool::of(&core_only).capacity;
     // Facing away from B, at the wall.
     let shoot = |weapon| Intent {
         yaw: 32_768,

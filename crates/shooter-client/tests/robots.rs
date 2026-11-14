@@ -126,6 +126,7 @@ fn loadouts_draw_their_own_parts_with_labelled_placeholders() {
             ("weapon.energy-blade", "asset-tooling#594"),
             ("weapon.grapple-hook", "asset-tooling#594"),
             ("weapon.shotgun", "asset-tooling#594"),
+            ("weapon.laser", "asset-tooling#594"),
         ]
     );
     // A heavy mod lengthens its weapon's placeholder like its footprint.
@@ -143,6 +144,40 @@ fn loadouts_draw_their_own_parts_with_labelled_placeholders() {
             .element_product()
     };
     assert!(rifle(&marksman) > rifle(&skirmisher) * 1.9);
+}
+
+#[test]
+fn the_side_mounted_laser_tracks_pitch_without_moving_its_mount() {
+    let model = Model::of(&STANDARD, kit()).unwrap();
+    let index = model
+        .parts
+        .iter()
+        .position(|part| part.key == "weapon.laser")
+        .unwrap();
+    let mut state = standing();
+    state.held = Weapon::Laser;
+    state.forward = Vec3::new(0.8, 0.5, -0.2).normalize();
+    let up = pose::pose(&model, kit(), &state, 0.0, &PartStates::default());
+    let barrel = up.parts[index].world_from_local;
+    let origin = barrel.transform_point3(Vec3::ZERO);
+    let muzzle = up.laser_muzzle.expect("the standard build mounts a laser");
+    assert!(muzzle.distance(barrel.transform_point3(Vec3::Z * 0.5)) < 1e-5);
+    assert!((muzzle - origin).normalize().distance(state.forward) < 1e-5);
+    assert!(
+        muzzle.distance(state.center) > 0.2,
+        "the muzzle is mounted on the arm"
+    );
+
+    state.forward = Vec3::new(0.8, -0.5, -0.2).normalize();
+    let down = pose::pose(&model, kit(), &state, 0.0, &PartStates::default());
+    let lowered = down.parts[index].world_from_local;
+    assert!(origin.distance(lowered.transform_point3(Vec3::ZERO)) < 1e-5);
+    assert!(
+        (down.laser_muzzle.unwrap() - origin)
+            .normalize()
+            .distance(state.forward)
+            < 1e-5
+    );
 }
 
 /// The robot-frame bounds of a kit entry's mesh placed by `robot_from_local`.
