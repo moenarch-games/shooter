@@ -58,7 +58,7 @@ fn mod_name(id: ModId) -> &'static str {
 
 /// The held weapon with its mod in `build`, if any: "Rail gun + overcharger".
 fn held(weapon: Weapon, build: &Assembly) -> String {
-    build.mod_on(weapon).map_or_else(
+    BETA.mod_on(build, weapon).map_or_else(
         || weapon_name(weapon).to_owned(),
         |id| format!("{} + {}", weapon_name(weapon), mod_name(id)),
     )
@@ -66,8 +66,8 @@ fn held(weapon: Weapon, build: &Assembly) -> String {
 
 /// The equipped mods, "mods: Energy rifle + rapid cycler, Shotgun + heat sink", or nothing.
 fn equipped(build: &Assembly) -> String {
-    let mods: Vec<String> = build
-        .mods()
+    let mods: Vec<String> = BETA
+        .mods(build)
         .map(|(_, weapon, id)| format!("{} + {}", weapon_name(weapon), mod_name(id)))
         .collect();
     if mods.is_empty() {

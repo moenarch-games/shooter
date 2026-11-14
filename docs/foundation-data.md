@@ -18,7 +18,8 @@ real players.
    followed by game-server's own replay log: admissions, commands, removals and a digest of
    every tick's snapshot (with the module pickups: who takes the greybox's pads and when they
    are spent). Files of an earlier format (format 2, before the slot count, format 3, before
-   weapon mods, or format 4, before module pickups) are refused.
+   weapon mods, format 4, before module pickups, or format 5, before socket-grid robot builds)
+   are refused.
 2. **Verify** it: `shooter-replay verify` replays the log into a fresh match on the recorded map
    (a file naming a map this build does not know is rejected) through
    game-server's `verify_replay`, and every tick must match its digest. Recording the same

@@ -185,6 +185,12 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   until replaced, and replacing them is an explicit migration of the one schema, never a second
   assembly system beside it: shooter#71 migrates the assembly, the named loadouts and the mods'
   mounting; shooter#72 removes heat and cooling and rebalances the heat-related mods.
+  Since shooter#71 the assembly ships as D2.i70.1 and D2.i70.2 describe (the socket-grid component
+  tree, one core, the build points and part ceiling), replacing the anatomical sockets and
+  hardpoints in place; the named loadouts are humanoid component trees with their mods on their
+  weapon parts. Still shipped until shooter#72: power (now supplied by the core) and heat and
+  cooling (made by weapons and mods, shed by chassis sections, the core, the sensor and the heat
+  sink). The legs' load budget is gone (D2.i70.1 rejects no build for its locomotion).
 
 ## 3. Platforms
 
@@ -284,7 +290,8 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   heavy, skirmisher, marksman), sent through the existing build request.
   Attachment rules answered by D2.i70.1 and D2.i70.2, cooling superseded by D2.i70.4; the numbers
   remain open as Q2.i70.1 and Q2.i70.2. The defaults above stay shipped until migrated
-  (D2.i70.12).
+  (D2.i70.12). The sockets, hardpoints and load budget were migrated by shooter#71; the mods, the
+  named loadouts and the power and heat budgets remain (see Q2.i70.1).
 - **Q2.i46.5**: Layout details of the three arenas: topology, destructible pieces, pickup points
   and each map's player capacity (D2.i46.11, D2.i46.12).
   Defaults in use until decided (shooter#48): the map catalog (`shooter_sim::maps`) holds only
@@ -297,8 +304,19 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration
   values (D2.i70.1, D2.i70.3, D2.i70.5, D2.i70.8). Implementations record provisional defaults
   here; none is owner-approved.
+  Defaults in use until decided (shooter#71, `shooter_sim::robot::BETA`): 120 build points and
+  a ceiling of 32 parts. Points: chassis 10, 20 and 30 by size, beams 2 and 3, hinge 5, rotor 6,
+  core 10, sensor 5, leg 7, wheel 6, track 12, armor plate 4; the weapons and mods keep their
+  shipped points. Until shooter#72 the core supplies 130 power, and the shipped heat stays: the
+  chassis sections shed 30, 45 and 60, the core and the sensor 10 each.
 - **Q2.i70.2**: The predetermined chassis sizes and their costs, and whether the 20 cm socket cell
   is final (D2.i70.1).
+  Defaults in use until decided (shooter#71): a 20 cm cell; chassis sections of 20 × 40 × 80,
+  40 × 40 × 80 and 40 × 60 × 80 cm (28, 40 and 52 sockets); beams of 20 × 20 × 40 and 80 cm.
+  Orientations are binary angles (65 536 a turn, so quarter, eighth and finer binary turns are
+  exact) in one canonical yaw-pitch-roll form; a footprint turns with the yaw's nearest quarter
+  turn and may overhang its face's edge. Overlaps are checked per face, not between parts in
+  space.
 - **Q2.i70.3**: Repair targeting and range: the module's radius, the target-selection gesture, the
   repair rate, energy cost and cooldown, and whether incoming damage interrupts a repair
   (D2.i70.9).

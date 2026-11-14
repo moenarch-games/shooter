@@ -1,184 +1,270 @@
-//! Robot builds (Atlas D2.i46.4, D2.i46.5): which component sits in each socket of a fighter's
-//! robot and which weapon module sits on each hardpoint, the curated component catalog, and the
-//! one validation path every build passes, whether it comes from a client, a snapshot or code.
+//! Robot builds (Atlas D2.i70.1, D2.i70.2): a robot is one generic component tree assembled
+//! free-form on a grid of universal sockets, the curated part catalog it is assembled from, and
+//! the one validation path every build passes, whether it comes from a client, a snapshot, a
+//! replay or code.
 //!
-//! A [`Candidate`] is untrusted raw data (socket, component, weapon and mod codes as they arrived);
-//! [`Catalog::validate`] turns it into an [`Assembly`], the only form the simulation stores and
-//! sends, or rejects it with an [`AssemblyError`]. A build is valid when every socket holds a
-//! component of its kind (torso, head and locomotion are required, arms are optional), every
-//! weapon sits on a hardpoint its parts provide and can carry, no weapon is mounted twice, and the
-//! build stays within its engineering budgets (the locomotion's load, the torso's power, the
-//! parts' cooling) and the catalog's build points.
+//! A [`Candidate`] is untrusted raw data (part, socket, orientation and mod codes as they
+//! arrived); [`Catalog::validate`] turns it into an [`Assembly`], the only form the simulation
+//! stores and sends, or rejects it with an [`AssemblyError`].
 //!
-//! **Provisional data.** The exact budgets, attachment rules and point values are open
-//! (Atlas Q2.i46.4): the numbers in [`BETA`] are tunable placeholders chosen so that builds trade
-//! off against each other, not owner-approved balance. The component keys are the shooter's
-//! proposal for the stable part and weapon IDs of the forthcoming robot and weapon kits
-//! (moritzbrantner/asset-tooling#595, #594) and are reconciled with them when the kits ship.
+//! **The tree.** Every [`Part`] has a stable [`PartId`] (unique within its build, the handle for
+//! hit attribution and detachment later), a part type from the catalog and, except for the one
+//! root, a [`Mount`]: the parent part, the [`SocketId`] on the parent it attaches to and its
+//! [`Orientation`] there. One field per part names one parent, so a part never has two; the root
+//! is a chassis section; every other part reaches the root through its parents (no cycles).
+//! Validated parts are stored in [`PartId`] order, so equal builds are equal byte for byte.
 //!
-//! **Weapon modifications** (Atlas D2.i46.8, shooter#51): a mounted weapon may carry one
-//! [`Mod`] from the catalog. A mod costs build points and weighs on the mass, power and cooling
-//! budgets like any part, may make its weapon a heavy module (it then needs a heavy hardpoint),
-//! fits only the weapons it names, and changes how that weapon fires ([`Tuning`]: damage, refire
-//! and range). Every mod trades something away: none is strictly better. The catalog and its
-//! numbers are provisional like the rest of [`BETA`].
+//! **Sockets.** Parts are cuboids of [`CELL_MM`] cells (`cells`, in the part's own frame). A part
+//! type exposes sockets on some of its faces ([`Faces`]): one per surface cell, numbered face by
+//! face in [`Face::ALL`] order and, on a face, row by row ([`PartType::socket`]); a 20 × 40 × 80 cm
+//! chassis has 28. A child sits on one socket of its parent with its mount face (its own `NegZ`
+//! face) against the parent's face, and reserves its base (`cells[0]` × `cells[1]`, the
+//! *footprint*) on that face from the socket on; no two children may reserve the same cell. Cells
+//! past the face's edge overhang and reserve nothing (a turret wider than its rotor is fine).
+//! A part's own mount face rests on its parent, so its sockets are interior and take nothing (the
+//! root's are free). Larger parts therefore occupy several cells but stay attached to one parent
+//! socket only. Footprints are checked per face; whether parts on different faces or parents
+//! intersect in space is not (that needs the parts' real geometry, shooter#73).
+//!
+//! **Orientation** is exact and canonical: three binary angles (65 536 a turn, like the
+//! fighters' yaw), applied in the socket's frame as yaw about the face's outward normal, then
+//! pitch, then roll (intrinsic Z-Y-X). [`Orientation::canonical`] folds any triple into the one
+//! representation of its rotation (pitch within a quarter turn either way, roll zero at a quarter
+//! turn of pitch), so the same rotation always serialises the same way. Quarter, eighth and finer
+//! binary turns are exact; a builder's snaps (shooter#57) choose among them. The footprint turns
+//! with the yaw's nearest quarter turn; pitch and roll tilt the part on its socket without moving
+//! its footprint. The socket frame of each face is fixed ([`Face::grid`]): `u` × `v` is the
+//! outward normal.
+//!
+//! **Rules.** Only objective rules reject a build: known codes, one root chassis, existing parents
+//! and sockets, no cycles, footprints on their faces without overlaps, exactly one control core
+//! (on an exterior socket of the player's choice, which every free socket is), mods on the
+//! weapons they fit, each weapon at most once (the arsenal looks a weapon's mod up by weapon), the
+//! technical part-count ceiling [`MAX_PARTS`], and the budgets: the core's power against what the
+//! parts draw, the parts' cooling against the heat they make (the shipped heat, until shooter#72
+//! replaces power and heat with shared energy, D2.i70.3 and D2.i70.4), and the build points.
+//! Nothing requires locomotion: stationary, asymmetrical or grappling-only robots are valid.
+//! Every attachment is rigid; joints are part types (shooter#73 moves them).
+//!
+//! **Provisional data.** The cell size, chassis sizes, part values, build points and part ceiling
+//! are tunable placeholders (Atlas Q2.i70.1, Q2.i70.2), not owner-approved balance. The part keys
+//! are the shooter's proposal for the stable part and weapon IDs of the forthcoming robot and
+//! weapon kits (moritzbrantner/asset-tooling#595, #594) and are reconciled with them when the kits
+//! ship.
+//!
+//! **Weapon modifications** (Atlas D2.i46.8, shooter#51) are mounted on weapon parts: a weapon
+//! part may carry one [`Mod`] from the catalog. A mod costs build points and weighs on the mass,
+//! power and heat budgets like any part, fits only the weapons it names, may make its weapon a
+//! heavy module (its footprint grows to at least two cells long), and changes how that weapon
+//! fires ([`Tuning`]: damage, refire and range). Every mod that changes the fire trades something
+//! away.
 //!
 //! A build does not yet change how a fighter moves or which weapons it carries: every fighter
-//! still has the full arsenal, and a weapon without a mod on it fires as shipped. A mounted
-//! weapon's mod applies whenever it fires, on the host and in a client's prediction alike. Limb
-//! damage (shooter#56), locomotion (shooter#58) and the builder (shooter#57) apply the rest.
+//! still has the full arsenal, and a weapon without a mod in the build fires as shipped. A
+//! mounted weapon's mod applies whenever it fires, on the host and in a client's prediction
+//! alike. Per-part damage (shooter#56), mechanics (shooter#73), locomotion (shooter#58) and the
+//! builder (shooter#57) apply the rest.
 
 use crate::weapons::{Delivery, Weapon};
+use parts::{
+    BEAM_LONG, CHASSIS_M, CHASSIS_S, CORE, ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, LEG, RAIL_GUN,
+    ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+};
 use std::fmt;
 
-/// Where a component attaches. The torso is the root; the other sockets are on it.
+/// The edge of one socket cell in millimetres (provisional, Atlas Q2.i70.2).
+pub const CELL_MM: u32 = 200;
+/// The technical part-count ceiling: the most parts one build may have (provisional, Atlas
+/// Q2.i70.1), separate from the build points.
+pub const MAX_PARTS: usize = 32;
+
+/// A face of a part's cuboid, in the part's own frame. `NegZ` is its mount face.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
-pub enum Socket {
-    Torso,
-    Head,
-    LeftArm,
-    RightArm,
-    Locomotion,
+pub enum Face {
+    PosX,
+    NegX,
+    PosY,
+    NegY,
+    PosZ,
+    NegZ,
 }
 
-impl Socket {
-    pub const ALL: [Self; 5] = [
-        Self::Torso,
-        Self::Head,
-        Self::LeftArm,
-        Self::RightArm,
-        Self::Locomotion,
+impl Face {
+    /// Every face, in socket-numbering order.
+    pub const ALL: [Self; 6] = [
+        Self::PosX,
+        Self::NegX,
+        Self::PosY,
+        Self::NegY,
+        Self::PosZ,
+        Self::NegZ,
     ];
 
-    /// Its stable wire code.
+    /// The face's socket grid on a cuboid of `cells`: `(u, v)` cell counts. The grid's axes are
+    /// part axes chosen so that `u` × `v` is the face's outward normal: +X (y, z), −X (z, y),
+    /// +Y (z, x), −Y (x, z), +Z (x, y), −Z (y, x); cells count from the cuboid's minimum corner.
     #[must_use]
-    pub const fn index(self) -> u8 {
-        self as u8
-    }
-
-    #[must_use]
-    pub fn from_index(index: u8) -> Option<Self> {
-        Self::ALL.get(usize::from(index)).copied()
-    }
-
-    /// The kind of component it takes.
-    #[must_use]
-    pub const fn kind(self) -> Kind {
+    pub const fn grid(self, [x, y, z]: [u8; 3]) -> (u8, u8) {
         match self {
-            Self::Torso => Kind::Torso,
-            Self::Head => Kind::Head,
-            Self::LeftArm | Self::RightArm => Kind::Arm,
-            Self::Locomotion => Kind::Locomotion,
+            Self::PosX => (y, z),
+            Self::NegX => (z, y),
+            Self::PosY => (z, x),
+            Self::NegY => (x, z),
+            Self::PosZ => (x, y),
+            Self::NegZ => (y, x),
         }
     }
 
-    /// A build without it is invalid.
-    #[must_use]
-    pub const fn required(self) -> bool {
-        !matches!(self, Self::LeftArm | Self::RightArm)
+    const fn bit(self) -> u8 {
+        1 << self as u8
     }
 }
 
-/// Where a weapon module mounts: a hand on each arm, a shoulder on each side of the torso.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
-pub enum Hardpoint {
-    LeftHand,
-    RightHand,
-    LeftShoulder,
-    RightShoulder,
-}
+/// The faces of a part type that carry sockets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Faces(u8);
 
-impl Hardpoint {
-    pub const ALL: [Self; 4] = [
-        Self::LeftHand,
-        Self::RightHand,
-        Self::LeftShoulder,
-        Self::RightShoulder,
-    ];
-
-    /// Its stable wire code.
-    #[must_use]
-    pub const fn index(self) -> u8 {
-        self as u8
-    }
+impl Faces {
+    pub const NONE: Self = Self(0);
+    pub const ALL: Self = Self(0b11_1111);
+    /// Only the face opposite the mount (a joint's moving side).
+    pub const TOP: Self = Self(Face::PosZ.bit());
 
     #[must_use]
-    pub fn from_index(index: u8) -> Option<Self> {
-        Self::ALL.get(usize::from(index)).copied()
-    }
-
-    /// The socket whose component provides it.
-    #[must_use]
-    pub const fn provider(self) -> Socket {
-        match self {
-            Self::LeftHand => Socket::LeftArm,
-            Self::RightHand => Socket::RightArm,
-            Self::LeftShoulder | Self::RightShoulder => Socket::Torso,
-        }
-    }
-
-    #[must_use]
-    pub const fn hand(self) -> bool {
-        matches!(self, Self::LeftHand | Self::RightHand)
+    pub const fn contains(self, face: Face) -> bool {
+        self.0 & face.bit() != 0
     }
 }
 
+/// What a part type is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Kind {
-    Torso,
-    Head,
-    Arm,
+    /// A cuboid chassis section; a build's root is one.
+    Chassis,
+    /// A structural beam extending the tree.
+    Beam,
+    /// A movable joint (hinge or rotor): rigid until the mechanics (shooter#73).
+    Joint,
+    /// The control core: exactly one per build (D2.i70.2).
+    Core,
+    Sensor,
+    /// Legs, wheels or tracks: optional (D2.i70.1).
     Locomotion,
+    Armor,
+    /// A weapon module: one of the shipped weapons as a mountable part (D2.i46.8).
+    Weapon(Weapon),
 }
 
-/// How heavy a weapon module is, and how heavy a module a hardpoint carries.
+/// A part type's stable code in the catalog (on the wire).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
-pub enum Size {
-    Light,
-    Heavy,
+pub struct PartTypeId(pub u8);
+
+/// A part's stable ID within its build.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub struct PartId(pub u8);
+
+/// A socket's stable index on its part ([`PartType::socket`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub struct SocketId(pub u8);
+
+/// Where a socket is on its part: a face and a cell of that face's grid ([`Face::grid`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Site {
+    pub face: Face,
+    pub u: u8,
+    pub v: u8,
 }
 
-/// A component's stable code in the catalog (on the wire).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
-pub struct ComponentId(pub u8);
-
-/// A catalog component: a torso, head, arm or locomotion module. Masses are kilograms; power,
-/// heat and cooling share one unit; all values are provisional (Q2.i46.4).
+/// A catalog part type. Masses are kilograms; power, draw, heat and cooling share one unit; all
+/// values are provisional (Q2.i70.1, Q2.i70.2).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Component {
-    pub id: ComponentId,
-    /// Its stable data ID, shared with the robot kit's part ID.
+pub struct PartType {
+    pub id: PartTypeId,
+    /// Its stable data ID, shared with the robot or weapon kit's part ID.
     pub key: &'static str,
     pub kind: Kind,
+    /// Its cuboid in cells (x, y, z of its own frame; its base is x × y).
+    pub cells: [u8; 3],
+    /// The faces with sockets.
+    pub sockets: Faces,
     pub mass: u16,
-    /// Power it supplies (the torso's reactor).
+    /// Power it supplies (the core).
     pub power: u16,
-    /// Power it draws.
     pub draw: u16,
-    /// Heat it can shed.
+    pub heat: u16,
     pub cooling: u16,
-    /// Mass it carries (locomotion): everything but itself.
-    pub load: u16,
     pub points: u16,
-    /// The hardpoints it provides (an arm's hand, the torso's two shoulders) and the heaviest
-    /// module each carries.
-    pub mounts: Option<Size>,
 }
 
-/// A weapon module: one of the shipped weapons (D2.i46.8) as a mountable part.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Module {
-    pub weapon: Weapon,
-    /// Its stable data ID, shared with the weapon kit's weapon ID.
-    pub key: &'static str,
-    pub size: Size,
-    /// It mounts only on a hand (the blade).
-    pub hand_only: bool,
-    pub mass: u16,
-    pub draw: u16,
-    /// Heat it makes.
-    pub heat: u16,
-    pub points: u16,
+impl PartType {
+    /// How many sockets it has.
+    #[must_use]
+    pub const fn socket_count(&self) -> u16 {
+        let mut count = 0;
+        let mut index = 0;
+        while index < Face::ALL.len() {
+            let face = Face::ALL[index];
+            if self.sockets.contains(face) {
+                let (u, v) = face.grid(self.cells);
+                count += u as u16 * v as u16;
+            }
+            index += 1;
+        }
+        count
+    }
+
+    /// The socket at cell `(u, v)` of `face`, if the face has sockets and the cell exists.
+    #[must_use]
+    pub const fn socket(&self, face: Face, u: u8, v: u8) -> Option<SocketId> {
+        if !self.sockets.contains(face) {
+            return None;
+        }
+        let (width, height) = face.grid(self.cells);
+        if u >= width || v >= height {
+            return None;
+        }
+        let mut base: u16 = 0;
+        let mut index = 0;
+        while index < Face::ALL.len() {
+            let earlier = Face::ALL[index];
+            if earlier as u8 == face as u8 {
+                break;
+            }
+            if self.sockets.contains(earlier) {
+                let (eu, ev) = earlier.grid(self.cells);
+                base += eu as u16 * ev as u16;
+            }
+            index += 1;
+        }
+        let socket = base + v as u16 * width as u16 + u as u16;
+        if socket > u8::MAX as u16 {
+            return None;
+        }
+        Some(SocketId(socket as u8))
+    }
+
+    /// Where `socket` is, if it has it.
+    #[must_use]
+    pub fn site(&self, socket: SocketId) -> Option<Site> {
+        let mut rest = u16::from(socket.0);
+        for face in Face::ALL {
+            if !self.sockets.contains(face) {
+                continue;
+            }
+            let (width, height) = face.grid(self.cells);
+            let count = u16::from(width) * u16::from(height);
+            if rest < count {
+                let width = u16::from(width);
+                return Some(Site {
+                    face,
+                    u: u8::try_from(rest % width).ok()?,
+                    v: u8::try_from(rest / width).ok()?,
+                });
+            }
+            rest -= count;
+        }
+        None
+    }
 }
 
 /// A weapon modification's stable code in the catalog (on the wire).
@@ -237,7 +323,7 @@ impl Tuning {
 }
 
 /// A weapon modification (D2.i46.8): what it costs a build, which weapons it fits and how it
-/// changes their fire. Masses are kilograms; power, heat and cooling share the components' unit.
+/// changes their fire. Masses are kilograms; power, heat and cooling share the parts' unit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Mod {
     pub id: ModId,
@@ -245,7 +331,7 @@ pub struct Mod {
     pub key: &'static str,
     /// The weapons it fits.
     pub fits: &'static [Weapon],
-    /// It makes its weapon a heavy module (a heavy hardpoint only).
+    /// It makes its weapon a heavy module: a footprint at least two cells long.
     pub heavy: bool,
     pub mass: u16,
     pub draw: u16,
@@ -257,52 +343,118 @@ pub struct Mod {
     pub tuning: Tuning,
 }
 
-/// The components, modules and weapon mods builds are made of, and the build-point budget.
+/// The part types and weapon mods builds are made of, and the build-point budget.
 #[derive(Clone, Copy, Debug)]
 pub struct Catalog {
-    pub components: &'static [Component],
-    pub modules: &'static [Module],
+    pub parts: &'static [PartType],
     pub mods: &'static [Mod],
     pub build_points: u16,
 }
 
-const fn part(
-    id: u8,
-    key: &'static str,
-    kind: Kind,
-    [mass, power, draw, cooling, load, points]: [u16; 6],
-    mounts: Option<Size>,
-) -> Component {
-    Component {
-        id: ComponentId(id),
-        key,
-        kind,
-        mass,
-        power,
-        draw,
-        cooling,
-        load,
-        points,
-        mounts,
-    }
-}
+/// The beta's part types (every one available from the start, D2.i46.5), as constants so builds
+/// can name sockets on them ([`PartType::socket`]). Provisional values (Q2.i70.1, Q2.i70.2).
+pub mod parts {
+    use super::{Faces, Kind, PartType, PartTypeId};
+    use crate::weapons::Weapon;
 
-const fn module(
-    weapon: Weapon,
-    key: &'static str,
-    size: Size,
-    [mass, draw, heat, points]: [u16; 4],
-) -> Module {
-    Module {
-        weapon,
-        key,
-        size,
-        hand_only: matches!(weapon, Weapon::EnergyBlade),
-        mass,
-        draw,
-        heat,
-        points,
+    const fn part(
+        id: u8,
+        key: &'static str,
+        kind: Kind,
+        cells: [u8; 3],
+        sockets: Faces,
+        [mass, power, draw, heat, cooling, points]: [u16; 6],
+    ) -> PartType {
+        PartType {
+            id: PartTypeId(id),
+            key,
+            kind,
+            cells,
+            sockets,
+            mass,
+            power,
+            draw,
+            heat,
+            cooling,
+            points,
+        }
     }
+
+    /// A light weapon is 1 × 1 × 2 cells, a heavy one (the rail gun, the rockets) 1 × 2 × 2.
+    const fn weapon(
+        weapon: Weapon,
+        key: &'static str,
+        heavy: bool,
+        [mass, draw, heat, points]: [u16; 4],
+    ) -> PartType {
+        let cells = if heavy { [1, 2, 2] } else { [1, 1, 2] };
+        part(
+            60 + weapon.index(),
+            key,
+            Kind::Weapon(weapon),
+            cells,
+            Faces::NONE,
+            [mass, 0, draw, heat, 0, points],
+        )
+    }
+
+    // The rows of the table: code, key, kind, cells, socket faces, then mass, power, draw, heat,
+    // cooling and points (weapons: mass, draw, heat and points).
+    /// 20 × 40 × 80 cm: 28 sockets.
+    #[rustfmt::skip]
+    pub const CHASSIS_S: PartType = part(1, "robot.chassis.20x40x80", Kind::Chassis, [1, 2, 4], Faces::ALL, [60, 0, 0, 0, 30, 10]);
+    /// 40 × 40 × 80 cm: 40 sockets.
+    #[rustfmt::skip]
+    pub const CHASSIS_M: PartType = part(2, "robot.chassis.40x40x80", Kind::Chassis, [2, 2, 4], Faces::ALL, [110, 0, 0, 0, 45, 20]);
+    /// 40 × 60 × 80 cm: 52 sockets.
+    #[rustfmt::skip]
+    pub const CHASSIS_L: PartType = part(3, "robot.chassis.40x60x80", Kind::Chassis, [2, 3, 4], Faces::ALL, [150, 0, 0, 0, 60, 30]);
+    /// 20 × 20 × 40 cm.
+    #[rustfmt::skip]
+    pub const BEAM_SHORT: PartType = part(10, "robot.beam.20x20x40", Kind::Beam, [1, 1, 2], Faces::ALL, [5, 0, 0, 0, 0, 2]);
+    /// 20 × 20 × 80 cm.
+    #[rustfmt::skip]
+    pub const BEAM_LONG: PartType = part(11, "robot.beam.20x20x80", Kind::Beam, [1, 1, 4], Faces::ALL, [10, 0, 0, 0, 0, 3]);
+    /// A hinge servo: one socket, on its moving side.
+    #[rustfmt::skip]
+    pub const HINGE: PartType = part(20, "robot.joint.hinge", Kind::Joint, [1, 1, 1], Faces::TOP, [8, 0, 5, 0, 0, 5]);
+    /// A continuous rotor (a turret's base): one socket, on its moving side.
+    #[rustfmt::skip]
+    pub const ROTOR: PartType = part(21, "robot.joint.rotor", Kind::Joint, [1, 1, 1], Faces::TOP, [10, 0, 8, 0, 0, 6]);
+    /// The control core: supplies the power everything draws.
+    #[rustfmt::skip]
+    pub const CORE: PartType = part(30, "robot.core", Kind::Core, [1, 1, 1], Faces::NONE, [15, 130, 0, 0, 10, 10]);
+    #[rustfmt::skip]
+    pub const SENSOR: PartType = part(31, "robot.sensor", Kind::Sensor, [1, 1, 1], Faces::NONE, [10, 0, 10, 0, 10, 5]);
+    /// One self-contained leg, 80 cm long.
+    #[rustfmt::skip]
+    pub const LEG: PartType = part(40, "robot.leg", Kind::Locomotion, [1, 1, 4], Faces::NONE, [25, 0, 12, 0, 0, 7]);
+    /// A 40 cm wheel.
+    #[rustfmt::skip]
+    pub const WHEEL: PartType = part(41, "robot.wheel", Kind::Locomotion, [2, 2, 1], Faces::NONE, [20, 0, 8, 0, 0, 6]);
+    /// An 80 cm track.
+    #[rustfmt::skip]
+    pub const TRACK: PartType = part(42, "robot.track", Kind::Locomotion, [1, 4, 2], Faces::NONE, [45, 0, 15, 0, 0, 12]);
+    /// A 40 × 40 cm plate.
+    #[rustfmt::skip]
+    pub const ARMOR_PLATE: PartType = part(50, "robot.armor.plate", Kind::Armor, [2, 2, 1], Faces::NONE, [15, 0, 0, 0, 0, 4]);
+
+    #[rustfmt::skip]
+    pub const ENERGY_RIFLE: PartType = weapon(Weapon::EnergyRifle, "weapon.energy-rifle", false, [12, 15, 10, 10]);
+    #[rustfmt::skip]
+    pub const RAIL_GUN: PartType = weapon(Weapon::RailGun, "weapon.rail-gun", true, [25, 35, 25, 20]);
+    #[rustfmt::skip]
+    pub const ROCKET_LAUNCHER: PartType = weapon(Weapon::RocketLauncher, "weapon.rocket-launcher", true, [30, 10, 20, 20]);
+    #[rustfmt::skip]
+    pub const GRAPPLE: PartType = weapon(Weapon::Grapple, "weapon.grapple-hook", false, [10, 10, 5, 10]);
+    #[rustfmt::skip]
+    pub const ENERGY_BLADE: PartType = weapon(Weapon::EnergyBlade, "weapon.energy-blade", false, [8, 10, 5, 5]);
+    #[rustfmt::skip]
+    pub const SHOTGUN: PartType = weapon(Weapon::Shotgun, "weapon.shotgun", false, [15, 10, 15, 15]);
+    #[rustfmt::skip]
+    pub const LASER: PartType = weapon(Weapon::Laser, "weapon.laser", false, [14, 30, 30, 15]);
+    #[rustfmt::skip]
+    pub const FLAMETHROWER: PartType = weapon(Weapon::Flamethrower, "weapon.flamethrower", false, [18, 20, 35, 15]);
 }
 
 const fn modification(
@@ -336,31 +488,25 @@ const SINGLE_SHOT: &[Weapon] = &[Weapon::EnergyRifle, Weapon::RailGun, Weapon::S
 /// The hitscan beams a longer barrel reaches further with.
 const BEAMS: &[Weapon] = &[Weapon::EnergyRifle, Weapon::RailGun, Weapon::Laser];
 
-/// The beta's components, every one available from the start (no unlocks, D2.i46.5): two of
-/// each kind, light and heavy, and the eight shipped weapons. Provisional values (Q2.i46.4).
+pub const RAPID_CYCLER: ModId = ModId(1);
+pub const OVERCHARGER: ModId = ModId(2);
+pub const LONG_BARREL: ModId = ModId(3);
+pub const HEAT_SINK: ModId = ModId(4);
+
+/// The beta's catalog: three chassis sizes, two beams, two joints, the core, a sensor, legs,
+/// wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
+/// Provisional values (Q2.i70.1, Q2.i70.2).
 #[rustfmt::skip]
 pub const BETA: Catalog = Catalog {
-    components: &[
-        //    code key                    kind               mass power draw cool load points   mounts
-        part(1,  "robot.torso.striker", Kind::Torso,      [60,  100, 0,  40, 0,   15], Some(Size::Light)),
-        part(2,  "robot.torso.bulwark", Kind::Torso,      [110, 160, 0,  60, 0,   25], Some(Size::Heavy)),
-        part(10, "robot.head.sensor",   Kind::Head,       [10,  0,   10, 10, 0,   5],  None),
-        part(11, "robot.head.optic",    Kind::Head,       [15,  0,   20, 5,  0,   10], None),
-        part(20, "robot.arm.light",     Kind::Arm,        [20,  0,   5,  0,  0,   5],  Some(Size::Light)),
-        part(21, "robot.arm.heavy",     Kind::Arm,        [35,  0,   10, 0,  0,   10], Some(Size::Heavy)),
-        part(30, "robot.legs.runner",   Kind::Locomotion, [50,  0,   25, 0,  260, 15], None),
-        part(31, "robot.legs.strider",  Kind::Locomotion, [80,  0,   35, 0,  400, 20], None),
-    ],
-    modules: &[
-        //     weapon                  key                       size          mass draw heat points
-        module(Weapon::EnergyRifle,    "weapon.energy-rifle",    Size::Light, [12, 15, 10, 10]),
-        module(Weapon::RailGun,        "weapon.rail-gun",        Size::Heavy, [25, 35, 25, 20]),
-        module(Weapon::RocketLauncher, "weapon.rocket-launcher", Size::Heavy, [30, 10, 20, 20]),
-        module(Weapon::Grapple,        "weapon.grapple-hook",    Size::Light, [10, 10, 5,  10]),
-        module(Weapon::EnergyBlade,    "weapon.energy-blade",    Size::Light, [8,  10, 5,  5]),
-        module(Weapon::Shotgun,        "weapon.shotgun",         Size::Light, [15, 10, 15, 15]),
-        module(Weapon::Laser,          "weapon.laser",           Size::Light, [14, 30, 30, 15]),
-        module(Weapon::Flamethrower,   "weapon.flamethrower",    Size::Light, [18, 20, 35, 15]),
+    parts: &[
+        parts::CHASSIS_S, parts::CHASSIS_M, parts::CHASSIS_L,
+        parts::BEAM_SHORT, parts::BEAM_LONG,
+        parts::HINGE, parts::ROTOR,
+        parts::CORE, parts::SENSOR,
+        parts::LEG, parts::WHEEL, parts::TRACK,
+        parts::ARMOR_PLATE,
+        parts::ENERGY_RIFLE, parts::RAIL_GUN, parts::ROCKET_LAUNCHER, parts::GRAPPLE,
+        parts::ENERGY_BLADE, parts::SHOTGUN, parts::LASER, parts::FLAMETHROWER,
     ],
     mods: &[
         //           code key                fits          heavy  mass draw heat cool points  damage% refire% range%
@@ -368,7 +514,7 @@ pub const BETA: Catalog = Catalog {
         modification(1, "mod.rapid-cycler", SINGLE_SHOT,  false, [4,   10,  20,  0,   10], [75,  65,  100]),
         // More damage a shot for slower fire; the most power.
         modification(2, "mod.overcharger",  SINGLE_SHOT,  false, [6,   20,  15,  0,   10], [125, 130, 100]),
-        // Half again the range, a little slower fire, and too heavy for a light mount.
+        // Half again the range, a little slower fire, and a heavy (two-cell) module.
         modification(3, "mod.long-barrel",  BEAMS,        true,  [10,  0,   0,   0,   5],  [100, 110, 150]),
         // Sheds heat for the rest of the build; mass and points, no change to the fire.
         modification(4, "mod.heat-sink",    &Weapon::ALL, false, [10,  0,   0,   20,  5],  [100, 100, 100]),
@@ -376,95 +522,279 @@ pub const BETA: Catalog = Catalog {
     build_points: 120,
 };
 
-/// Untrusted build data as it arrived: `(socket, component)` and `(hardpoint, weapon)` codes,
-/// in any order. Only [`Catalog::validate`] turns it into an [`Assembly`].
+/// A part's orientation on its socket: binary angles (65 536 a turn), yaw about the socket's
+/// outward normal, then pitch, then roll (intrinsic Z-Y-X), always in canonical form
+/// ([`Orientation::canonical`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub struct Orientation {
+    pub yaw: u16,
+    /// Within a quarter turn either way.
+    pub pitch: i16,
+    /// Zero when the pitch is a whole quarter turn.
+    pub roll: u16,
+}
+
+impl Orientation {
+    pub const IDENTITY: Self = Self {
+        yaw: 0,
+        pitch: 0,
+        roll: 0,
+    };
+    pub const QUARTER: u16 = 16_384;
+    const HALF: u16 = 2 * Self::QUARTER;
+
+    /// The one canonical representation of the rotation `yaw`, `pitch`, `roll` (any binary
+    /// angles): a pitch past a quarter turn becomes its supplement with yaw and roll turned half
+    /// way (the same rotation), and at a pitch of exactly a quarter turn, where yaw and roll turn
+    /// about the same axis, the roll folds into the yaw. Exact integer arithmetic.
+    #[must_use]
+    pub const fn canonical(yaw: u16, pitch: u16, roll: u16) -> Self {
+        let (mut yaw, pitch, mut roll) = if pitch <= Self::QUARTER || pitch >= 3 * Self::QUARTER {
+            (yaw, pitch, roll)
+        } else {
+            (
+                yaw.wrapping_add(Self::HALF),
+                Self::HALF.wrapping_sub(pitch),
+                roll.wrapping_add(Self::HALF),
+            )
+        };
+        #[allow(clippy::cast_possible_wrap)]
+        let pitch = pitch as i16;
+        if pitch == Self::QUARTER as i16 {
+            yaw = yaw.wrapping_sub(roll);
+            roll = 0;
+        } else if pitch == -(Self::QUARTER as i16) {
+            yaw = yaw.wrapping_add(roll);
+            roll = 0;
+        }
+        Self { yaw, pitch, roll }
+    }
+
+    /// The yaw's nearest quarter turn (0 to 3; a tie turns further): how the footprint turns.
+    #[must_use]
+    pub const fn quarter_turns(self) -> u8 {
+        (self.yaw.wrapping_add(Self::QUARTER / 2) / Self::QUARTER) as u8
+    }
+
+    /// Its raw `(yaw, pitch, roll)` codes.
+    #[must_use]
+    pub const fn raw(self) -> (u16, u16, u16) {
+        #[allow(clippy::cast_sign_loss)]
+        (self.yaw, self.pitch as u16, self.roll)
+    }
+}
+
+/// Where a part attaches: a socket of its parent, and how it is turned there.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Mount {
+    pub parent: PartId,
+    pub socket: SocketId,
+    pub orientation: Orientation,
+}
+
+/// One part of a validated build.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Part {
+    pub id: PartId,
+    pub kind: PartTypeId,
+    /// `None` for the root.
+    pub mount: Option<Mount>,
+    /// The mod on it (weapon parts only).
+    pub modification: Option<ModId>,
+}
+
+impl Part {
+    const EMPTY: Self = Self {
+        id: PartId(0),
+        kind: PartTypeId(0),
+        mount: None,
+        modification: None,
+    };
+
+    const fn root(id: u8, kind: &PartType) -> Self {
+        Self {
+            id: PartId(id),
+            kind: kind.id,
+            mount: None,
+            modification: None,
+        }
+    }
+
+    /// `kind` on `parent` (of type `on`) at cell `(u, v)` of its `face`, unturned.
+    const fn on(
+        id: u8,
+        kind: &PartType,
+        parent: u8,
+        on: &PartType,
+        face: Face,
+        u: u8,
+        v: u8,
+    ) -> Self {
+        let Some(socket) = on.socket(face, u, v) else {
+            panic!("no such socket");
+        };
+        Self {
+            id: PartId(id),
+            kind: kind.id,
+            mount: Some(Mount {
+                parent: PartId(parent),
+                socket,
+                orientation: Orientation::IDENTITY,
+            }),
+            modification: None,
+        }
+    }
+
+    const fn with(self, modification: ModId) -> Self {
+        Self {
+            modification: Some(modification),
+            ..self
+        }
+    }
+}
+
+/// Untrusted raw data for one part, as it arrived.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct RawPart {
+    pub id: u8,
+    pub kind: u8,
+    pub mount: Option<RawMount>,
+    pub modification: Option<u8>,
+}
+
+/// Untrusted raw data for a mount: any parent and socket code, any angles.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct RawMount {
+    pub parent: u8,
+    pub socket: u8,
+    pub yaw: u16,
+    pub pitch: u16,
+    pub roll: u16,
+}
+
+/// Untrusted build data as it arrived, parts in any order. Only [`Catalog::validate`] turns it
+/// into an [`Assembly`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Candidate {
-    pub parts: Vec<(u8, u8)>,
-    pub mounts: Vec<(u8, u8)>,
-    /// `(hardpoint, mod)` codes: the mod on the weapon at that hardpoint.
-    pub mods: Vec<(u8, u8)>,
+    pub parts: Vec<RawPart>,
 }
 
-/// A validated robot build, in canonical (socket and hardpoint) order.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+/// A validated robot build: its parts in [`PartId`] order. At most [`MAX_PARTS`] parts, held
+/// inline so a build copies like the rest of a fighter's state.
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub struct Assembly {
-    parts: [Option<ComponentId>; Socket::ALL.len()],
-    mounts: [Option<Weapon>; Hardpoint::ALL.len()],
-    mods: [Option<ModId>; Hardpoint::ALL.len()],
+    parts: [Part; MAX_PARTS],
+    len: u8,
 }
 
-/// The build every fighter starts with: a light torso, the sensor head, two light arms and the
-/// runner legs, with the energy rifle and the blade in hand and the grapple and the shotgun on
-/// the shoulders. Valid in [`BETA`].
-pub const STANDARD: Assembly = Assembly {
-    parts: [
-        Some(ComponentId(1)),
-        Some(ComponentId(10)),
-        Some(ComponentId(20)),
-        Some(ComponentId(20)),
-        Some(ComponentId(30)),
-    ],
-    mounts: [
-        Some(Weapon::EnergyRifle),
-        Some(Weapon::EnergyBlade),
-        Some(Weapon::Grapple),
-        Some(Weapon::Shotgun),
-    ],
-    mods: [None; Hardpoint::ALL.len()],
-};
+impl fmt::Debug for Assembly {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_list().entries(self.parts()).finish()
+    }
+}
 
-/// A heavy build that spends the whole build-point budget: the heavy torso, the sensor head, a
-/// heavy left arm with the rail gun, a light right arm with the blade, the strider legs, and the
-/// rocket launcher and the grapple on the shoulders. Valid in [`BETA`].
-pub const HEAVY: Assembly = Assembly {
-    parts: [
-        Some(ComponentId(2)),
-        Some(ComponentId(10)),
-        Some(ComponentId(21)),
-        Some(ComponentId(20)),
-        Some(ComponentId(31)),
-    ],
-    mounts: [
-        Some(Weapon::RailGun),
-        Some(Weapon::EnergyBlade),
-        Some(Weapon::RocketLauncher),
-        Some(Weapon::Grapple),
-    ],
-    mods: [None; Hardpoint::ALL.len()],
-};
+/// `parts` (in ID order, at most [`MAX_PARTS`]) as an assembly: the named loadouts (valid in
+/// [`BETA`], tested) and candidates before their rules are checked.
+const fn authored(parts: &[Part]) -> Assembly {
+    assert!(parts.len() <= MAX_PARTS, "too many parts");
+    let mut assembly = Assembly {
+        parts: [Part::EMPTY; MAX_PARTS],
+        len: parts.len() as u8,
+    };
+    let mut index = 0;
+    while index < parts.len() {
+        assembly.parts[index] = parts[index];
+        index += 1;
+    }
+    assembly
+}
 
-/// A fast, light loadout on the standard frame: the rapid-cycler rifle in the left hand, the
-/// blade, the grapple, and the shotgun with a heat sink (without it the cycler overheats the
-/// standard frame). Draws exactly the light torso's power. Valid in [`BETA`].
-pub const SKIRMISHER: Assembly = Assembly {
-    mods: [Some(ModId(1)), None, None, Some(ModId(4))],
-    ..STANDARD
-};
+/// The humanoid frame the named loadouts share, on chassis `torso`: the core on its back, the
+/// sensor on its top, a long beam for an arm on each side, two legs underneath (IDs 0 to 6).
+const fn frame(torso: &PartType) -> [Part; 7] {
+    let (side, _) = Face::PosY.grid(torso.cells);
+    let (_, right) = Face::NegY.grid(torso.cells);
+    [
+        Part::root(0, torso),
+        Part::on(1, &CORE, 0, torso, Face::NegX, 2, 0),
+        Part::on(2, &SENSOR, 0, torso, Face::PosZ, 0, 0),
+        Part::on(3, &BEAM_LONG, 0, torso, Face::PosY, side - 1, 0),
+        Part::on(4, &BEAM_LONG, 0, torso, Face::NegY, 0, right - 1),
+        Part::on(5, &LEG, 0, torso, Face::NegZ, 0, 0),
+        Part::on(6, &LEG, 0, torso, Face::NegZ, 1, 0),
+    ]
+}
 
-/// A heavy, long-range loadout that spends the whole build-point budget: the heavy torso with an
-/// overcharged rail gun (two hits a kill instead of three) on the left shoulder and the grapple on the
-/// right, a heavy left arm for the long-barrel rifle, the blade in the light right hand, the
-/// runner legs. Valid in [`BETA`].
-pub const MARKSMAN: Assembly = Assembly {
-    parts: [
-        Some(ComponentId(2)),
-        Some(ComponentId(10)),
-        Some(ComponentId(21)),
-        Some(ComponentId(20)),
-        Some(ComponentId(30)),
+const fn with_weapons(frame: [Part; 7], weapons: [Part; 4]) -> Assembly {
+    let [a, b, c, d, e, f, g] = frame;
+    let [h, i, j, k] = weapons;
+    authored(&[a, b, c, d, e, f, g, h, i, j, k])
+}
+
+/// A weapon on the tip of arm `arm` (3 left, 4 right).
+const fn in_hand(id: u8, weapon: &PartType, arm: u8) -> Part {
+    Part::on(id, weapon, arm, &BEAM_LONG, Face::PosZ, 0, 0)
+}
+
+/// A two-cell weapon along the front of arm `arm`, by its tip.
+const fn along_arm(id: u8, weapon: &PartType, arm: u8) -> Part {
+    Part::on(id, weapon, arm, &BEAM_LONG, Face::PosX, 0, 2)
+}
+
+/// The build every fighter starts with (re-expressing the shipped standard build): the small
+/// chassis as the torso, with the energy rifle on the left arm's tip, the blade on the right
+/// arm's tip, the grapple on top beside the sensor and the shotgun on the chest. Valid in
+/// [`BETA`].
+pub const STANDARD: Assembly = with_weapons(
+    frame(&CHASSIS_S),
+    [
+        in_hand(7, &ENERGY_RIFLE, 3),
+        in_hand(8, &ENERGY_BLADE, 4),
+        Part::on(9, &GRAPPLE, 0, &CHASSIS_S, Face::PosZ, 0, 1),
+        Part::on(10, &SHOTGUN, 0, &CHASSIS_S, Face::PosX, 1, 3),
     ],
-    mounts: [
-        Some(Weapon::EnergyRifle),
-        Some(Weapon::EnergyBlade),
-        Some(Weapon::RailGun),
-        Some(Weapon::Grapple),
+);
+
+/// A heavy build: the medium chassis, the rail gun along the left arm, the blade on the right
+/// arm's tip, the rocket launcher on top and the grapple on the chest. Valid in [`BETA`].
+pub const HEAVY: Assembly = with_weapons(
+    frame(&CHASSIS_M),
+    [
+        along_arm(7, &RAIL_GUN, 3),
+        in_hand(8, &ENERGY_BLADE, 4),
+        Part::on(9, &ROCKET_LAUNCHER, 0, &CHASSIS_M, Face::PosZ, 1, 0),
+        Part::on(10, &GRAPPLE, 0, &CHASSIS_M, Face::PosX, 0, 3),
     ],
-    mods: [Some(ModId(3)), None, Some(ModId(2)), None],
-};
+);
+
+/// A fast, light loadout on the standard frame: the rapid-cycler rifle, the blade, the grapple,
+/// and the shotgun with a heat sink (without it the cycler overheats the small chassis). Valid
+/// in [`BETA`].
+pub const SKIRMISHER: Assembly = with_weapons(
+    frame(&CHASSIS_S),
+    [
+        in_hand(7, &ENERGY_RIFLE, 3).with(RAPID_CYCLER),
+        in_hand(8, &ENERGY_BLADE, 4),
+        Part::on(9, &GRAPPLE, 0, &CHASSIS_S, Face::PosZ, 0, 1),
+        Part::on(10, &SHOTGUN, 0, &CHASSIS_S, Face::PosX, 1, 3).with(HEAT_SINK),
+    ],
+);
+
+/// A heavy, long-range loadout: the medium chassis, the long-barrel rifle (a two-cell module)
+/// along the left arm, the blade on the right arm's tip, an overcharged rail gun (two hits a kill
+/// instead of three) on top and the grapple on the chest. Valid in [`BETA`].
+pub const MARKSMAN: Assembly = with_weapons(
+    frame(&CHASSIS_M),
+    [
+        along_arm(7, &ENERGY_RIFLE, 3).with(LONG_BARREL),
+        in_hand(8, &ENERGY_BLADE, 4),
+        Part::on(9, &RAIL_GUN, 0, &CHASSIS_M, Face::PosZ, 1, 0).with(OVERCHARGER),
+        Part::on(10, &GRAPPLE, 0, &CHASSIS_M, Face::PosX, 0, 3),
+    ],
+);
 
 /// The named loadouts a person picks from until the builder (shooter#57): the unmodified
-/// standard and heavy builds and the two contrasting modded ones.
+/// standard and heavy builds and the two contrasting modded ones, all component trees.
 pub const LOADOUTS: [(&str, Assembly); 4] = [
     ("standard", STANDARD),
     ("heavy", HEAVY),
@@ -488,51 +818,22 @@ impl Default for Assembly {
 }
 
 impl Assembly {
-    /// The component in `socket`.
+    /// Its parts, in ID order.
     #[must_use]
-    pub const fn part(&self, socket: Socket) -> Option<ComponentId> {
-        self.parts[socket as usize]
+    pub fn parts(&self) -> &[Part] {
+        &self.parts[..usize::from(self.len)]
     }
 
-    /// The weapon on `hardpoint`.
     #[must_use]
-    pub const fn mount(&self, hardpoint: Hardpoint) -> Option<Weapon> {
-        self.mounts[hardpoint as usize]
+    pub fn part(&self, id: PartId) -> Option<&Part> {
+        self.parts().iter().find(|part| part.id == id)
     }
 
-    /// The mod on the weapon at `hardpoint`.
-    #[must_use]
-    pub const fn modification(&self, hardpoint: Hardpoint) -> Option<ModId> {
-        self.mods[hardpoint as usize]
-    }
-
-    /// The mod on `weapon`, wherever it is mounted.
-    #[must_use]
-    pub fn mod_on(&self, weapon: Weapon) -> Option<ModId> {
-        self.mounts()
-            .find(|(_, mounted)| *mounted == weapon)
-            .and_then(|(hardpoint, _)| self.modification(hardpoint))
-    }
-
-    /// The mods with the weapon each is on, in hardpoint order.
-    pub fn mods(&self) -> impl Iterator<Item = (Hardpoint, Weapon, ModId)> + '_ {
-        self.mounts().filter_map(|(hardpoint, weapon)| {
-            Some((hardpoint, weapon, self.modification(hardpoint)?))
-        })
-    }
-
-    /// The installed components, in socket order.
-    pub fn parts(&self) -> impl Iterator<Item = (Socket, ComponentId)> + '_ {
-        Socket::ALL
-            .into_iter()
-            .filter_map(|socket| Some((socket, self.part(socket)?)))
-    }
-
-    /// The mounted weapons, in hardpoint order.
-    pub fn mounts(&self) -> impl Iterator<Item = (Hardpoint, Weapon)> + '_ {
-        Hardpoint::ALL
-            .into_iter()
-            .filter_map(|hardpoint| Some((hardpoint, self.mount(hardpoint)?)))
+    /// The parts mounted on `id`, in ID order.
+    pub fn children(&self, id: PartId) -> impl Iterator<Item = &Part> + '_ {
+        self.parts()
+            .iter()
+            .filter(move |part| part.mount.is_some_and(|mount| mount.parent == id))
     }
 
     /// Its canonical raw form (what the wire carries).
@@ -541,15 +842,22 @@ impl Assembly {
         Candidate {
             parts: self
                 .parts()
-                .map(|(socket, id)| (socket.index(), id.0))
-                .collect(),
-            mounts: self
-                .mounts()
-                .map(|(hardpoint, weapon)| (hardpoint.index(), weapon.index()))
-                .collect(),
-            mods: self
-                .mods()
-                .map(|(hardpoint, _, id)| (hardpoint.index(), id.0))
+                .iter()
+                .map(|part| RawPart {
+                    id: part.id.0,
+                    kind: part.kind.0,
+                    mount: part.mount.map(|mount| {
+                        let (yaw, pitch, roll) = mount.orientation.raw();
+                        RawMount {
+                            parent: mount.parent.0,
+                            socket: mount.socket.0,
+                            yaw,
+                            pitch,
+                            roll,
+                        }
+                    }),
+                    modification: part.modification.map(|id| id.0),
+                })
                 .collect(),
         }
     }
@@ -558,10 +866,9 @@ impl Assembly {
 /// A build's totals against its limits.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Budget {
-    /// Mass on the locomotion (everything but the locomotion itself)...
-    pub carried: u32,
-    /// ...and the mass it carries.
-    pub load: u32,
+    pub parts: u32,
+    /// Total mass (no limit: nothing carries it yet, shooter#73).
+    pub mass: u32,
     pub draw: u32,
     pub power: u32,
     pub heat: u32,
@@ -573,35 +880,35 @@ pub struct Budget {
 /// Why a candidate is not a valid build.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AssemblyError {
-    UnknownSocket(u8),
-    UnknownComponent(u8),
-    UnknownHardpoint(u8),
-    UnknownWeapon(u8),
-    /// The weapon is not in the catalog.
-    UnavailableWeapon(Weapon),
+    /// More parts than [`MAX_PARTS`].
+    TooManyParts(usize),
+    UnknownPart(u8),
     UnknownMod(u8),
-    /// The hardpoint carries two mods.
-    DuplicateMod(Hardpoint),
-    /// A mod on a hardpoint with no weapon.
-    Unmounted(Hardpoint),
+    /// The same part ID twice (a part with two parents is one).
+    DuplicateId(PartId),
+    /// No part without a parent.
+    NoRoot,
+    /// Two parts without a parent.
+    MultipleRoots(PartId, PartId),
+    /// The root is not a chassis section.
+    RootNotChassis(PartId),
+    /// The part's parent is not in the build.
+    UnknownParent(PartId),
+    /// The part's parent has no such socket.
+    NoSocket(PartId),
+    /// The part sits on its parent's mount face, which rests on the parent's own parent.
+    InteriorSocket(PartId),
+    /// The part's parents never reach the root: they loop.
+    Cycle(PartId),
+    /// The second part's footprint covers a cell the first's holds.
+    Overlap(PartId, PartId),
+    NoCore,
+    MultipleCores(PartId, PartId),
+    /// A mod on a part that is not a weapon.
+    NotAWeapon(PartId),
     /// The mod does not fit the weapon.
     DoesNotFit(ModId, Weapon),
-    DuplicateSocket(Socket),
-    DuplicateHardpoint(Hardpoint),
     DuplicateWeapon(Weapon),
-    /// The component is not the kind the socket takes.
-    WrongKind(Socket, ComponentId),
-    Missing(Socket),
-    /// No installed component provides the hardpoint.
-    NoHardpoint(Hardpoint),
-    /// The hardpoint cannot carry a module that heavy.
-    TooHeavyForMount(Hardpoint, Weapon),
-    /// The weapon mounts only on a hand.
-    HandOnly(Hardpoint, Weapon),
-    Overweight {
-        carried: u32,
-        load: u32,
-    },
     Underpowered {
         draw: u32,
         power: u32,
@@ -619,43 +926,47 @@ pub enum AssemblyError {
 impl fmt::Display for AssemblyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownSocket(code) => write!(formatter, "unknown socket {code}"),
-            Self::UnknownComponent(code) => write!(formatter, "unknown component {code}"),
-            Self::UnknownHardpoint(code) => write!(formatter, "unknown hardpoint {code}"),
-            Self::UnknownWeapon(code) => write!(formatter, "unknown weapon {code}"),
-            Self::UnavailableWeapon(weapon) => write!(formatter, "{weapon:?} is not available"),
-            Self::UnknownMod(code) => write!(formatter, "unknown weapon mod {code}"),
-            Self::DuplicateMod(hardpoint) => write!(formatter, "{hardpoint:?} has two mods"),
-            Self::Unmounted(hardpoint) => {
-                write!(formatter, "a mod on {hardpoint:?}, which holds no weapon")
+            Self::TooManyParts(parts) => {
+                write!(formatter, "{parts} parts, at most {MAX_PARTS}")
             }
+            Self::UnknownPart(code) => write!(formatter, "unknown part type {code}"),
+            Self::UnknownMod(code) => write!(formatter, "unknown weapon mod {code}"),
+            Self::DuplicateId(id) => write!(formatter, "part {} appears twice", id.0),
+            Self::NoRoot => formatter.write_str("no root part"),
+            Self::MultipleRoots(first, second) => {
+                write!(
+                    formatter,
+                    "parts {} and {} are both roots",
+                    first.0, second.0
+                )
+            }
+            Self::RootNotChassis(id) => write!(formatter, "root part {} is no chassis", id.0),
+            Self::UnknownParent(id) => write!(formatter, "part {}'s parent is missing", id.0),
+            Self::NoSocket(id) => {
+                write!(formatter, "part {}'s parent has no such socket", id.0)
+            }
+            Self::InteriorSocket(id) => {
+                write!(formatter, "part {} sits on an interior socket", id.0)
+            }
+            Self::Cycle(id) => write!(formatter, "part {} is not connected to the root", id.0),
+            Self::Overlap(first, second) => {
+                write!(formatter, "parts {} and {} overlap", first.0, second.0)
+            }
+            Self::NoCore => formatter.write_str("no control core"),
+            Self::MultipleCores(first, second) => {
+                write!(
+                    formatter,
+                    "parts {} and {} are both cores",
+                    first.0, second.0
+                )
+            }
+            Self::NotAWeapon(id) => write!(formatter, "a mod on part {}, no weapon", id.0),
             Self::DoesNotFit(id, weapon) => {
                 write!(formatter, "mod {} does not fit {weapon:?}", id.0)
             }
-            Self::DuplicateSocket(socket) => write!(formatter, "{socket:?} is filled twice"),
-            Self::DuplicateHardpoint(hardpoint) => {
-                write!(formatter, "{hardpoint:?} is filled twice")
-            }
             Self::DuplicateWeapon(weapon) => write!(formatter, "{weapon:?} is mounted twice"),
-            Self::WrongKind(socket, id) => {
-                write!(formatter, "component {} does not fit {socket:?}", id.0)
-            }
-            Self::Missing(socket) => write!(formatter, "no component in {socket:?}"),
-            Self::NoHardpoint(hardpoint) => write!(formatter, "nothing provides {hardpoint:?}"),
-            Self::TooHeavyForMount(hardpoint, weapon) => {
-                write!(formatter, "{hardpoint:?} cannot carry {weapon:?}")
-            }
-            Self::HandOnly(hardpoint, weapon) => {
-                write!(formatter, "{weapon:?} mounts on a hand, not {hardpoint:?}")
-            }
-            Self::Overweight { carried, load } => {
-                write!(
-                    formatter,
-                    "carries {carried} kg, the locomotion takes {load} kg"
-                )
-            }
             Self::Underpowered { draw, power } => {
-                write!(formatter, "draws {draw} power, the torso supplies {power}")
+                write!(formatter, "draws {draw} power, the core supplies {power}")
             }
             Self::Overheated { heat, cooling } => {
                 write!(formatter, "makes {heat} heat, sheds {cooling}")
@@ -673,15 +984,34 @@ impl fmt::Display for AssemblyError {
 
 impl std::error::Error for AssemblyError {}
 
+/// The cells of a face of `grid` that a footprint of `(width, length)` reserves from `(u, v)`,
+/// turned `quarters` quarter turns about the face's normal (cells past the face's edge overhang
+/// and reserve nothing).
+fn footprint(
+    (width, length): (u8, u8),
+    quarters: u8,
+    (u, v): (u8, u8),
+    (columns, rows): (u8, u8),
+) -> impl Iterator<Item = (u8, u8)> {
+    (0..i16::from(width))
+        .flat_map(move |i| (0..i16::from(length)).map(move |j| (i, j)))
+        .filter_map(move |(i, j)| {
+            let (du, dv) = match quarters & 3 {
+                0 => (i, j),
+                1 => (-j, i),
+                2 => (-i, -j),
+                _ => (j, -i),
+            };
+            let cell_u = u8::try_from(i16::from(u) + du).ok()?;
+            let cell_v = u8::try_from(i16::from(v) + dv).ok()?;
+            (cell_u < columns && cell_v < rows).then_some((cell_u, cell_v))
+        })
+}
+
 impl Catalog {
     #[must_use]
-    pub fn component(&self, id: ComponentId) -> Option<&Component> {
-        self.components.iter().find(|component| component.id == id)
-    }
-
-    #[must_use]
-    pub fn module(&self, weapon: Weapon) -> Option<&Module> {
-        self.modules.iter().find(|module| module.weapon == weapon)
+    pub fn part_type(&self, id: PartTypeId) -> Option<&PartType> {
+        self.parts.iter().find(|part| part.id == id)
     }
 
     #[must_use]
@@ -689,116 +1019,196 @@ impl Catalog {
         self.mods.iter().find(|modification| modification.id == id)
     }
 
+    /// The weapon `part` is, if it is one.
+    #[must_use]
+    pub fn weapon(&self, part: &Part) -> Option<Weapon> {
+        match self.part_type(part.kind)?.kind {
+            Kind::Weapon(weapon) => Some(weapon),
+            _ => None,
+        }
+    }
+
+    /// The weapons mounted in `build`, in part ID order.
+    pub fn weapons<'a>(
+        &'a self,
+        build: &'a Assembly,
+    ) -> impl Iterator<Item = (PartId, Weapon)> + 'a {
+        build
+            .parts()
+            .iter()
+            .filter_map(|part| Some((part.id, self.weapon(part)?)))
+    }
+
+    /// The mod on `weapon` in `build`, wherever it is mounted.
+    #[must_use]
+    pub fn mod_on(&self, build: &Assembly, weapon: Weapon) -> Option<ModId> {
+        build
+            .parts()
+            .iter()
+            .find(|part| self.weapon(part) == Some(weapon))
+            .and_then(|part| part.modification)
+    }
+
+    /// The mods in `build` with the weapon each is on, in part ID order.
+    pub fn mods<'a>(
+        &'a self,
+        build: &'a Assembly,
+    ) -> impl Iterator<Item = (PartId, Weapon, ModId)> + 'a {
+        build
+            .parts()
+            .iter()
+            .filter_map(|part| Some((part.id, self.weapon(part)?, part.modification?)))
+    }
+
     /// How `weapon` fires in `build`: its mod's tuning, else the shipped weapon's.
     #[must_use]
     pub fn tuning(&self, build: &Assembly, weapon: Weapon) -> Tuning {
-        build
-            .mod_on(weapon)
+        self.mod_on(build, weapon)
             .and_then(|id| self.modification(id))
             .map_or(Tuning::BASE, |modification| modification.tuning)
     }
 
-    /// The one validation path for a build: structure first (known, unique codes), then
-    /// attachment (kinds, required sockets, hardpoints, which mods fit where), then the budgets
-    /// (mass, power, cooling, build points), each in a fixed order so the same candidate always
-    /// fails the same way.
+    /// The one validation path for a build, in a fixed order so the same candidate always fails
+    /// the same way: the part ceiling and known codes; unique IDs (canonical ID order); one root
+    /// chassis; parents and their sockets; connection to the root; footprints; the core; mods and
+    /// weapons; then the budgets (power, heat, build points).
     ///
     /// # Errors
     ///
     /// The first rule the candidate breaks.
     pub fn validate(&self, candidate: &Candidate) -> Result<Assembly, AssemblyError> {
-        let mut assembly = Assembly {
-            parts: [None; Socket::ALL.len()],
-            mounts: [None; Hardpoint::ALL.len()],
-            mods: [None; Hardpoint::ALL.len()],
-        };
-        for &(socket, id) in &candidate.parts {
-            let socket = Socket::from_index(socket).ok_or(AssemblyError::UnknownSocket(socket))?;
-            let component = self
-                .component(ComponentId(id))
-                .ok_or(AssemblyError::UnknownComponent(id))?;
-            let slot = &mut assembly.parts[usize::from(socket.index())];
-            if slot.is_some() {
-                return Err(AssemblyError::DuplicateSocket(socket));
-            }
-            if component.kind != socket.kind() {
-                return Err(AssemblyError::WrongKind(socket, component.id));
-            }
-            *slot = Some(component.id);
+        if candidate.parts.len() > MAX_PARTS {
+            return Err(AssemblyError::TooManyParts(candidate.parts.len()));
         }
-        for &(hardpoint, weapon) in &candidate.mounts {
-            let hardpoint = Hardpoint::from_index(hardpoint)
-                .ok_or(AssemblyError::UnknownHardpoint(hardpoint))?;
-            let weapon = Weapon::from_index(weapon).ok_or(AssemblyError::UnknownWeapon(weapon))?;
-            let slot = &mut assembly.mounts[usize::from(hardpoint.index())];
-            if slot.is_some() {
-                return Err(AssemblyError::DuplicateHardpoint(hardpoint));
-            }
-            *slot = Some(weapon);
-        }
-        for &(hardpoint, id) in &candidate.mods {
-            let hardpoint = Hardpoint::from_index(hardpoint)
-                .ok_or(AssemblyError::UnknownHardpoint(hardpoint))?;
-            let modification = self
-                .modification(ModId(id))
-                .ok_or(AssemblyError::UnknownMod(id))?;
-            let slot = &mut assembly.mods[usize::from(hardpoint.index())];
-            if slot.is_some() {
-                return Err(AssemblyError::DuplicateMod(hardpoint));
-            }
-            *slot = Some(modification.id);
-        }
-        for socket in Socket::ALL {
-            if socket.required() && assembly.part(socket).is_none() {
-                return Err(AssemblyError::Missing(socket));
-            }
-        }
-        let mut seen = Vec::with_capacity(Hardpoint::ALL.len());
-        for (hardpoint, weapon) in assembly.mounts() {
-            if seen.contains(&weapon) {
-                return Err(AssemblyError::DuplicateWeapon(weapon));
-            }
-            seen.push(weapon);
-            let module = self
-                .module(weapon)
-                .ok_or(AssemblyError::UnavailableWeapon(weapon))?;
-            let carries = assembly
-                .part(hardpoint.provider())
-                .and_then(|id| self.component(id))
-                .and_then(|component| component.mounts)
-                .ok_or(AssemblyError::NoHardpoint(hardpoint))?;
-            let modification = assembly
-                .modification(hardpoint)
-                .and_then(|id| self.modification(id));
-            if let Some(modification) = modification
-                && !modification.fits.contains(&weapon)
-            {
-                return Err(AssemblyError::DoesNotFit(modification.id, weapon));
-            }
-            let size = if modification.is_some_and(|modification| modification.heavy) {
-                Size::Heavy
-            } else {
-                module.size
+        let mut parts = Vec::with_capacity(candidate.parts.len());
+        for raw in &candidate.parts {
+            let kind = self
+                .part_type(PartTypeId(raw.kind))
+                .ok_or(AssemblyError::UnknownPart(raw.kind))?;
+            let modification = match raw.modification {
+                Some(code) => Some(
+                    self.modification(ModId(code))
+                        .ok_or(AssemblyError::UnknownMod(code))?
+                        .id,
+                ),
+                None => None,
             };
-            if size > carries {
-                return Err(AssemblyError::TooHeavyForMount(hardpoint, weapon));
-            }
-            if module.hand_only && !hardpoint.hand() {
-                return Err(AssemblyError::HandOnly(hardpoint, weapon));
-            }
-        }
-        for hardpoint in Hardpoint::ALL {
-            if assembly.modification(hardpoint).is_some() && assembly.mount(hardpoint).is_none() {
-                return Err(AssemblyError::Unmounted(hardpoint));
-            }
-        }
-        let budget = self.budget(&assembly);
-        if budget.carried > budget.load {
-            return Err(AssemblyError::Overweight {
-                carried: budget.carried,
-                load: budget.load,
+            parts.push(Part {
+                id: PartId(raw.id),
+                kind: kind.id,
+                mount: raw.mount.map(|mount| Mount {
+                    parent: PartId(mount.parent),
+                    socket: SocketId(mount.socket),
+                    orientation: Orientation::canonical(mount.yaw, mount.pitch, mount.roll),
+                }),
+                modification,
             });
         }
+        parts.sort_by_key(|part| part.id);
+        if let Some(pair) = parts.windows(2).find(|pair| pair[0].id == pair[1].id) {
+            return Err(AssemblyError::DuplicateId(pair[0].id));
+        }
+        let assembly = authored(&parts);
+        let type_of = |part: &Part| {
+            self.part_type(part.kind)
+                .expect("validated part types are in the catalog")
+        };
+
+        let mut roots = parts.iter().filter(|part| part.mount.is_none());
+        let root = roots.next().ok_or(AssemblyError::NoRoot)?;
+        if let Some(second) = roots.next() {
+            return Err(AssemblyError::MultipleRoots(root.id, second.id));
+        }
+        if type_of(root).kind != Kind::Chassis {
+            return Err(AssemblyError::RootNotChassis(root.id));
+        }
+
+        // Each child's site on its parent.
+        let mut sites = Vec::with_capacity(parts.len());
+        for part in &parts {
+            let Some(mount) = part.mount else {
+                continue;
+            };
+            let parent = assembly
+                .part(mount.parent)
+                .ok_or(AssemblyError::UnknownParent(part.id))?;
+            let site = type_of(parent)
+                .site(mount.socket)
+                .ok_or(AssemblyError::NoSocket(part.id))?;
+            if site.face == Face::NegZ && parent.mount.is_some() {
+                return Err(AssemblyError::InteriorSocket(part.id));
+            }
+            sites.push((part, parent, site));
+        }
+
+        // Every part reaches the root within as many steps as there are parts.
+        for part in &parts {
+            let mut at = part;
+            let mut steps = 0;
+            while let Some(mount) = at.mount {
+                steps += 1;
+                if steps > parts.len() || mount.parent == part.id {
+                    return Err(AssemblyError::Cycle(part.id));
+                }
+                at = assembly.part(mount.parent).expect("parents were checked");
+            }
+        }
+
+        // Footprints: no cell of a face claimed twice.
+        let mut claimed: Vec<(PartId, Face, (u8, u8), PartId)> = Vec::new();
+        for &(part, parent, site) in &sites {
+            let kind = type_of(part);
+            let mount = part.mount.expect("children have mounts");
+            let heavy = part
+                .modification
+                .and_then(|id| self.modification(id))
+                .is_some_and(|modification| modification.heavy);
+            let length = if heavy {
+                kind.cells[1].max(2)
+            } else {
+                kind.cells[1]
+            };
+            for cell in footprint(
+                (kind.cells[0], length),
+                mount.orientation.quarter_turns(),
+                (site.u, site.v),
+                site.face.grid(type_of(parent).cells),
+            ) {
+                if let Some(&(.., owner)) = claimed
+                    .iter()
+                    .find(|&&(on, face, at, _)| on == parent.id && face == site.face && at == cell)
+                {
+                    return Err(AssemblyError::Overlap(owner, part.id));
+                }
+                claimed.push((parent.id, site.face, cell, part.id));
+            }
+        }
+
+        let mut cores = parts.iter().filter(|part| type_of(part).kind == Kind::Core);
+        let core = cores.next().ok_or(AssemblyError::NoCore)?;
+        if let Some(second) = cores.next() {
+            return Err(AssemblyError::MultipleCores(core.id, second.id));
+        }
+
+        let mut seen = Vec::new();
+        for part in &parts {
+            let weapon = self.weapon(part);
+            if let Some(id) = part.modification {
+                let weapon = weapon.ok_or(AssemblyError::NotAWeapon(part.id))?;
+                let modification = self.modification(id).expect("mods were checked");
+                if !modification.fits.contains(&weapon) {
+                    return Err(AssemblyError::DoesNotFit(id, weapon));
+                }
+            }
+            if let Some(weapon) = weapon {
+                if seen.contains(&weapon) {
+                    return Err(AssemblyError::DuplicateWeapon(weapon));
+                }
+                seen.push(weapon);
+            }
+        }
+
+        let budget = self.budget(&assembly);
         if budget.draw > budget.power {
             return Err(AssemblyError::Underpowered {
                 draw: budget.draw,
@@ -820,46 +1230,30 @@ impl Catalog {
         Ok(assembly)
     }
 
-    /// `assembly`'s totals against its limits (components or modules this catalog lacks count
-    /// nothing).
+    /// `assembly`'s totals against its limits (parts or mods this catalog lacks count nothing).
     #[must_use]
     pub fn budget(&self, assembly: &Assembly) -> Budget {
         let mut budget = Budget {
+            parts: u32::from(assembly.len),
             build_points: u32::from(self.build_points),
             ..Budget::default()
         };
-        for (socket, id) in assembly.parts() {
-            let Some(component) = self.component(id) else {
-                continue;
-            };
-            if socket == Socket::Locomotion {
-                budget.load += u32::from(component.load);
-            } else {
-                budget.carried += u32::from(component.mass);
+        for part in assembly.parts() {
+            if let Some(kind) = self.part_type(part.kind) {
+                budget.mass += u32::from(kind.mass);
+                budget.power += u32::from(kind.power);
+                budget.draw += u32::from(kind.draw);
+                budget.heat += u32::from(kind.heat);
+                budget.cooling += u32::from(kind.cooling);
+                budget.points += u32::from(kind.points);
             }
-            budget.power += u32::from(component.power);
-            budget.draw += u32::from(component.draw);
-            budget.cooling += u32::from(component.cooling);
-            budget.points += u32::from(component.points);
-        }
-        for (_, weapon) in assembly.mounts() {
-            let Some(module) = self.module(weapon) else {
-                continue;
-            };
-            budget.carried += u32::from(module.mass);
-            budget.draw += u32::from(module.draw);
-            budget.heat += u32::from(module.heat);
-            budget.points += u32::from(module.points);
-        }
-        for (_, _, id) in assembly.mods() {
-            let Some(modification) = self.modification(id) else {
-                continue;
-            };
-            budget.carried += u32::from(modification.mass);
-            budget.draw += u32::from(modification.draw);
-            budget.heat += u32::from(modification.heat);
-            budget.cooling += u32::from(modification.cooling);
-            budget.points += u32::from(modification.points);
+            if let Some(modification) = part.modification.and_then(|id| self.modification(id)) {
+                budget.mass += u32::from(modification.mass);
+                budget.draw += u32::from(modification.draw);
+                budget.heat += u32::from(modification.heat);
+                budget.cooling += u32::from(modification.cooling);
+                budget.points += u32::from(modification.points);
+            }
         }
         budget
     }
