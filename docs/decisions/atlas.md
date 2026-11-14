@@ -85,9 +85,9 @@ implemented yet.
   defeated robots, extensive arena destruction and advanced progression are post-beta.
 
 The D2.i70 entries reconcile the owner's detailed robot construction and combat record of
-2026-11-13 (choices 01–29; shooter#70, tracker shooter#45) and the owner's 2026-11-14 follow-ups on
-shooter#57 and shooter#61. They are the one intended beta contract; D2.i70.12 says what ships today
-and which issue migrates it. Each capability has one owning issue (D5.i70.1).
+2026-11-13 (choices 01–29; shooter#70, tracker shooter#45) and the owner's 2026-11-14 follow-ups
+on shooter#57 and shooter#61. They are the one intended beta contract; D2.i70.12 says what ships
+today and which issue migrates it. Each capability has one owning issue (D5.i70.1).
 
 - **D2.i70.1** (owner, 2026-11-13; shooter#70; supersedes D2.i46.5's assembly rules, answers
   Q2.i46.4's attachment rules): Robots are assembled free-form on universal mounts: a socket grid
