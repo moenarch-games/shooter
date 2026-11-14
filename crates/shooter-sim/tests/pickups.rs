@@ -12,7 +12,7 @@ use shooter_sim::pickups::{
 };
 use shooter_sim::player::{JUMP_VELOCITY_SUBUNITS_PER_TICK, Motion, PLAYER_HALF_EXTENTS};
 use shooter_sim::robot::parts::CHASSIS_S;
-use shooter_sim::robot::{BETA, HEAVY, MARKSMAN, SKIRMISHER, STANDARD};
+use shooter_sim::robot::{ARMORY, BETA, HEAVY, MARKSMAN, SKIRMISHER};
 use shooter_sim::scenarios;
 use shooter_sim::tour::{end_of, run_legs};
 use shooter_sim::trig;
@@ -62,6 +62,13 @@ fn duel(pads: Vec<ModulePad>) -> Session {
     assert_eq!(session.join(A).unwrap(), Some(0));
     assert_eq!(session.join(B).unwrap(), Some(1));
     session
+}
+
+/// `slot` is built as `build` this life and the next (a fighter fires only what it carries).
+fn equip(session: &mut Session, slot: usize, build: Assembly) {
+    let fighter = &mut session.fighters[slot];
+    fighter.configured = build;
+    fighter.rebuild(build);
 }
 
 /// Puts `slot` standing still with its feet at `feet` (units).
@@ -232,6 +239,8 @@ fn a_module_lasts_the_life_until_its_uses_are_spent() {
 #[test]
 fn a_module_ends_with_its_carrier() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::Thrusters)]);
+    // B fires the heavy build's rockets.
+    equip(&mut session, 1, HEAVY);
     session.step().unwrap();
     assert!(session.fighters[0].carried.is_some());
     let taken_at = session.ticks();
@@ -451,15 +460,17 @@ fn the_rail_capacitor_hits_harder_through_lag_compensation_on_any_build() {
             rail_duel(12, build, capacitor),
         )
     };
-    assert_eq!(shot(STANDARD, false), (None, Some(85)));
+    assert_eq!(shot(ARMORY, false), (None, Some(85)));
     let boosted = 85 * i32::from(RAIL_CAPACITOR_DAMAGE_PERCENT) / 100;
-    assert_eq!(shot(STANDARD, true), (None, Some(boosted)));
+    assert_eq!(shot(ARMORY, true), (None, Some(boosted)));
     // The marksman's overcharger (125 %) and the capacitor (150 %) multiply: 187 %.
     assert_eq!(shot(MARKSMAN, false), (None, Some(106)));
     assert_eq!(shot(MARKSMAN, true), (None, Some(85 * 187 / 100)));
     // Builds without a rail mod get the same capacitor.
     assert_eq!(shot(HEAVY, true), (None, Some(boosted)));
-    assert_eq!(shot(SKIRMISHER, true), (None, Some(boosted)));
+    // A build without a rail gun cannot take one up (shooter#92): the skirmisher fires its
+    // rapid-cycler rifle (9 a bolt), which the capacitor does not boost.
+    assert_eq!(shot(SKIRMISHER, true), (None, Some(9)));
 }
 
 /// The yaw and pitch from A's eye to B's root chassis below the weapons on its chest, where the
@@ -488,6 +499,7 @@ fn at_chassis(session: &Session) -> (u16, i16) {
 #[test]
 fn rail_capacitor_kills_score() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::RailCapacitor)]);
+    equip(&mut session, 0, ARMORY);
     let mut shots = Vec::new();
     let mut kills = 0;
     for sequence in 1..=200 {
@@ -547,6 +559,7 @@ fn rail_capacitor_kills_score() {
 #[test]
 fn the_rail_capacitor_is_spent_by_its_rail_shots() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::RailCapacitor)]);
+    equip(&mut session, 0, ARMORY);
     // Facing away from B, at the wall.
     let shoot = |weapon| Intent {
         yaw: 32_768,

@@ -352,7 +352,7 @@ struct FighterInstances {
 
 /// The moving things drawn over the arena: every fighter (the local one too, seen from the
 /// third-person camera) with its gun, swung blade and grapple cable, the rockets, the modules lying on their pads, the reticle
-/// and (natively; the page draws its own) a health bar. Placeholder primitives: a fighter drawn as
+/// (the HUD is screen overlay, [`crate::overlay`]). Placeholder primitives: a fighter drawn as
 /// its robot ([`crate::robots`]) shows no box body or held gun box here (its weapons are the
 /// weapons kit's); the swung blade's sweep still shows the simulation's arc for every fighter.
 pub struct Actors {
@@ -375,8 +375,6 @@ pub struct Actors {
     /// Modules on their pads, reused frame to frame (hidden when unused).
     modules: Vec<InstanceId>,
     reticle: InstanceId,
-    /// Natively: the health bar's mesh, material and instance (HUD stopgap).
-    health_bar: Option<(MeshId, MaterialId, InstanceId)>,
 }
 
 fn glowing(rgb: Vec3, nits: f32) -> StandardMaterial {
@@ -430,21 +428,6 @@ impl Actors {
                 skin: None,
             })
         };
-        let health_bar = (!cfg!(target_arch = "wasm32")).then(|| {
-            let mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
-                HEALTH_BAR_LENGTH,
-                0.004,
-                0.001,
-            ))));
-            let material = world.add_material(&glowing(Vec3::new(0.3, 1.0, 0.5), 20_000.0));
-            let instance = world.add_instance(Instance {
-                mesh,
-                material,
-                world_from_local: HIDDEN,
-                skin: None,
-            });
-            (mesh, material, instance)
-        });
         Self {
             fighters: Vec::new(),
             fighter_mesh,
@@ -467,7 +450,6 @@ impl Actors {
                 .map(|module| world.add_material(&glowing(module_tint(module), 4_000.0))),
             modules: Vec::new(),
             reticle,
-            health_bar,
         }
     }
 
@@ -489,18 +471,14 @@ impl Actors {
         );
     }
 
-    /// Places everything for this frame. `camera`/`forward` is the camera; `reticle` where the
-    /// reticle is drawn ([`camera::reticle`]), while the local fighter is alive; `health` is its
-    /// health (0..=1); `modules` the modules lying on their pads (each pad's centre, metres).
-    #[allow(clippy::too_many_arguments)]
+    /// Places everything for this frame. `reticle` is where the reticle is drawn
+    /// ([`camera::reticle`]), while the local fighter is alive; `modules` the modules lying on
+    /// their pads (each pad's centre, metres).
     pub fn update(
         &mut self,
         world: &mut World,
         fighters: &[FighterView],
         rockets: &[Vec3],
-        health: Option<f32>,
-        camera: Vec3,
-        forward: Vec3,
         modules: &[(Vec3, ArenaModule)],
         reticle: Option<Vec3>,
     ) {
@@ -647,25 +625,7 @@ impl Actors {
         let mut instance = world.instance(self.reticle);
         instance.world_from_local = reticle.map_or(HIDDEN, Mat4::from_translation);
         world.set_instance(self.reticle, instance);
-        if let Some((mesh, material, instance)) = self.health_bar {
-            let at = health.map_or(HIDDEN, |health| health_bar_pose(camera, forward, health));
-            Self::place(world, instance, mesh, material, at);
-        }
     }
-}
-
-/// The native health bar's full length (metres, half a metre ahead of the camera).
-const HEALTH_BAR_LENGTH: f32 = 0.12;
-
-/// The health bar low and right of the view's centre, clear of the fighter over whose shoulder
-/// the camera looks, shrunk to `health` from its left end.
-fn health_bar_pose(camera: Vec3, forward: Vec3, health: f32) -> Mat4 {
-    let (forward, right, up) = basis(forward);
-    let health = health.clamp(0.0, 1.0);
-    let left = camera + forward * 0.5 - up * 0.25 + right * 0.12;
-    let center = left + right * (HEALTH_BAR_LENGTH * health / 2.0);
-    let rotation = Quat::from_mat3(&Mat3::from_cols(-right, up, forward));
-    Mat4::from_scale_rotation_translation(Vec3::new(health.max(0.001), 1.0, 1.0), rotation, center)
 }
 
 /// The frame's camera ([`camera`]) and the hall's light: a high sun through an open roof and

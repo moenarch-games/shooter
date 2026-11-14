@@ -7,7 +7,7 @@ use shooter_sim::damage::PartDamage;
 use shooter_sim::melee;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{CHASSIS_L, CHASSIS_S};
-use shooter_sim::robot::{MARKSMAN, SKIRMISHER, STANDARD};
+use shooter_sim::robot::{ARMORY, HEAVY, MARKSMAN, SKIRMISHER, STANDARD};
 use shooter_sim::scenarios;
 use shooter_sim::session::{SELF_SPLASH_PERCENT, body_of, slot_of};
 use shooter_sim::tour::run_legs;
@@ -111,6 +111,13 @@ fn duel_arena() -> Arena {
         module_pads: Vec::new(),
         waypoints: Vec::new(),
     }
+}
+
+/// `slot` is built as `build` this life and the next (a fighter fires only what it carries).
+fn equip(session: &mut Session, slot: usize, build: Assembly) {
+    let fighter = &mut session.fighters[slot];
+    fighter.configured = build;
+    fighter.rebuild(build);
 }
 
 fn duel_rules() -> Rules {
@@ -237,7 +244,7 @@ fn modded_hitscan_is_lag_compensated_for_the_modded_damage() {
     assert_eq!(shot(STANDARD, Weapon::EnergyRifle), (None, Some(12)));
     // The rapid cycler's rifle bolts are lighter, the overcharged rail gun's beam heavier.
     assert_eq!(shot(SKIRMISHER, Weapon::EnergyRifle), (None, Some(9)));
-    assert_eq!(shot(STANDARD, Weapon::RailGun), (None, Some(85)));
+    assert_eq!(shot(HEAVY, Weapon::RailGun), (None, Some(85)));
     assert_eq!(shot(MARKSMAN, Weapon::RailGun), (None, Some(106)));
     // The long barrel changes the range, not the damage.
     assert_eq!(shot(MARKSMAN, Weapon::EnergyRifle), (None, Some(12)));
@@ -426,6 +433,8 @@ fn the_blade_strikes_the_nearest_part_whatever_gun_is_held() {
     let mut session = Session::with_rules(arena, duel_rules()).unwrap();
     session.join(1).unwrap();
     session.join(2).unwrap();
+    // A carries the rockets it holds (and the blade).
+    equip(&mut session, 0, HEAVY);
     session.step().unwrap();
     let (mut strikes, mut lost) = (Vec::new(), Vec::new());
     for sequence in 1..=120 {
@@ -511,6 +520,7 @@ fn rail_kills_score_and_the_round_ends_and_restarts() {
     let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
     session.join(1).unwrap();
     session.join(2).unwrap();
+    equip(&mut session, 0, HEAVY);
     let mut kills = 0;
     let mut over = false;
     // A aims at B's root chassis: four rail beams break it, the kill.
@@ -574,6 +584,7 @@ fn rail_kills_score_and_the_round_ends_and_restarts() {
 fn a_rocket_jump_costs_health() {
     let scenario = scenarios::ROCKET_JUMP;
     let mut session = Session::new((scenario.arena)()).unwrap();
+    equip(&mut session, 0, HEAVY);
     run_legs(&mut session, scenario.legs).unwrap();
     let local = session.local();
     assert!(local.alive());
@@ -694,6 +705,7 @@ fn a_standing_input_backlog_is_trimmed_and_a_silent_person_stops() {
     use shooter_sim::session::{BACKLOG_KEEP, BACKLOG_WINDOW_TICKS, HOLD_INPUT_TICKS};
     let mut session = bot_match(3, 0);
     let slot = usize::from(session.join(4).unwrap().unwrap());
+    equip(&mut session, slot, HEAVY);
     let forward = Intent {
         forward: 1,
         fire: true,
@@ -747,6 +759,7 @@ fn the_flame_burns_other_fighters_never_its_owner() {
     let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
     session.join(1).unwrap();
     session.join(2).unwrap();
+    equip(&mut session, 0, ARMORY);
     let (mut burnt, mut first) = (0, None);
     // A walks up to 3 m short of B, burning the parts nearest it (the front) and the root chassis
     // among them, until it breaks.
@@ -817,6 +830,7 @@ fn the_flame_ignites_before_it_burns_a_fighter() {
     let mut session = Session::with_rules(arena, duel_rules()).unwrap();
     session.join(1).unwrap();
     session.join(2).unwrap();
+    equip(&mut session, 0, ARMORY);
     let mut burns = Vec::new();
     for sequence in 1..60 {
         let now = session.ticks();

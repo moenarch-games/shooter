@@ -34,8 +34,9 @@
 //!   part's nearest point; ties by part ID, [`Hitboxes::nearest`]).
 //!
 //! **Consequences** (applied by [`crate::session`]): the root chassis at zero kills the robot (the only
-//! kill; a fall out of the arena still ends a life); a lost weapon part no longer fires (weapons
-//! a build does not carry still fire as shipped: every fighter keeps the full arsenal); a lost
+//! kill; a fall out of the arena still ends a life); a fighter holds, fires and swings only the
+//! weapons its build mounts and still has ([`PartDamage::armed`]): a lost weapon part no longer
+//! fires and cannot be selected, nor can a weapon the build does not carry (shooter#92); a lost
 //! battery takes its capacity and its share of the charge with it, once, and a destroyed one
 //! sets off a small blast ([`BATTERY_BLAST_RADIUS_UNITS`], [`BATTERY_BLAST_DAMAGE`]) that
 //! damages nearby parts through the same resolution (another battery it destroys blasts in turn,
@@ -165,6 +166,23 @@ impl PartDamage {
             .iter()
             .position(|part| part_type(part).kind == Kind::Weapon(weapon))
             .is_some_and(|index| !self.attached(index))
+    }
+
+    /// `build` carries `weapon` as a part and still has it: it may hold, fire or swing it. A
+    /// weapon the build does not mount is never armed.
+    #[must_use]
+    pub fn armed(&self, build: &Assembly, weapon: Weapon) -> bool {
+        build
+            .parts()
+            .iter()
+            .position(|part| part_type(part).kind == Kind::Weapon(weapon))
+            .is_some_and(|index| self.attached(index))
+    }
+
+    /// It may hold `weapon` now ([`crate::weapons::holdable`]): the host refuses any other.
+    #[must_use]
+    pub fn holdable(&self, build: &Assembly, weapon: Weapon) -> bool {
+        crate::weapons::holdable(|weapon| self.armed(build, weapon)).any(|held| held == weapon)
     }
 
     /// It still has a connected leg, wheel or track: the capsule may walk, jump and slide.

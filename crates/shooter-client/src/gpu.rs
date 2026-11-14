@@ -138,6 +138,12 @@ impl Gpu {
         })
     }
 
+    /// The drawn frame's width and height in pixels.
+    #[must_use]
+    pub fn size(&self) -> (u32, u32) {
+        self.viewport.size()
+    }
+
     /// An offscreen target keeps its size.
     #[cfg_attr(target_arch = "wasm32", allow(irrefutable_let_patterns))]
     pub fn resize(&mut self, width: u32, height: u32) {

@@ -11,7 +11,7 @@
 //! `cargo test -p shooter-sim --features physics-ab --test physics_ab`
 
 use shooter_sim::physics::{Backend, using_backend};
-use shooter_sim::robot::{MARKSMAN, SKIRMISHER, STANDARD};
+use shooter_sim::robot::{ARMORY, MARKSMAN, SKIRMISHER};
 use shooter_sim::scenarios::{self, Scenario};
 use shooter_sim::tour::{self, Leg, Sample, end_of};
 use shooter_sim::{Arena, Assembly, Session, Weapon};
@@ -20,7 +20,7 @@ use shooter_sim::{Arena, Assembly, Session, Weapon};
 const PATH_TOLERANCE_UNITS: f32 = 6.0;
 
 fn run_on(backend: Backend, arena: fn() -> Arena, legs: &[Leg]) -> Vec<Sample> {
-    run_as(backend, arena, legs, STANDARD)
+    run_as(backend, arena, legs, ARMORY)
 }
 
 /// [`run_on`] with the local fighter built as `build` (its weapon mods).
@@ -42,7 +42,7 @@ fn tour_scenario() -> Scenario {
 }
 
 fn compare(scenario: Scenario) {
-    compare_as(scenario, STANDARD);
+    compare_as(scenario, ARMORY);
 }
 
 fn compare_as(scenario: Scenario, build: Assembly) {
@@ -204,7 +204,7 @@ fn modded_loadouts_match_the_rapier_oracle() {
         compare_as(scenarios::SHOOTING_RANGE, build);
         assert_ne!(
             combat(scenarios::SHOOTING_RANGE, build),
-            combat(scenarios::SHOOTING_RANGE, STANDARD),
+            combat(scenarios::SHOOTING_RANGE, ARMORY),
             "{build:?} changes the fire"
         );
     }
@@ -212,7 +212,7 @@ fn modded_loadouts_match_the_rapier_oracle() {
     // The efficiency coil slows the shotgun's blasts.
     assert_ne!(
         combat(scenarios::CLOSE_RANGE, SKIRMISHER),
-        combat(scenarios::CLOSE_RANGE, STANDARD)
+        combat(scenarios::CLOSE_RANGE, ARMORY)
     );
 }
 
