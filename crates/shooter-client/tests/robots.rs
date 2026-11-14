@@ -449,13 +449,14 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
 }
 
 #[test]
-fn a_detached_arm_falls_away_with_its_blade_while_the_legs_keep_walking() {
+fn a_detached_arm_carries_its_blade_and_laser_while_the_legs_keep_walking() {
     let kit = kit();
     let model = Model::of(&STANDARD, kit).unwrap();
     // The authoritative state (per-part damage is shooter#56; a fixture here) puts the right
     // arm's subtree on the floor beside the robot.
     let arm = PartId(4);
     let blade = PartId(8);
+    let laser = PartId(14);
     let fallen = Mat4::from_translation(Vec3::new(3.0, 0.5, 3.0))
         * Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2);
     let detached = [(arm, fallen)];
@@ -470,7 +471,7 @@ fn a_detached_arm_falls_away_with_its_blade_while_the_legs_keep_walking() {
     let whole = pose::pose(&model, kit, &running, 0.3, &PartStates::default());
     let lost = pose::pose(&model, kit, &running, 0.3, &states);
     for (index, part) in model.parts.iter().enumerate() {
-        let off = part.id == arm || part.id == blade;
+        let off = part.id == arm || part.id == blade || part.id == laser;
         assert_eq!(lost.parts[index].detached, off, "{}", part.key);
         if off {
             let expected = fallen * part.robot_from_local;
@@ -483,6 +484,11 @@ fn a_detached_arm_falls_away_with_its_blade_while_the_legs_keep_walking() {
             assert_eq!(lost.parts[index], whole.parts[index], "{}", part.key);
         }
     }
+    assert!(whole.laser_muzzle.is_some());
+    assert!(
+        lost.laser_muzzle.is_none(),
+        "a lost turret cannot emit from the arm"
+    );
     // A damaged plate draws its damaged variant (the plate is in the kit, none in a loadout).
     assert!(model.parts.iter().all(|p| p.key != "robot.armor.plate"));
 }
