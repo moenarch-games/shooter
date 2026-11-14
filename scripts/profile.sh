@@ -39,6 +39,7 @@ rm -rf "$out"
 mkdir -p "$out"
 
 if [[ "$lane" != web ]]; then
+  scripts/fetch-robot-kit.sh
   cargo build --release --locked -p shooter-server --bin shooter-replay -p shooter-client --bin shooter-client
   mkdir -p "$out/bot-match" "$out/native-client"
 

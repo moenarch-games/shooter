@@ -8,6 +8,7 @@ use crate::effects::Effects;
 use crate::game::Game;
 use crate::gpu::Gpu;
 use crate::hud::{Hud, HudText};
+use crate::robots::{self, RobotState, RobotView, Robots, track::Tracker};
 use crate::scene::{self, Actors, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT, SWING_SECONDS};
 use render_engine::glam::Vec3;
 use shooter_sim::aim::{self, RETICLE_RANGE_UNITS};
@@ -27,6 +28,31 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 /// The GPU arrives as a user event: in the browser it is created asynchronously.
 pub type GpuReady = Result<Gpu, String>;
+
+/// The browser's robot kit fetch result, filled in when it finishes.
+#[cfg(target_arch = "wasm32")]
+type KitInbox = std::rc::Rc<
+    std::cell::RefCell<Option<Result<(robots::kit::Plan, robots::load::Files), String>>>,
+>;
+
+/// Where the browser fetches the robot kit: beside the page (`scripts/build-web.sh`).
+#[cfg(target_arch = "wasm32")]
+const KIT_URL: &str = "robot-kit/";
+
+/// The HUD's note while the kit is not drawn yet.
+const KIT_LOADING: &str = "robot kit loading: box placeholders stand in";
+
+/// Starts the browser's robot kit fetch.
+#[cfg(target_arch = "wasm32")]
+fn fetch_kit() -> KitInbox {
+    let inbox = KitInbox::default();
+    let filled = inbox.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let fetched = robots::load::fetch(KIT_URL).await;
+        *filled.borrow_mut() = Some(fetched);
+    });
+    inbox
+}
 
 /// Never simulate more than this many ticks in one frame (after a stall, time is dropped).
 const MAX_TICKS_PER_FRAME: u32 = 8;
@@ -76,6 +102,15 @@ pub struct App {
     /// Weapon effects and the moving actors, once the GPU is up.
     effects: Option<Effects>,
     actors: Option<Actors>,
+    /// The fighters drawn as their robot builds, once the kit is in the GPU's world.
+    robots: Option<Robots>,
+    /// Why the fighters are boxes, while they are (the kit loading or unavailable): in the HUD.
+    kit_status: Option<String>,
+    /// The browser's kit fetch, once it is done.
+    #[cfg(target_arch = "wasm32")]
+    kit_inbox: KitInbox,
+    /// Shots and deaths per slot, for the robots' poses.
+    tracker: Tracker,
     /// Each slot's hit glow, 1 when just hit.
     glows: Vec<f32>,
     /// Seconds since each slot's last blade swing (others', from the match's events), and since
@@ -123,6 +158,11 @@ impl App {
             board: false,
             effects: None,
             actors: None,
+            robots: None,
+            kit_status: Some(KIT_LOADING.to_owned()),
+            #[cfg(target_arch = "wasm32")]
+            kit_inbox: fetch_kit(),
+            tracker: Tracker::default(),
             glows: vec![0.0; usize::from(u8::MAX)],
             swings: vec![f32::INFINITY; usize::from(u8::MAX)],
             local_swing: f32::INFINITY,
@@ -200,6 +240,9 @@ impl App {
             board: false,
             effects: None,
             actors: None,
+            robots: None,
+            kit_status: Some(KIT_LOADING.to_owned()),
+            tracker: Tracker::default(),
             glows: vec![0.0; usize::from(u8::MAX)],
             swings: vec![f32::INFINITY; usize::from(u8::MAX)],
             local_swing: f32::INFINITY,
@@ -232,10 +275,19 @@ impl App {
         }
     }
 
+    /// The offscreen run's GPU (`--capture` reads its frames).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn gpu(&self) -> Option<&Gpu> {
+        self.gpu.as_ref()
+    }
+
     /// The GPU is up: the effects and actors go into its world (and the arena, once known).
     fn attach(&mut self, mut gpu: Gpu) {
         self.effects = Some(Effects::new(&mut gpu.world));
         self.actors = Some(Actors::new(&mut gpu.world));
+        #[cfg(not(target_arch = "wasm32"))]
+        self.robots_ready(&mut gpu, robots::load::read(&robots::load::directory()));
         if let Some(window) = &self.window {
             let size = window.inner_size();
             gpu.resize(size.width, size.height);
@@ -244,6 +296,37 @@ impl App {
         self.gpu = Some(gpu);
         self.draw_map();
         self.last_frame = Instant::now();
+    }
+
+    /// The kit is read (or failed): its robots go into `gpu`'s world, or the HUD says why the
+    /// fighters stay boxes.
+    fn robots_ready(&mut self, gpu: &mut Gpu, kit: Result<robots::kit::KitData, String>) {
+        match kit.and_then(|kit| Robots::new(&mut gpu.world, kit)) {
+            Ok(robots) => {
+                self.robots = Some(robots);
+                self.kit_status = None;
+            }
+            Err(error) => {
+                crate::log(&error);
+                self.kit_status = Some(format!("{error}: box placeholders stand in"));
+            }
+        }
+    }
+
+    /// In the browser: the kit fetch is done and the GPU is up.
+    #[cfg(target_arch = "wasm32")]
+    fn poll_kit(&mut self) {
+        if self.gpu.is_none() {
+            return;
+        }
+        let Some(fetched) = self.kit_inbox.borrow_mut().take() else {
+            return;
+        };
+        let kit = fetched.and_then(|(plan, files)| robots::load::finish(&plan, &files));
+        if let Some(mut gpu) = self.gpu.take() {
+            self.robots_ready(&mut gpu, kit);
+            self.gpu = Some(gpu);
+        }
     }
 
     /// Puts the match's arena into the GPU's world the first time both are there. A host keeps
@@ -391,6 +474,8 @@ impl App {
             *swing += seconds;
         }
         self.local_swing += seconds;
+        self.tracker
+            .tick(&tick.events, local, tick.report.fired, seconds);
         if tick.report.fired == Some(Weapon::EnergyBlade) {
             self.local_swing = 0.0;
         }
@@ -428,6 +513,8 @@ impl App {
 
     /// `seconds` of play: the ticks they hold, then the drawing. False once the match fails.
     fn advance(&mut self, now: Instant, seconds: f32) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        self.poll_kit();
         #[cfg(target_arch = "wasm32")]
         if self.captured && !crate::web::pointer_locked() {
             // The browser let go of the pointer (Escape): stop playing until the next click.
@@ -494,6 +581,8 @@ impl App {
             .collect();
         let me = local.and_then(|slot| snapshot.and_then(|snapshot| snapshot.slot(slot)));
         let alive = me.filter(|me| me.alive && self.game.local_center().is_some());
+        // The robots' poses: each fighter shown alive, and the dead where they fell.
+        let mut robot_views: Vec<RobotView> = Vec::new();
         #[allow(clippy::cast_precision_loss)]
         let mut fighters: Vec<FighterView> = alive
             .map(|me| FighterView {
@@ -510,9 +599,36 @@ impl App {
                     .local_hook()
                     .map(|hook| Vec3::from(hook) * METRES_PER_UNIT),
                 swing: swing_progress(self.local_swing),
+                slot: me.slot,
+                robot: false,
+                grapple_from: None,
             })
             .into_iter()
             .collect();
+        if let (Some(me), Some(view)) = (alive, fighters.first()) {
+            let at = center * METRES_PER_UNIT;
+            self.tracker.seen(me.slot, at, forward, me.build, me.held);
+            if view.center.is_some() {
+                let moved = Vec3::from(self.center) - Vec3::from(self.previous_center);
+                robot_views.push(RobotView {
+                    slot: me.slot,
+                    build: me.build,
+                    state: RobotState {
+                        center: at,
+                        forward,
+                        velocity: moved * f32::from(TICK_HZ) * METRES_PER_UNIT,
+                        sliding: self.game.local_sliding(),
+                        hooked: view.hook.is_some(),
+                        since_fired: self.tracker.since_fired(me.slot),
+                        held: me.held,
+                        swing: view.swing,
+                        dead_for: None,
+                    },
+                    glow: view.glow,
+                    parts: robots::PartStates::default(),
+                });
+            }
+        }
         // Where the others are drawn (units), which is where the host checks a hitscan shot.
         let mut seen = Vec::new();
         #[allow(clippy::cast_precision_loss)]
@@ -522,10 +638,7 @@ impl App {
             }
             let slot = usize::from(fighter.slot);
             let drawn = self.game.other_center(fighter.slot, blend);
-            if let Some(center) = drawn.filter(|_| fighter.alive) {
-                seen.push((slot, center));
-            }
-            fighters.push(FighterView {
+            let view = FighterView {
                 center: drawn.map(|center| Vec3::from(center) * METRES_PER_UNIT),
                 eye_above_center: EYE_ABOVE_CENTER,
                 forward: looking(fighter.yaw, fighter.pitch),
@@ -536,6 +649,54 @@ impl App {
                     .hook
                     .map(|hook| Vec3::from(hook.anchor_units()) * METRES_PER_UNIT),
                 swing: swing_progress(self.swings[slot]),
+                slot: fighter.slot,
+                robot: false,
+                grapple_from: None,
+            };
+            if let Some(center) = drawn.filter(|_| fighter.alive) {
+                seen.push((slot, center));
+                let at = Vec3::from(center) * METRES_PER_UNIT;
+                self.tracker
+                    .seen(fighter.slot, at, view.forward, fighter.build, fighter.held);
+                robot_views.push(RobotView {
+                    slot: fighter.slot,
+                    build: fighter.build,
+                    state: RobotState {
+                        center: at,
+                        forward: view.forward,
+                        velocity: Vec3::from(fighter.velocity)
+                            * f32::from(TICK_HZ)
+                            * METRES_PER_UNIT,
+                        sliding: fighter.motion.sliding,
+                        hooked: fighter.hook.is_some(),
+                        since_fired: self.tracker.since_fired(fighter.slot),
+                        held: fighter.held,
+                        swing: view.swing,
+                        dead_for: None,
+                    },
+                    glow: view.glow,
+                    parts: robots::PartStates::default(),
+                });
+            }
+            fighters.push(view);
+        }
+        for (slot, remains) in self.tracker.dead() {
+            robot_views.push(RobotView {
+                slot,
+                build: remains.build,
+                state: RobotState {
+                    center: remains.center,
+                    forward: remains.forward,
+                    velocity: Vec3::ZERO,
+                    sliding: false,
+                    hooked: false,
+                    since_fired: f32::INFINITY,
+                    held: remains.held,
+                    swing: None,
+                    dead_for: Some(remains.dead_for),
+                },
+                glow: 0.0,
+                parts: robots::PartStates::default(),
             });
         }
         // The reticle covers what a shot fired now meets: from the eye along the aim the
@@ -559,9 +720,34 @@ impl App {
             }
             _ => None,
         };
-        let text = self
+
+        let drawn = match (&mut self.gpu, &mut self.robots) {
+            (Some(gpu), Some(robots)) => robots.update(&mut gpu.world, &robot_views, seconds),
+            _ => Ok(Vec::new()),
+        };
+        let drawn = drawn.unwrap_or_else(|error| {
+            // A build the kit cannot draw: every fighter falls back to its box, and says why.
+            crate::log(&error);
+            self.robots = None;
+            self.kit_status = Some(format!("{error}: box placeholders stand in"));
+            Vec::new()
+        });
+        for robot in &drawn {
+            if let Some(view) = fighters.iter_mut().find(|view| view.slot == robot.slot) {
+                view.robot = true;
+                view.grapple_from = robot.grapple;
+            }
+        }
+        let mut text = self
             .hud
             .text(snapshot, local, self.game.status(), self.board, seconds);
+        text.robot = self.kit_status.clone().unwrap_or_else(|| {
+            drawn
+                .iter()
+                .find(|robot| Some(robot.slot) == local)
+                .map(robot_line)
+                .unwrap_or_default()
+        });
         #[cfg(target_arch = "wasm32")]
         crate::hud::show(&text, &mut self.shown);
         #[cfg(not(target_arch = "wasm32"))]
@@ -595,6 +781,26 @@ impl App {
         }
         true
     }
+}
+
+/// The HUD's robot line for the local fighter: its animation state and its placeholder parts,
+/// "robot: run (walk-biped) + fire · placeholders (asset-tooling#594): weapon.energy-rifle, …".
+fn robot_line(robot: &robots::Drawn) -> String {
+    let mut owners: Vec<&str> = robot.placeholders.iter().map(|(_, owner)| *owner).collect();
+    owners.dedup();
+    let placeholders: Vec<String> = owners
+        .iter()
+        .map(|owner| {
+            let keys: Vec<&str> = robot
+                .placeholders
+                .iter()
+                .filter(|(_, by)| by == owner)
+                .map(|(key, _)| *key)
+                .collect();
+            format!(" · placeholders ({owner}): {}", keys.join(", "))
+        })
+        .collect();
+    format!("robot: {}{}", robot.label, placeholders.concat())
 }
 
 impl ApplicationHandler<GpuReady> for App {

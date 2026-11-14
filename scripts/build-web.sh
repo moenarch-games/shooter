@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the browser client into web/dist: the client crate for wasm32 (WebGPU), bound with the
-# wasm-bindgen CLI. The CLI must match the wasm-bindgen version in Cargo.lock.
+# wasm-bindgen CLI, and the pinned robot kit beside it in web/dist/robot-kit
+# (scripts/fetch-robot-kit.sh). The CLI must match the wasm-bindgen version in Cargo.lock.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -22,4 +23,7 @@ rm -rf web/dist
 "$bindgen" --target web --no-typescript --out-dir web/dist \
   target/wasm32-unknown-unknown/release/shooter_client.wasm
 cp web/index.html web/dist/
+# The pinned robot kit beside the page: the client fetches it from robot-kit/.
+scripts/fetch-robot-kit.sh
+cp -R target/robot-kit web/dist/robot-kit
 echo "web/dist is ready: serve it with any static server, e.g. python3 -m http.server -d web/dist"

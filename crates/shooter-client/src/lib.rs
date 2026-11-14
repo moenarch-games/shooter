@@ -13,6 +13,7 @@ pub mod gpu;
 pub mod hud;
 pub mod interpolation;
 pub mod net;
+pub mod robots;
 pub mod scene;
 
 use shooter_sim::MapId;
@@ -109,6 +110,8 @@ struct Args {
     frames: Option<u32>,
     /// `--loadout <name>`: the loadout to play as ([`loadout`]).
     loadout: Option<String>,
+    /// `--capture <dir>`: the offscreen run writes every [`CAPTURE_EVERY`]th frame there.
+    capture: Option<std::path::PathBuf>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -124,6 +127,7 @@ impl Args {
                 "--map" => parsed.map = args.next(),
                 "--loadout" => parsed.loadout = args.next(),
                 "--frames" => parsed.frames = args.next().and_then(|n| n.parse().ok()),
+                "--capture" => parsed.capture = args.next().map(std::path::PathBuf::from),
                 other => log(&format!("unknown argument {other}")),
             }
         }
@@ -134,27 +138,74 @@ impl Args {
 /// The offscreen profile run's frame size.
 pub const OFFSCREEN_SIZE: (u32, u32) = (1280, 720);
 
-/// The profile run (`shooter-client --frames <n> [--map <id>]`): `frames` frames of a practice
-/// match on `map` at one
-/// tick per frame, the local fighter played by the replays' scripted person 0
-/// ([`shooter_sim::scenarios::scripted_intent`]), drawn to an offscreen [`OFFSCREEN_SIZE`]
-/// target with no window, as fast as the GPU finishes them. Prints frame times; nothing gates
-/// on them.
+/// How often `--capture` writes a frame.
+pub const CAPTURE_EVERY: u32 = 30;
+
+/// Writes RGBA8 `pixels` (`width` × `height`) to `path` as a binary PPM image.
 ///
 /// # Errors
 ///
-/// If there is no GPU adapter or the match fails.
+/// If the file cannot be written.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn offscreen(frames: u32, map: MapId) -> Result<(), String> {
+pub fn write_ppm(
+    path: &std::path::Path,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Result<(), String> {
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    for pixel in pixels.chunks(4) {
+        ppm.extend_from_slice(&pixel[..3]);
+    }
+    std::fs::write(path, ppm).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// The profile run (`shooter-client --frames <n> [--map <id>] [--loadout <name>] [--capture
+/// <dir>]`): `frames` frames of a practice match on `map` at one tick per frame, the local
+/// fighter (as `build`, if given) played by the replays' scripted person 0
+/// ([`shooter_sim::scenarios::scripted_intent`]), drawn to an offscreen [`OFFSCREEN_SIZE`]
+/// target with no window, as fast as the GPU finishes them. Prints frame times; nothing gates
+/// on them. With `capture`, every [`CAPTURE_EVERY`]th frame is also written there as a PPM
+/// image (outside the timed frames).
+///
+/// # Errors
+///
+/// If there is no GPU adapter, the match fails or a capture cannot be written.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn offscreen(
+    frames: u32,
+    map: MapId,
+    build: Option<shooter_sim::Assembly>,
+    capture: Option<&std::path::Path>,
+) -> Result<(), String> {
     let (width, height) = OFFSCREEN_SIZE;
     let gpu = gpu::Gpu::offscreen(width, height)?;
-    let mut app = app::App::scripted(game::Game::practice(map), gpu);
+    let game = game::Game::practice(map);
+    let game = match build {
+        Some(build) => game.with_loadout(build),
+        None => game,
+    };
+    let mut app = app::App::scripted(game, gpu);
+    if let Some(directory) = capture {
+        std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    }
     let mut times = Vec::with_capacity(frames as usize);
     let started = std::time::Instant::now();
-    for _ in 0..frames {
+    for index in 1..=frames {
         let frame = std::time::Instant::now();
         app.scripted_frame()?;
         times.push(frame.elapsed().as_secs_f64() * 1_000.0);
+        if let (Some(directory), Some(gpu)) = (capture, app.gpu())
+            && index % CAPTURE_EVERY == 0
+        {
+            let (width, height, pixels) = gpu.read_frame()?;
+            write_ppm(
+                &directory.join(format!("frame-{index:04}.ppm")),
+                width,
+                height,
+                &pixels,
+            )?;
+        }
     }
     let total = started.elapsed().as_secs_f64();
     let stats = FrameStats::of(times);
@@ -284,7 +335,11 @@ pub fn run() {
     };
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(frames) = args.frames {
-        if let Err(error) = offscreen(frames, map) {
+        let build = loadout(args.loadout.as_deref()).unwrap_or_else(|error| {
+            fail(&error);
+            std::process::exit(2);
+        });
+        if let Err(error) = offscreen(frames, map, build, args.capture.as_deref()) {
             fail(&error);
             std::process::exit(1);
         }

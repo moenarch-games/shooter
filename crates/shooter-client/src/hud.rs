@@ -26,6 +26,9 @@ pub struct HudText {
     pub feed: Vec<String>,
     /// The scoreboard's lines, while it shows.
     pub board: Option<Vec<String>>,
+    /// The local robot's animation state and placeholder parts, or why the fighters are boxes
+    /// (set by the app from `crate::robots`).
+    pub robot: String,
 }
 
 #[derive(Default)]
@@ -261,6 +264,7 @@ impl Hud {
             banner,
             feed,
             board,
+            robot: String::new(),
         }
     }
 }
@@ -282,6 +286,7 @@ pub fn show(text: &HudText, last: &mut HudText) {
     set("hud-status", &text.status);
     set("hud-banner", &text.banner);
     set("hud-feed", &text.feed.join("\n"));
+    set("hud-robot", &text.robot);
     set(
         "hud-board",
         &text.board.as_deref().unwrap_or_default().join("\n"),
@@ -308,6 +313,9 @@ pub fn show(text: &HudText, last: &mut HudText, window: &winit::window::Window) 
     }
     if let Some(board) = &text.board {
         parts.push(board.join(" | "));
+    }
+    if !text.robot.is_empty() {
+        parts.push(text.robot.clone());
     }
     window.set_title(&format!("shooter — {}", parts.join("   ·   ")));
     *last = text.clone();

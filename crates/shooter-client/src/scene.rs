@@ -305,6 +305,11 @@ pub struct FighterView {
     pub hook: Option<Vec3>,
     /// How far through a blade swing it is (0..=1), while swinging.
     pub swing: Option<f32>,
+    pub slot: u8,
+    /// Drawn as its robot ([`crate::robots`]): no box body and no held gun box here.
+    pub robot: bool,
+    /// Where its robot's grapple weapon is: the cable's start (else the held gun's barrel).
+    pub grapple_from: Option<Vec3>,
 }
 
 /// A grapple cable's thickness (metres).
@@ -347,8 +352,9 @@ struct FighterInstances {
 
 /// The moving things drawn over the arena: every fighter (the local one too, seen from the
 /// third-person camera) with its gun, swung blade and grapple cable, the rockets, the modules lying on their pads, the reticle
-/// and (natively; the page draws its own) a health bar. Placeholder primitives until
-/// asset-tooling delivers the weapon and robot models.
+/// and (natively; the page draws its own) a health bar. Placeholder primitives: a fighter drawn as
+/// its robot ([`crate::robots`]) shows no box body or held gun box here, and the weapon models
+/// wait for asset-tooling.
 pub struct Actors {
     fighters: Vec<FighterInstances>,
     fighter_mesh: MeshId,
@@ -502,7 +508,10 @@ impl Actors {
             .iter()
             .filter_map(|view| {
                 let fighter_eye = view.center? + Vec3::Y * view.eye_above_center;
-                Some((gun_pose(fighter_eye, view.forward).1, view.hook?))
+                let from = view
+                    .grapple_from
+                    .unwrap_or_else(|| gun_pose(fighter_eye, view.forward).1);
+                Some((from, view.hook?))
             })
             .collect();
         while self.cables.len() < cables.len() {
@@ -562,11 +571,16 @@ impl Actors {
                     }
                     let center = view.center.unwrap_or_default();
                     let fighter_eye = center + Vec3::Y * view.eye_above_center;
-                    (
-                        Mat4::from_translation(center),
-                        gun_pose(fighter_eye, view.forward).0,
-                        gun_material(&self.gun_materials, view.held),
-                    )
+                    if view.robot {
+                        // Its robot and the weapons on it are drawn by `crate::robots`.
+                        (HIDDEN, HIDDEN, gun_material(&self.gun_materials, view.held))
+                    } else {
+                        (
+                            Mat4::from_translation(center),
+                            gun_pose(fighter_eye, view.forward).0,
+                            gun_material(&self.gun_materials, view.held),
+                        )
+                    }
                 }
                 None => (HIDDEN, HIDDEN, self.gun_materials[0]),
             };

@@ -7,8 +7,9 @@ demanding consumer: every gap or regression it finds is filed on the crate that 
 Product intent lives in the [Decision Atlas](docs/decisions/atlas.md). The owner has set a beta
 direction (Atlas D1.i46.1, D2.i46.\*, tracker #45): a third-person arena shooter with modular
 robots, about 12 slots and three arenas. The third-person camera, the robot build schema and
-the 12 slots are in; the rest is not implemented yet. Everything below describes what works
-today: a third-person, 12-slot deathmatch on one greybox arena with box fighters.
+the 12 slots are in, and the fighters are drawn as their robot builds from asset-tooling's robot
+kit; the rest is not implemented yet. Everything below describes what works today: a
+third-person, 12-slot deathmatch on one greybox arena, the fighters still moving as capsules.
 
 ## What a player does
 
@@ -36,8 +37,8 @@ The current slice is a deathmatch in a greybox arena with two jump pads onto the
 six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower), the grapple hook and an energy blade. Twelve slots by default; bots fill every slot no
 person holds. A kill scores a frag; dying by your own rocket or a fall costs one. The dead respawn after 2 s at the spawn point
 farthest from everyone else. A round ends at 15 frags or after 5 minutes, the scores show for 8 s
-and a fresh round starts. Every fighter has 200 health. The guns, the fighters (boxes) and the
-sounds are placeholders until asset-tooling delivers models and clips.
+and a fresh round starts. Every fighter has 200 health. Each fighter is drawn as its robot build (below, **Robot
+models**); the weapon models and the sounds are placeholders until asset-tooling delivers them.
 
 **Practice offline.** The native client without arguments, and the browser build (Pages), run the
 same simulation in-process: you in slot 0 against eleven bots, no server needed.
@@ -54,8 +55,9 @@ so a joining client builds and predicts on that map; practice takes `--map <id>`
 refused everywhere.
 
 ```sh
+scripts/fetch-robot-kit.sh                 # the pinned robot kit into target/robot-kit
 cargo run -p shooter-client --release      # native window, practice
-scripts/build-web.sh                       # browser build into web/dist (needs a WebGPU browser)
+scripts/build-web.sh                       # browser build (and the kit) into web/dist (needs a WebGPU browser)
 python3 -m http.server -d web/dist
 ```
 
@@ -152,7 +154,7 @@ one rejects the command) and applies at that fighter's next spawn, never while i
 Snapshots carry each fighter's build and the one it comes back as. The cell size, chassis sizes,
 part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part keys await the
 asset kits, and a build does not yet change movement or the arsenal: every fighter still carries
-every weapon, the box fighter is still drawn, and there is no builder screen yet.
+every weapon, and there is no builder screen yet.
 
 **Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
 D2.i70.4): the control core stores 100 and regenerates 24 a second, and each battery (a
@@ -188,10 +190,33 @@ command the hip and knee servos, so legs mounted wrong go nowhere and nothing te
 actuator reports its angle, rate, torque and whether it stalled (at its torque, far from its
 command). Part poses and per-part ray hits follow the bodies, and the state encodes exactly
 (`wire::encode_mechanics`, `encode_controls`): a world restored from it continues bit for bit.
-The fighters in a match are still the box fighters on the capsule controller: putting mechanical
+The fighters in a match still move on the capsule controller: putting mechanical
 robots into the match, its snapshots, prediction and replays, is #73's second half, with the
 bindings (#74). Masses, torques, rates, draws and gait timings are provisional; a 12-robot scene
 (66 joints) steps in about 0.16 ms a tick natively on physics-engine (0.20 ms on Rapier).
+
+**Robot models** (`shooter_client::robots`, #54). Both clients draw every fighter as its validated
+build from asset-tooling's `shooter-combat-robot` kit: the chassis, beams, hinge, rotor, core,
+sensor, battery, the armor plate (and its damaged look) and the rigged leg with its walk clips.
+The release is pinned by SHA-256 (`assets/robot-kit.pin.json`); `scripts/fetch-robot-kit.sh`
+fetches it into `target/robot-kit` for the native client (`$SHOOTER_ROBOT_KIT` names another
+directory) and `scripts/build-web.sh` puts it in `web/dist/robot-kit`, which the browser fetches.
+Every file is checked against the bundle's pins and bounds (4 MiB a file, 8 MiB a load, 20 s a
+request in the browser), every kit key must be a catalog part and every catalog part a kit entry
+or a declared placeholder; otherwise the load fails, the HUD says why and the fighters stay
+boxes. Each part sits where the simulation places it (`mechanics::placements`), so loadouts look
+different. Weapons (asset-tooling#594), wheels and tracks (#634) are not modelled yet: they draw
+as translucent purple boxes of their cells (the held weapon brighter) and the HUD lists them. The
+robot stands on its capsule's feet and faces its look; its legs rest when idle, walk the kit's
+clips when running (at most 2.5 cycles a second, so feet slide at full speed), tuck while
+airborne or grappling and crouch in a slide. Firing kicks and flashes the held weapon, the
+grapple cable starts at the grapple, and a dead robot topples over until it respawns. Strafing
+(no sideways clip) and the blade swing (no swing clip, the arm is rigid) are missing animations:
+a magenta marker floats over the robot and the HUD names it. Hinges and rotors would turn about
+the simulation's anchor (the centre of their top face, where the kit pivots at the cube's
+centre), but nothing in a match turns them yet; lost parts and damaged armor draw from per-part
+state the match does not send yet (#56). `cargo run -p shooter-client --release --example
+robot_gallery -- <dir>` renders the loadouts, the mechanics fixtures and every pose offscreen.
 
 **Weapon mods.** A weapon part may carry one mod, which costs build points and mass and changes
 how that weapon fires (on the host, in the client's prediction and in lag-compensated hits
