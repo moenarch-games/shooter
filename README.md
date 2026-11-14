@@ -93,7 +93,7 @@ the host's reconnect grace. A public host is described in [docs/hosting.md](docs
 
 Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
-mouse. Steer in the air with WASD. The HUD (health, weapon, frags and place, the round clock, the
+mouse. Steer in the air with WASD. The HUD (health, energy, weapon, frags and place, the round clock, the
 carried module and its uses left, the kill and pickup feed) is the page's overlay in the browser and the window title plus a health bar natively,
 until render-engine draws screen overlays.
 
@@ -143,11 +143,10 @@ sockets, one per 20 cm surface cell (a 20 × 40 × 80 cm chassis has 28). Each p
 one parent socket and an exact orientation (binary angles, stored in one canonical form); a larger
 part reserves its footprint of neighbouring cells on its parent's face, and no two parts may
 claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints (rigid for
-now), the control core, a sensor, legs, wheels, tracks, an armor plate and the eight shipped
-weapons. A build is valid with one chassis root, no cycles, exactly one control core on any free
-socket, each weapon at most once, at most 32 parts, and within its budgets: the core's power
-against what the parts draw, the parts' cooling against the heat they make (the shipped heat,
-until shooter#72) and 120 build points. Nothing requires locomotion: tanks, four-legged dogs,
+now), the control core, a battery, a sensor, legs, wheels, tracks, an armor plate and the eight
+shipped weapons. A build is valid with one chassis root, no cycles, exactly one control core on
+any free socket, each weapon at most once, at most 32 parts and at most 120 build points; there is
+no power, heat or cooling budget. Nothing requires locomotion: tanks, four-legged dogs,
 humanoids, stationary turrets and grappling-only machines are all valid. Every fighter starts as
 the standard build; a person's command may ask for another, which the host validates (an invalid
 one rejects the command) and applies at that fighter's next spawn, never while it is alive.
@@ -156,27 +155,45 @@ part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part key
 asset kits, and a build does not yet change movement or the arsenal: every fighter still carries
 every weapon, the box fighter is still drawn, and there is no builder screen yet.
 
-**Weapon mods.** A weapon part may carry one mod, which costs build points, weighs on the
-mass, power and heat budgets and changes how that weapon fires (on the host, in the client's
-prediction and in lag-compensated hits alike); a weapon without one fires as shipped. Four
-provisional mods: the *rapid cycler* (rifle, rail gun, shotgun: 65% refire time, 75% damage, hot
-and power-hungry), the *overcharger* (same guns: 125% damage, 130% refire time, the most power),
-the *long barrel* (rifle, rail gun, laser: 150% range, 110% refire time, and its weapon becomes a
-two-cell module) and the *heat sink* (any weapon: sheds 20 heat, fire unchanged, mass and points).
-A mod that does not fit its weapon, or breaks a budget, rejects the build. Pick a named loadout
+**Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
+D2.i70.4): the control core stores 100 and regenerates 24 a second, and each battery (a
+20 × 40 × 20 cm part, 5 build points, 20 kg) adds 60 stored energy and nothing else. A robot
+spawns with its pool full. Every activation pays from it: a rifle bolt 2, a rail shot 30, a
+rocket 20, a grapple hook 10, a blade swing 5, a shotgun blast 12, and the laser and the
+flamethrower 0.6 and 0.5 every tick they burn (36 and 30 a second, more than the core
+regenerates). A request is granted whole or not at all: with too little energy the shot, swing or
+hook simply does not happen (no cooldown is spent) and works again once regeneration has paid for
+it; the charge never goes below zero. Within a tick a robot's requests go first come, first
+served in a fixed order: a thruster jump, then the blade swing, then the gun (provisional, Atlas
+Q2.i70.4). There is no heat or cooling. The host owns the pool; snapshots carry each robot's
+charge, the client predicts its own, replays reproduce it, and the HUD's status line shows it
+(`⚡ 87/160`). Values are provisional (Atlas Q2.i70.1). A destroyed battery losing its charge and
+exploding waits on per-part damage (#56); continuous motor draw comes with #73.
+
+**Weapon mods.** A weapon part may carry one mod, which costs build points and mass and changes
+how that weapon fires (on the host, in the client's prediction and in lag-compensated hits
+alike); a weapon without one fires as shipped. Four provisional mods: the *rapid cycler* (rifle,
+rail gun, shotgun: 65% refire time, 75% damage, so each second of fire costs half again the
+energy), the *overcharger* (same guns: 125% damage, 130% refire time, 150% energy a shot), the
+*long barrel* (rifle, rail gun, laser: 150% range, 110% refire time, and its weapon becomes a
+two-cell module) and the *efficiency coil* (rifle, rail gun, rockets, shotgun: 60% energy a shot,
+125% refire time). The heat sink is gone with heat; a build naming it is rejected as an unknown
+mod. A mod that does not fit its weapon rejects the build. Pick a named loadout
 with `--loadout <name>` natively or `&loadout=<name>` in the browser (the join overlay's loadout
-field): `standard`, `heavy`, `skirmisher` (rapid-cycler rifle, heat-sunk shotgun) or `marksman`
-(long-barrel rifle along an arm, overcharged rail gun: two hits a kill instead of three), each a
-humanoid component tree. Practice starts as it; online the host applies it at your next spawn.
-The HUD's status line shows the held weapon's mod and every equipped one.
+field): `standard`, `heavy` (with a battery: 160 energy), `skirmisher` (rapid-cycler rifle,
+efficiency-coiled shotgun) or `marksman` (long-barrel rifle along an arm, overcharged rail gun:
+two hits a kill instead of three, on the core's 100), each a humanoid component tree. Practice
+starts as it; online the host applies it at your next spawn. The HUD's status line shows the held
+weapon's mod and every equipped one.
 
 **Module pickups.** A few powerful modules lie on pads at contested points of a map, placed in
 the map's data (`shooter_sim::pickups`, `Arena::module_pads`). Any robot that walks (or jumps
 low) onto a pad takes its module, whatever its build; the module works on top of the build and
 its mods and never changes the build. Two provisional modules: the *rail capacitor* (rail gun:
-150% damage, 75% refire time, stacking on a rail mod; 5 boosted shots) and *thrusters* (every
-jump, the air jump too, leaves at 9 m/s instead of 6: a 2.25 m jump onto the platform; 6
-boosted jumps). On the greybox the capacitor lies on the platform's south-east corner, the perch
+150% damage, 75% refire time and 150% energy a shot, stacking on a rail mod; 5 boosted shots)
+and *thrusters* (every jump, the air jump too, leaves at 9 m/s instead of 6: a 2.25 m jump onto
+the platform; 6 boosted jumps, each costing 15 energy; without the energy a jump is a plain one
+and keeps its use). On the greybox the capacitor lies on the platform's south-east corner, the perch
 that sees the whole hall, and the thrusters in the open south-west quarter under its sightline.
 A module lasts until its uses are spent, its holder dies or the round ends (owner decision on
 #62); nothing drops. A robot carries one module, and taking another replaces it. A pad is back
@@ -185,7 +202,7 @@ ready pad in the same tick the nearest (feet to pad centre) takes it, then the l
 host owns all of it; snapshots carry the pads and each fighter's module, the HUD's status line
 shows the carried module and its uses left, the feed announces pickups, and the pads are drawn
 as tinted plates with the module floating over them while it is there. Values are provisional
-(Atlas Q2.i46.3); the shared energy pool (#72) does not exist yet, so modules cost no energy.
+(Atlas Q2.i46.3); the boosts are paid from the robot's shared energy pool (owner option B on #62).
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points,
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few

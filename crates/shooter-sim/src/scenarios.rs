@@ -438,7 +438,7 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
 
 /// The robot build scripted person `index` asks for when it joins: the first person comes back
 /// as the [`HEAVY`] build after its first death, the second as the modded [`SKIRMISHER`]
-/// (rapid-cycler rifle, heat-sunk shotgun), the others keep the standard build.
+/// (rapid-cycler rifle, efficiency-coiled shotgun), the others keep the standard build.
 #[must_use]
 pub const fn scripted_build(index: u8) -> Option<Assembly> {
     match index {

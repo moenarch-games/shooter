@@ -185,9 +185,9 @@ fn combat(scenario: Scenario, build: Assembly) -> Vec<(u32, Option<Weapon>, i32)
 }
 
 /// Weapon mods on both backends: the skirmisher's rapid-cycler rifle and the marksman's
-/// long-barrel rifle and overcharged rail gun on the shooting range, the skirmisher's heat-sunk
-/// shotgun on the close range. They fire and hit alike on both, and differently from the shipped
-/// weapons.
+/// long-barrel rifle and overcharged rail gun on the shooting range, the skirmisher's
+/// efficiency-coiled shotgun on the close range. They fire and hit alike on both, and differently
+/// from the shipped weapons.
 #[test]
 fn modded_loadouts_match_the_rapier_oracle() {
     for build in [SKIRMISHER, MARKSMAN] {
@@ -199,8 +199,8 @@ fn modded_loadouts_match_the_rapier_oracle() {
         );
     }
     compare_as(scenarios::CLOSE_RANGE, SKIRMISHER);
-    // The heat sink leaves the shotgun (and the rest of the close range) as shipped.
-    assert_eq!(
+    // The efficiency coil slows the shotgun's blasts.
+    assert_ne!(
         combat(scenarios::CLOSE_RANGE, SKIRMISHER),
         combat(scenarios::CLOSE_RANGE, STANDARD)
     );

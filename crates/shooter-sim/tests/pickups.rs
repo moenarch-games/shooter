@@ -543,9 +543,13 @@ fn the_rail_capacitor_is_spent_by_its_rail_shots() {
     assert_eq!(spent_at, Some(shots[boosted - 1]));
     assert_eq!(session.fighters[0].carried, None);
     let gaps: Vec<u32> = shots.windows(2).map(|pair| pair[1] - pair[0]).collect();
-    // The boosted shots recharge in 54 ticks (the last one too: it went out boosted), then 72.
-    assert!(gaps[..boosted].iter().all(|gap| *gap == 54), "{gaps:?}");
-    assert!(gaps[boosted..].iter().all(|gap| *gap == 72), "{gaps:?}");
+    // The boosted shots recharge in 54 ticks, but each costs 45 energy (150 % of the rail
+    // shot's 30) from the core's 100, which regenerates 0.4 a tick: two go out at the boosted
+    // pace, then a shot waits for the pool to hold 45 again (92 ticks, then 112.5 rounded up).
+    // Unboosted, a shot costs 30 and the pool pays it every 75 ticks, a little slower than the
+    // rail gun's own 72.
+    assert_eq!(gaps[..boosted - 1], [54, 54, 92, 113], "{gaps:?}");
+    assert!(gaps[boosted - 1..].iter().all(|gap| *gap == 75), "{gaps:?}");
 }
 
 /// Any build takes any module, keeps its build (still valid), and gets the same effect: the

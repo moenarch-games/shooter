@@ -25,10 +25,11 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
-/// 6: the logged commands are wire-11 inputs and the digests cover wire-11 snapshots (robot
-/// builds as socket-grid component trees); 5 carried wire 10 (module pickups), 4 wire 9 (robot
-/// builds with weapon mods).
-const FORMAT: u8 = 6;
+/// 7: the logged commands are wire-12 inputs and the digests cover wire-12 snapshots (each
+/// robot's shared energy charge, batteries, no heat); 6 carried wire 11 (robot builds as
+/// socket-grid component trees), 5 wire 10 (module pickups), 4 wire 9 (robot builds with weapon
+/// mods).
+const FORMAT: u8 = 7;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 
@@ -340,6 +341,40 @@ mod tests {
         unknown[at..at + named.len()].copy_from_slice(b"nowhere");
         assert!(matches!(Replay::decode(&unknown), Err(Error::Map(_))));
         assert!(Replay::decode(&bytes[..HEADER_BYTES + 3]).is_err());
+    }
+
+    /// Every robot's energy charge is part of the replayed match: two replays of the same log
+    /// spend and regenerate it alike, the robots do spend it, and the heavy build's battery
+    /// shows in its capacity.
+    #[test]
+    fn a_replay_reproduces_every_energy_pool() {
+        let replay = record(Script::DEFAULT).unwrap();
+        let pools = || {
+            let mut charges = Vec::new();
+            let (mut spent, mut battery) = (false, false);
+            replay
+                .play(u64::MAX, |session| {
+                    for fighter in session.fighters.iter().filter(|f| f.alive()) {
+                        let pool = fighter.pool();
+                        assert!(fighter.energy <= pool.capacity);
+                        spent |= fighter.energy < pool.capacity;
+                        battery |= fighter.build == HEAVY && pool.capacity == 160_000;
+                    }
+                    charges.push(
+                        session
+                            .fighters
+                            .iter()
+                            .map(|f| f.energy)
+                            .collect::<Vec<_>>(),
+                    );
+                    Ok(())
+                })
+                .unwrap();
+            assert!(spent, "the match spends energy");
+            assert!(battery, "the heavy person comes back with its battery");
+            charges
+        };
+        assert_eq!(pools(), pools());
     }
 
     #[test]

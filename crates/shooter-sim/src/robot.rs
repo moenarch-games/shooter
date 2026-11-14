@@ -40,11 +40,15 @@
 //! and sockets, no cycles, footprints on their faces without overlaps, exactly one control core
 //! (on an exterior socket of the player's choice, which every free socket is), mods on the
 //! weapons they fit, each weapon at most once (the arsenal looks a weapon's mod up by weapon), the
-//! technical part-count ceiling [`MAX_PARTS`], and the budgets: the core's power against what the
-//! parts draw, the parts' cooling against the heat they make (the shipped heat, until shooter#72
-//! replaces power and heat with shared energy, D2.i70.3 and D2.i70.4), and the build points.
-//! Nothing requires locomotion: stationary, asymmetrical or grappling-only robots are valid.
-//! Every attachment is rigid; joints are part types (shooter#73 moves them).
+//! technical part-count ceiling [`MAX_PARTS`], and the build points. Nothing requires
+//! locomotion: stationary, asymmetrical or grappling-only robots are valid. Every attachment is
+//! rigid; joints are part types (shooter#73 moves them).
+//!
+//! **Energy** (D2.i70.3, D2.i70.4): the control core holds a baseline energy capacity and
+//! regenerates it; each optional battery ([`Kind::Battery`]) adds stored capacity only (no
+//! regeneration). Every part draws from that one shared pool ([`crate::energy`]): no wiring, no
+//! circuits, and no heat or cooling. A build's capacity and regeneration are in its
+//! [`Catalog::budget`].
 //!
 //! **Provisional data.** The cell size, chassis sizes, part values, build points and part ceiling
 //! are tunable placeholders (Atlas Q2.i70.1, Q2.i70.2), not owner-approved balance. The part keys
@@ -53,11 +57,10 @@
 //! ship.
 //!
 //! **Weapon modifications** (Atlas D2.i46.8, shooter#51) are mounted on weapon parts: a weapon
-//! part may carry one [`Mod`] from the catalog. A mod costs build points and weighs on the mass,
-//! power and heat budgets like any part, fits only the weapons it names, may make its weapon a
-//! heavy module (its footprint grows to at least two cells long), and changes how that weapon
-//! fires ([`Tuning`]: damage, refire and range). Every mod that changes the fire trades something
-//! away.
+//! part may carry one [`Mod`] from the catalog. A mod costs build points and adds mass like any
+//! part, fits only the weapons it names, may make its weapon a heavy module (its footprint grows
+//! to at least two cells long), and changes how that weapon fires ([`Tuning`]: damage, refire,
+//! range and the energy a shot costs). Every mod that changes the fire trades something away.
 //!
 //! A build does not yet change how a fighter moves or which weapons it carries: every fighter
 //! still has the full arsenal, and a weapon without a mod in the build fires as shipped. A
@@ -67,8 +70,8 @@
 
 use crate::weapons::{Delivery, Weapon};
 use parts::{
-    BEAM_LONG, CHASSIS_M, CHASSIS_S, CORE, ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, LEG, RAIL_GUN,
-    ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    BATTERY, BEAM_LONG, CHASSIS_M, CHASSIS_S, CORE, ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, LEG,
+    RAIL_GUN, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
 
@@ -145,8 +148,11 @@ pub enum Kind {
     Beam,
     /// A movable joint (hinge or rotor): rigid until the mechanics (shooter#73).
     Joint,
-    /// The control core: exactly one per build (D2.i70.2).
+    /// The control core: exactly one per build (D2.i70.2); the baseline energy capacity and its
+    /// regeneration (D2.i70.3).
     Core,
+    /// A battery: stored energy capacity only (D2.i70.3).
+    Battery,
     Sensor,
     /// Legs, wheels or tracks: optional (D2.i70.1).
     Locomotion,
@@ -175,8 +181,8 @@ pub struct Site {
     pub v: u8,
 }
 
-/// A catalog part type. Masses are kilograms; power, draw, heat and cooling share one unit; all
-/// values are provisional (Q2.i70.1, Q2.i70.2).
+/// A catalog part type. Masses are kilograms and energy whole energy units
+/// ([`crate::energy`]); all values are provisional (Q2.i70.1, Q2.i70.2).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PartType {
     pub id: PartTypeId,
@@ -188,11 +194,13 @@ pub struct PartType {
     /// The faces with sockets.
     pub sockets: Faces,
     pub mass: u16,
-    /// Power it supplies (the core).
-    pub power: u16,
-    pub draw: u16,
-    pub heat: u16,
-    pub cooling: u16,
+    /// Energy it stores (the core and batteries).
+    pub capacity: u16,
+    /// Energy it regenerates a second (the core).
+    pub regen: u16,
+    /// Its component health; 0 where none is authored yet (per-part damage, which applies it,
+    /// is shooter#56).
+    pub health: u16,
     pub points: u16,
 }
 
@@ -272,13 +280,16 @@ impl PartType {
 pub struct ModId(pub u8);
 
 /// How a mod changes its weapon's fire, in percent of the shipped weapon's values (100 changes
-/// nothing). Damage and range round down (to at least 1), refire rounds up; a continuous weapon
-/// keeps firing every tick.
+/// nothing). Damage and range round down (to at least 1), refire and energy round up; a
+/// continuous weapon keeps firing every tick.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Tuning {
     pub damage_percent: u16,
     pub refire_percent: u16,
     pub range_percent: u16,
+    /// What one activation (a shot, a swing, a hook, a continuous weapon's tick) costs from the
+    /// shared energy pool.
+    pub energy_percent: u16,
 }
 
 impl Tuning {
@@ -287,7 +298,14 @@ impl Tuning {
         damage_percent: 100,
         refire_percent: 100,
         range_percent: 100,
+        energy_percent: 100,
     };
+
+    /// The energy (milli-units, [`crate::energy`]) one activation of `weapon` costs.
+    #[must_use]
+    pub fn energy(self, weapon: Weapon) -> u32 {
+        (weapon.energy() * u32::from(self.energy_percent)).div_ceil(100)
+    }
 
     /// Ticks between two of `weapon`'s shots.
     #[must_use]
@@ -323,7 +341,7 @@ impl Tuning {
 }
 
 /// A weapon modification (D2.i46.8): what it costs a build, which weapons it fits and how it
-/// changes their fire. Masses are kilograms; power, heat and cooling share the parts' unit.
+/// changes their fire. Masses are kilograms.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Mod {
     pub id: ModId,
@@ -334,11 +352,6 @@ pub struct Mod {
     /// It makes its weapon a heavy module: a footprint at least two cells long.
     pub heavy: bool,
     pub mass: u16,
-    pub draw: u16,
-    /// Heat it adds...
-    pub heat: u16,
-    /// ...or sheds.
-    pub cooling: u16,
     pub points: u16,
     pub tuning: Tuning,
 }
@@ -363,7 +376,7 @@ pub mod parts {
         kind: Kind,
         cells: [u8; 3],
         sockets: Faces,
-        [mass, power, draw, heat, cooling, points]: [u16; 6],
+        [mass, capacity, regen, points]: [u16; 4],
     ) -> PartType {
         PartType {
             id: PartTypeId(id),
@@ -372,10 +385,9 @@ pub mod parts {
             cells,
             sockets,
             mass,
-            power,
-            draw,
-            heat,
-            cooling,
+            capacity,
+            regen,
+            health: 0,
             points,
         }
     }
@@ -385,7 +397,7 @@ pub mod parts {
         weapon: Weapon,
         key: &'static str,
         heavy: bool,
-        [mass, draw, heat, points]: [u16; 4],
+        [mass, points]: [u16; 2],
     ) -> PartType {
         let cells = if heavy { [1, 2, 2] } else { [1, 1, 2] };
         part(
@@ -394,67 +406,72 @@ pub mod parts {
             Kind::Weapon(weapon),
             cells,
             Faces::NONE,
-            [mass, 0, draw, heat, 0, points],
+            [mass, 0, 0, points],
         )
     }
 
-    // The rows of the table: code, key, kind, cells, socket faces, then mass, power, draw, heat,
-    // cooling and points (weapons: mass, draw, heat and points).
+    // The rows of the table: code, key, kind, cells, socket faces, then mass, energy capacity,
+    // energy regenerated a second, and points (weapons: mass and points; what an activation
+    // costs is the weapon's, `Weapon::energy`).
     /// 20 × 40 × 80 cm: 28 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_S: PartType = part(1, "robot.chassis.20x40x80", Kind::Chassis, [1, 2, 4], Faces::ALL, [60, 0, 0, 0, 30, 10]);
+    pub const CHASSIS_S: PartType = part(1, "robot.chassis.20x40x80", Kind::Chassis, [1, 2, 4], Faces::ALL, [60, 0, 0, 10]);
     /// 40 × 40 × 80 cm: 40 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_M: PartType = part(2, "robot.chassis.40x40x80", Kind::Chassis, [2, 2, 4], Faces::ALL, [110, 0, 0, 0, 45, 20]);
+    pub const CHASSIS_M: PartType = part(2, "robot.chassis.40x40x80", Kind::Chassis, [2, 2, 4], Faces::ALL, [110, 0, 0, 20]);
     /// 40 × 60 × 80 cm: 52 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_L: PartType = part(3, "robot.chassis.40x60x80", Kind::Chassis, [2, 3, 4], Faces::ALL, [150, 0, 0, 0, 60, 30]);
+    pub const CHASSIS_L: PartType = part(3, "robot.chassis.40x60x80", Kind::Chassis, [2, 3, 4], Faces::ALL, [150, 0, 0, 30]);
     /// 20 × 20 × 40 cm.
     #[rustfmt::skip]
-    pub const BEAM_SHORT: PartType = part(10, "robot.beam.20x20x40", Kind::Beam, [1, 1, 2], Faces::ALL, [5, 0, 0, 0, 0, 2]);
+    pub const BEAM_SHORT: PartType = part(10, "robot.beam.20x20x40", Kind::Beam, [1, 1, 2], Faces::ALL, [5, 0, 0, 2]);
     /// 20 × 20 × 80 cm.
     #[rustfmt::skip]
-    pub const BEAM_LONG: PartType = part(11, "robot.beam.20x20x80", Kind::Beam, [1, 1, 4], Faces::ALL, [10, 0, 0, 0, 0, 3]);
+    pub const BEAM_LONG: PartType = part(11, "robot.beam.20x20x80", Kind::Beam, [1, 1, 4], Faces::ALL, [10, 0, 0, 3]);
     /// A hinge servo: one socket, on its moving side.
     #[rustfmt::skip]
-    pub const HINGE: PartType = part(20, "robot.joint.hinge", Kind::Joint, [1, 1, 1], Faces::TOP, [8, 0, 5, 0, 0, 5]);
+    pub const HINGE: PartType = part(20, "robot.joint.hinge", Kind::Joint, [1, 1, 1], Faces::TOP, [8, 0, 0, 5]);
     /// A continuous rotor (a turret's base): one socket, on its moving side.
     #[rustfmt::skip]
-    pub const ROTOR: PartType = part(21, "robot.joint.rotor", Kind::Joint, [1, 1, 1], Faces::TOP, [10, 0, 8, 0, 0, 6]);
-    /// The control core: supplies the power everything draws.
+    pub const ROTOR: PartType = part(21, "robot.joint.rotor", Kind::Joint, [1, 1, 1], Faces::TOP, [10, 0, 0, 6]);
+    /// The control core: the baseline energy capacity (100) and the regeneration (24 a second).
     #[rustfmt::skip]
-    pub const CORE: PartType = part(30, "robot.core", Kind::Core, [1, 1, 1], Faces::NONE, [15, 130, 0, 0, 10, 10]);
+    pub const CORE: PartType = part(30, "robot.core", Kind::Core, [1, 1, 1], Faces::NONE, [15, 100, 24, 10]);
+    /// A 20 × 40 × 20 cm battery: 60 more stored energy and nothing else (D2.i70.3), with 60
+    /// component health for per-part damage (shooter#56).
     #[rustfmt::skip]
-    pub const SENSOR: PartType = part(31, "robot.sensor", Kind::Sensor, [1, 1, 1], Faces::NONE, [10, 0, 10, 0, 10, 5]);
+    pub const BATTERY: PartType = PartType { health: 60, ..part(32, "robot.battery", Kind::Battery, [1, 2, 1], Faces::NONE, [20, 60, 0, 5]) };
+    #[rustfmt::skip]
+    pub const SENSOR: PartType = part(31, "robot.sensor", Kind::Sensor, [1, 1, 1], Faces::NONE, [10, 0, 0, 5]);
     /// One self-contained leg, 80 cm long.
     #[rustfmt::skip]
-    pub const LEG: PartType = part(40, "robot.leg", Kind::Locomotion, [1, 1, 4], Faces::NONE, [25, 0, 12, 0, 0, 7]);
+    pub const LEG: PartType = part(40, "robot.leg", Kind::Locomotion, [1, 1, 4], Faces::NONE, [25, 0, 0, 7]);
     /// A 40 cm wheel.
     #[rustfmt::skip]
-    pub const WHEEL: PartType = part(41, "robot.wheel", Kind::Locomotion, [2, 2, 1], Faces::NONE, [20, 0, 8, 0, 0, 6]);
+    pub const WHEEL: PartType = part(41, "robot.wheel", Kind::Locomotion, [2, 2, 1], Faces::NONE, [20, 0, 0, 6]);
     /// An 80 cm track.
     #[rustfmt::skip]
-    pub const TRACK: PartType = part(42, "robot.track", Kind::Locomotion, [1, 4, 2], Faces::NONE, [45, 0, 15, 0, 0, 12]);
+    pub const TRACK: PartType = part(42, "robot.track", Kind::Locomotion, [1, 4, 2], Faces::NONE, [45, 0, 0, 12]);
     /// A 40 × 40 cm plate.
     #[rustfmt::skip]
-    pub const ARMOR_PLATE: PartType = part(50, "robot.armor.plate", Kind::Armor, [2, 2, 1], Faces::NONE, [15, 0, 0, 0, 0, 4]);
+    pub const ARMOR_PLATE: PartType = part(50, "robot.armor.plate", Kind::Armor, [2, 2, 1], Faces::NONE, [15, 0, 0, 4]);
 
     #[rustfmt::skip]
-    pub const ENERGY_RIFLE: PartType = weapon(Weapon::EnergyRifle, "weapon.energy-rifle", false, [12, 15, 10, 10]);
+    pub const ENERGY_RIFLE: PartType = weapon(Weapon::EnergyRifle, "weapon.energy-rifle", false, [12, 10]);
     #[rustfmt::skip]
-    pub const RAIL_GUN: PartType = weapon(Weapon::RailGun, "weapon.rail-gun", true, [25, 35, 25, 20]);
+    pub const RAIL_GUN: PartType = weapon(Weapon::RailGun, "weapon.rail-gun", true, [25, 20]);
     #[rustfmt::skip]
-    pub const ROCKET_LAUNCHER: PartType = weapon(Weapon::RocketLauncher, "weapon.rocket-launcher", true, [30, 10, 20, 20]);
+    pub const ROCKET_LAUNCHER: PartType = weapon(Weapon::RocketLauncher, "weapon.rocket-launcher", true, [30, 20]);
     #[rustfmt::skip]
-    pub const GRAPPLE: PartType = weapon(Weapon::Grapple, "weapon.grapple-hook", false, [10, 10, 5, 10]);
+    pub const GRAPPLE: PartType = weapon(Weapon::Grapple, "weapon.grapple-hook", false, [10, 10]);
     #[rustfmt::skip]
-    pub const ENERGY_BLADE: PartType = weapon(Weapon::EnergyBlade, "weapon.energy-blade", false, [8, 10, 5, 5]);
+    pub const ENERGY_BLADE: PartType = weapon(Weapon::EnergyBlade, "weapon.energy-blade", false, [8, 5]);
     #[rustfmt::skip]
-    pub const SHOTGUN: PartType = weapon(Weapon::Shotgun, "weapon.shotgun", false, [15, 10, 15, 15]);
+    pub const SHOTGUN: PartType = weapon(Weapon::Shotgun, "weapon.shotgun", false, [15, 15]);
     #[rustfmt::skip]
-    pub const LASER: PartType = weapon(Weapon::Laser, "weapon.laser", false, [14, 30, 30, 15]);
+    pub const LASER: PartType = weapon(Weapon::Laser, "weapon.laser", false, [14, 15]);
     #[rustfmt::skip]
-    pub const FLAMETHROWER: PartType = weapon(Weapon::Flamethrower, "weapon.flamethrower", false, [18, 20, 35, 15]);
+    pub const FLAMETHROWER: PartType = weapon(Weapon::Flamethrower, "weapon.flamethrower", false, [18, 15]);
 }
 
 const fn modification(
@@ -462,8 +479,13 @@ const fn modification(
     key: &'static str,
     fits: &'static [Weapon],
     heavy: bool,
-    [mass, draw, heat, cooling, points]: [u16; 5],
-    [damage_percent, refire_percent, range_percent]: [u16; 3],
+    [mass, points]: [u16; 2],
+    [
+        damage_percent,
+        refire_percent,
+        range_percent,
+        energy_percent,
+    ]: [u16; 4],
 ) -> Mod {
     Mod {
         id: ModId(id),
@@ -471,14 +493,12 @@ const fn modification(
         fits,
         heavy,
         mass,
-        draw,
-        heat,
-        cooling,
         points,
         tuning: Tuning {
             damage_percent,
             refire_percent,
             range_percent,
+            energy_percent,
         },
     }
 }
@@ -487,14 +507,23 @@ const fn modification(
 const SINGLE_SHOT: &[Weapon] = &[Weapon::EnergyRifle, Weapon::RailGun, Weapon::Shotgun];
 /// The hitscan beams a longer barrel reaches further with.
 const BEAMS: &[Weapon] = &[Weapon::EnergyRifle, Weapon::RailGun, Weapon::Laser];
+/// The single-shot guns whose shots an efficiency coil charges more slowly.
+const SHOTS: &[Weapon] = &[
+    Weapon::EnergyRifle,
+    Weapon::RailGun,
+    Weapon::RocketLauncher,
+    Weapon::Shotgun,
+];
 
 pub const RAPID_CYCLER: ModId = ModId(1);
 pub const OVERCHARGER: ModId = ModId(2);
 pub const LONG_BARREL: ModId = ModId(3);
-pub const HEAT_SINK: ModId = ModId(4);
+// Code 4 was the heat sink (shooter#51), removed with heat (shooter#72); it stays retired, so an
+// old build naming it is an unknown mod.
+pub const EFFICIENCY_COIL: ModId = ModId(5);
 
-/// The beta's catalog: three chassis sizes, two beams, two joints, the core, a sensor, legs,
-/// wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
+/// The beta's catalog: three chassis sizes, two beams, two joints, the core, a battery, a sensor,
+/// legs, wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
 /// Provisional values (Q2.i70.1, Q2.i70.2).
 #[rustfmt::skip]
 pub const BETA: Catalog = Catalog {
@@ -502,22 +531,23 @@ pub const BETA: Catalog = Catalog {
         parts::CHASSIS_S, parts::CHASSIS_M, parts::CHASSIS_L,
         parts::BEAM_SHORT, parts::BEAM_LONG,
         parts::HINGE, parts::ROTOR,
-        parts::CORE, parts::SENSOR,
+        parts::CORE, parts::BATTERY, parts::SENSOR,
         parts::LEG, parts::WHEEL, parts::TRACK,
         parts::ARMOR_PLATE,
         parts::ENERGY_RIFLE, parts::RAIL_GUN, parts::ROCKET_LAUNCHER, parts::GRAPPLE,
         parts::ENERGY_BLADE, parts::SHOTGUN, parts::LASER, parts::FLAMETHROWER,
     ],
     mods: &[
-        //           code key                fits          heavy  mass draw heat cool points  damage% refire% range%
-        // Faster fire for less damage a shot; hot and power-hungry.
-        modification(1, "mod.rapid-cycler", SINGLE_SHOT,  false, [4,   10,  20,  0,   10], [75,  65,  100]),
-        // More damage a shot for slower fire; the most power.
-        modification(2, "mod.overcharger",  SINGLE_SHOT,  false, [6,   20,  15,  0,   10], [125, 130, 100]),
+        //           code key                    fits         heavy  mass points  damage% refire% range% energy%
+        // Faster fire for less damage a shot: more damage a second, but each shot costs as much,
+        // so it drains the pool half again as fast.
+        modification(1, "mod.rapid-cycler",     SINGLE_SHOT, false, [4,  10], [75,  65,  100, 100]),
+        // More damage a shot for slower fire, at a higher energy cost a damage point.
+        modification(2, "mod.overcharger",      SINGLE_SHOT, false, [6,  10], [125, 130, 100, 150]),
         // Half again the range, a little slower fire, and a heavy (two-cell) module.
-        modification(3, "mod.long-barrel",  BEAMS,        true,  [10,  0,   0,   0,   5],  [100, 110, 150]),
-        // Sheds heat for the rest of the build; mass and points, no change to the fire.
-        modification(4, "mod.heat-sink",    &Weapon::ALL, false, [10,  0,   0,   20,  5],  [100, 100, 100]),
+        modification(3, "mod.long-barrel",      BEAMS,       true,  [10, 5],  [100, 110, 150, 100]),
+        // Shots cost 60 % of the energy but charge a quarter slower: sustained fire on less.
+        modification(5, "mod.efficiency-coil",  SHOTS,       false, [6,  5],  [100, 125, 100, 60]),
     ],
     build_points: 120,
 };
@@ -756,33 +786,44 @@ pub const STANDARD: Assembly = with_weapons(
 );
 
 /// A heavy build: the medium chassis, the rail gun along the left arm, the blade on the right
-/// arm's tip, the rocket launcher on top and the grapple on the chest. Valid in [`BETA`].
-pub const HEAVY: Assembly = with_weapons(
-    frame(&CHASSIS_M),
-    [
+/// arm's tip, the rocket launcher on top, the grapple on the chest and, for the energy its rail
+/// shots and rockets take, a battery on its back beside the core (160 energy, not 100). Valid in
+/// [`BETA`].
+pub const HEAVY: Assembly = {
+    let [a, b, c, d, e, f, g] = frame(&CHASSIS_M);
+    authored(&[
+        a,
+        b,
+        c,
+        d,
+        e,
+        f,
+        g,
         along_arm(7, &RAIL_GUN, 3),
         in_hand(8, &ENERGY_BLADE, 4),
         Part::on(9, &ROCKET_LAUNCHER, 0, &CHASSIS_M, Face::PosZ, 1, 0),
         Part::on(10, &GRAPPLE, 0, &CHASSIS_M, Face::PosX, 0, 3),
-    ],
-);
+        Part::on(11, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0),
+    ])
+};
 
-/// A fast, light loadout on the standard frame: the rapid-cycler rifle, the blade, the grapple,
-/// and the shotgun with a heat sink (without it the cycler overheats the small chassis). Valid
-/// in [`BETA`].
+/// A fast, light loadout on the standard frame: the rapid-cycler rifle (which drains the core's
+/// energy half again as fast as the shipped rifle), the blade, the grapple, and the shotgun with
+/// an efficiency coil (cheaper blasts, so the pool lasts). Valid in [`BETA`].
 pub const SKIRMISHER: Assembly = with_weapons(
     frame(&CHASSIS_S),
     [
         in_hand(7, &ENERGY_RIFLE, 3).with(RAPID_CYCLER),
         in_hand(8, &ENERGY_BLADE, 4),
         Part::on(9, &GRAPPLE, 0, &CHASSIS_S, Face::PosZ, 0, 1),
-        Part::on(10, &SHOTGUN, 0, &CHASSIS_S, Face::PosX, 1, 3).with(HEAT_SINK),
+        Part::on(10, &SHOTGUN, 0, &CHASSIS_S, Face::PosX, 1, 3).with(EFFICIENCY_COIL),
     ],
 );
 
 /// A heavy, long-range loadout: the medium chassis, the long-barrel rifle (a two-cell module)
 /// along the left arm, the blade on the right arm's tip, an overcharged rail gun (two hits a kill
-/// instead of three) on top and the grapple on the chest. Valid in [`BETA`].
+/// instead of three, for half again the energy a shot) on top and the grapple on the chest; no
+/// battery, so it lives on the core's 100. Valid in [`BETA`].
 pub const MARKSMAN: Assembly = with_weapons(
     frame(&CHASSIS_M),
     [
@@ -869,10 +910,10 @@ pub struct Budget {
     pub parts: u32,
     /// Total mass (no limit: nothing carries it yet, shooter#73).
     pub mass: u32,
-    pub draw: u32,
-    pub power: u32,
-    pub heat: u32,
-    pub cooling: u32,
+    /// The shared energy pool's capacity (whole units): the core's and every battery's.
+    pub capacity: u32,
+    /// Energy regenerated a second (whole units): the core's.
+    pub regen: u32,
     pub points: u32,
     pub build_points: u32,
 }
@@ -909,14 +950,6 @@ pub enum AssemblyError {
     /// The mod does not fit the weapon.
     DoesNotFit(ModId, Weapon),
     DuplicateWeapon(Weapon),
-    Underpowered {
-        draw: u32,
-        power: u32,
-    },
-    Overheated {
-        heat: u32,
-        cooling: u32,
-    },
     OverBudget {
         points: u32,
         build_points: u32,
@@ -965,12 +998,6 @@ impl fmt::Display for AssemblyError {
                 write!(formatter, "mod {} does not fit {weapon:?}", id.0)
             }
             Self::DuplicateWeapon(weapon) => write!(formatter, "{weapon:?} is mounted twice"),
-            Self::Underpowered { draw, power } => {
-                write!(formatter, "draws {draw} power, the core supplies {power}")
-            }
-            Self::Overheated { heat, cooling } => {
-                write!(formatter, "makes {heat} heat, sheds {cooling}")
-            }
             Self::OverBudget {
                 points,
                 build_points,
@@ -1071,7 +1098,7 @@ impl Catalog {
     /// The one validation path for a build, in a fixed order so the same candidate always fails
     /// the same way: the part ceiling and known codes; unique IDs (canonical ID order); one root
     /// chassis; parents and their sockets; connection to the root; footprints; the core; mods and
-    /// weapons; then the budgets (power, heat, build points).
+    /// weapons; then the build points.
     ///
     /// # Errors
     ///
@@ -1209,18 +1236,6 @@ impl Catalog {
         }
 
         let budget = self.budget(&assembly);
-        if budget.draw > budget.power {
-            return Err(AssemblyError::Underpowered {
-                draw: budget.draw,
-                power: budget.power,
-            });
-        }
-        if budget.heat > budget.cooling {
-            return Err(AssemblyError::Overheated {
-                heat: budget.heat,
-                cooling: budget.cooling,
-            });
-        }
         if budget.points > budget.build_points {
             return Err(AssemblyError::OverBudget {
                 points: budget.points,
@@ -1241,17 +1256,12 @@ impl Catalog {
         for part in assembly.parts() {
             if let Some(kind) = self.part_type(part.kind) {
                 budget.mass += u32::from(kind.mass);
-                budget.power += u32::from(kind.power);
-                budget.draw += u32::from(kind.draw);
-                budget.heat += u32::from(kind.heat);
-                budget.cooling += u32::from(kind.cooling);
+                budget.capacity += u32::from(kind.capacity);
+                budget.regen += u32::from(kind.regen);
                 budget.points += u32::from(kind.points);
             }
             if let Some(modification) = part.modification.and_then(|id| self.modification(id)) {
                 budget.mass += u32::from(modification.mass);
-                budget.draw += u32::from(modification.draw);
-                budget.heat += u32::from(modification.heat);
-                budget.cooling += u32::from(modification.cooling);
                 budget.points += u32::from(modification.points);
             }
         }

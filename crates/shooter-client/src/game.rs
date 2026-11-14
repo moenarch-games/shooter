@@ -208,6 +208,8 @@ pub mod online {
         position: [f32; 3],
         motion: Motion,
         hook: Option<Hook>,
+        /// The charge in its energy pool (milli-units).
+        energy: u32,
     }
 
     pub struct Online {
@@ -449,18 +451,18 @@ pub mod online {
             predictor.tick(intent).map_err(|error| error.to_string())
         }
 
-        fn state(&self) -> ([f32; 3], Motion, Option<Hook>) {
+        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, u32) {
             self.live()
-                .map_or(([0.0; 3], Motion::default(), None), |predictor| {
+                .map_or(([0.0; 3], Motion::default(), None, 0), |predictor| {
                     let local = predictor.local();
                     (
                         local.player.center(&predictor.world),
                         local.player.motion,
                         local.hook,
+                        local.energy,
                     )
                 })
         }
-
         pub fn hook(&self) -> Option<[f32; 3]> {
             self.live()?.local().hook.map(|hook| hook.anchor_units())
         }
@@ -476,6 +478,7 @@ pub mod online {
             }
             // Predicted shots fire at the host's pace for this life's build (its weapon mods)
             // and module, and jumps leave as the host's do; the pads are as the host has them.
+            // The energy pool is predicted like the body: reset to the host's charge with it.
             if let Some(predictor) = self.predictor.as_mut() {
                 predictor.fighters[0].build = me.build;
                 predictor.fighters[0].carried = me.carried;
@@ -486,7 +489,9 @@ pub mod online {
             let place = |predictor: &mut Session| {
                 predictor
                     .place(0, me.position, me.velocity, me.motion, me.held, me.hook)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                predictor.fighters[0].energy = me.energy;
+                Ok::<(), String>(())
             };
             if !self.predicting {
                 place(self.predictor_mut()?)?;
@@ -513,13 +518,19 @@ pub mod online {
             let off = (0..3)
                 .any(|axis| (acked.position[axis] - me.position[axis]).abs() > TOLERANCE_UNITS)
                 || acked.motion != me.motion
-                || acked.hook != me.hook;
+                || acked.hook != me.hook
+                || acked.energy != me.energy;
             if off {
                 place(self.predictor_mut()?)?;
                 let replay: Vec<Pending> = self.pending.drain(..).collect();
                 for mut pending in replay {
                     self.predict(pending.intent)?;
-                    (pending.position, pending.motion, pending.hook) = self.state();
+                    (
+                        pending.position,
+                        pending.motion,
+                        pending.hook,
+                        pending.energy,
+                    ) = self.state();
                     self.pending.push_back(pending);
                 }
             }
@@ -594,13 +605,14 @@ pub mod online {
                     report = self.predict(intent)?;
                     let shots = self.predicted_shots();
                     self.events.extend(shots);
-                    let (position, motion, hook) = self.state();
+                    let (position, motion, hook, energy) = self.state();
                     self.pending.push_back(Pending {
                         sequence: self.sequence,
                         intent,
                         position,
                         motion,
                         hook,
+                        energy,
                     });
                     while self.pending.len() > 120 {
                         self.pending.pop_front();

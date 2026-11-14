@@ -16,11 +16,15 @@
 //!
 //! Module pickups lie on the map's pads; the host resolves who takes them, applies, expires and
 //! clears their effects and brings the pads back ([`crate::pickups`] has the rules).
+//!
+//! Every fighter has a shared energy pool from its build; its jumps, swings and shots ask it for
+//! energy first come, first served and it regenerates after them each tick ([`crate::energy`]).
 
 use crate::aim;
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
 use crate::bots::{Bot, Sight};
 use crate::dummies::Dummy;
+use crate::energy::{self, Pool};
 use crate::grapple::Hook;
 use crate::maps::MapId;
 use crate::melee;
@@ -174,6 +178,9 @@ pub struct Fighter {
     pub hook: Option<Hook>,
     /// The module pickup it carries this life, if any ([`crate::pickups`]).
     pub carried: Option<Carried>,
+    /// The charge in its shared energy pool, milli-units ([`crate::energy`]; its build's
+    /// [`Fighter::pool`] bounds it).
+    pub energy: u32,
     pub health: i32,
     /// While dead: the tick it comes back.
     pub respawn_at: Option<u32>,
@@ -208,6 +215,7 @@ impl Fighter {
             configured: Assembly::default(),
             hook: None,
             carried: None,
+            energy: 0,
             health: 0,
             respawn_at: None,
             frags: 0,
@@ -274,6 +282,12 @@ impl Fighter {
     #[must_use]
     pub fn tuning(&self, weapon: Weapon) -> Tuning {
         tuning_of(&self.build, self.carried, weapon)
+    }
+
+    /// Its shared energy pool: its build's capacity and regeneration ([`crate::energy`]).
+    #[must_use]
+    pub fn pool(&self) -> Pool {
+        Pool::of(&self.build)
     }
 }
 
@@ -542,6 +556,7 @@ impl Session {
         fighter.build = fighter.configured;
         fighter.hook = None;
         fighter.carried = None;
+        fighter.energy = fighter.pool().capacity;
         fighter.health = MAX_HEALTH;
         fighter.respawn_at = None;
         fighter.intent = Intent {
@@ -764,17 +779,18 @@ impl Session {
                 }
             };
             let hooked = fighter.hook.is_some();
+            // A thruster jump is the tick's first energy request ([`crate::energy`]).
+            let (jump_velocity, boosted) = pickups::jump(fighter.carried, fighter.energy);
             let moved = fighter.player.apply(
                 &mut self.world,
                 &self.arena,
                 intent,
                 hooked,
-                pickups::jump_velocity(fighter.carried),
+                jump_velocity,
             )?;
             if moved.jumped
-                && fighter
-                    .carried
-                    .is_some_and(|carried| carried.module.spent_by_jump())
+                && boosted
+                && energy::spend(&mut fighter.energy, pickups::THRUSTER_JUMP_ENERGY)
             {
                 spend_module(fighter, &mut self.events);
             }
@@ -796,12 +812,16 @@ impl Session {
             // A set hook holds while the trigger stays down: no second hook until it is let go.
             let hooked = fighter.hook.is_some();
             let (build, carried) = (fighter.build, fighter.carried);
+            // The swing, then the gun, ask the shared pool for their energy, first come, first
+            // served ([`crate::energy`]).
+            let charge = &mut fighter.energy;
             let fired = fighter.arsenal.trigger_tuned(
                 intent.select,
                 intent.melee && playing,
                 intent.fire && playing && !hooked,
                 self.tick,
                 |weapon| tuning_of(&build, carried, weapon).refire_ticks(weapon),
+                |weapon| energy::spend(charge, tuning_of(&build, carried, weapon).energy(weapon)),
             );
             if hooked && !(intent.fire && playing && fighter.arsenal.held == Weapon::Grapple) {
                 fighter.hook = None;
@@ -819,6 +839,12 @@ impl Session {
                 {
                     spend_module(fighter, &mut self.events);
                 }
+            }
+        }
+        // Every request of the tick is in: the pools regenerate.
+        for fighter in &mut self.fighters {
+            if fighter.alive() {
+                fighter.pool().regenerate(&mut fighter.energy);
             }
         }
         for fighter in &mut self.fighters {
