@@ -4,8 +4,10 @@
 //! **Capacity and regeneration.** The control core holds a baseline capacity and regenerates it;
 //! each battery adds stored capacity only ([`crate::robot::Kind::Battery`]). A robot's pool is its
 //! build's ([`Pool::of`]); it comes to life full and refills by [`Pool::regen`] every tick, never
-//! past its capacity. Everything is integer: charges and costs are milli-units ([`MILLI`] to one
-//! energy unit), regeneration a whole number of milli-units a tick.
+//! past its capacity. A battery the robot loses ([`crate::damage`]) takes its capacity with it
+//! ([`Pool::attached`]) and its share of the charge, once ([`Pool::shrink`]). Everything is
+//! integer: charges and costs are milli-units ([`MILLI`] to one energy unit), regeneration a
+//! whole number of milli-units a tick.
 //!
 //! **Spending.** Every activation asks the pool for its whole cost ([`spend`]): a weapon's shot,
 //! swing, hook or continuous tick ([`crate::robot::Tuning::energy`], its weapon mod and any
@@ -27,6 +29,7 @@
 //! owner-approved balance.
 
 use crate::TICK_HZ;
+use crate::damage::PartDamage;
 use crate::robot::{Assembly, BETA};
 
 /// Milli-units in one energy unit: the fixed point of charges and costs.
@@ -51,6 +54,44 @@ impl Pool {
             capacity: budget.capacity * MILLI,
             regen: budget.regen * MILLI / u32::from(TICK_HZ),
         }
+    }
+
+    /// The pool of `build`'s parts still connected ([`crate::damage`]): a lost battery's
+    /// capacity (and a lost core's regeneration) is gone.
+    #[must_use]
+    pub fn attached(build: &Assembly, damage: &PartDamage) -> Self {
+        let (capacity, regen) = build
+            .parts()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| damage.attached(*index))
+            .filter_map(|(_, part)| BETA.part_type(part.kind))
+            .fold((0, 0), |(capacity, regen), part| {
+                (
+                    capacity + u32::from(part.capacity),
+                    regen + u32::from(part.regen),
+                )
+            });
+        Self {
+            capacity: capacity * MILLI,
+            regen: regen * MILLI / u32::from(TICK_HZ),
+        }
+    }
+
+    /// The charge left when the pool shrinks from `self` to `smaller` (a battery lost): the
+    /// lost capacity's share of `charge` goes with it (rounded up), and what remains fits the
+    /// smaller pool.
+    #[must_use]
+    pub fn shrink(self, smaller: Self, charge: u32) -> u32 {
+        if smaller.capacity >= self.capacity || self.capacity == 0 {
+            return charge.min(smaller.capacity);
+        }
+        let gone = u64::from(self.capacity - smaller.capacity);
+        let share = (u64::from(charge) * gone).div_ceil(u64::from(self.capacity));
+        let left = u64::from(charge).saturating_sub(share);
+        u32::try_from(left)
+            .unwrap_or(u32::MAX)
+            .min(smaller.capacity)
     }
 
     /// One tick of regeneration on `charge`, never past the capacity.

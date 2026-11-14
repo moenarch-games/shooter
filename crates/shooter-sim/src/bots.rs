@@ -3,7 +3,9 @@
 //! then fires with an aim error it re-rolls every few hundred milliseconds, strafing as it does.
 //! It burns anyone within a few metres with the flamethrower, picks the rifle (even slots) or the
 //! shotgun (odd slots) up close, rockets (even) or the laser (odd) at mid range and the rail gun
-//! far off, and rushes in to swing the energy blade when someone comes within a few metres. Every random
+//! far off, and rushes in to swing the energy blade when someone comes within a few metres. It
+//! aims at its target's core (the one part whose loss kills, [`crate::damage`]), and once a
+//! weapon part of its own is lost it fires the first gun it still has instead. Every random
 //! choice comes from its own seeded stream (SplitMix64, `crate::rng`), so a match replays
 //! exactly.
 
@@ -47,12 +49,15 @@ pub const WAYPOINT_REACH_UNITS: i64 = 150;
 /// After 0.5 s barely moving while it wants to walk, it jumps and picks another waypoint.
 pub const STUCK_TICKS: u32 = 30;
 
-/// What a bot knows of one slot: where its fighter stands (units), if it is alive.
+/// What a bot knows of one slot: where its fighter stands (units), if it is alive, where its
+/// core is (what a bot aims at: destroying it is the kill, [`crate::damage`]) and which of the
+/// weapons it can still fire (by [`Weapon::index`]: not a weapon part it has lost).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Sight {
     pub center: Option<Vec3i>,
     pub eye: Option<Vec3i>,
-    pub health: i32,
+    pub core: Option<Vec3i>,
+    pub armed: [bool; 8],
 }
 
 /// One bot's mind.
@@ -182,8 +187,11 @@ impl Bot {
         {
             self.target = None;
         }
-        let mut intent = match self.target.and_then(|target| sights[target].center) {
-            Some(target) => self.fight(me, eye, target, held, tick),
+        let mut intent = match self
+            .target
+            .and_then(|target| sights[target].core.or(sights[target].center))
+        {
+            Some(target) => self.fight(me, eye, target, held, sights[me].armed, tick),
             None => self.wander(center, arena),
         };
         // Stuck against something while walking: hop and head elsewhere.
@@ -213,7 +221,16 @@ impl Bot {
         self.pitch = i16::try_from(i32::from(self.pitch) + step).unwrap_or(0);
     }
 
-    fn fight(&mut self, me: usize, eye: Vec3i, target: Vec3i, held: Weapon, tick: u32) -> Intent {
+    fn fight(
+        &mut self,
+        me: usize,
+        eye: Vec3i,
+        target: Vec3i,
+        held: Weapon,
+        armed: [bool; 8],
+        tick: u32,
+    ) -> Intent {
+        let armed = |weapon: Weapon| armed[usize::from(weapon.index())];
         let (dx, dy, dz) = (target.x - eye.x, target.y - eye.y, target.z - eye.z);
         let run = i32::try_from(trig::xz_length(dx, dz)).unwrap_or(i32::MAX);
         let distance = i64::from(run).max(i64::from(dy.abs()));
@@ -247,6 +264,15 @@ impl Bot {
         } else {
             Weapon::RailGun
         };
+        // A weapon part it has lost: the first gun it can still fire instead.
+        let weapon = if armed(weapon) {
+            weapon
+        } else {
+            Weapon::ROTATION
+                .into_iter()
+                .find(|gun| *gun != Weapon::Grapple && armed(*gun))
+                .unwrap_or(weapon)
+        };
         if tick >= self.strafe_until {
             self.strafe = if self.rng.below(2) == 0 { -1 } else { 1 };
             self.strafe_until = tick + 40 + self.rng.below(60);
@@ -268,7 +294,10 @@ impl Bot {
             sprint: false,
             crouch: false,
             fire: weapon == held && ready,
-            melee: ready && run < MELEE_UNITS && dy.abs() < crate::player::EYE_HEIGHT_UNITS,
+            melee: ready
+                && armed(Weapon::EnergyBlade)
+                && run < MELEE_UNITS
+                && dy.abs() < crate::player::EYE_HEIGHT_UNITS,
             select: Some(weapon),
         }
     }

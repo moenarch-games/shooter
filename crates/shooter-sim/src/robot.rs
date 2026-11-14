@@ -8,8 +8,8 @@
 //! stores and sends, or rejects it with an [`AssemblyError`].
 //!
 //! **The tree.** Every [`Part`] has a stable [`PartId`] (unique within its build, the handle for
-//! hit attribution and detachment later), a part type from the catalog and, except for the one
-//! root, a [`Mount`]: the parent part, the [`SocketId`] on the parent it attaches to and its
+//! hit attribution and detachment, [`crate::damage`]), a part type from the catalog and, except
+//! for the one root, a [`Mount`]: the parent part, the [`SocketId`] on the parent it attaches to and its
 //! [`Orientation`] there. One field per part names one parent, so a part never has two; the root
 //! is a chassis section; every other part reaches the root through its parents (no cycles).
 //! Validated parts are stored in [`PartId`] order, so equal builds are equal byte for byte.
@@ -66,9 +66,12 @@
 //! A build does not yet change how a fighter moves or which weapons it carries: every fighter
 //! still has the full arsenal, and a weapon without a mod in the build fires as shipped. A
 //! mounted weapon's mod applies whenever it fires, on the host and in a client's prediction
-//! alike. [`crate::mechanics`] builds any valid build as a mechanical robot, but the match's
-//! fighters do not use it yet (shooter#73's second half); per-part damage (shooter#56),
-//! locomotion (shooter#58) and the builder (shooter#57) apply the rest.
+//! alike. Every part has component health; [`crate::damage`] places the parts on the fighter
+//! as hitboxes, resolves strikes onto them and detaches what is destroyed: a lost weapon part
+//! no longer fires, a lost battery takes its energy with it, a robot without a connected
+//! locomotion part cannot walk, and the core is the only kill. [`crate::mechanics`] builds any
+//! valid build as a mechanical robot, but the match's fighters do not use it yet (shooter#73's
+//! second half); locomotion (shooter#58) and the builder (shooter#57) apply the rest.
 
 use crate::weapons::{Delivery, Weapon};
 use parts::{
@@ -241,8 +244,8 @@ pub struct PartType {
     pub capacity: u16,
     /// Energy it regenerates a second (the core).
     pub regen: u16,
-    /// Its component health; 0 where none is authored yet (per-part damage, which applies it,
-    /// is shooter#56).
+    /// Its component health ([`crate::damage`]): it works fully until this reaches zero, then
+    /// it is destroyed.
     pub health: u16,
     pub points: u16,
     /// Its motors (joints and locomotion, [`crate::mechanics`]).
@@ -447,71 +450,85 @@ pub mod parts {
         }
     }
 
-    /// A light weapon is 1 × 1 × 2 cells, a heavy one (the rail gun, the rockets) 1 × 2 × 2.
+    /// `part` with `health` component health ([`crate::damage`]).
+    const fn tough(part: PartType, health: u16) -> PartType {
+        PartType { health, ..part }
+    }
+
+    /// A light weapon is 1 × 1 × 2 cells with 40 health, a heavy one (the rail gun, the
+    /// rockets) 1 × 2 × 2 with 60.
     const fn weapon(
         weapon: Weapon,
         key: &'static str,
         heavy: bool,
         [mass, points]: [u16; 2],
     ) -> PartType {
-        let cells = if heavy { [1, 2, 2] } else { [1, 1, 2] };
-        part(
-            60 + weapon.index(),
-            key,
-            Kind::Weapon(weapon),
-            cells,
-            Faces::NONE,
-            [mass, 0, 0, points],
+        let (cells, health) = if heavy {
+            ([1, 2, 2], 60)
+        } else {
+            ([1, 1, 2], 40)
+        };
+        tough(
+            part(
+                60 + weapon.index(),
+                key,
+                Kind::Weapon(weapon),
+                cells,
+                Faces::NONE,
+                [mass, 0, 0, points],
+            ),
+            health,
         )
     }
 
     // The rows of the table: code, key, kind, cells, socket faces, then mass, energy capacity,
     // energy regenerated a second, and points (weapons: mass and points; what an activation
-    // costs is the weapon's, `Weapon::energy`).
+    // costs is the weapon's, `Weapon::energy`), and last the component health
+    // ([`crate::damage`]).
     /// 20 × 40 × 80 cm: 28 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_S: PartType = part(1, "robot.chassis.20x40x80", Kind::Chassis, [1, 2, 4], Faces::ALL, [60, 0, 0, 10]);
+    pub const CHASSIS_S: PartType = tough(part(1, "robot.chassis.20x40x80", Kind::Chassis, [1, 2, 4], Faces::ALL, [60, 0, 0, 10]), 120);
     /// 40 × 40 × 80 cm: 40 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_M: PartType = part(2, "robot.chassis.40x40x80", Kind::Chassis, [2, 2, 4], Faces::ALL, [110, 0, 0, 20]);
+    pub const CHASSIS_M: PartType = tough(part(2, "robot.chassis.40x40x80", Kind::Chassis, [2, 2, 4], Faces::ALL, [110, 0, 0, 20]), 160);
     /// 40 × 60 × 80 cm: 52 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_L: PartType = part(3, "robot.chassis.40x60x80", Kind::Chassis, [2, 3, 4], Faces::ALL, [150, 0, 0, 30]);
+    pub const CHASSIS_L: PartType = tough(part(3, "robot.chassis.40x60x80", Kind::Chassis, [2, 3, 4], Faces::ALL, [150, 0, 0, 30]), 200);
     /// 20 × 20 × 40 cm.
     #[rustfmt::skip]
-    pub const BEAM_SHORT: PartType = part(10, "robot.beam.20x20x40", Kind::Beam, [1, 1, 2], Faces::ALL, [5, 0, 0, 2]);
+    pub const BEAM_SHORT: PartType = tough(part(10, "robot.beam.20x20x40", Kind::Beam, [1, 1, 2], Faces::ALL, [5, 0, 0, 2]), 50);
     /// 20 × 20 × 80 cm.
     #[rustfmt::skip]
-    pub const BEAM_LONG: PartType = part(11, "robot.beam.20x20x80", Kind::Beam, [1, 1, 4], Faces::ALL, [10, 0, 0, 3]);
+    pub const BEAM_LONG: PartType = tough(part(11, "robot.beam.20x20x80", Kind::Beam, [1, 1, 4], Faces::ALL, [10, 0, 0, 3]), 60);
     // Motorised parts end with their drive: torque (N·m), top rate (tenths of a radian a
     // second) and the energy drawn a second while commanded.
     /// A hinge servo: one socket, on its moving side.
     #[rustfmt::skip]
-    pub const HINGE: PartType = driven(part(20, "robot.joint.hinge", Kind::Joint(Joint::Hinge), [1, 1, 1], Faces::TOP, [8, 0, 0, 5]), [40, 30, 1]);
+    pub const HINGE: PartType = tough(driven(part(20, "robot.joint.hinge", Kind::Joint(Joint::Hinge), [1, 1, 1], Faces::TOP, [8, 0, 0, 5]), [40, 30, 1]), 40);
     /// A continuous rotor (a turret's base): one socket, on its moving side.
     #[rustfmt::skip]
-    pub const ROTOR: PartType = driven(part(21, "robot.joint.rotor", Kind::Joint(Joint::Rotor), [1, 1, 1], Faces::TOP, [10, 0, 0, 6]), [60, 40, 2]);
+    pub const ROTOR: PartType = tough(driven(part(21, "robot.joint.rotor", Kind::Joint(Joint::Rotor), [1, 1, 1], Faces::TOP, [10, 0, 0, 6]), [60, 40, 2]), 40);
     /// The control core: the baseline energy capacity (100) and the regeneration (24 a second).
     #[rustfmt::skip]
-    pub const CORE: PartType = part(30, "robot.core", Kind::Core, [1, 1, 1], Faces::NONE, [15, 100, 24, 10]);
+    pub const CORE: PartType = tough(part(30, "robot.core", Kind::Core, [1, 1, 1], Faces::NONE, [15, 100, 24, 10]), 100);
     /// A 20 × 40 × 20 cm battery: 60 more stored energy and nothing else (D2.i70.3), with 60
     /// component health for per-part damage (shooter#56).
     #[rustfmt::skip]
-    pub const BATTERY: PartType = PartType { health: 60, ..part(32, "robot.battery", Kind::Battery, [1, 2, 1], Faces::NONE, [20, 60, 0, 5]) };
+    pub const BATTERY: PartType = tough(part(32, "robot.battery", Kind::Battery, [1, 2, 1], Faces::NONE, [20, 60, 0, 5]), 60);
     #[rustfmt::skip]
-    pub const SENSOR: PartType = part(31, "robot.sensor", Kind::Sensor, [1, 1, 1], Faces::NONE, [10, 0, 0, 5]);
+    pub const SENSOR: PartType = tough(part(31, "robot.sensor", Kind::Sensor, [1, 1, 1], Faces::NONE, [10, 0, 0, 5]), 30);
     /// One self-contained leg, 80 cm long: a hip and a knee servo, each with this drive.
     #[rustfmt::skip]
-    pub const LEG: PartType = driven(part(40, "robot.leg", Kind::Locomotion(Locomotion::Leg), [1, 1, 4], Faces::NONE, [25, 0, 0, 7]), [300, 80, 4]);
+    pub const LEG: PartType = tough(driven(part(40, "robot.leg", Kind::Locomotion(Locomotion::Leg), [1, 1, 4], Faces::NONE, [25, 0, 0, 7]), [300, 80, 4]), 70);
     /// A 40 cm wheel.
     #[rustfmt::skip]
-    pub const WHEEL: PartType = driven(part(41, "robot.wheel", Kind::Locomotion(Locomotion::Wheel), [2, 2, 1], Faces::NONE, [20, 0, 0, 6]), [30, 120, 2]);
+    pub const WHEEL: PartType = tough(driven(part(41, "robot.wheel", Kind::Locomotion(Locomotion::Wheel), [2, 2, 1], Faces::NONE, [20, 0, 0, 6]), [30, 120, 2]), 50);
     /// An 80 cm track: two road wheels, each with this drive.
     #[rustfmt::skip]
-    pub const TRACK: PartType = driven(part(42, "robot.track", Kind::Locomotion(Locomotion::Track), [1, 4, 2], Faces::NONE, [45, 0, 0, 12]), [40, 120, 3]);
+    pub const TRACK: PartType = tough(driven(part(42, "robot.track", Kind::Locomotion(Locomotion::Track), [1, 4, 2], Faces::NONE, [45, 0, 0, 12]), [40, 120, 3]), 90);
     /// A 40 × 40 cm plate.
     #[rustfmt::skip]
-    pub const ARMOR_PLATE: PartType = part(50, "robot.armor.plate", Kind::Armor, [2, 2, 1], Faces::NONE, [15, 0, 0, 4]);
+    pub const ARMOR_PLATE: PartType = tough(part(50, "robot.armor.plate", Kind::Armor, [2, 2, 1], Faces::NONE, [15, 0, 0, 4]), 120);
 
     #[rustfmt::skip]
     pub const ENERGY_RIFLE: PartType = weapon(Weapon::EnergyRifle, "weapon.energy-rifle", false, [12, 10]);
@@ -889,8 +906,8 @@ pub const SKIRMISHER: Assembly = with_weapons(
 );
 
 /// A heavy, long-range loadout: the medium chassis, the long-barrel rifle (a two-cell module)
-/// along the left arm, the blade on the right arm's tip, an overcharged rail gun (two hits a kill
-/// instead of three, for half again the energy a shot) on top and the grapple on the chest; no
+/// along the left arm, the blade on the right arm's tip, an overcharged rail gun (106 a
+/// hit instead of 85, for half again the energy a shot) on top and the grapple on the chest; no
 /// battery, so it lives on the core's 100. Valid in [`BETA`].
 pub const MARKSMAN: Assembly = with_weapons(
     frame(&CHASSIS_M),

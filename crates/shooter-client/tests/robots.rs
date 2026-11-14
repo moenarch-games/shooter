@@ -452,14 +452,14 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
 fn a_detached_arm_carries_its_blade_and_laser_while_the_legs_keep_walking() {
     let kit = kit();
     let model = Model::of(&STANDARD, kit).unwrap();
-    // The authoritative state (per-part damage is shooter#56; a fixture here) puts the right
-    // arm's subtree on the floor beside the robot.
+    // The authoritative damage state lists every lost part separately: the right arm, the
+    // blade and the laser that hung from it all lie on the floor beside the robot.
     let arm = PartId(4);
     let blade = PartId(8);
     let laser = PartId(14);
     let fallen = Mat4::from_translation(Vec3::new(3.0, 0.5, 3.0))
         * Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2);
-    let detached = [(arm, fallen)];
+    let detached = [(arm, fallen), (blade, fallen), (laser, fallen)];
     let running = RobotState {
         velocity: Vec3::new(0.0, 0.0, 6.0),
         ..standing()

@@ -27,7 +27,7 @@ fn run_as(backend: Backend, arena: fn() -> Arena, legs: &[Leg], build: Assembly)
     using_backend(backend, || {
         let mut session = Session::new(arena()).expect("arena builds");
         assert_eq!(session.world.backend(), backend);
-        session.fighters[0].build = build;
+        session.fighters[0].rebuild(build);
         tour::run_legs(&mut session, legs).expect("script runs")
     })
 }

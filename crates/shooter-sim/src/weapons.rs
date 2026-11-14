@@ -10,8 +10,9 @@
 //! steps (the shotgun's pellets add fixed yaw and pitch offsets, [`PELLETS`]), rockets fly in
 //! rockets and pellets fly in subunits per tick (a pellet's drag and damage falloff are integer
 //! fractions of its speed), splash distances are integer square roots. Rays and rocket and pellet
-//! sweeps go through the physics world's `cast_ray` and the flame through its `overlap_box`, so
-//! physics-engine and the Rapier oracle answer them alike.
+//! sweeps go through the physics world's `cast_ray` (the arena and the dummies) and the robots'
+//! part hitboxes ([`crate::damage`]), and the flame through its `overlap_box`, so physics-engine
+//! and the Rapier oracle answer them alike.
 
 use crate::fixed::subunits_per_tick;
 use crate::physics::{BodyId, PhysicsError, RayHit, SUBUNITS_PER_UNIT, World};
@@ -178,6 +179,18 @@ impl Weapon {
     #[must_use]
     pub const fn continuous(self) -> bool {
         matches!(self, Self::Laser | Self::Flamethrower)
+    }
+
+    /// The share of a strike's damage (percent) that passes an armor plate to the part behind
+    /// it ([`crate::damage`]): the hitscan beams pierce, the rail gun most; pellets, rockets,
+    /// the flame and the blade do not. Provisional (Atlas Q2.i70.1).
+    #[must_use]
+    pub const fn penetration(self) -> u8 {
+        match self {
+            Self::RailGun => 50,
+            Self::EnergyRifle | Self::Laser => 20,
+            _ => 0,
+        }
     }
 }
 
@@ -482,11 +495,13 @@ impl Rocket {
         units(self.position)
     }
 
-    /// One tick of flight: sweeps this tick's path for the first body other than the owner.
-    pub fn fly(&mut self, world: &World) -> Flight {
+    /// owner that it meets: in a match, the scenery or a robot's part hitbox,
+    /// owner that it meets: the scenery and, the session's, the robots' part hitboxes,
+    /// [`crate::damage`]).
+    pub fn fly(&mut self, cast: impl Fn([f32; 3], [f32; 3]) -> Option<RayHit>) -> Flight {
         let origin = self.position_units();
         let translation = units(self.velocity);
-        if let Some(hit) = world.cast_ray(origin, translation, |body| body != self.owner) {
+        if let Some(hit) = cast(origin, translation) {
             let point = along(origin, translation, hit.fraction);
             let at = [0, 1, 2].map(|axis| point[axis] + hit.normal[axis]);
             return Flight::Exploded { at, body: hit.body };
@@ -525,12 +540,15 @@ pub struct Pellet {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Travel {
     Flying,
-    /// It met a body at `at` (units) and deals `damage` there.
+    /// It met a body at `at` (units) on this tick's stretch from `origin` along `translation`,
+    /// and deals `damage` there.
     Struck {
         at: [f32; 3],
         normal: [f32; 3],
         body: BodyId,
         damage: i32,
+        origin: [f32; 3],
+        translation: [f32; 3],
     },
     /// Out of range or too slow: gone.
     Spent,
@@ -572,9 +590,10 @@ impl Pellet {
         i32::try_from((scaled + muzzle - 1) / muzzle).unwrap_or(0)
     }
 
-    /// One tick of flight: sweeps this tick's path (cut at [`PELLET_RANGE_UNITS`]) for the first
-    /// body other than the owner, then slows down by drag.
-    pub fn fly(&mut self, world: &World) -> Travel {
+    /// One tick of flight: sweeps this tick's path (cut at [`PELLET_RANGE_UNITS`]) with `cast`
+    /// (the first body other than the owner that it meets, like [`Rocket::fly`]), then slows
+    /// down by drag.
+    pub fn fly(&mut self, cast: impl Fn([f32; 3], [f32; 3]) -> Option<RayHit>) -> Travel {
         let range = PELLET_RANGE_UNITS * SUBUNITS_PER_UNIT;
         let step = self.speed.min(range - self.travelled).max(0);
         let velocity = self
@@ -583,12 +602,14 @@ impl Pellet {
         let origin = self.position_units();
         let translation = units(velocity);
         self.from = self.position;
-        if let Some(hit) = world.cast_ray(origin, translation, |body| body != self.owner) {
+        if let Some(hit) = cast(origin, translation) {
             return Travel::Struck {
                 at: along(origin, translation, hit.fraction),
                 normal: hit.normal,
                 body: hit.body,
                 damage: self.damage(),
+                origin,
+                translation,
             };
         }
         self.position = [0, 1, 2].map(|axis| self.position[axis] + velocity[axis]);
@@ -628,6 +649,26 @@ pub fn splash(blast: [f32; 3], center: [f32; 3]) -> Option<(i32, [i32; 3])> {
     };
     let narrow = |value: i64| i32::try_from(value).unwrap_or(0);
     Some((narrow(damage), knockback.map(narrow)))
+}
+
+/// The damage a blast of `damage` at its centre and `radius_units` reach deals at `point`
+/// (units): falling off linearly with the integer distance, `None` out of reach. A rocket's
+/// splash on a robot part is `falloff(blast, point, SPLASH_RADIUS_UNITS, SPLASH_DAMAGE)`, like
+/// [`splash`] for a body's centre.
+#[must_use]
+pub fn falloff(blast: [f32; 3], point: [f32; 3], radius_units: i32, damage: i32) -> Option<i32> {
+    let blast = subunits(blast);
+    let point = subunits(point);
+    let offset: [i64; 3] = [0, 1, 2].map(|axis| i64::from(point[axis] - blast[axis]));
+    #[allow(clippy::cast_sign_loss)]
+    let squared = offset.iter().map(|axis| axis * axis).sum::<i64>() as u64;
+    #[allow(clippy::cast_possible_wrap)]
+    let distance = trig::isqrt(squared) as i64;
+    let radius = i64::from(radius_units * SUBUNITS_PER_UNIT);
+    if distance >= radius {
+        return None;
+    }
+    i32::try_from(i64::from(damage) * (radius - distance) / radius).ok()
 }
 
 #[cfg(test)]
@@ -704,7 +745,9 @@ mod tests {
         let mut damages = vec![pellet.damage()];
         let mut ticks = 0;
         let world = World::new(crate::physics::Vec3i::new(0, 0, 0));
-        while pellet.fly(&world) == Travel::Flying {
+        while pellet.fly(|origin, translation| world.cast_ray(origin, translation, |_| true))
+            == Travel::Flying
+        {
             damages.push(pellet.damage());
             ticks += 1;
         }

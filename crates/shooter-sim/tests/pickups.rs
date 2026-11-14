@@ -4,6 +4,7 @@
 //! transitions, the rail capacitor's lag-compensated hits and frags, thrusters, fighters of
 //! different builds, and the wire.
 
+use shooter_sim::damage::PartDamage;
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::pickups::{
@@ -11,9 +12,11 @@ use shooter_sim::pickups::{
     THRUSTER_JUMP_SUBUNITS_PER_TICK, THRUSTER_JUMPS,
 };
 use shooter_sim::player::{JUMP_VELOCITY_SUBUNITS_PER_TICK, Motion, PLAYER_HALF_EXTENTS};
+use shooter_sim::robot::parts::CORE;
 use shooter_sim::robot::{BETA, HEAVY, MARKSMAN, SKIRMISHER, STANDARD};
 use shooter_sim::scenarios;
 use shooter_sim::tour::{end_of, run_legs};
+use shooter_sim::trig;
 use shooter_sim::wire::{decode_snapshot, encode_snapshot};
 use shooter_sim::{
     Arena, ArenaModule, Assembly, Carried, Event, Input, Intent, MapId, ModulePad, Phase, Rules,
@@ -230,31 +233,47 @@ fn a_module_lasts_the_life_until_its_uses_are_spent() {
 fn a_module_ends_with_its_carrier() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::Thrusters)]);
     session.step().unwrap();
-    // B's rifle bolt finishes A.
-    session.fighters[0].health = 1;
-    session.queue(
-        B,
-        Input {
-            sequence: 1,
-            intent: Intent {
-                yaw: 32_768,
-                fire: true,
-                select: Some(Weapon::EnergyRifle),
-                ..Intent::IDLE
+    assert!(session.fighters[0].carried.is_some());
+    let taken_at = session.ticks();
+    // A's core is down to its last point; B's rocket at A's feet finishes it.
+    let a = &mut session.fighters[0];
+    let core = PartDamage::core(&a.build).unwrap();
+    let build = a.build;
+    a.parts.hurt(&build, core, i32::from(CORE.health) - 1);
+    let mut killed = false;
+    for sequence in 1..120 {
+        session.queue(
+            B,
+            Input {
+                sequence,
+                intent: Intent {
+                    yaw: 32_768,
+                    pitch: -1_500,
+                    fire: true,
+                    select: Some(Weapon::RocketLauncher),
+                    ..Intent::IDLE
+                },
+                view_tick: session.ticks(),
             },
-            view_tick: session.ticks(),
-        },
-    );
-    session.step().unwrap();
-    assert!(session.events.contains(&Event::Killed {
-        victim: 0,
-        killer: Some(1),
-        weapon: Some(Weapon::EnergyRifle),
-    }));
+        );
+        session.step().unwrap();
+        if session.events.contains(&Event::Killed {
+            victim: 0,
+            killer: Some(1),
+            weapon: Some(Weapon::RocketLauncher),
+        }) {
+            killed = true;
+            break;
+        }
+    }
+    assert!(killed);
     assert!(!session.fighters[0].alive());
     assert_eq!(session.fighters[0].carried, None);
     assert_eq!(session.pickups.len(), 1);
-    assert_eq!(session.pickups[0].ready_in, PAD_RESPAWN_TICKS - 1);
+    assert_eq!(
+        session.pickups[0].ready_in,
+        PAD_RESPAWN_TICKS - (session.ticks() - taken_at)
+    );
     // Respawned, it carries nothing until it takes a pad again.
     for _ in 0..40 {
         session.step().unwrap();
@@ -364,7 +383,7 @@ fn rail_duel(seen_ticks_ago: u32, build: Assembly, capacitor: bool) -> Option<i3
         Vec::new()
     };
     let mut session = duel(pads);
-    session.fighters[0].build = build;
+    session.fighters[0].rebuild(build);
     let mut sequence = 0;
     let mut step = |session: &mut Session, a: Intent, b: Intent, view_tick: u32| {
         sequence += 1;
@@ -400,8 +419,10 @@ fn rail_duel(seen_ticks_ago: u32, build: Assembly, capacitor: bool) -> Option<i3
         let now = session.ticks();
         step(&mut session, Intent::IDLE, strafe, now);
     }
+    // Level with the middle of B's chassis (120 units above its feet; the eye is at 165).
     let fire = Intent {
         fire: true,
+        pitch: trig::yaw_from_vector(-45, 1_190).unwrap() as i16,
         ..Intent::IDLE
     };
     let seen = session.ticks() - seen_ticks_ago;
@@ -435,24 +456,41 @@ fn the_rail_capacitor_hits_harder_through_lag_compensation_on_any_build() {
     assert_eq!(shot(SKIRMISHER, true), (None, Some(boosted)));
 }
 
-/// With the capacitor two rail hits kill and score, recharging in three quarters of the time;
-/// the carrier's frags count like any other.
+/// The yaw and pitch from A's eye to the centre of B's core, where the host places it.
+#[allow(clippy::cast_possible_truncation)]
+fn at_core(session: &Session) -> (u16, i16) {
+    let eye = session.fighters[0].player.eye(&session.world);
+    let b = &session.fighters[1];
+    let parts = b.hitboxes(b.player.center(&session.world), b.intent.yaw);
+    let core = parts
+        .get(PartDamage::core(&b.build).unwrap())
+        .unwrap()
+        .center;
+    let d = [0, 1, 2].map(|axis| core[axis] - eye[axis]);
+    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
+    let run = d[0].hypot(d[2]).round() as i32;
+    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
+    (yaw, pitch)
+}
+
+/// The capacitor's boosted rail hits still kill and score, with three hits against the standard
+/// build's new front-mounted batteries (which shield the chassis and core). Its shorter refire
+/// time applies between every shot, and the carrier's frags count like any other.
 #[test]
 fn rail_capacitor_kills_score() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::RailCapacitor)]);
-    let rail = Intent {
-        fire: true,
-        select: Some(Weapon::RailGun),
-        ..Intent::IDLE
-    };
     let mut shots = Vec::new();
     let mut kills = 0;
     for sequence in 1..=200 {
         let now = session.ticks();
-        // The rail gun comes up while A takes the capacitor, then fires.
+        // The rail gun comes up while A takes the capacitor, then fires at B's core.
+        let (yaw, pitch) = at_core(&session);
         let intent = Intent {
             fire: sequence > 10,
-            ..rail
+            yaw,
+            pitch,
+            select: Some(Weapon::RailGun),
+            ..Intent::IDLE
         };
         session.queue(
             A,
@@ -483,14 +521,15 @@ fn rail_capacitor_kills_score() {
         }
     }
     assert_eq!(kills, 1);
-    assert_eq!(shots.len(), 2, "{shots:?}");
+    assert_eq!(shots.len(), 3, "{shots:?}");
     // 72 ticks shipped, 54 with the capacitor.
     assert_eq!(shots[1] - shots[0], 54);
+    assert_eq!(shots[2] - shots[1], 54);
     assert_eq!(session.fighters[0].frags, 1);
     assert_eq!(session.fighters[1].deaths, 1);
     assert_eq!(
         session.fighters[0].carried.map(|c| c.uses_left),
-        Some(RAIL_CAPACITOR_SHOTS - 2)
+        Some(RAIL_CAPACITOR_SHOTS - 3)
     );
 }
 
@@ -568,8 +607,8 @@ fn fighters_of_different_builds_take_and_use_any_module() {
         pad([0, 0, -600], ArenaModule::Thrusters),
         pad([0, 0, 600], ArenaModule::RailCapacitor),
     ]);
-    session.fighters[0].build = HEAVY;
-    session.fighters[1].build = SKIRMISHER;
+    session.fighters[0].rebuild(HEAVY);
+    session.fighters[1].rebuild(SKIRMISHER);
     session.step().unwrap();
     assert_eq!(
         taken(&session),

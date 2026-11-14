@@ -35,9 +35,10 @@ weapons.
 
 The current slice is a deathmatch in a greybox arena with two jump pads onto the central platform,
 six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower), the grapple hook and an energy blade. Twelve slots by default; bots fill every slot no
-person holds. A kill scores a frag; dying by your own rocket or a fall costs one. The dead respawn after 2 s at the spawn point
+person holds. A kill scores a frag; dying by your own rocket, your own battery's blast or a fall costs one. The dead respawn after 2 s at the spawn point
 farthest from everyone else. A round ends at 15 frags or after 5 minutes, the scores show for 8 s
-and a fresh round starts. Every fighter has 200 health. Each fighter is drawn as its robot build (below, **Robot
+and a fresh round starts. A fighter is its robot build with per-part health (below, **Part
+damage**): destroying its core is the kill. Each fighter is drawn as its robot build (below, **Robot
 models**); the weapon models and the sounds are placeholders until asset-tooling delivers them.
 
 **Practice offline.** The native client without arguments, and the browser build (Pages), run the
@@ -95,8 +96,8 @@ the host's reconnect grace. A public host is described in [docs/hosting.md](docs
 
 Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
-mouse. Steer in the air with WASD. The HUD (health, energy, weapon, frags and place, the round clock, the
-carried module and its uses left, the kill and pickup feed) is the page's overlay in the browser and the window title plus a health bar natively,
+mouse. Steer in the air with WASD. The HUD (the core's health and the parts damaged and lost, energy, weapon, frags and place, the round clock, the
+carried module and its uses left, the kill and pickup feed) is the page's overlay in the browser and the window title plus a core health bar natively,
 until render-engine draws screen overlays.
 
 **Camera and aim.** Native and browser clients share one third-person follow camera
@@ -124,7 +125,7 @@ The left mouse button fires; 1 to 7 pick the weapon:
 | 7 | Flamethrower | A 6 m flame, 1.2 m across, cut short by walls: after a 0.25 s ignition, 3 damage a tick (180 a second) to everyone in it |
 
 Rocket jump by firing at your feet as you jump: the blast throws you about 5 m up. Your own
-rocket hurts you at half damage (a rocket jump costs about 35 health).
+rocket hurts you at half damage (a rocket jump costs every part near your feet up to 50, the legs most).
 
 The grapple hook (4) sets on arena geometry within 30 m (not on fighters) while you hold the
 trigger: it reels you toward the hook at up to 24 m/s and the rope never lets you further away
@@ -154,8 +155,9 @@ the standard build; a person's command may ask for another, which the host valid
 one rejects the command) and applies at that fighter's next spawn, never while it is alive.
 Snapshots carry each fighter's build and the one it comes back as. The cell size, chassis sizes,
 part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part keys await the
-asset kits, and a build does not yet change movement or the arsenal: every fighter still carries
-every weapon, and there is no builder screen yet.
+asset kits, and the build does not yet drive mechanical locomotion. Fighters start with the
+full arsenal even when a weapon is not mounted, but losing a mounted weapon disables it and
+losing all locomotion parts prevents movement. There is no builder screen yet.
 
 The standard build mounts three batteries down the front of the torso, an energy rifle on the left
 arm and an aim-tracking laser on the right arm alongside its blade, plus a grapple and shotgun.
@@ -173,8 +175,37 @@ it; the charge never goes below zero. Within a tick a robot's requests go first 
 served in a fixed order: a thruster jump, then the blade swing, then the gun (provisional, Atlas
 Q2.i70.4). There is no heat or cooling. The host owns the pool; snapshots carry each robot's
 charge, the client predicts its own, replays reproduce it, and the HUD's status line shows it
-(`⚡ 87/160`). Values are provisional (Atlas Q2.i70.1). A destroyed battery losing its charge and
-exploding waits on per-part damage (#56). Motors draw from the same pool (below).
+(`⚡ 87/160`). Values are provisional (Atlas Q2.i70.1). A lost battery (destroyed, or carried off
+with a part it hung from) takes its capacity and its share of the charge with it, once; a
+destroyed one also blasts its neighbours (below, **Part damage**). Motors draw from the same
+pool (below).
+
+**Part damage** (`shooter_sim::damage`, Atlas D2.i70.2, D2.i70.8, #56). Every part of a build
+has its own health (provisional, Atlas Q2.i70.1: chassis 120, 160 and 200 by size, beams 50 and
+60, hinge and rotor 40, core 100, battery 60, sensor 30, leg 70, wheel 50, track 90, armor plate
+120, light weapons 40, heavy ones 60). The host places each fighter's parts as boxes where the
+simulation lays out its build, standing on the capsule's feet and facing its look (the capsule
+still moves it; the mechanical robots do not drive fighters yet, #73), and resolves every strike
+onto them, deterministically, each part at most once a strike: a hitscan beam, a pellet or a
+rocket meets the parts along its path (a shot through a gap flies on); the first one takes the
+damage, unless it is an armor plate and the weapon penetrates, when the plate takes the rest and
+a share goes on to the part behind it (rail gun 50 %, rifle and laser 20 %, nothing else;
+provisional). A blast (a rocket's splash, a battery's) hurts every part within reach by its
+falloff to that part; the blade and the flame strike the part nearest the attacker's eye.
+Lag-compensated shots and swings place the parts at the centre and facing the shooter saw. A part
+works fully until zero; then it is destroyed for the rest of that life and everything no longer
+connected to the core through the part tree falls away with it (the core is a leaf, so breaking
+an arm drops the arm and its weapon, and breaking the root chassis drops everything but the
+core). Destroying the core is the only kill; respawn restores the configured build whole. A lost
+weapon part no longer fires or swings (a gun the build never carried still fires as shipped:
+every fighter keeps the full arsenal); a destroyed battery sets off a small blast (40 at its
+centre, 0.8 m; provisional, Atlas Q2.i70.5) through the same damage, and a battery it destroys
+blasts in turn, once each; a robot with no connected leg, wheel or track cannot walk, jump or
+slide but stays alive while its core does. Losing some of its legs changes nothing yet: how the
+surviving ones move it is the mechanical robots' (#73), and the capsule invents no fallback.
+Snapshots carry every part's health (the lost parts follow from it), with a hit's part and each
+detachment as events; the client's prediction takes the host's part state, replays reproduce it
+and bots aim at their target's core and switch off a lost gun.
 
 **Mechanics** (`shooter_sim::mechanics`, Atlas D2.i70.5, the first half of #73). The simulation
 can build any valid robot as a mechanical one in a dynamic world of its own
@@ -220,8 +251,10 @@ grapple cable starts at the grapple, and a dead robot topples over until it resp
 (no sideways clip) and the blade swing (no swing clip, the arm is rigid) are missing animations:
 a magenta marker floats over the robot and the HUD names it. Hinges and rotors would turn about
 the simulation's anchor (the centre of their top face, where the kit pivots at the cube's
-centre), but nothing in a match turns them yet; lost parts and damaged armor draw from per-part
-state the match does not send yet (#56). `cargo run -p shooter-client --release --example
+centre), but nothing in a match turns them yet. Parts a robot has lost (from the host's per-part
+state in each snapshot) fall from where they came off to the floor and lie there until it
+respawns, while the rest of it keeps animating; damaged parts draw their damaged look where the
+kit has one (the armor plate). `cargo run -p shooter-client --release --example
 robot_gallery -- <dir>` renders the loadouts, the mechanics fixtures and every pose offscreen.
 
 **Weapon mods.** A weapon part may carry one mod, which costs build points and mass and changes
