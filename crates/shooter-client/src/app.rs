@@ -912,24 +912,10 @@ fn damaged_parts(fighter: &FighterState) -> Vec<PartId> {
         .collect()
 }
 
-/// The HUD's robot line for the local fighter: its animation state and its placeholder parts,
-/// "robot: run (walk-biped) + fire · placeholders (asset-tooling#634): robot.wheel, …".
+/// The HUD's robot line for the local fighter: its animation state, "robot: run (walk-biped) +
+/// fire".
 fn robot_line(robot: &robots::Drawn) -> String {
-    let mut owners: Vec<&str> = robot.placeholders.iter().map(|(_, owner)| *owner).collect();
-    owners.dedup();
-    let placeholders: Vec<String> = owners
-        .iter()
-        .map(|owner| {
-            let keys: Vec<&str> = robot
-                .placeholders
-                .iter()
-                .filter(|(_, by)| by == owner)
-                .map(|(key, _)| *key)
-                .collect();
-            format!(" · placeholders ({owner}): {}", keys.join(", "))
-        })
-        .collect();
-    format!("robot: {}{}", robot.label, placeholders.concat())
+    format!("robot: {}", robot.label)
 }
 
 impl ApplicationHandler<GpuReady> for App {

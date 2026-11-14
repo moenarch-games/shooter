@@ -1,10 +1,10 @@
 //! The fighters drawn as their robot builds from asset-tooling's kits (Atlas D5.i46.1,
-//! shooter#54): the pinned robot part and weapons kits read and decoded ([`kit`], [`load`]), each
-//! validated build laid out where the simulation places its parts, with each weapon's mod on its
-//! anchor ([`model`]), posed every frame from the fighter's state ([`pose`], its weapons'
-//! states and glow channels in [`weapon`]) and drawn in render-engine's world ([`draw`]). Parts
-//! the kits do not make yet (the wheels and tracks) are labelled placeholders; a missing
-//! animation is marked, never a silent dummy.
+//! shooter#54): the pinned robot part, weapons and locomotion kits read and decoded ([`kit`],
+//! [`load`]), each validated build laid out where the simulation places its parts, with each
+//! weapon's mod on its anchor and each wheel's and track's axle where the simulation turns it
+//! ([`model`]), posed every frame from the fighter's state ([`pose`], its weapons' states and
+//! glow channels in [`weapon`]) and drawn in render-engine's world ([`draw`]). Every catalog part
+//! is a kit model; a missing animation is marked, never a silent dummy.
 
 pub mod draw;
 pub mod kit;

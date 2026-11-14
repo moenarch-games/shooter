@@ -1,7 +1,8 @@
 //! Reading the pinned kits ([`Bundle::ALL`]): natively from directories
-//! (`scripts/fetch-robot-kit.sh` puts them in `target/robot-kit` and `target/weapon-kit`;
-//! `SHOOTER_ROBOT_KIT` and `SHOOTER_WEAPON_KIT` name others), in the browser over HTTP as each
-//! kit's release tar, `robot-kit/kit.tar` and `weapon-kit/kit.tar` beside the page
+//! (`scripts/fetch-robot-kit.sh` puts them in `target/robot-kit`, `target/weapon-kit` and
+//! `target/locomotion-kit`; `SHOOTER_ROBOT_KIT`, `SHOOTER_WEAPON_KIT` and `SHOOTER_LOCOMOTION_KIT`
+//! name others), in the browser over HTTP as each kit's release tar, `robot-kit/kit.tar`,
+//! `weapon-kit/kit.tar` and `locomotion-kit/kit.tar` beside the page
 //! (`scripts/build-web.sh` copies them into `web/dist`), checked against its pinned SHA-256 and
 //! read in memory ([`untar`]). One request a kit: Chromium's WebGPU on SwiftShader refuses
 //! buffers mapped at creation (every mesh upload) once a page has made many requests
@@ -129,14 +130,16 @@ pub fn take(
     Ok(())
 }
 
-/// The native directory of `bundle`: `$SHOOTER_ROBOT_KIT` / `$SHOOTER_WEAPON_KIT`, else the
-/// workspace's `target/robot-kit` / `target/weapon-kit`.
+/// The native directory of `bundle`: `$SHOOTER_ROBOT_KIT` / `$SHOOTER_WEAPON_KIT` /
+/// `$SHOOTER_LOCOMOTION_KIT`, else the workspace's `target/robot-kit` / `target/weapon-kit` /
+/// `target/locomotion-kit`.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn directory(bundle: Bundle) -> std::path::PathBuf {
     let variable = match bundle {
         Bundle::Robot => "SHOOTER_ROBOT_KIT",
         Bundle::Weapons => "SHOOTER_WEAPON_KIT",
+        Bundle::Locomotion => "SHOOTER_LOCOMOTION_KIT",
     };
     std::env::var_os(variable).map_or_else(
         || {

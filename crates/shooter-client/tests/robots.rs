@@ -1,22 +1,25 @@
-//! The robot and weapons kits as the clients draw them, against the pinned asset-tooling
-//! releases in `target/robot-kit` and `target/weapon-kit` (or `$SHOOTER_ROBOT_KIT`,
-//! `$SHOOTER_WEAPON_KIT`; fetch them with `scripts/fetch-robot-kit.sh`): they decode within their
-//! bounds, every loadout maps onto kit entries (wheels and tracks onto labelled placeholders), the
-//! parts sit inside the cuboids the simulation places, mods sit on their weapons' anchors, and
-//! the poses, weapon states, muzzles, lost parts and joint pivots follow the authoritative state.
+//! The robot, weapons and locomotion kits as the clients draw them, against the pinned
+//! asset-tooling releases in `target/robot-kit`, `target/weapon-kit` and `target/locomotion-kit`
+//! (or `$SHOOTER_ROBOT_KIT`, `$SHOOTER_WEAPON_KIT`, `$SHOOTER_LOCOMOTION_KIT`; fetch them with
+//! `scripts/fetch-robot-kit.sh`): they decode within their bounds, every loadout and mechanics
+//! fixture maps onto kit entries, the parts sit inside the cuboids the simulation places, mods sit
+//! on their weapons' anchors, wheels and tracks on the simulation's axles rolling as it turns
+//! them, and the poses, weapon states, muzzles, lost parts and joint pivots follow the
+//! authoritative state.
 
 #![cfg(not(target_arch = "wasm32"))]
 
 use render_engine::glam::{Mat4, Vec3};
 use shooter_client::robots::kit::{Bundle, KitData, MAX_TOTAL_BYTES, Plan};
 use shooter_client::robots::load;
-use shooter_client::robots::model::{Model, Visual};
+use shooter_client::robots::model::Model;
 use shooter_client::robots::pose::{
     self, Action, Activity, Animation, HALF_HEIGHT, PartStates, Posed, RobotState,
     SIM_JOINT_ANCHOR, SOLE,
 };
 use shooter_client::robots::weapon::{self, Memory};
-use shooter_sim::mechanics::{Layout, fixtures, placements};
+use shooter_sim::Assembly;
+use shooter_sim::mechanics::{Controls, Layout, Mechanics, fixtures, placements};
 use shooter_sim::robot::{HEAVY, LOADOUTS, MARKSMAN, PartId, SKIRMISHER, STANDARD};
 use shooter_sim::weapons::Weapon;
 use std::sync::OnceLock;
@@ -81,16 +84,18 @@ fn the_pinned_kits_decode_within_their_bounds() {
     assert!(bytes < MAX_TOTAL_BYTES, "{bytes}");
     let kit = kit();
     // Eleven robot parts at full detail and the plate's damaged look, eight weapons and four
-    // mods; a material and four textures for each kit.
+    // mods, the wheel and the track and their damaged looks; a material and four textures for
+    // each kit.
     assert_eq!(plans[0].entries.len(), 12);
     assert_eq!(plans[1].entries.len(), 12);
-    assert_eq!(kit.entries.len(), 24);
+    assert_eq!(plans[2].entries.len(), 4);
+    assert_eq!(kit.entries.len(), 28);
     // The pinned robot kit no longer ships the retired control core (shooter#89).
     let manifest =
         std::fs::read_to_string(load::directory(Bundle::Robot).join("manifest.json")).unwrap();
     assert!(!manifest.contains("\"robot.core\""));
-    assert_eq!(kit.materials.len(), 2);
-    assert_eq!(kit.textures.len(), 8);
+    assert_eq!(kit.materials.len(), 3);
+    assert_eq!(kit.textures.len(), 12);
     assert!(kit.textures[..4].iter().all(|t| t.width == 1024));
     assert!(kit.textures[4..].iter().all(|t| t.width == 512));
     let leg = &kit.entries[kit.entry("robot.leg", "default").unwrap()];
@@ -129,23 +134,25 @@ fn a_tampered_file_is_refused() {
     files.get_mut(&descriptor).unwrap()[0] ^= 1;
     let error = decode(&plans, &files).unwrap_err();
     assert!(error.contains(&descriptor), "{error}");
-    // Without the weapons kit, the catalog's weapons and mods are unmapped.
-    let error = decode(&plans[..1], &files).unwrap_err();
+    // Without the weapons kit, the catalog's weapons and mods are unmapped; without the
+    // locomotion kit, the wheel and the track.
+    let error = decode(&[plans[0].clone(), plans[2].clone()], &files).unwrap_err();
     assert!(error.contains("weapon."), "{error}");
+    let error = decode(&plans[..2], &files).unwrap_err();
+    assert!(error.contains("robot.wheel"), "{error}");
 }
 
 #[test]
-fn loadouts_draw_their_own_parts_with_labelled_placeholders() {
+fn loadouts_and_fixtures_draw_every_part_from_the_kits() {
     let kit = kit();
     for (name, build) in LOADOUTS {
         let model = Model::of(&build, kit).expect(name);
         assert_eq!(model.parts.len(), build.parts().len(), "{name}");
         for (part, drawn) in build.parts().iter().zip(&model.parts) {
             assert_eq!(part.id, drawn.id);
-            let kit_part = matches!(drawn.visual, Visual::Kit { entry, .. } if kit.entries[entry].key == drawn.key);
+            let kit_part = kit.entries[drawn.entry].key == drawn.key;
             assert!(kit_part, "{name}: {}", drawn.key);
         }
-        assert!(model.placeholders().is_empty(), "{name}");
         assert_eq!(model.gait, Some("walk-biped"), "{name}");
     }
     let keys = |model: &Model| -> Vec<&str> { model.parts.iter().map(|p| p.key).collect() };
@@ -196,16 +203,70 @@ fn bounds(kit: &KitData, entry: usize, robot_from_local: Mat4) -> (Vec3, Vec3) {
         .fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(p), hi.max(p)))
 }
 
+/// A tracked build for review and tests (not a simulation fixture: where tracks should sit is
+/// shooter#58): the large chassis on two tracks along its lower sides, the belts' bottoms flush
+/// with the hull's, a rotor on the roof carrying the rocket pod pitched to aim ahead.
+fn mini_tank() -> Assembly {
+    use shooter_sim::robot::parts::{CHASSIS_L, ROCKET_LAUNCHER, ROTOR, TRACK};
+    use shooter_sim::robot::{BETA, Candidate, Face, Orientation, PartType, RawMount, RawPart};
+    let on =
+        |id: u8, kind: &PartType, parent: u8, to: &PartType, face: Face, yaw: u16, pitch: u16| {
+            RawPart {
+                id,
+                kind: kind.id.0,
+                mount: Some(RawMount {
+                    parent,
+                    socket: to.socket(face, 0, 0).unwrap().0,
+                    yaw,
+                    pitch,
+                    roll: 0,
+                }),
+                modification: None,
+            }
+        };
+    let quarter = Orientation::QUARTER;
+    let parts = vec![
+        RawPart {
+            id: 0,
+            kind: CHASSIS_L.id.0,
+            mount: None,
+            modification: None,
+        },
+        on(1, &TRACK, 0, &CHASSIS_L, Face::PosY, 0, 0),
+        on(2, &TRACK, 0, &CHASSIS_L, Face::NegY, 3 * quarter, 0),
+        on(3, &ROTOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+        on(4, &ROCKET_LAUNCHER, 3, &ROTOR, Face::PosZ, 0, 3 * quarter),
+    ];
+    BETA.validate(&Candidate { parts })
+        .expect("the mini-tank is a valid build")
+}
+
+/// The named loadouts, the mechanics fixtures and the mini-tank.
+fn builds() -> Vec<(&'static str, Assembly)> {
+    let mut builds = LOADOUTS.to_vec();
+    builds.extend([
+        ("car", fixtures::car()),
+        ("strafer", fixtures::strafer()),
+        ("turret", fixtures::turret()),
+        ("paired-turret", fixtures::paired_turret()),
+        ("lopsided", fixtures::lopsided()),
+        ("balanced", fixtures::balanced()),
+        ("biped", fixtures::biped()),
+        ("dog", fixtures::dog(false)),
+        ("upside-down-legs", fixtures::upside_down_legs()),
+        ("mini-tank", mini_tank()),
+    ]);
+    builds
+}
+
 #[test]
 fn every_kit_part_sits_inside_the_cuboid_the_simulation_places() {
     // The meshes are uploaded (and dropped) by the GPU path only; this kit keeps them.
     let kit = kit();
-    for (name, build) in LOADOUTS {
+    for (name, build) in builds() {
         let model = Model::of(&build, kit).unwrap();
         for (drawn, placement) in model.parts.iter().zip(placements(&build)) {
-            let Visual::Kit { entry, .. } = drawn.visual else {
-                continue;
-            };
+            let entry = drawn.entry;
             let (lo, hi) = bounds(kit, entry, drawn.robot_from_local);
             let rotation = render_engine::glam::Quat::from_array(placement.orientation);
             let half = Vec3::from(placement.half_extents) * 0.01;
@@ -238,9 +299,7 @@ fn every_kit_part_sits_inside_the_cuboid_the_simulation_places() {
     // The legs' toes point forward (+X) and the soles are the robot's floor.
     let model = Model::of(&STANDARD, kit).unwrap();
     for drawn in model.parts.iter().filter(|p| p.key == "robot.leg") {
-        let Visual::Kit { entry, .. } = drawn.visual else {
-            panic!()
-        };
+        let entry = drawn.entry;
         let (lo, hi) = bounds(kit, entry, drawn.robot_from_local);
         let sole = drawn.robot_from_local.transform_point3(SOLE);
         assert!(
@@ -697,9 +756,7 @@ fn every_loadout_weapon_points_its_kit_muzzle_along_the_aim() {
             assert!(along > within, "{name}: {:?} {along}", muzzle.weapon);
         }
         let blade = &model.parts[part_of(&model, "weapon.energy-blade")];
-        let Visual::Kit { entry, .. } = blade.visual else {
-            panic!("{name}: the blade is a kit part")
-        };
+        let entry = blade.entry;
         let gear = kit.entries[entry]
             .gear
             .as_ref()
@@ -716,9 +773,7 @@ fn weapon_states_follow_the_shots_hook_and_blade() {
     let kit = kit();
     let heavy = Model::of(&HEAVY, kit).unwrap();
     let entry = |model: &Model, key| {
-        let Visual::Kit { entry, .. } = model.parts[part_of(model, key)].visual else {
-            panic!()
-        };
+        let entry = model.parts[part_of(model, key)].entry;
         &kit.entries[entry]
     };
     let locals = |model: &Model, key, state: &RobotState, memory: &Memory| {
@@ -878,10 +933,330 @@ fn the_browser_reads_each_kit_from_its_pinned_tar() {
     let (_, on_disk) = plans_and_files();
     assert_eq!(files, on_disk);
     let kit = load::finish(&plans, &files).unwrap();
-    assert_eq!(kit.entries.len(), 24);
+    assert_eq!(kit.entries.len(), 28);
     // Anything but a plain archive of regular files is refused.
     assert!(load::untar(&[7; 1024]).is_err());
     let mut tar = std::fs::read(load::directory(Bundle::Weapons).join("kit.tar")).unwrap();
     tar[156] = b'2';
     assert!(load::untar(&tar).unwrap_err().contains("regular file"));
+}
+
+/// A rotation of `angle` about `axis` through `pivot`.
+fn about(pivot: Vec3, axis: Vec3, angle: f32) -> Mat4 {
+    Mat4::from_translation(pivot)
+        * Mat4::from_axis_angle(axis, angle)
+        * Mat4::from_translation(-pivot)
+}
+
+#[test]
+fn every_build_draws_its_wheels_and_tracks_from_the_locomotion_kit() {
+    let kit = kit();
+    for (name, build) in builds() {
+        let model = Model::of(&build, kit).expect(name);
+        for drawn in &model.parts {
+            assert_eq!(kit.entries[drawn.entry].key, drawn.key, "{name}");
+            assert_eq!(kit.entries[drawn.entry].variant, "default", "{name}");
+            let rolls = matches!(drawn.key, "robot.wheel" | "robot.track");
+            assert_eq!(drawn.roll.is_some(), rolls, "{name}: {}", drawn.key);
+            if rolls {
+                let damaged = drawn
+                    .damaged
+                    .expect("a wheel and a track have a damaged look");
+                assert_eq!(kit.entries[damaged].variant, "damaged");
+            }
+        }
+    }
+    // Only the plate, the wheel and the track have a damaged look.
+    let damaged: Vec<&str> = kit
+        .entries
+        .iter()
+        .filter(|entry| entry.variant == "damaged")
+        .map(|entry| entry.key.as_str())
+        .collect();
+    assert_eq!(damaged, ["robot.armor.plate", "robot.track", "robot.wheel"]);
+}
+
+#[test]
+fn the_roll_clip_turns_the_wheels_about_the_simulations_axles() {
+    let kit = kit();
+    for (key, nodes) in [
+        ("robot.wheel", &["wheel"][..]),
+        ("robot.track", &["sprocket", "idler"][..]),
+    ] {
+        let entry = &kit.entries[kit.entry(key, "default").unwrap()];
+        let damaged = &kit.entries[kit.entry(key, "damaged").unwrap()];
+        let rig = entry.rig.as_ref().expect("rigged");
+        let rolling = entry
+            .rolling
+            .as_ref()
+            .expect("its descriptor's locomotion block");
+        // The damaged look has the same nodes and clip, so it swaps in under the same skin.
+        let names = |rig: &shooter_client::robots::kit::Rig| -> Vec<String> {
+            rig.joints.iter().map(|joint| joint.name.clone()).collect()
+        };
+        assert_eq!(names(rig), names(damaged.rig.as_ref().unwrap()), "{key}");
+        assert_eq!(damaged.rolling.as_ref(), Some(rolling), "{key}");
+        assert_eq!(rolling.axis, Vec3::Y, "{key}");
+        assert_eq!(rolling.centres.len(), nodes.len(), "{key}");
+        let clip = rig.clip(&rolling.clip).expect("the roll clip");
+        for angle in [0.0_f32, 1.0, -2.5, 7.0] {
+            let mut locals = rig.rest_locals();
+            clip.pose(rolling.time(angle), &mut locals);
+            let palette = rig.palette_of(&locals);
+            // A positive angle turns right-handed about the axle, as the simulation's joint.
+            for (node, centre) in nodes.iter().zip(&rolling.centres) {
+                let joint = rig.joint(node).unwrap();
+                let expected = about(*centre, rolling.axis, angle);
+                assert!(
+                    palette[joint].abs_diff_eq(expected, 2e-3),
+                    "{key} {node} at {angle}: {} vs {expected}",
+                    palette[joint]
+                );
+            }
+        }
+    }
+    // The tyre is the simulation's wheel radius, the belt rolls on its road wheels.
+    let radius = |key| {
+        kit.entries[kit.entry(key, "default").unwrap()]
+            .rolling
+            .as_ref()
+            .unwrap()
+            .radius
+    };
+    assert!((radius("robot.wheel") - 0.18).abs() < 1e-6);
+    assert!((radius("robot.track") - 0.1).abs() < 1e-6);
+}
+
+#[test]
+fn wheels_and_tracks_sit_on_the_simulations_axles_and_stand_the_robot_on_them() {
+    use shooter_sim::physics::articulated::Shape;
+    let kit = kit();
+    for (name, build) in builds() {
+        let model = Model::of(&build, kit).unwrap();
+        let layout = Layout::of(&build);
+        let mut lowest = f32::MAX;
+        for drawn in &model.parts {
+            let Some(roll) = &drawn.roll else {
+                continue;
+            };
+            // Each rolling body of the part, in the simulation's frame (metres).
+            let bodies: Vec<(Vec3, f32, Vec3)> = layout
+                .segments
+                .iter()
+                .filter(|segment| segment.part == drawn.id)
+                .map(|segment| {
+                    let child = &layout.bodies[segment.body].children[segment.child];
+                    let Shape::Sphere(radius) = child.shape else {
+                        panic!("{name}: a wheel or road wheel is a sphere")
+                    };
+                    let hinge = layout
+                        .hinges
+                        .iter()
+                        .find(|hinge| hinge.b == segment.body)
+                        .expect("on a hinge");
+                    (
+                        Vec3::from(child.position) * 0.01,
+                        radius * 0.01,
+                        Vec3::from(hinge.axis),
+                    )
+                })
+                .collect();
+            assert_eq!(bodies.len(), roll.centres.len(), "{name}: {}", drawn.key);
+            for ((centre, radius, axis), drawn_centre) in bodies.iter().zip(&roll.centres) {
+                assert!(
+                    centre.abs_diff_eq(*drawn_centre, 1e-3),
+                    "{name}: {} {centre} vs {drawn_centre}",
+                    drawn.key
+                );
+                assert!(
+                    axis.abs_diff_eq(roll.axis, 1e-4),
+                    "{name}: {axis} vs {}",
+                    roll.axis
+                );
+                assert!((radius - roll.radius).abs() < 1e-3, "{name}: {radius}");
+                lowest = lowest.min(centre.y - radius);
+            }
+        }
+        // A wheeled or tracked robot stands on its rolling bodies where they are lowest, as the
+        // simulation stands it.
+        if lowest < f32::MAX {
+            assert!(
+                model.floor <= lowest + 1e-3,
+                "{name}: floor {} above its wheels {lowest}",
+                model.floor
+            );
+        }
+    }
+    let car = Model::of(&fixtures::car(), kit).unwrap();
+    let wheels = car.parts.iter().filter_map(|part| part.roll.as_ref());
+    for roll in wheels {
+        assert!(
+            (roll.bottom() - car.floor).abs() < 1e-3,
+            "{}",
+            roll.bottom()
+        );
+    }
+}
+
+/// Steps `build` alone on the floor under `controls` for two seconds; its robot-frame velocity
+/// (metres a second), turn rate (radians a second about +Y) and each actuator's part and rate.
+fn driven(build: Assembly, controls: Controls) -> (Vec3, f32, Vec<(PartId, f32)>) {
+    let mut mechanics = Mechanics::new(&fixtures::floor()).unwrap();
+    mechanics.spawn(build, [0.0, 0.0, 0.0], 0).unwrap();
+    for _ in 0..120 {
+        mechanics.step(&[controls]).unwrap();
+    }
+    let motion = mechanics.root_motion(0).unwrap();
+    let turn = render_engine::glam::Quat::from_array(motion.pose.orientation);
+    let velocity = turn.inverse() * Vec3::from(motion.velocity) * 0.01;
+    let actuators = mechanics.robots()[0]
+        .actuators
+        .iter()
+        .map(|actuator| (actuator.part, actuator.rate))
+        .collect();
+    (velocity, motion.angular_velocity[1], actuators)
+}
+
+#[test]
+fn ground_motion_rolls_the_wheels_as_the_simulation_drives_them() {
+    const RATE: i16 = 6_000;
+    let kit = kit();
+    // The car rolling ahead and the strafer sideways at the fixtures' drive. (Tracks are left out:
+    // the mini-tank's hull rests on the floor flush with its belts, and its tracks spin without
+    // moving it; where tracks should sit is shooter#58.)
+    for (name, build) in [("car", fixtures::car()), ("strafer", fixtures::strafer())] {
+        let model = Model::of(&build, kit).unwrap();
+        let (velocity, yaw_rate, actuators) = driven(build, fixtures::wheels(RATE, -RATE));
+        assert!(velocity.length() > 0.5, "{name}: it rolls ({velocity})");
+        for (part, rate) in actuators {
+            let roll = model
+                .parts
+                .iter()
+                .find(|drawn| drawn.id == part)
+                .and_then(|drawn| drawn.roll.as_ref())
+                .unwrap();
+            let rolled = roll.rate(velocity, yaw_rate);
+            assert!(
+                (rolled - rate).abs() < 0.15 * rate.abs(),
+                "{name}: part {} rolls {rolled}, the simulation turns it {rate}",
+                part.0
+            );
+        }
+    }
+}
+
+#[test]
+fn a_rolling_robot_turns_its_wheels_and_tracks_on_the_ground_only() {
+    let kit = kit();
+    let car = Model::of(&fixtures::car(), kit).unwrap();
+
+    let mut rolling = standing();
+    rolling.velocity = Vec3::Z * 2.0;
+    let mut angles = vec![0.0; car.parts.len()];
+    pose::advance_rolls(&mut angles, &car, &rolling, 0.0, 0.25);
+    for (drawn, angle) in car.parts.iter().zip(&angles) {
+        match &drawn.roll {
+            // Half a metre of ground over the tyre's radius, each side its own way.
+            Some(roll) => {
+                let signed = if *angle > std::f32::consts::PI {
+                    angle - std::f32::consts::TAU
+                } else {
+                    *angle
+                };
+                assert!((signed.abs() - (0.5 / 0.18)).abs() < 1e-3, "{angle}");
+                let left = roll.centres[0].z < 0.0;
+                assert_eq!(signed > 0.0, left, "{angle}");
+            }
+            None => assert_eq!(*angle, 0.0),
+        }
+    }
+    // The drawn wheel turns by that angle about its axle (from the simulation where it gives
+    // one).
+    let wheel = car
+        .parts
+        .iter()
+        .position(|part| part.roll.is_some())
+        .unwrap();
+    let joints = [(car.parts[wheel].id, 1.2)];
+    let turned = posed(
+        &car,
+        &standing(),
+        0.0,
+        &PartStates {
+            joints: &joints,
+            ..PartStates::default()
+        },
+    );
+    let rest = posed(&car, &standing(), 0.0, &PartStates::default());
+    let entry = &kit.entries[car.parts[wheel].entry];
+    let rig = entry.rig.as_ref().unwrap();
+    let joint = rig.joint("wheel").unwrap();
+    let centre = entry.rolling.as_ref().unwrap().centres[0];
+    assert!(
+        turned.parts[wheel].palette.as_ref().unwrap()[joint]
+            .abs_diff_eq(about(centre, Vec3::Y, 1.2), 2e-3)
+    );
+    assert!(rest.parts[wheel].palette.as_ref().unwrap()[joint].abs_diff_eq(Mat4::IDENTITY, 1e-4));
+    // In the air or dead the wheels keep their angle.
+    let mut airborne = rolling;
+    airborne.velocity.y = 5.0;
+    let before = angles.clone();
+    pose::advance_rolls(&mut angles, &car, &airborne, 0.0, 0.25);
+    assert_eq!(angles, before);
+    // Turning on the spot counter-rotates the tank's tracks (their axles point opposite ways,
+    // so the same angle on both sides), driving straight turns them together.
+    let tank = Model::of(&mini_tank(), kit).unwrap();
+    let rates = |velocity: Vec3, yaw_rate: f32| -> Vec<f32> {
+        tank.parts
+            .iter()
+            .filter_map(|part| part.roll.as_ref())
+            .map(|roll| roll.rate(velocity, yaw_rate))
+            .collect()
+    };
+    let ahead = rates(Vec3::X, 0.0);
+    assert!(ahead[0] * ahead[1] < 0.0, "{ahead:?}");
+    let spin = rates(Vec3::ZERO, 1.0);
+    assert!(spin[0] * spin[1] > 0.0, "{spin:?}");
+    assert!((pose::yaw_rate(Vec3::X, Vec3::NEG_Z, 1.0) - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+}
+
+#[test]
+fn a_lost_wheel_lies_at_rest_and_a_damaged_one_draws_its_damaged_look() {
+    let kit = kit();
+    let car = Model::of(&fixtures::car(), kit).unwrap();
+    let wheel = car
+        .parts
+        .iter()
+        .position(|part| part.roll.is_some())
+        .unwrap();
+    let id = car.parts[wheel].id;
+    let lying = Mat4::from_translation(Vec3::new(4.0, 0.0, 4.0));
+    let detached = [(id, lying)];
+    let joints = [(id, 2.0)];
+    let damaged = [id];
+    let posed = posed(
+        &car,
+        &standing(),
+        0.0,
+        &PartStates {
+            detached: &detached,
+            damaged: &damaged,
+            joints: &joints,
+        },
+    );
+    let part = &posed.parts[wheel];
+    assert!(part.detached && part.damaged);
+    assert!(
+        part.world_from_local
+            .abs_diff_eq(lying * car.parts[wheel].robot_from_local, 1e-5)
+    );
+    for matrix in part.palette.as_ref().unwrap() {
+        assert!(matrix.abs_diff_eq(Mat4::IDENTITY, 1e-4), "{matrix}");
+    }
+    // The other wheels stay on and whole.
+    for (index, other) in posed.parts.iter().enumerate() {
+        if index != wheel {
+            assert!(!other.detached && !other.damaged);
+        }
+    }
 }

@@ -29,6 +29,14 @@
 //! on it turn about the simulation's anchor, so the plate stays flush under the child. For a
 //! rotor both pivots lie on its axis, so they agree exactly.
 //!
+//! **Wheels and tracks** roll the locomotion kit's `roll` clip at their joint's angle (the
+//! descriptor's rule: the clip's time is `(angle mod 2π) / 2π` of its second; the track's belt
+//! moves with its wheels). The angle is the simulation's where the state gives one
+//! ([`PartStates::joints`]: the mechanics fixtures); in the match, where the fighters move as
+//! capsules, it is the turn the robot's ground motion and turn rate would give each wheel and track
+//! about its axle ([`advance_rolls`]), so wheels on opposite sides turn opposite ways and a robot
+//! turning on the spot counter-rotates its tracks.
+//!
 //! **Lost parts** ([`PartStates::detached`]): every part the authoritative state says the robot
 //! has lost (`shooter_sim::damage`: a destroyed part and what hung from it, its weapons and their
 //! mods too) draws at rest where its entry puts its robot frame ([`super::track`] lets it fall
@@ -36,7 +44,7 @@
 //! not subtrees: when the root chassis is destroyed the robot is dead, and everything comes off.
 
 use super::kit::{KitData, Rig};
-use super::model::{Model, Visual};
+use super::model::Model;
 use super::weapon::{self, Memory};
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3};
 use shooter_sim::robot::{Joint, Kind, Locomotion, PartId};
@@ -230,7 +238,7 @@ pub struct PartStates<'a> {
     pub detached: &'a [(PartId, Mat4)],
     /// Parts drawn in their damaged variant, where the kit has one.
     pub damaged: &'a [PartId],
-    /// Hinge and rotor angles (radians).
+    /// Hinge, rotor, wheel and track angles (radians; a track's two road wheels share one).
     pub joints: &'a [(PartId, f32)],
 }
 
@@ -278,6 +286,57 @@ fn about(pivot: Vec3, axis: Vec3, angle: f32) -> Mat4 {
         * Mat4::from_translation(-pivot)
 }
 
+/// Part `id`'s joint angle in `parts` (radians), zero where none is given.
+fn angle_of(parts: &PartStates, id: PartId) -> f32 {
+    parts
+        .joints
+        .iter()
+        .find(|(part, _)| *part == id)
+        .map_or(0.0, |(_, angle)| *angle)
+}
+
+/// Each wheel's and track's angle (radians, one a model part; others stay as they are) after
+/// `seconds` more of `state`'s motion, with the robot turning at `yaw_rate` (radians a second
+/// about +Y): rolling on the floor where the robot moves (idle, running, strafing, sliding), not
+/// in the air or dead. The fighters move as capsules, so this is the turn the robot's ground
+/// motion would give its wheels; the simulation's joint angles replace it where a state has them
+/// ([`PartStates::joints`]).
+pub fn advance_rolls(
+    angles: &mut [f32],
+    model: &Model,
+    state: &RobotState,
+    yaw_rate: f32,
+    seconds: f32,
+) {
+    let rolling = matches!(
+        Animation::of(state).activity,
+        Activity::Idle | Activity::Run | Activity::Strafe | Activity::Slide
+    );
+    if !rolling {
+        return;
+    }
+    // The robot's motion in its own frame.
+    let velocity = facing(state.forward).transpose() * state.velocity;
+    for (angle, part) in angles.iter_mut().zip(&model.parts) {
+        if let Some(roll) = &part.roll {
+            *angle = (*angle + roll.rate(velocity, yaw_rate) * seconds)
+                .rem_euclid(std::f32::consts::TAU);
+        }
+    }
+}
+
+/// The robot's turn rate (radians a second about +Y) from looking along `from` to `to` in
+/// `seconds`.
+#[must_use]
+pub fn yaw_rate(from: Vec3, to: Vec3, seconds: f32) -> f32 {
+    if seconds <= 0.0 {
+        return 0.0;
+    }
+    let from = Vec3::new(from.x, 0.0, from.z).normalize_or(Vec3::Z);
+    let to = Vec3::new(to.x, 0.0, to.z).normalize_or(Vec3::Z);
+    from.cross(to).y.atan2(from.dot(to)) / seconds
+}
+
 /// The leg rig's rotations for hip, knee and ankle angles about its own X.
 fn leg_rotations(rig: &Rig, [hip, knee, ankle]: [f32; 3]) -> Vec<Quat> {
     let mut rotations = rig.rest();
@@ -322,9 +381,7 @@ pub fn pose(
     // Attached weapons' joints, posed once their place in the world is known (the hook).
     let mut weapons = vec![None; count];
     for (index, part) in model.parts.iter().enumerate() {
-        let Visual::Kit { entry, .. } = part.visual else {
-            continue;
-        };
+        let entry = part.entry;
         let Some(rig) = &kit.entries[entry].rig else {
             continue;
         };
@@ -351,12 +408,20 @@ pub fn pose(
                 weapons[index] = Some(weapon::locals(rig, gear, held, part.refire, state, memory));
                 continue;
             }
+            Kind::Locomotion(Locomotion::Wheel | Locomotion::Track) if attached => {
+                // The kit's roll clip at the joint's angle: (angle mod 2π) / 2π through it.
+                let rolling = kit.entries[entry].rolling.as_ref();
+                match rolling.and_then(|rolling| Some((rolling, rig.clip(&rolling.clip)?))) {
+                    Some((rolling, clip)) => {
+                        let mut locals = rig.rest_locals();
+                        clip.pose(rolling.time(angle_of(parts, part.id)), &mut locals);
+                        rig.palette_of(&locals)
+                    }
+                    None => rig.palette(&rig.rest()),
+                }
+            }
             Kind::Joint(joint) if attached => {
-                let angle = parts
-                    .joints
-                    .iter()
-                    .find(|(id, _)| *id == part.id)
-                    .map_or(0.0, |(_, angle)| *angle);
+                let angle = angle_of(parts, part.id);
                 let axis = match joint {
                     Joint::Hinge => Vec3::X,
                     Joint::Rotor => Vec3::Y,
@@ -395,9 +460,7 @@ pub fn pose(
     let mut lift = 0.0;
     if grounded {
         let soles = model.parts.iter().enumerate().filter_map(|(index, part)| {
-            let Visual::Kit { entry, .. } = part.visual else {
-                return None;
-            };
+            let entry = part.entry;
             let rig = kit.entries[entry].rig.as_ref()?;
             let ankle = rig.joint("ankle")?;
             let palette = palettes[index].as_ref()?;
@@ -433,9 +496,8 @@ pub fn pose(
             Some(world) => world * model.parts[index].robot_from_local,
             None => world_from_robot * robot_from_local[index],
         };
-        if let (Some((mut locals, reach)), Visual::Kit { entry, .. }) =
-            (weapons[index].take(), part.visual)
-        {
+        if let Some((mut locals, reach)) = weapons[index].take() {
+            let entry = part.entry;
             let kit_entry = &kit.entries[entry];
             if let (Some(rig), Some(gear), Kind::Weapon(held)) =
                 (&kit_entry.rig, &kit_entry.gear, part.kind)
@@ -481,14 +543,7 @@ pub fn pose(
         posed.push(PosedPart {
             world_from_local,
             palette: palettes[index].take(),
-            damaged: parts.damaged.contains(&part.id)
-                && matches!(
-                    part.visual,
-                    Visual::Kit {
-                        damaged: Some(_),
-                        ..
-                    }
-                ),
+            damaged: parts.damaged.contains(&part.id) && part.damaged.is_some(),
             detached: lost[index].is_some(),
         });
     }
@@ -498,9 +553,7 @@ pub fn pose(
         .iter()
         .map(|modification| {
             let weapon = &posed[modification.part];
-            let Visual::Kit { entry, .. } = model.parts[modification.part].visual else {
-                return weapon.world_from_local;
-            };
+            let entry = model.parts[modification.part].entry;
             let at = kit.entries[entry]
                 .rig
                 .as_ref()
