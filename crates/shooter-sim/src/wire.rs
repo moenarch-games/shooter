@@ -12,13 +12,18 @@
 use crate::grapple::Hook;
 use crate::maps::MapId;
 use crate::player::{Intent, Motion};
-use crate::robot::{Assembly, AssemblyError, BETA, Candidate};
+use crate::robot::{Assembly, AssemblyError, BETA, Candidate, RawMount, RawPart};
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 9;
+pub const WIRE_VERSION: u8 = 10;
 const NONE: u8 = u8::MAX;
+
+/// A build part's flags: it has a parent, it is turned, it carries a mod.
+const MOUNTED: u8 = 1;
+const TURNED: u8 = 2;
+const MODDED: u8 = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WireError {
@@ -232,14 +237,37 @@ impl Out {
     fn weapon(&mut self, weapon: Weapon) {
         self.u8(weapon.index());
     }
-    /// A robot build in canonical order: a count and `(socket, component)` codes, then a count
-    /// and `(hardpoint, weapon)` codes, then a count and `(hardpoint, mod)` codes.
+    /// A robot build's component tree in canonical (part ID) order: a part count, then per part
+    /// its ID, its part type code and a flags byte, then its parent's ID and socket if it is
+    /// mounted, its orientation's three angles (u16 each) if it is turned, and its mod's code if
+    /// it carries one.
     fn build(&mut self, build: &Assembly) {
         let candidate = build.candidate();
-        for pairs in [&candidate.parts, &candidate.mounts, &candidate.mods] {
-            self.u8(count(pairs.len()));
-            for &(at, code) in pairs {
-                self.u8(at);
+        self.u8(count(candidate.parts.len()));
+        for part in &candidate.parts {
+            self.u8(part.id);
+            self.u8(part.kind);
+            let turned = part
+                .mount
+                .filter(|mount| (mount.yaw, mount.pitch, mount.roll) != (0, 0, 0));
+            self.u8([
+                (part.mount.is_some(), MOUNTED),
+                (turned.is_some(), TURNED),
+                (part.modification.is_some(), MODDED),
+            ]
+            .iter()
+            .filter(|(set, _)| *set)
+            .fold(0, |flags, (_, flag)| flags | flag));
+            if let Some(mount) = part.mount {
+                self.u8(mount.parent);
+                self.u8(mount.socket);
+            }
+            if let Some(mount) = turned {
+                self.u16(mount.yaw);
+                self.u16(mount.pitch);
+                self.u16(mount.roll);
+            }
+            if let Some(code) = part.modification {
                 self.u8(code);
             }
         }
@@ -302,20 +330,46 @@ impl In<'_> {
     }
     /// Inverse of `Out::build`, validated against [`BETA`].
     fn build(&mut self) -> Result<Assembly, WireError> {
-        let mut pairs = || {
-            (0..self.u8()?)
-                .map(|_| Ok((self.u8()?, self.u8()?)))
-                .collect::<Result<Vec<_>, WireError>>()
-        };
-        let parts = pairs()?;
-        let mounts = pairs()?;
-        let mods = pairs()?;
-        BETA.validate(&Candidate {
-            parts,
-            mounts,
-            mods,
-        })
-        .map_err(WireError::Build)
+        let parts = (0..self.u8()?)
+            .map(|_| {
+                let id = self.u8()?;
+                let kind = self.u8()?;
+                let flags = self.u8()?;
+                if flags & !(MOUNTED | TURNED | MODDED) != 0 {
+                    return Err(WireError::Malformed("unknown part flags"));
+                }
+                let mut mount = if flags & MOUNTED == 0 {
+                    None
+                } else {
+                    Some(RawMount {
+                        parent: self.u8()?,
+                        socket: self.u8()?,
+                        ..RawMount::default()
+                    })
+                };
+                if flags & TURNED != 0 {
+                    let mount = mount
+                        .as_mut()
+                        .ok_or(WireError::Malformed("a root part turned"))?;
+                    mount.yaw = self.u16()?;
+                    mount.pitch = self.u16()?;
+                    mount.roll = self.u16()?;
+                }
+                let modification = if flags & MODDED == 0 {
+                    None
+                } else {
+                    Some(self.u8()?)
+                };
+                Ok(RawPart {
+                    id,
+                    kind,
+                    mount,
+                    modification,
+                })
+            })
+            .collect::<Result<Vec<_>, WireError>>()?;
+        BETA.validate(&Candidate { parts })
+            .map_err(WireError::Build)
     }
     fn finish(self) -> Result<(), WireError> {
         if self.0.is_empty() {

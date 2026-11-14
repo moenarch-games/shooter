@@ -137,29 +137,38 @@ from 1 m below your feet to 2 m above them, unless the arena is in the way, and 
 away. The reach, arc and height band are the values of mmorpg's player swing. Your swing
 is drawn and heard as soon as you press; the host decides what it strikes.
 
-**Robot builds.** The simulation already knows the beta's modular robot build
-(`shooter_sim::robot`): a torso, head, two optional arms and legs from a small catalog, weapons on
-the arms' hands and the torso's shoulders, checked against the legs' load, the torso's power, the
-parts' cooling and a build-point budget. Every fighter starts as the standard build; a person's
-command may ask for another, which the host validates (an invalid one rejects the command) and
-applies at that fighter's next spawn, never while it is alive. Snapshots carry each fighter's
-build and the one it comes back as. The budgets and point values are provisional (Atlas
-Q2.i46.4), and a build does not yet change movement or the arsenal: every fighter still carries
+**Robot builds.** The simulation already knows the beta's free-form robot build
+(`shooter_sim::robot`, Atlas D2.i70.1, D2.i70.2): one component tree assembled on universal
+sockets, one per 20 cm surface cell (a 20 × 40 × 80 cm chassis has 28). Each part has a stable ID,
+one parent socket and an exact orientation (binary angles, stored in one canonical form); a larger
+part reserves its footprint of neighbouring cells on its parent's face, and no two parts may
+claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints (rigid for
+now), the control core, a sensor, legs, wheels, tracks, an armor plate and the eight shipped
+weapons. A build is valid with one chassis root, no cycles, exactly one control core on any free
+socket, each weapon at most once, at most 32 parts, and within its budgets: the core's power
+against what the parts draw, the parts' cooling against the heat they make (the shipped heat,
+until shooter#72) and 120 build points. Nothing requires locomotion: tanks, four-legged dogs,
+humanoids, stationary turrets and grappling-only machines are all valid. Every fighter starts as
+the standard build; a person's command may ask for another, which the host validates (an invalid
+one rejects the command) and applies at that fighter's next spawn, never while it is alive.
+Snapshots carry each fighter's build and the one it comes back as. The cell size, chassis sizes,
+part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part keys await the
+asset kits, and a build does not yet change movement or the arsenal: every fighter still carries
 every weapon, the box fighter is still drawn, and there is no builder screen yet.
 
-**Weapon mods.** A mounted weapon may carry one mod, which costs build points, weighs on the
-mass, power and cooling budgets and changes how that weapon fires (on the host, in the client's
+**Weapon mods.** A weapon part may carry one mod, which costs build points, weighs on the
+mass, power and heat budgets and changes how that weapon fires (on the host, in the client's
 prediction and in lag-compensated hits alike); a weapon without one fires as shipped. Four
 provisional mods: the *rapid cycler* (rifle, rail gun, shotgun: 65% refire time, 75% damage, hot
 and power-hungry), the *overcharger* (same guns: 125% damage, 130% refire time, the most power),
-the *long barrel* (rifle, rail gun, laser: 150% range, 110% refire time, and its weapon needs a
-heavy mount) and the *heat sink* (any weapon: sheds 20 heat, fire unchanged, mass and points). A
-mod that does not fit its weapon or its mount, or breaks a budget, rejects the build. Pick a
-named loadout with `--loadout <name>` natively or `&loadout=<name>` in the browser (the join
-overlay's loadout field): `standard`, `heavy`, `skirmisher` (rapid-cycler rifle, heat-sunk
-shotgun) or `marksman` (long-barrel rifle on a heavy arm, overcharged rail gun: two hits a kill
-instead of three). Practice starts as it; online the host applies it at your next spawn. The
-HUD's status line shows the held weapon's mod and every equipped one.
+the *long barrel* (rifle, rail gun, laser: 150% range, 110% refire time, and its weapon becomes a
+two-cell module) and the *heat sink* (any weapon: sheds 20 heat, fire unchanged, mass and points).
+A mod that does not fit its weapon, or breaks a budget, rejects the build. Pick a named loadout
+with `--loadout <name>` natively or `&loadout=<name>` in the browser (the join overlay's loadout
+field): `standard`, `heavy`, `skirmisher` (rapid-cycler rifle, heat-sunk shotgun) or `marksman`
+(long-barrel rifle along an arm, overcharged rail gun: two hits a kill instead of three), each a
+humanoid component tree. Practice starts as it; online the host applies it at your next spawn.
+The HUD's status line shows the held weapon's mod and every equipped one.
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points,
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
@@ -171,9 +180,11 @@ The movement and the weapons are checked against Rapier on a scripted tour of th
 scripted moves (sprint, slide, double jump, jump pad, ramp slides, a thin wall, a step, a rocket
 jump, a grapple onto a ledge, a shooting range, a close range for the shotgun, laser and flamethrower):
 `cargo test -p shooter-sim --features physics-ab --test physics_ab`.
-`cargo test -p shooter-sim --test robot` checks valid and invalid robot builds and weapon mods,
-the budgets at their limits, tampered builds on the wire, modded fire and builds through a
-replayed match; the A/B also runs the shooting and close ranges as the modded loadouts.
+`cargo test -p shooter-sim --test robot` checks the sockets and canonical orientations, valid
+builds of every form (the loadouts, a mini-tank, a robo-dog, a humanoid, stationary and
+grappling-only machines), every rejection (core, cycles, double parents, overlaps, the part
+ceiling, mods), the budgets at their limits, tampered builds on the wire, modded fire and builds
+through a replayed match; the A/B also runs the shooting and close ranges as the modded loadouts.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
 lag compensation of shots and swings, that the reticle's aim ends where the hosted beam does, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
 clients through a real game-server host on loopback and resumes a severed connection in its slot.
