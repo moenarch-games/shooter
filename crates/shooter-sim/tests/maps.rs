@@ -50,8 +50,37 @@ fn every_map_fits_its_capacity_without_changing_the_slots() {
         assert_eq!(session.rules.slots, DEATHMATCH_SLOTS);
         assert_eq!(session.fighters.len(), usize::from(DEATHMATCH_SLOTS));
     }
+    assert_eq!(DEATHMATCH_SLOTS, 12);
     assert!(MapId::Greybox.capacity().fits(DEATHMATCH_SLOTS));
     assert!(!MapId::Greybox.capacity().fits(1));
+}
+
+#[test]
+fn every_slot_starts_on_a_spawn_point_of_its_own() {
+    for map in MapId::ALL {
+        assert_eq!(
+            usize::from(map.max_slots()),
+            map.arena().spawn_points().len()
+        );
+        assert!(map.max_slots() >= DEATHMATCH_SLOTS, "{map}");
+        assert!(map.capacity().max <= map.max_slots(), "{map}");
+        let rules = Rules {
+            slots: map.max_slots(),
+            ..Rules::deathmatch(3)
+        };
+        let session = Session::on_map(map, rules).unwrap();
+        let feet: Vec<[f32; 3]> = session
+            .fighters
+            .iter()
+            .map(|fighter| fighter.player.feet(&session.world))
+            .collect();
+        for (index, a) in feet.iter().enumerate() {
+            for b in &feet[index + 1..] {
+                let apart = (a[0] - b[0]).hypot(a[2] - b[2]);
+                assert!(apart > 200.0, "{map}: fighters start {apart} units apart");
+            }
+        }
+    }
 }
 
 #[test]

@@ -144,5 +144,7 @@ implemented yet.
 - **Q2.i46.5**: Layout details of the three arenas: topology, destructible pieces, pickup points
   and each map's player capacity (D2.i46.11, D2.i46.12).
   Defaults in use until decided (shooter#48): the map catalog (`shooter_sim::maps`) holds only
-  the greybox, a test and A/B fixture recommending 2 to 8 players (one per spawn point); a map's
-  recommended capacity does not change the slot count.
+  the greybox, a test and A/B fixture recommending 2 to 12 players; a map's recommended capacity
+  does not change the slot count. Since shooter#50 a deathmatch has 12 slots unless the host sets
+  another count per match (`SHOOTER_MATCH_IDS=<id>=<map>:<slots>`), bounded by one slot per
+  spawn point of the map (the greybox has 13); no global maximum (D2.i46.12).

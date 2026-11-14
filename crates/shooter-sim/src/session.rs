@@ -47,8 +47,9 @@ pub const BACKLOG_KEEP: usize = 2;
 /// A person with no input for this many ticks (250 ms: a dropped connection) stops moving and
 /// shooting until inputs arrive again; shorter gaps hold the last input.
 pub const HOLD_INPUT_TICKS: u32 = 15;
-/// Slots in a deathmatch: people take them from bots.
-pub const DEATHMATCH_SLOTS: u8 = 6;
+/// Slots in a deathmatch by default (Atlas D2.i46.12): people take them from bots. A host sets
+/// another count per match, up to its map's [`MapId::max_slots`].
+pub const DEATHMATCH_SLOTS: u8 = 12;
 /// A round ends when someone has this many frags...
 pub const FRAG_LIMIT: i32 = 15;
 /// ...or after 5 minutes.

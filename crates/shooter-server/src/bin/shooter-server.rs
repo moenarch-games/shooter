@@ -4,7 +4,7 @@
 //! | --- | --- | --- |
 //! | `SHOOTER_PORT` | 4433 | UDP port |
 //! | `SHOOTER_CERT_PEM`, `SHOOTER_KEY_PEM` | `cert.pem`, `key.pem` | TLS identity |
-//! | `SHOOTER_MATCH_IDS` | `dm` | comma-separated matches, one deathmatch each: `<id>` (on the greybox) or `<id>=<map>` |
+//! | `SHOOTER_MATCH_IDS` | `dm` | comma-separated matches, one deathmatch each: `<id>` (on the greybox) or `<id>=<map>`, either with `:<slots>` (default 12, at most one per map spawn point) |
 //! | `SHOOTER_ROUTE_PREFIX` | `/shooter` | matches are at `<prefix>/matches/<id>` |
 //! | `SHOOTER_ALLOWED_ORIGINS` | none | comma-separated browser origins (unset: any client) |
 //!
@@ -58,8 +58,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     for spec in &matches {
         println!(
-            "deathmatch on {} ({} players recommended) at https://localhost:{port}{prefix}/matches/{}",
+            "deathmatch on {} with {} slots ({} players recommended) at https://localhost:{port}{prefix}/matches/{}",
             spec.map,
+            spec.slots,
             spec.map.capacity(),
             spec.id
         );
