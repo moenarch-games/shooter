@@ -17,7 +17,7 @@ real players.
    Every second person leaves three quarters of the way in. It plays the default map (`--map` picks
    another catalogued one). The replay file is the bot seed, the slot count and the map ID
    followed by game-server's own replay log: admissions, commands, removals and a digest of
-   every tick's snapshot (with the module pickups: who takes the greybox's pads and when they
+   every tick's snapshot (with the module pickups: who takes the map's pads and when they
    are spent, and every robot's energy charge). Files of an earlier format (format 2, before the
    slot count, format 3, before weapon mods, format 4, before module pickups, format 5, before
    socket-grid robot builds, or format 6, before shared energy and the removal of heat) are
@@ -85,7 +85,7 @@ scripts/profile.sh                       # all lanes; `scripts/profile.sh target
 | Foundation | State |
 | --- | --- |
 | game-server | 20 s deathmatch replay fixture with a codec and runtime-shape test: [game-server#84](https://github.com/moritzbrantner/game-server/pull/84) |
-| physics-engine | Accepted as the `shooter_window` A/B scenario ([physics-engine#558](https://github.com/moritzbrantner/physics-engine/issues/558)). Its window: `record --seed 33 --ticks 720`, then `promote --target physics --from 580 --to 699` (a rocket blast lifts slot 0 at tick 610, slot 3 launches off a jump pad at tick 634). Recorded from the six-slot match on the 9-spawn greybox; since the 12-slot default (#50) the same command records a different match |
+| physics-engine | Accepted as the `shooter_window` A/B scenario ([physics-engine#558](https://github.com/moritzbrantner/physics-engine/issues/558)). Its window: `record --seed 33 --ticks 720`, then `promote --target physics --from 580 --to 699` (a rocket blast lifts slot 0 at tick 610, slot 3 launches off a jump pad at tick 634). Recorded from the six-slot match on the 9-spawn greybox; since the 12-slot default (#50) the same command records a different match, and since the greybox yard became the default map (#82) it records on the yard unless given `--map greybox` |
 | render-engine | Proposed as a scene fixture: [render-engine#105](https://github.com/moritzbrantner/render-engine/issues/105) |
 | runtime-profiler | Pinned at `2110e16` (the `;` in Rust symbols fix, [runtime-profiler#149](https://github.com/moritzbrantner/runtime-profiler/issues/149)). The bot match collects `native-perf` hotspots. The native client stays on `process`: its perf report (lavapipe and wgpu stacks) exceeds the profiler's 8 MiB limit ([runtime-profiler#151](https://github.com/moritzbrantner/runtime-profiler/issues/151)) |
 

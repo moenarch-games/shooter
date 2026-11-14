@@ -32,6 +32,7 @@ fn duel() -> Session {
             yaw: 32_768,
         }],
         module_pads: Vec::new(),
+        waypoints: Vec::new(),
     };
     let rules = Rules {
         slots: 2,

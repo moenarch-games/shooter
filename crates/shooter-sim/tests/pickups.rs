@@ -46,6 +46,7 @@ fn duel(pads: Vec<ModulePad>) -> Session {
             yaw: 32_768,
         }],
         module_pads: pads,
+        waypoints: Vec::new(),
     };
     let rules = Rules {
         slots: 2,
@@ -349,26 +350,31 @@ fn every_map_starts_with_its_own_pads_ready() {
     }
 }
 
-/// The greybox has a weapon and a movement module, both on open, standable ground away from the
+/// Every map has a weapon and a movement module, all on open, standable ground away from the
 /// spawn points and the jump pads.
 #[test]
-fn the_greybox_places_a_weapon_and_a_movement_module_at_contested_points() {
+fn every_map_places_a_weapon_and_a_movement_module_at_contested_points() {
     use shooter_sim::pickups::{Class, REACH_UNITS};
-    let arena = Arena::greybox();
-    let classes: Vec<Class> = arena.module_pads.iter().map(|p| p.module.class()).collect();
-    assert!(classes.contains(&Class::Weapon) && classes.contains(&Class::Movement));
-    for pad in &arena.module_pads {
-        for spawn in arena.spawn_points() {
-            let d = (spawn.feet.x - pad.center.x).abs() + (spawn.feet.z - pad.center.z).abs();
-            assert!(d > 4 * REACH_UNITS, "{pad:?} next to {spawn:?}");
-        }
+    for map in MapId::ALL {
+        let arena = map.arena();
+        let classes: Vec<Class> = arena.module_pads.iter().map(|p| p.module.class()).collect();
         assert!(
-            arena.pad_under(pad.center).is_none(),
-            "{pad:?} on a jump pad"
+            classes.contains(&Class::Weapon) && classes.contains(&Class::Movement),
+            "{map}"
         );
-        // A fighter walks onto it (or along the platform's top to it).
-        let beside = Vec3i::new(pad.center.x - 200, pad.center.y, pad.center.z);
-        assert!(arena.clear_walk(beside, pad.center), "{pad:?}");
+        for pad in &arena.module_pads {
+            for spawn in arena.spawn_points() {
+                let d = (spawn.feet.x - pad.center.x).abs() + (spawn.feet.z - pad.center.z).abs();
+                assert!(d > 4 * REACH_UNITS, "{pad:?} next to {spawn:?}");
+            }
+            assert!(
+                arena.pad_under(pad.center).is_none(),
+                "{pad:?} on a jump pad"
+            );
+            // A fighter walks onto it (or along the platform's top to it).
+            let beside = Vec3i::new(pad.center.x - 200, pad.center.y, pad.center.z);
+            assert!(arena.clear_walk(beside, pad.center), "{pad:?}");
+        }
     }
 }
 
@@ -669,6 +675,7 @@ fn thrusters_climb_a_ledge_a_plain_jump_cannot() {
     assert!((top.center[1] - (200.0 + half)).abs() < 2.0, "{top:?}");
     let plain = run(Arena {
         module_pads: Vec::new(),
+        waypoints: Vec::new(),
         ..(scenario.arena)()
     });
     let bottom = end_of(&plain, "on the ledge").unwrap();

@@ -106,6 +106,10 @@ pub struct Arena {
     /// Where the contested module pickups lie ([`crate::pickups`]), in the order the host
     /// resolves them.
     pub module_pads: Vec<ModulePad>,
+    /// More points bots walk between (feet, units), after the spawn points
+    /// ([`Arena::bot_points`]): corners, ramp ends and the walkway, where spawn points alone
+    /// would leave a bot no straight walk on.
+    pub waypoints: Vec<Vec3i>,
 }
 
 /// The floor's body; pieces take the IDs after it, players start at [`FIRST_PLAYER_BODY`].
@@ -134,6 +138,38 @@ const fn ramp(center: [i32; 3], half: [i32; 3], rises: RampRise) -> Piece {
         center: Vec3i::new(center[0], center[1], center[2]),
         half: Vec3i::new(half[0], half[1], half[2]),
         rises,
+    }
+}
+
+/// `piece` turned half a turn round the arena's centre.
+const fn turned_half(piece: &Piece) -> Piece {
+    match *piece {
+        Piece::Block { center, half } => Piece::Block {
+            center: Vec3i::new(-center.x, center.y, -center.z),
+            half,
+        },
+        Piece::Ramp {
+            center,
+            half,
+            rises,
+        } => Piece::Ramp {
+            center: Vec3i::new(-center.x, center.y, -center.z),
+            half,
+            rises: match rises {
+                RampRise::PosX => RampRise::NegX,
+                RampRise::NegX => RampRise::PosX,
+                RampRise::PosZ => RampRise::NegZ,
+                RampRise::NegZ => RampRise::PosZ,
+            },
+        },
+    }
+}
+
+/// `spawn` turned half a turn round the arena's centre.
+const fn turned_spawn(spawn: &Spawn) -> Spawn {
+    Spawn {
+        feet: Vec3i::new(-spawn.feet.x, spawn.feet.y, -spawn.feet.z),
+        yaw: spawn.yaw.wrapping_add(32_768),
     }
 }
 
@@ -227,6 +263,160 @@ impl Arena {
             spawn_yaw: 32_768,
             spawns,
             module_pads,
+            waypoints: Vec::new(),
+        }
+    }
+
+    /// The greybox yard, an interim playtest map (shooter#82): a 76 m square with 5 m walls,
+    /// laid out point-symmetrically (every piece north of the middle has a twin turned half a
+    /// turn round the centre in the south). Across the middle runs a raised walkway, a 3 m deck on
+    /// two pillars that fighters walk under, reached by a 14° ramp at either end and thrown onto
+    /// by two jump pads beside it. 5 m wall lines either side of it split the yard into a central
+    /// band and two outer yards; in each outer yard a cross wall, wing and bunker walls, a 2 m
+    /// platform with its own ramp, a 3 m shed, a 7 m tower only a grapple (or a rocket jump)
+    /// reaches, a 2 m container, cover walls and crates break the sightlines at every height.
+    /// Fourteen spawn points, none in sight of another, sheltered round the edges and in the
+    /// wings; bot waypoints at the wall gaps, ramp ends, walkway and platforms; the rail
+    /// capacitor lies on the walkway's middle and thrusters on each platform.
+    #[must_use]
+    pub fn greybox_yard() -> Self {
+        let half_size = 3_800;
+        let wall = 50;
+        let outer = half_size + wall;
+        let mut pieces = vec![
+            // Perimeter walls, 5 m high.
+            block([0, 250, outer], [outer + wall, 250, wall]),
+            block([0, 250, -outer], [outer + wall, 250, wall]),
+            block([outer, 250, 0], [wall, 250, outer - wall]),
+            block([-outer, 250, 0], [wall, 250, outer - wall]),
+            // The walkway: a 40 cm deck, top at 3 m, 32 m long and 4 m wide, on two pillars;
+            // 2.6 m clear underneath.
+            block([0, 280, 0], [1_600, 20, 200]),
+            block([-800, 130, 0], [50, 130, 50]),
+            block([800, 130, 0], [50, 130, 50]),
+            // Its ramps, 12 m long (14°), from the west and the east.
+            ramp([-2_200, 150, 0], [600, 150, 200], RampRise::PosX),
+            ramp([2_200, 150, 0], [600, 150, 200], RampRise::NegX),
+        ];
+        // The north half; the south half is the same turned half a turn.
+        let north = [
+            // A 5 m wall line between the central band and the outer yard, open at its middle
+            // and both ends.
+            block([-1_600, 250, -1_200], [800, 250, 30]),
+            block([1_000, 250, -1_200], [600, 250, 30]),
+            // The outer yard's 4 m cross wall, clear of the perimeter and the wall line.
+            block([-600, 200, -2_800], [30, 200, 800]),
+            // Wing walls, 4 m, each with room to pass at both ends.
+            block([-3_100, 200, -1_500], [400, 200, 30]),
+            block([3_250, 200, -1_700], [350, 200, 30]),
+            // A 4 m bunker wall in the east wing.
+            block([2_900, 200, -800], [30, 200, 400]),
+            // A 2 m platform and its ramp from the west (14°).
+            block([2_600, 100, -2_700], [600, 100, 500]),
+            ramp([1_600, 100, -2_700], [400, 100, 200], RampRise::PosX),
+            // A 3 m shed.
+            block([1_000, 150, -3_400], [200, 150, 200]),
+            // A 7 m tower: a grapple perch over the whole yard.
+            block([-2_600, 350, -2_600], [150, 350, 150]),
+            // A 2 m container: a thruster jump climbs it.
+            block([-1_700, 100, -3_100], [400, 100, 150]),
+            // Low cover walls, 1.2 m.
+            block([800, 60, -2_200], [250, 60, 30]),
+            // A 2 m wall: cover a standing robot cannot see over.
+            block([-2_000, 100, -1_800], [30, 100, 300]),
+            // A 2 m barrier inside the middle gap.
+            block([-200, 100, -800], [350, 100, 30]),
+            // Crates, 80 cm, and a 1.6 m stack.
+            block([0, 40, -1_800], [40, 40, 40]),
+            block([90, 40, -1_800], [40, 40, 40]),
+            block([1_800, 40, -700], [40, 40, 40]),
+            block([1_400, 40, -2_000], [40, 40, 40]),
+            block([1_400, 120, -2_000], [40, 40, 40]),
+        ];
+        pieces.extend(north);
+        pieces.extend(north.iter().map(turned_half));
+        // Two pads beside the walkway, each throwing 12 m/s up (a 4 m apex) and 6 m/s toward it:
+        // over its edge and down on its deck.
+        let pads = vec![
+            JumpPad {
+                center: Vec3i::new(-1_200, 0, -500),
+                half: [80, 80],
+                launch: Vec3i::new(0, 1_200, 600),
+            },
+            JumpPad {
+                center: Vec3i::new(1_200, 0, 500),
+                half: [80, 80],
+                launch: Vec3i::new(0, 1_200, -600),
+            },
+        ];
+        // Each spawn point sheltered by walls, the platforms, the container or the tower from
+        // every other one (and its twin in the south).
+        let north_spawns = [
+            spawn_at([-3_400, 0, -1_750], 16_384),
+            spawn_at([3_500, 0, -2_000], 49_152),
+            spawn_at([3_400, 0, -800], 49_152),
+            spawn_at([-1_800, 0, -3_550], 16_384),
+            spawn_at([-300, 0, -3_400], 16_384),
+            spawn_at([-1_100, 0, -2_200], 0),
+            spawn_at([1_500, 0, -3_650], 49_152),
+        ];
+        let spawns = north_spawns[1..]
+            .iter()
+            .copied()
+            .chain(north_spawns.iter().map(turned_spawn))
+            .collect();
+        // Where bots walk besides the spawn points: up the ramps onto the walkway and the
+        // platforms, and through the gaps in the walls.
+        let north_waypoints = [
+            Vec3i::new(-1_450, 300, 0),
+            Vec3i::new(-400, 300, 0),
+            Vec3i::new(1_000, 0, -2_700),
+            Vec3i::new(2_100, 200, -2_700),
+            Vec3i::new(2_600, 200, -2_700),
+            Vec3i::new(-200, 0, -1_500),
+            Vec3i::new(-200, 0, -900),
+            Vec3i::new(-600, 0, -1_650),
+            Vec3i::new(-600, 0, -3_700),
+            Vec3i::new(2_300, 0, -1_400),
+            Vec3i::new(-2_550, 0, -1_350),
+            Vec3i::new(3_650, 0, -1_700),
+            Vec3i::new(-3_650, 0, -1_500),
+            Vec3i::new(-3_200, 0, -3_400),
+            Vec3i::new(-2_300, 0, -2_100),
+        ];
+        let waypoints = north_waypoints
+            .iter()
+            .copied()
+            .chain(
+                north_waypoints
+                    .iter()
+                    .map(|point| Vec3i::new(-point.x, point.y, -point.z)),
+            )
+            .collect();
+        let module_pads = vec![
+            ModulePad {
+                center: Vec3i::new(0, 300, 0),
+                module: ArenaModule::RailCapacitor,
+            },
+            ModulePad {
+                center: Vec3i::new(2_600, 200, -2_700),
+                module: ArenaModule::Thrusters,
+            },
+            ModulePad {
+                center: Vec3i::new(-2_600, 200, 2_700),
+                module: ArenaModule::Thrusters,
+            },
+        ];
+        Self {
+            half_size,
+            pieces,
+            pads,
+            posts: Vec::new(),
+            spawn: north_spawns[0].feet,
+            spawn_yaw: north_spawns[0].yaw,
+            spawns,
+            module_pads,
+            waypoints,
         }
     }
 
@@ -241,24 +431,52 @@ impl Arena {
         .collect()
     }
 
+    /// Where bots walk: every spawn point's feet, then [`Arena::waypoints`].
+    #[must_use]
+    pub fn bot_points(&self) -> Vec<Vec3i> {
+        self.spawn_points()
+            .iter()
+            .map(|spawn| spawn.feet)
+            .chain(self.waypoints.iter().copied())
+            .collect()
+    }
+
     /// Whether a fighter walking straight from `from` to `to` (feet, units) on the floor meets
-    /// no piece taller than a step (ramps excepted): bots pick waypoints they can walk to.
+    /// no piece taller than a step (ramps excepted, and pieces it fits under): bots pick
+    /// waypoints they can walk to.
     #[must_use]
     pub fn clear_walk(&self, from: Vec3i, to: Vec3i) -> bool {
-        const SAMPLES: i32 = 16;
         const MARGIN: i32 = 40;
-        (0..=SAMPLES).all(|step| {
-            let x = from.x + (to.x - from.x) * step / SAMPLES;
-            let z = from.z + (to.z - from.z) * step / SAMPLES;
-            let feet = from.y + (to.y - from.y) * step / SAMPLES;
-            self.pieces.iter().all(|piece| match *piece {
-                Piece::Ramp { .. } => true,
-                Piece::Block { center, half } => {
-                    let top = center.y + half.y;
-                    top <= feet + crate::player::STEP_UP.max_height
-                        || (x - center.x).abs() > half.x + MARGIN
-                        || (z - center.z).abs() > half.z + MARGIN
+        // At least every 50 cm, so no wall slips between two samples.
+        let samples = ((to.x - from.x).abs().max((to.z - from.z).abs()) / 50).max(16);
+        let step_up = crate::player::STEP_UP.max_height;
+        let height = 2 * crate::player::PLAYER_HALF_EXTENTS.y;
+        (0..=samples).all(|step| {
+            let x = from.x + (to.x - from.x) * step / samples;
+            let z = from.z + (to.z - from.z) * step / samples;
+            let feet = from.y + (to.y - from.y) * step / samples;
+            self.pieces.iter().all(|piece| {
+                let (center, half) = (piece.center(), piece.half());
+                if (x - center.x).abs() > half.x + MARGIN || (z - center.z).abs() > half.z + MARGIN
+                {
+                    return true;
                 }
+                let bottom = center.y - half.y;
+                let top = match *piece {
+                    Piece::Block { .. } => center.y + half.y,
+                    // A ramp's top where the fighter is: walked up or down along its rise, it
+                    // stays within a step of the feet; crossed sideways, it is a wall.
+                    Piece::Ramp { rises, .. } => {
+                        let (along, run) = match rises {
+                            RampRise::PosX => (x - center.x + half.x, 2 * half.x),
+                            RampRise::NegX => (center.x + half.x - x, 2 * half.x),
+                            RampRise::PosZ => (z - center.z + half.z, 2 * half.z),
+                            RampRise::NegZ => (center.z + half.z - z, 2 * half.z),
+                        };
+                        bottom + 2 * half.y * along.clamp(0, run) / run.max(1)
+                    }
+                };
+                top <= feet + step_up || bottom >= feet + height
             })
         })
     }

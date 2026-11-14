@@ -688,7 +688,8 @@ pub fn frame(camera: Vec3, forward: Vec3, point_lights: Vec<PointLight>) -> Scen
             color: Vec3::new(1.0, 0.96, 0.9),
             illuminance: 20_000.0,
             shadows: Some(SunShadows {
-                max_distance: 60.0,
+                // Far enough to cover the greybox yard's 76 m from corner to corner.
+                max_distance: 110.0,
                 ..SunShadows::default()
             }),
         }),

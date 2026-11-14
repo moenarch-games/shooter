@@ -75,6 +75,36 @@ fn the_jump_pad_throws_onto_the_platform() {
     );
 }
 
+/// The greybox yard's second level: its ramp climbs onto the walkway, the deck carries a fighter
+/// along it, its edge drops them back to the ground, and its pad throws them up onto it.
+#[test]
+fn the_yards_walkway_is_reached_by_ramp_and_pad() {
+    let samples = run(scenarios::YARD_WALKWAY);
+    let deck = end_of(&samples, "on the walkway").unwrap();
+    assert!(
+        deck.grounded && (deck.center[1] - (300.0 + HALF)).abs() < 2.0,
+        "{deck:?}"
+    );
+    assert!(
+        deck.center[0] > -1_400.0 && deck.center[2].abs() < 50.0,
+        "{deck:?}"
+    );
+    let below = end_of(&samples, "below").unwrap();
+    assert!(
+        below.grounded && (below.center[1] - HALF).abs() < 2.0 && below.center[2] > 200.0,
+        "{below:?}"
+    );
+
+    let samples = run(scenarios::YARD_JUMP_PAD);
+    assert_eq!(samples.iter().filter(|s| s.launched).count(), 1);
+    let landed = end_of(&samples, "on the walkway").unwrap();
+    assert!(
+        landed.grounded && (landed.center[1] - (300.0 + HALF)).abs() < 2.0,
+        "{landed:?}"
+    );
+    assert!(landed.center[2].abs() < 200.0, "{landed:?}");
+}
+
 #[test]
 fn a_slide_climbs_the_ramp_and_runs_down_it() {
     let samples = run(scenarios::RAMP_SLIDE);

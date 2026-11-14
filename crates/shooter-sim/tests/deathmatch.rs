@@ -16,8 +16,8 @@ use shooter_sim::weapons;
 use shooter_sim::weapons::Delivery;
 use shooter_sim::wire::{decode_input, decode_snapshot, encode_input, encode_snapshot};
 use shooter_sim::{
-    Arena, Assembly, Controller, Event, Input, Intent, Phase, Piece, Pilot, Rules, Session, Spawn,
-    Weapon,
+    Arena, Assembly, Controller, Event, Input, Intent, MapId, Phase, Piece, Pilot, Rules, Session,
+    Spawn, Weapon,
 };
 
 fn bot_match(seed: u64, ticks: u32) -> Session {
@@ -109,6 +109,7 @@ fn duel_arena() -> Arena {
             yaw: 32_768,
         }],
         module_pads: Vec::new(),
+        waypoints: Vec::new(),
     }
 }
 
@@ -854,4 +855,82 @@ fn the_flame_ignites_before_it_burns_a_fighter() {
         "{burns:?}"
     );
     assert!(burns[35 + ignition..].iter().all(|burnt| *burnt));
+}
+
+/// Twelve bots on the greybox yard (the default map): they fight and score across its 76 m, and
+/// none is stranded: every bot covers ground, and a living bot that is not shooting at anyone
+/// never stays within 1 m of one spot for long.
+#[test]
+fn bots_keep_moving_and_scoring_on_the_yard() {
+    let rules = Rules {
+        frag_limit: 0,
+        ..Rules::deathmatch(7)
+    };
+    let mut session = Session::on_map(MapId::GreyboxYard, rules).unwrap();
+    let slots = session.fighters.len();
+    let (mut kills, mut shots) = (0, 0);
+    // Per slot: where it last moved 1 m from (or last fired) and when, its longest idle stay
+    // anywhere, and the farthest it got from where it started.
+    let mut anchor: Vec<Option<([f32; 3], u32)>> = vec![None; slots];
+    let mut idle = vec![0u32; slots];
+    let mut start: Vec<Option<[f32; 3]>> = vec![None; slots];
+    let mut farthest = vec![0.0f32; slots];
+    for _ in 0..90 * 60 {
+        session.step().unwrap();
+        let tick = session.ticks();
+        for event in &session.events {
+            match *event {
+                Event::Killed { .. } => kills += 1,
+                Event::Fired { slot, .. } => {
+                    shots += 1;
+                    anchor[usize::from(slot)] = None;
+                }
+                _ => {}
+            }
+        }
+        for (slot, fighter) in session.fighters.iter().enumerate() {
+            // The dead, and robots whose legs are shot off ([`PartDamage::mobile`]), stand.
+            if !fighter.alive() || !fighter.parts.mobile(&fighter.build) {
+                anchor[slot] = None;
+                continue;
+            }
+            let feet = fighter.player.feet(&session.world);
+            let from = *start[slot].get_or_insert(feet);
+            farthest[slot] = farthest[slot].max((feet[0] - from[0]).hypot(feet[2] - from[2]));
+            match anchor[slot] {
+                Some((at, since)) if (feet[0] - at[0]).hypot(feet[2] - at[2]) < 100.0 => {
+                    idle[slot] = idle[slot].max(tick - since);
+                }
+                _ => anchor[slot] = Some((feet, tick)),
+            }
+        }
+    }
+    println!("{shots} shots, {kills} kills; longest idle {idle:?}; farthest {farthest:?}");
+    assert!(shots > 100, "{shots} shots");
+    assert!(kills >= 10, "{kills} kills in 90 s");
+    for slot in 0..slots {
+        assert!(
+            farthest[slot] > 2_000.0,
+            "slot {slot} got {} units",
+            farthest[slot]
+        );
+        assert!(
+            idle[slot] < 5 * 60,
+            "slot {slot} idled {} ticks",
+            idle[slot]
+        );
+    }
+}
+
+#[test]
+fn a_bot_match_on_the_yard_replays_exactly() {
+    let play = |seed| {
+        let mut session = Session::on_map(MapId::GreyboxYard, Rules::deathmatch(seed)).unwrap();
+        for _ in 0..1_200 {
+            session.step().unwrap();
+        }
+        encode_snapshot(&session.snapshot())
+    };
+    assert_eq!(play(3), play(3));
+    assert_ne!(play(3), play(4));
 }
