@@ -44,13 +44,16 @@ export async function run({ page }) {
   await readFile(path.join(root, "shooter_client_bg.wasm")).catch(() => {
     throw new Error("web/dist has no wasm build: run scripts/build-web.sh first");
   });
-  // SwiftShader intermittently refuses mapped-at-creation mesh buffers. Keep this
-  // profile journey deterministic: reject that upload path even on lucky runs.
+  // SwiftShader intermittently refuses mapped-at-creation buffers. Reject the
+  // renderer's immutable uploads even on lucky runs, including material and sky.
   await page.addInitScript(() => {
     const createBuffer = GPUDevice.prototype.createBuffer;
     GPUDevice.prototype.createBuffer = function (descriptor) {
-      if (descriptor.label?.startsWith("mesh ") && descriptor.mappedAtCreation) {
-        throw new Error("mesh uploads must not map GPU buffers at creation");
+      const label = descriptor.label ?? "";
+      const rendererUpload =
+        label.startsWith("mesh ") || label === "material" || label === "environment filter constants";
+      if (rendererUpload && descriptor.mappedAtCreation) {
+        throw new Error(`renderer upload '${label}' must not map its GPU buffer at creation`);
       }
       return createBuffer.call(this, descriptor);
     };
