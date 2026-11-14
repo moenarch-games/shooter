@@ -1,16 +1,17 @@
-//! A validated build as drawn parts: each part of the component tree mapped to its kit entry
-//! (or a labelled placeholder) and placed at rest where the simulation places it
-//! ([`shooter_sim::mechanics::placements`]), in the robot's frame (+X forward, +Y up, +Z right,
-//! metres; the root chassis centred on the origin), and each weapon's mod on the anchor of the
-//! weapon it sits on.
+//! A validated build as drawn parts: each part of the component tree mapped to its kit entry and
+//! placed at rest where the simulation places it ([`shooter_sim::mechanics::placements`]), in the
+//! robot's frame (+X forward, +Y up, +Z right, metres; the root chassis centred on the origin),
+//! each weapon's mod on the anchor of the weapon it sits on, and each wheel's and track's axle
+//! where the simulation turns it ([`Roll`]).
 //!
-//! The kits' glTF frame ([asset-tooling `docs/combat-robot-kit.md`, `docs/shooter-weapons.md`],
-//! socket-grid convention): a part's own x, y and z are glTF +X, −Z and +Y, and the glTF origin
-//! is the mount anchor, the centre of the mount face's first cell. The simulation places a part
-//! by its cuboid's minimum corner, so a kit mesh is drawn at `corner · rotation · anchor · axes`.
-//! A weapon points out of its socket, along its part's +z.
+//! The kits' glTF frame ([asset-tooling `docs/combat-robot-kit.md`, `docs/shooter-weapons.md`,
+//! `docs/robot-locomotion.md`], socket-grid convention): a part's own x, y and z are glTF +X, −Z
+//! and +Y, and the glTF origin is the mount anchor, the centre of the mount face's first cell.
+//! The simulation places a part by its cuboid's minimum corner, so a kit mesh is drawn at
+//! `corner · rotation · anchor · axes`. A weapon points out of its socket, along its part's +z;
+//! a wheel or track turns about it.
 
-use super::kit::{Anchor, KitData, placeholder_owner};
+use super::kit::{Anchor, KitData};
 use crate::scene::METRES_PER_UNIT;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use shooter_sim::mechanics::placements;
@@ -27,16 +28,42 @@ pub const CELL: f32 = CELL_MM as f32 / 1_000.0;
 /// The mount anchor in the part's frame (metres from its cuboid's minimum corner).
 pub const MOUNT_ANCHOR: Vec3 = Vec3::new(CELL / 2.0, CELL / 2.0, 0.0);
 
-/// How a part is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Visual {
-    /// A kit entry ([`KitData::entries`]), with its damaged variant if the kit has one.
-    Kit {
-        entry: usize,
-        damaged: Option<usize>,
-    },
-    /// A labelled placeholder box of the part's cells until `owner` ships its model.
-    Placeholder { owner: &'static str },
+/// A wheel or track as it rolls, in the robot's frame at rest: the axle the simulation turns it
+/// about (its mount normal) and where its rolling bodies are.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Roll {
+    /// Its axle (a unit vector): a positive angle turns right-handed about it, as the
+    /// simulation's joint does.
+    pub axis: Vec3,
+    /// Its rolling bodies' centres (metres): the wheel's sphere, the track's two road wheels.
+    pub centres: Vec<Vec3>,
+    /// Metres of ground a radian of turn rolls.
+    pub radius: f32,
+}
+
+impl Roll {
+    /// How fast (radians a second) it turns rolling on the floor while the robot moves at
+    /// `velocity` (metres a second, robot frame) and turns at `yaw_rate` (radians a second about
+    /// +Y): its centre's ground speed across its axle over its radius. An upright axle does not
+    /// roll.
+    #[must_use]
+    pub fn rate(&self, velocity: Vec3, yaw_rate: f32) -> f32 {
+        #[allow(clippy::cast_precision_loss)]
+        let centre = self.centres.iter().sum::<Vec3>() / self.centres.len().max(1) as f32;
+        let moving = velocity + (Vec3::Y * yaw_rate).cross(centre);
+        let ahead = self.axis.cross(Vec3::Y);
+        Vec3::new(moving.x, 0.0, moving.z).dot(ahead) / self.radius
+    }
+
+    /// Its lowest point (metres, robot frame): the bottom of its lowest rolling disc.
+    #[must_use]
+    pub fn bottom(&self) -> f32 {
+        let reach = self.radius * (1.0 - self.axis.y * self.axis.y).max(0.0).sqrt();
+        self.centres
+            .iter()
+            .map(|centre| centre.y - reach)
+            .fold(f32::MAX, f32::min)
+    }
 }
 
 /// One drawn part.
@@ -47,14 +74,18 @@ pub struct ModelPart {
     pub kind: Kind,
     /// Its parent (an index into [`Model::parts`]).
     pub parent: Option<usize>,
-    pub visual: Visual,
-    /// Its mesh's frame in the robot's frame at rest: the kit's glTF frame, or for a placeholder
-    /// a unit cube scaled to its cuboid.
+    /// Its kit entry ([`KitData::entries`]).
+    pub entry: usize,
+    /// Its damaged variant's entry, if its kit has one.
+    pub damaged: Option<usize>,
+    /// Its mesh's frame (the kit's glTF frame) in the robot's frame at rest.
     pub robot_from_local: Mat4,
     /// A leg's offset in its gait's cycle (0..1).
     pub phase: f32,
     /// A weapon's seconds between shots in this build (its mod's tuning included).
     pub refire: f32,
+    /// A wheel's or track's axle.
+    pub roll: Option<Roll>,
 }
 
 /// A weapon's mod as drawn.
@@ -94,7 +125,7 @@ impl Model {
     ///
     /// # Errors
     ///
-    /// If a part is not in the catalog, or neither in the kit nor a declared placeholder, or a
+    /// If a part is not in the catalog or in no kit, or a
     /// mod is not in the kit or its weapon lacks the anchor it sits on.
     pub fn of(build: &Assembly, kit: &KitData) -> Result<Self, String> {
         let mut parts = Vec::with_capacity(build.parts().len());
@@ -113,32 +144,29 @@ impl Model {
             let extent = axes.x_axis.abs() * half.x
                 + axes.y_axis.abs() * half.y
                 + axes.z_axis.abs() * half.z;
-            floor = floor.min(centre.y - extent.y);
             top = top.max(centre.y + extent.y);
             back = back.min(centre.x - extent.x);
-            let (visual, robot_from_local) =
-                if let Some(entry) = kit.entry(part_type.key, "default") {
-                    let corner = centre - rotation * half;
-                    (
-                        Visual::Kit {
-                            entry,
-                            damaged: kit.entry(part_type.key, "damaged"),
-                        },
-                        Mat4::from_rotation_translation(rotation, corner)
-                            * Mat4::from_translation(MOUNT_ANCHOR)
-                            * PART_FROM_GLTF,
-                    )
-                } else if let Some(owner) = placeholder_owner(part_type.key) {
-                    (
-                        Visual::Placeholder { owner },
-                        Mat4::from_scale_rotation_translation(half * 2.0, rotation, centre),
-                    )
-                } else {
-                    return Err(format!(
-                        "robot: part {} has no kit entry and is no declared placeholder",
-                        part_type.key
-                    ));
-                };
+            let entry = kit
+                .entry(part_type.key, "default")
+                .ok_or_else(|| format!("robot: part {} has no kit entry", part_type.key))?;
+            let corner = centre - rotation * half;
+            let robot_from_local = Mat4::from_rotation_translation(rotation, corner)
+                * Mat4::from_translation(MOUNT_ANCHOR)
+                * PART_FROM_GLTF;
+            let roll = kit.entries[entry].rolling.as_ref().map(|rolling| Roll {
+                axis: robot_from_local
+                    .transform_vector3(rolling.axis)
+                    .normalize_or(Vec3::Y),
+                centres: rolling
+                    .centres
+                    .iter()
+                    .map(|centre| robot_from_local.transform_point3(*centre))
+                    .collect(),
+                radius: rolling.radius,
+            });
+            // A wheel or track stands on its rolling discs (the wheel's tyre is inset from its
+            // cuboid), anything else on its cuboid.
+            floor = floor.min(roll.as_ref().map_or(centre.y - extent.y, Roll::bottom));
             if part_type.kind == Kind::Locomotion(Locomotion::Leg) {
                 legs.push((parts.len(), centre));
             }
@@ -146,9 +174,7 @@ impl Model {
                 Kind::Weapon(weapon) => Some(weapon),
                 _ => None,
             };
-            if let (Some(id), Some(_), Visual::Kit { entry, .. }) =
-                (part.modification, weapon, visual)
-            {
+            if let (Some(id), Some(_)) = (part.modification, weapon) {
                 mods.push(Self::modification(
                     kit,
                     id,
@@ -164,10 +190,12 @@ impl Model {
                 parent: part
                     .mount
                     .and_then(|mount| build.parts().iter().position(|p| p.id == mount.parent)),
-                visual,
+                entry,
+                damaged: kit.entry(part_type.key, "damaged"),
                 robot_from_local,
                 phase: 0.0,
                 refire: weapon.map_or(0.0, |weapon| refire(build, weapon)),
+                roll,
             });
         }
         let gait = match legs.len() {
@@ -249,20 +277,6 @@ impl Model {
                 false
             })
             .collect()
-    }
-
-    /// The placeholders, each catalog key once, with the issue that makes it.
-    #[must_use]
-    pub fn placeholders(&self) -> Vec<(&'static str, &'static str)> {
-        let mut out: Vec<(&'static str, &'static str)> = Vec::new();
-        for part in &self.parts {
-            if let Visual::Placeholder { owner } = part.visual
-                && !out.iter().any(|(key, _)| *key == part.key)
-            {
-                out.push((part.key, owner));
-            }
-        }
-        out
     }
 }
 

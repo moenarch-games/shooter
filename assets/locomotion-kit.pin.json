@@ -1,0 +1,7 @@
+{
+  "release": "shooter-robot-locomotion",
+  "tar": "https://github.com/moritzbrantner/asset-tooling/releases/download/shooter-robot-locomotion/shooter-robot-locomotion.kit.tar",
+  "sha256": "3892158384aec574eda98afaaf65f2967c64d0a2ca39c07be5e0cd06974f0f83",
+  "manifestSha256": "ccb4d04035001385d664950d616acfbbf138dba8626659474142105b2960829b",
+  "assetTooling": "c9030e009221123f5ce0ba71b7a01f55f30a089e"
+}

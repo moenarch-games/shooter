@@ -7,10 +7,10 @@ demanding consumer: every gap or regression it finds is filed on the crate that 
 Product intent lives in the [Decision Atlas](docs/decisions/atlas.md). The owner has set a beta
 direction (Atlas D1.i46.1, D2.i46.\*, tracker #45): a third-person arena shooter with modular
 robots, about 12 slots and three arenas. The third-person camera, the robot build schema and
-the 12 slots are in, and the fighters are drawn as their robot builds from asset-tooling's robot
-kit; the rest is not implemented yet. Everything below describes what works today: a
-third-person, 12-slot deathmatch on greybox arenas (the 76 m greybox yard by default, the 40 m
-greybox hall as the test fixture), the fighters still moving as capsules.
+the 12 slots are in, and the fighters are drawn as their robot builds from asset-tooling's robot,
+weapons and locomotion kits; the rest is not implemented yet. Everything below describes what
+works today: a third-person, 12-slot deathmatch on greybox arenas (the 76 m greybox yard by
+default, the 40 m greybox hall as the test fixture), the fighters still moving as capsules.
 
 ## What a player does
 
@@ -74,7 +74,7 @@ so a joining client builds and predicts on that map; practice takes `--map <id>`
 refused everywhere.
 
 ```sh
-scripts/fetch-robot-kit.sh                 # the pinned robot and weapons kits into target/robot-kit, target/weapon-kit
+scripts/fetch-robot-kit.sh                 # the pinned robot, weapons and locomotion kits into target/*-kit
 cargo run -p shooter-client --release      # native window, practice
 scripts/build-web.sh                       # browser build (and the kit) into web/dist (needs a WebGPU browser)
 python3 -m http.server -d web/dist
@@ -270,21 +270,28 @@ bindings (#74). Masses, torques, rates, draws and gait timings are provisional; 
 (66 joints) steps in about 0.16 ms a tick natively on physics-engine (0.20 ms on Rapier).
 
 **Robot models** (`shooter_client::robots`, #54). Both clients draw every fighter as its validated
-build from two asset-tooling kits: `shooter-combat-robot` (the chassis, beams, hinge, rotor,
-sensor, battery, the armor plate and its damaged look, and the rigged leg with its walk clips) and
+build from three asset-tooling kits: `shooter-combat-robot` (the chassis, beams, hinge, rotor,
+sensor, battery, the armor plate and its damaged look, and the rigged leg with its walk clips),
 `shooter-weapons` (the eight weapons, rigged with their states and glow channels, and the four
-mods). Each release is pinned by SHA-256 (`assets/robot-kit.pin.json`,
-`assets/weapon-kit.pin.json`); `scripts/fetch-robot-kit.sh` fetches them into `target/robot-kit`
-and `target/weapon-kit` for the native client (`$SHOOTER_ROBOT_KIT` and `$SHOOTER_WEAPON_KIT` name
+mods) and `shooter-robot-locomotion` (the wheel and the track, each with its `roll` clip and a
+damaged look). Each release is pinned by SHA-256 (`assets/robot-kit.pin.json`,
+`assets/weapon-kit.pin.json`, `assets/locomotion-kit.pin.json`); `scripts/fetch-robot-kit.sh`
+fetches them into `target/robot-kit`, `target/weapon-kit` and `target/locomotion-kit` for the
+native client (`$SHOOTER_ROBOT_KIT`, `$SHOOTER_WEAPON_KIT` and `$SHOOTER_LOCOMOTION_KIT` name
 others) and `scripts/build-web.sh` puts each kit's release tar in `web/dist`, which the browser
 fetches in one request a kit and reads in memory. Every file is checked against the bundles' pins
 and bounds (4 MiB a file, 8 MiB a load, 16 MiB and 30 s a tar in the browser), every kit key must
-be a catalog part or mod, every catalog mod a weapons-kit entry and every catalog part a kit entry
-or a declared placeholder; otherwise the load fails, the HUD says why and the fighters stay
-boxes. Each part sits where the simulation places it (`mechanics::placements`), so loadouts look
-different, and each mod sits on its weapon's anchor from the weapons kit's descriptor. Wheels and
-tracks (asset-tooling#634) are not modelled yet: they draw as translucent purple boxes of their
-cells and the HUD lists them. The robot stands on its capsule's feet and faces its look; its legs
+be a catalog part or mod of that kit and every catalog part and mod must be in a kit; otherwise
+the load fails, the HUD says why and the fighters stay boxes. Each part sits where the simulation
+places it (`mechanics::placements`), so loadouts look different, and each mod sits on its
+weapon's anchor from the weapons kit's descriptor. Wheels and tracks turn about the axles the
+locomotion kit's descriptor (`socket-grid-kit-descriptor-v3`) puts exactly where the simulation's
+mechanics turn them (the mount normal; the wheel's 0.18 m tyre, the track's two 0.1 m road
+wheels), by their `roll` clip at the joint's angle (the belt moves with the wheels): the
+simulation's angle where a state gives one (the gallery's mechanics fixtures), and in a match,
+where the fighters move as capsules (the named loadouts walk on legs), the turn the robot's ground
+motion and turn rate would give them, so the two sides turn opposite ways and a robot turning on
+the spot counter-rotates its tracks. The robot stands on its capsule's feet and faces its look; its legs
 rest when idle, walk the kit's clips when running (at most 2.5 cycles a second, so feet slide at
 full speed), tuck while airborne or grappling and crouch in a slide. The weapons play the kit's
 states from the match (`robots::weapon`): a shot's recoil and muzzle flash, the laser's and
@@ -303,8 +310,12 @@ of their top face, where the kit pivots at the cube's centre), but nothing in a 
 yet. Parts a robot has lost (from the host's per-part state in each snapshot) fall from where they
 came off to the floor with their weapons and mods and lie there until it respawns, while the rest
 of it keeps animating; damaged parts draw their damaged look where the kit has one (the armor
-plate). `cargo run -p shooter-client --release --example robot_gallery -- <dir>` renders the
-loadouts, the mechanics fixtures, every pose, the weapons' states and the mods offscreen.
+plate, the wheel and the track). `cargo run -p shooter-client --release --example robot_gallery
+-- <dir>` renders the loadouts, the mechanics fixtures (the car, strafer and turret with their
+wheels where the simulation turned them, and the gallery's own mini-tank on tracks: in the
+simulation its hull rests on the floor and its tracks spin without moving it, #58), every pose,
+the weapons' states, the mods, and damaged and lost wheels and tracks offscreen
+([captures](docs/captures/54-locomotion/)).
 
 **Weapon mods.** A weapon part may carry one mod, which costs build points and mass and changes
 how that weapon fires (on the host, in the client's prediction and in lag-compensated hits

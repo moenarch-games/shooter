@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Fetches the pinned asset-tooling kits the fighters are drawn from (Atlas D5.i46.1): the robot
 # part kit (release `shooter-combat-robot`, pin assets/robot-kit.pin.json) into ROBOT_DIR (default
-# target/robot-kit) and the weapons kit (release `shooter-weapons`, pin
-# assets/weapon-kit.pin.json) into WEAPON_DIR (default target/weapon-kit): each bundle's manifest,
-# scenes, resources and attachments as its release tar holds them, and the verified tar itself as
-# kit.tar (the browser reads the tar: one request a kit). The releases are rolling, so
-# each is pinned by its tar's SHA-256 and its manifest's: a republished release fails here until
-# its pin is bumped. The native client reads the directories (or $SHOOTER_ROBOT_KIT and
-# $SHOOTER_WEAPON_KIT); scripts/build-web.sh copies them into web/dist.
+# target/robot-kit), the weapons kit (release `shooter-weapons`, pin assets/weapon-kit.pin.json)
+# into WEAPON_DIR (default target/weapon-kit) and the wheels and tracks (release
+# `shooter-robot-locomotion`, pin assets/locomotion-kit.pin.json) into LOCOMOTION_DIR (default
+# target/locomotion-kit): each bundle's manifest, scenes, resources and attachments as its release
+# tar holds them, and the verified tar itself as kit.tar (the browser reads the tar: one request a
+# kit). The releases are rolling, so each is pinned by its tar's SHA-256 and its manifest's: a
+# republished release fails here until its pin is bumped. The native client reads the directories
+# (or $SHOOTER_ROBOT_KIT, $SHOOTER_WEAPON_KIT and $SHOOTER_LOCOMOTION_KIT); scripts/build-web.sh
+# copies them into web/dist.
 #
-#   scripts/fetch-robot-kit.sh [ROBOT_DIR [WEAPON_DIR]]
+#   scripts/fetch-robot-kit.sh [ROBOT_DIR [WEAPON_DIR [LOCOMOTION_DIR]]]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -59,3 +61,4 @@ fetch() {
 
 fetch assets/robot-kit.pin.json "${1:-target/robot-kit}"
 fetch assets/weapon-kit.pin.json "${2:-target/weapon-kit}"
+fetch assets/locomotion-kit.pin.json "${3:-target/locomotion-kit}"

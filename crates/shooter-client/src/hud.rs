@@ -24,7 +24,7 @@ pub struct HudText {
     pub feed: Vec<String>,
     /// The scoreboard's lines, while it shows.
     pub board: Option<Vec<String>>,
-    /// The local robot's animation state and placeholder parts, or why the fighters are boxes
+    /// The local robot's animation state, or why the fighters are boxes
     /// (set by the app from `crate::robots`).
     pub robot: String,
 }

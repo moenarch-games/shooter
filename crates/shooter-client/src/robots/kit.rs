@@ -1,10 +1,12 @@
 //! The asset-tooling kits the fighters are drawn from (Atlas D5.i46.1): the robot part kit
-//! (release `shooter-combat-robot`) and the weapons kit (release `shooter-weapons`, the eight
-//! weapons and four mods). Which bundle files the clients read, their content pins and size
-//! bounds, and the decoding of their glTF scenes (meshes, skins, clips), KTX2 (Basis Universal)
-//! textures and the weapons kit's socket-grid descriptor (anchors, glow channels, states) into
-//! render-engine data. Both clients read the same files through [`Plan`] and [`decode`]: natively
-//! from a directory, in the browser over HTTP (`crate::robots::load`).
+//! (release `shooter-combat-robot`), the weapons kit (release `shooter-weapons`, the eight
+//! weapons and four mods) and the locomotion kit (release `shooter-robot-locomotion`, the wheel
+//! and the track). Which bundle files the clients read, their content pins and size bounds, and
+//! the decoding of their glTF scenes (meshes, skins, clips), KTX2 (Basis Universal) textures and
+//! the socket-grid descriptors (the weapons' anchors, glow channels and states; the wheels' and
+//! tracks' axles and roll clip) into render-engine data. Both clients read the same files through
+//! [`Plan`] and [`decode`]: natively from a directory, in the browser over HTTP
+//! (`crate::robots::load`).
 //!
 //! **Pins.** The releases are rolling, so the shooter pins each ([`Bundle::pin_json`],
 //! `assets/*-kit.pin.json`): the tar's SHA-256 (checked by `scripts/fetch-robot-kit.sh`) and the
@@ -13,10 +15,9 @@
 //! a load over [`MAX_TOTAL_BYTES`].
 //!
 //! **IDs.** Kit entries are keyed by the simulation's part and mod keys
-//! (`shooter_sim::robot::parts`, `BETA.mods`). Every kit key must be a catalog part or mod, every
-//! catalog mod must be in the weapons kit and every catalog part in a kit or a declared
-//! placeholder ([`placeholder_owner`]: the wheels and tracks of asset-tooling#634); anything else
-//! fails the load loudly ([`complete`]).
+//! (`shooter_sim::robot::parts`, `BETA.mods`). Every kit key must be a catalog part or mod of
+//! that kit, and every catalog part and mod must be in a kit; anything else fails the load
+//! loudly ([`complete`]).
 
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::material::{Sampler, TextureData};
@@ -24,43 +25,52 @@ use render_engine::mesh::MeshData;
 use render_engine::wgpu;
 use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
-use shooter_sim::robot::{BETA, Kind};
+use shooter_sim::robot::{BETA, Kind, Locomotion};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// The most one bundle file may hold (the largest, the robot kit's normal atlas, is about
 /// 0.45 MB).
 pub const MAX_FILE_BYTES: usize = 4 << 20;
-/// The most one load (both kits) may read (the drawn closures are about 1.5 MB and 1 MB).
+/// The most one load (all three kits) may read (the drawn closures are about 1.5 MB, 1 MB and
+/// 1.4 MB).
 pub const MAX_TOTAL_BYTES: usize = 8 << 20;
-/// The variants the clients draw: every part's full detail, and the armor plate's damaged look.
-/// (The weapons kit's `lod1` and `lod2` are not read: at the arena's distances a weapon is a few
-/// hundred triangles.)
+/// The variants the clients draw: every part's full detail, and the damaged look where a kit has
+/// one (the armor plate, the wheel and the track). (The `lod1` and `lod2` levels are not read: at
+/// the arena's distances a weapon is a few hundred triangles and a wheel about a thousand.)
 pub const VARIANTS: [&str; 2] = ["default", "damaged"];
 /// The atlases' top mip level is skipped: at third-person distances a 1024 px atlas is plenty,
 /// and it keeps the transcoded RGBA8 textures at a quarter of their full size (about 22 MB for
-/// the robot kit and 6 MB for the weapons).
+/// the robot kit, 6 MB for the weapons and 6 MB for the wheels and tracks).
 pub const SKIPPED_MIPS: u32 = 1;
-/// The attachment of the weapons kit that describes its anchors, channels and states.
+/// The attachment of the weapons and locomotion kits that describes their anchors, channels and
+/// states, and the wheels' and tracks' axles and roll.
 pub const DESCRIPTOR: &str = "socket-grid-descriptor";
+/// The locomotion kit's descriptor schema (asset-tooling
+/// `schemas/socket-grid-kit-descriptor-v3.schema.json`: v2 plus each part's `locomotion` block).
+pub const LOCOMOTION_SCHEMA: &str = "socket-grid-kit-descriptor-v3";
 
 /// One pinned asset-tooling release the clients draw from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Bundle {
-    /// `shooter-combat-robot`: the robot parts.
+    /// `shooter-combat-robot`: the robot parts but the wheels and tracks.
     Robot,
     /// `shooter-weapons`: the weapons and their mods.
     Weapons,
+    /// `shooter-robot-locomotion`: the wheel and the track.
+    Locomotion,
 }
 
 impl Bundle {
-    pub const ALL: [Self; 2] = [Self::Robot, Self::Weapons];
+    pub const ALL: [Self; 3] = [Self::Robot, Self::Weapons, Self::Locomotion];
 
-    /// Its pin (`assets/robot-kit.pin.json`, `assets/weapon-kit.pin.json`).
+    /// Its pin (`assets/robot-kit.pin.json`, `assets/weapon-kit.pin.json`,
+    /// `assets/locomotion-kit.pin.json`).
     #[must_use]
     pub const fn pin_json(self) -> &'static str {
         match self {
             Self::Robot => include_str!("../../../../assets/robot-kit.pin.json"),
             Self::Weapons => include_str!("../../../../assets/weapon-kit.pin.json"),
+            Self::Locomotion => include_str!("../../../../assets/locomotion-kit.pin.json"),
         }
     }
 
@@ -70,18 +80,29 @@ impl Bundle {
         match self {
             Self::Robot => "robot-kit",
             Self::Weapons => "weapon-kit",
+            Self::Locomotion => "locomotion-kit",
         }
     }
 
-    /// Whether `key` may be an entry of this kit: a robot part, or a weapon or mod.
+    /// Whether `key` may be an entry of this kit: a robot part, a weapon or mod, a wheel or
+    /// track.
     fn holds(self, key: &str) -> bool {
         let part = BETA.parts.iter().find(|part| part.key == key);
+        let rolls = |kind: Kind| {
+            matches!(
+                kind,
+                Kind::Locomotion(Locomotion::Wheel | Locomotion::Track)
+            )
+        };
         match self {
-            Self::Robot => part.is_some_and(|part| !matches!(part.kind, Kind::Weapon(_))),
+            Self::Robot => {
+                part.is_some_and(|part| !matches!(part.kind, Kind::Weapon(_)) && !rolls(part.kind))
+            }
             Self::Weapons => {
                 part.is_some_and(|part| matches!(part.kind, Kind::Weapon(_)))
                     || BETA.mods.iter().any(|modification| modification.key == key)
             }
+            Self::Locomotion => part.is_some_and(|part| rolls(part.kind)),
         }
     }
 }
@@ -113,13 +134,6 @@ pub fn pinned_tar(bundle: Bundle) -> String {
         .as_str()
         .expect("the pin names the tar's SHA-256")
         .to_owned()
-}
-
-/// The issue that makes a catalog part no shipped kit draws yet, if it is one: those draw as
-/// labelled placeholders. Any other catalog part missing from the kits is an error.
-#[must_use]
-pub fn placeholder_owner(key: &str) -> Option<&'static str> {
-    matches!(key, "robot.wheel" | "robot.track").then_some("asset-tooling#634")
 }
 
 /// `bytes`' SHA-256 in lowercase hex.
@@ -273,6 +287,19 @@ impl Plan {
                     return Err(format!("{name}: no {DESCRIPTOR} attachment"));
                 }
             }
+            Bundle::Locomotion => {
+                if descriptor.is_none() {
+                    return Err(format!("{name}: no {DESCRIPTOR} attachment"));
+                }
+                for key in ["robot.wheel", "robot.track"] {
+                    if !entries
+                        .iter()
+                        .any(|entry| entry.key == key && entry.variant == "damaged")
+                    {
+                        return Err(format!("{name}: {key} has no damaged variant"));
+                    }
+                }
+            }
         }
         Ok(Self {
             bundle,
@@ -299,8 +326,8 @@ impl Plan {
     }
 }
 
-/// Checks that `plans` between them draw the whole catalog: every catalog part is in a kit or a
-/// declared placeholder, and every catalog mod is in a kit.
+/// Checks that `plans` between them draw the whole catalog: every catalog part and every catalog
+/// mod is in a kit.
 ///
 /// # Errors
 ///
@@ -312,11 +339,8 @@ pub fn complete(plans: &[Plan]) -> Result<(), String> {
         .map(|entry| entry.key.as_str())
         .collect();
     for part in BETA.parts {
-        if !keys.contains(part.key) && placeholder_owner(part.key).is_none() {
-            return Err(format!(
-                "robot kit: catalog part {} is neither in a kit nor a declared placeholder",
-                part.key
-            ));
+        if !keys.contains(part.key) {
+            return Err(format!("robot kit: catalog part {} is in no kit", part.key));
         }
     }
     for modification in BETA.mods {
@@ -623,6 +647,90 @@ impl Gear {
     }
 }
 
+/// What the locomotion kit's descriptor says about a wheel or track (its v3 `locomotion` block):
+/// where the simulation's rolling bodies are and how the kit's roll clip follows their turn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rolling {
+    /// The axle every wheel node turns about, in the part's glTF frame: the part's mount normal,
+    /// as the simulation's revolute joints (`shooter_sim::mechanics`). A positive angle turns
+    /// right-handed about it.
+    pub axis: Vec3,
+    /// Metres of ground a radian of turn rolls: the tyre's tread (0.18 m) or the belt round the
+    /// track's wheels (0.1 m).
+    pub radius: f32,
+    /// The simulation's rolling bodies' centres (the wheel's sphere, the track's two road
+    /// wheels), in the part's glTF frame (metres).
+    pub centres: Vec<Vec3>,
+    /// The looping clip that turns the wheels (and moves the belt), its length (seconds) and the
+    /// turn one cycle of it makes (radians).
+    pub clip: String,
+    pub seconds: f32,
+    pub radians_per_cycle: f32,
+}
+
+impl Rolling {
+    /// The clip's time (seconds) for a turn of `angle` radians: `(angle mod 2π) / 2π` of it
+    /// (the descriptor's `roll.rule`).
+    #[must_use]
+    pub fn time(&self, angle: f32) -> f32 {
+        angle.rem_euclid(self.radians_per_cycle) / self.radians_per_cycle * self.seconds
+    }
+}
+
+/// The wheels and tracks of the locomotion kit's v3 descriptor, by key, with the nodes each
+/// one's clip turns.
+fn rolling(descriptor: &[u8]) -> Result<HashMap<String, (Rolling, Vec<String>)>, String> {
+    let fail = |what: &str| format!("locomotion-kit: descriptor: {what}");
+    let json: Json =
+        serde_json::from_slice(descriptor).map_err(|error| fail(&error.to_string()))?;
+    if json["schema"].as_str() != Some(LOCOMOTION_SCHEMA) {
+        return Err(fail(&format!("not a {LOCOMOTION_SCHEMA}")));
+    }
+    let mut out = HashMap::new();
+    for part in json["parts"].as_array().into_iter().flatten() {
+        let key = part["key"]
+            .as_str()
+            .ok_or_else(|| fail("a part has no key"))?;
+        let block = &part["locomotion"];
+        let malformed = || fail(&format!("{key} has a malformed locomotion block"));
+        #[allow(clippy::cast_possible_truncation)]
+        let number = |value: &Json| value.as_f64().map(|value| value as f32);
+        let roll = &block["roll"];
+        let rolling = Rolling {
+            axis: vec3(&block["axis"]).ok_or_else(malformed)?,
+            radius: number(&block["rollingRadius"]).ok_or_else(malformed)?,
+            centres: block["bodies"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|body| vec3(&body["centre"]))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(malformed)?,
+            clip: roll["animation"].as_str().ok_or_else(malformed)?.to_owned(),
+            seconds: number(&roll["seconds"]).ok_or_else(malformed)?,
+            radians_per_cycle: number(&roll["radiansPerCycle"]).ok_or_else(malformed)?,
+        };
+        let wheels = block["wheels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|node| node.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(malformed)?;
+        if rolling.centres.is_empty()
+            || wheels.is_empty()
+            || rolling.radius <= 0.0
+            || rolling.seconds <= 0.0
+            || rolling.radians_per_cycle <= 0.0
+            || rolling.axis.length() < 0.5
+        {
+            return Err(malformed());
+        }
+        out.insert(key.to_owned(), (rolling, wheels));
+    }
+    Ok(out)
+}
+
 fn vec3(value: &Json) -> Option<Vec3> {
     let array = value.as_array()?;
     #[allow(clippy::cast_possible_truncation)]
@@ -717,6 +825,8 @@ pub struct KitEntry {
     pub rig: Option<Rig>,
     /// A weapon's or mod's anchors, channels and states (the weapons kit's descriptor).
     pub gear: Option<Gear>,
+    /// A wheel's or track's axle and roll clip (the locomotion kit's descriptor).
+    pub rolling: Option<Rolling>,
 }
 
 /// The decoded kits: what the clients upload and pose.
@@ -823,9 +933,12 @@ pub fn decode(plans: &[Plan], files: &HashMap<String, Vec<u8>>) -> Result<KitDat
     let mut materials: Vec<KitMaterial> = Vec::new();
     let mut entries = Vec::new();
     for plan in plans {
-        let gear = match &plan.descriptor {
-            Some(descriptor) => Some(gear(files[&descriptor.path])?),
-            None => None,
+        let (gear, rolling) = match (&plan.descriptor, plan.bundle) {
+            (Some(descriptor), Bundle::Locomotion) => {
+                (None, Some(rolling(files[&descriptor.path])?))
+            }
+            (Some(descriptor), _) => (Some(gear(files[&descriptor.path])?), None),
+            (None, _) => (None, None),
         };
         for entry in &plan.entries {
             let mut decoded = scene(
@@ -853,6 +966,23 @@ pub fn decode(plans: &[Plan], files: &HashMap<String, Vec<u8>>) -> Result<KitDat
                     }
                 }
                 decoded.gear = Some(found.clone());
+            }
+            if let Some(rolling) = &rolling {
+                let fail = |what: String| format!("locomotion-kit: {}: {what}", entry.key);
+                let (found, wheels) = rolling
+                    .get(&entry.key)
+                    .ok_or_else(|| fail("not in the descriptor".into()))?;
+                let rig = decoded
+                    .rig
+                    .as_ref()
+                    .ok_or_else(|| fail("not rigged".into()))?;
+                if rig.clip(&found.clip).is_none() {
+                    return Err(fail(format!("no {} clip", found.clip)));
+                }
+                if let Some(missing) = wheels.iter().find(|node| rig.joint(node).is_none()) {
+                    return Err(fail(format!("no {missing} node")));
+                }
+                decoded.rolling = Some(found.clone());
             }
             entries.push(decoded);
         }
@@ -1166,6 +1296,7 @@ fn scene(
         material,
         rig,
         gear: None,
+        rolling: None,
     })
 }
 
@@ -1187,10 +1318,18 @@ mod tests {
     }
 
     #[test]
-    fn only_the_wheels_and_tracks_are_declared_placeholders() {
-        assert_eq!(placeholder_owner("weapon.rail-gun"), None);
-        assert_eq!(placeholder_owner("robot.track"), Some("asset-tooling#634"));
-        assert_eq!(placeholder_owner("robot.leg"), None);
+    fn every_catalog_part_has_exactly_one_kit_and_every_kit_a_pin() {
+        for part in BETA.parts {
+            let kits = Bundle::ALL
+                .iter()
+                .filter(|bundle| bundle.holds(part.key))
+                .count();
+            assert_eq!(kits, 1, "{}", part.key);
+        }
+        assert!(Bundle::Locomotion.holds("robot.wheel"));
+        assert!(Bundle::Locomotion.holds("robot.track"));
+        assert!(!Bundle::Robot.holds("robot.track"));
+        assert!(!Bundle::Locomotion.holds("robot.leg"));
         for bundle in Bundle::ALL {
             assert_eq!(pinned_manifest(bundle).len(), 64);
             assert_eq!(pinned_tar(bundle).len(), 64);
@@ -1249,7 +1388,46 @@ mod tests {
             descriptor: None,
         };
         let error = complete(&[plan("robot.sensor")]).unwrap_err();
-        assert!(error.contains("neither in a kit"), "{error}");
+        assert!(error.contains("in no kit"), "{error}");
+        // The locomotion kit holds only the wheel and the track, with its descriptor and their
+        // damaged looks.
+        let (bytes, pin) = manifest(&asset("robot.leg"));
+        let error = Plan::checked(Bundle::Locomotion, &bytes, &pin).unwrap_err();
+        assert!(error.contains("robot.leg"), "{error}");
+        let (bytes, pin) = manifest(&asset("robot.wheel"));
+        let error = Plan::checked(Bundle::Locomotion, &bytes, &pin).unwrap_err();
+        assert!(error.contains(DESCRIPTOR), "{error}");
+    }
+
+    #[test]
+    fn a_locomotion_descriptor_is_read_and_checked() {
+        let part = |key: &str, block: &str| format!(r#"{{"key": "{key}", "locomotion": {block}}}"#);
+        let wheel = r#"{"axis": [0, 1, 0], "rollingRadius": 0.18,
+            "bodies": [{"centre": [0.1, 0.1, -0.1], "radius": 0.18}], "wheels": ["wheel"],
+            "roll": {"animation": "roll", "seconds": 1, "radiansPerCycle": 6.283185}}"#;
+        let descriptor = |parts: &str, schema: &str| {
+            format!(r#"{{"schema": "{schema}", "parts": [{parts}]}}"#).into_bytes()
+        };
+        let read = rolling(&descriptor(&part("robot.wheel", wheel), LOCOMOTION_SCHEMA)).unwrap();
+        let (found, wheels) = &read["robot.wheel"];
+        assert_eq!(found.axis, Vec3::Y);
+        assert_eq!(found.centres, [Vec3::new(0.1, 0.1, -0.1)]);
+        assert_eq!(wheels, &["wheel".to_owned()]);
+        // Half a turn is half the clip; a turn back wraps forward.
+        assert!((found.time(std::f32::consts::PI) - 0.5).abs() < 1e-5);
+        assert!((found.time(-std::f32::consts::FRAC_PI_2) - 0.75).abs() < 1e-5);
+        let error = rolling(&descriptor(
+            &part("robot.wheel", wheel),
+            "socket-grid-kit-descriptor-v2",
+        ))
+        .unwrap_err();
+        assert!(error.contains(LOCOMOTION_SCHEMA), "{error}");
+        let error = rolling(&descriptor(
+            &part("robot.wheel", r#"{"axis": [0, 1, 0]}"#),
+            LOCOMOTION_SCHEMA,
+        ))
+        .unwrap_err();
+        assert!(error.contains("malformed"), "{error}");
     }
 
     #[test]
