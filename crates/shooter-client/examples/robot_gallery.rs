@@ -9,7 +9,7 @@
 //! writes `loadouts.ppm` (the four named loadouts and the mechanics fixtures: the biped, the
 //! robo-dog and the paired turret with its rotor and hinge turned), `poses.ppm` (the standard
 //! build idle, running, strafing, airborne, grappling, sliding, firing, swinging the blade, dead,
-//! and with its right arm shot off), `weapons.ppm` (the weapons' states and the mods: the rifle
+//! and with its blade shot off), `weapons.ppm` (the weapons' states and the mods: the rifle
 //! held with the blade away, the rifle firing, a blade swing, the rocket pod firing, the rail gun
 //! recharging, the skirmisher's grapple hooked with its mods, the marksman's long barrel and
 //! overcharger), `close.ppm` (the heavy build close up) and `mods.ppm` (the skirmisher and
@@ -189,9 +189,9 @@ fn main() -> Result<(), String> {
             (base(9), 0.0),
         ]
     };
-    // The standard build's right arm (and the blade on it) shot off, lying on the floor.
+    // The standard build's blade shot off, lying on the floor.
     let fallen = [(
-        PartId(4),
+        PartId(8),
         Mat4::from_translation(at(9, 1.45) + Vec3::new(-0.5, 0.12, -0.7))
             * Mat4::from_rotation_z(-std::f32::consts::FRAC_PI_2)
             * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.4)),

@@ -79,7 +79,7 @@
 
 use crate::weapons::{Delivery, Weapon};
 use parts::{
-    BATTERY, BEAM_LONG, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, LEG, RAIL_GUN,
+    BATTERY, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, LEG, RAIL_GUN,
     ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
@@ -825,97 +825,95 @@ const fn authored(parts: &[Part]) -> Assembly {
     assembly
 }
 
-/// The humanoid frame the named loadouts share, on chassis `torso` (the root, the vital part):
-/// the sensor on its top, a long beam for an arm on each side, two legs underneath (IDs 0 and 2
-/// to 6; ID 1 was the retired control core's and stays unused, so the other IDs keep theirs).
-const fn frame(torso: &PartType) -> [Part; 6] {
-    let (side, _) = Face::PosY.grid(torso.cells);
-    let (_, right) = Face::NegY.grid(torso.cells);
+/// The frame the named loadouts share, on chassis `torso` (the root, the vital part): the sensor
+/// on its top and two legs underneath (IDs 0, 2, 5 and 6). ID 1 was the retired control core's
+/// and IDs 3 and 4 the arm beams' (removed, shooter#91); they stay unused, so the other IDs keep
+/// theirs.
+const fn frame(torso: &PartType) -> [Part; 4] {
     [
         Part::root(0, torso),
         Part::on(2, &SENSOR, 0, torso, Face::PosZ, 0, 0),
-        Part::on(3, &BEAM_LONG, 0, torso, Face::PosY, side - 1, 0),
-        Part::on(4, &BEAM_LONG, 0, torso, Face::NegY, 0, right - 1),
         Part::on(5, &LEG, 0, torso, Face::NegZ, 0, 0),
         Part::on(6, &LEG, 0, torso, Face::NegZ, 1, 0),
     ]
 }
 
-const fn with_weapons(frame: [Part; 6], weapons: [Part; 4]) -> Assembly {
-    let [a, c, d, e, f, g] = frame;
-    let [h, i, j, k] = weapons;
-    authored(&[a, c, d, e, f, g, h, i, j, k])
+/// The four weapons IDs 7 to 10 on `frame`, then `extra` (at most one more part).
+const fn with_weapons(frame: [Part; 4], weapons: [Part; 4], extra: Option<Part>) -> Assembly {
+    let [a, b, c, d] = frame;
+    let [e, f, g, h] = weapons;
+    match extra {
+        Some(i) => authored(&[a, b, c, d, e, f, g, h, i]),
+        None => authored(&[a, b, c, d, e, f, g, h]),
+    }
 }
 
-/// A weapon on the tip of arm `arm` (3 left, 4 right).
-const fn in_hand(id: u8, weapon: &PartType, arm: u8) -> Part {
-    Part::on(id, weapon, arm, &BEAM_LONG, Face::PosZ, 0, 0)
-}
-
-/// A two-cell weapon along the front of arm `arm`, by its tip.
-const fn along_arm(id: u8, weapon: &PartType, arm: u8) -> Part {
-    Part::on(id, weapon, arm, &BEAM_LONG, Face::PosX, 0, 2)
+/// `weapon` on the front (+X, the aim) of chassis `torso` at cell `(u, v)`, unturned: its mount
+/// face on the chassis and its muzzle, along its own +Z, pointing forward. On the front face `u`
+/// counts from the robot's right to its left and `v` from the bottom up; a heavy weapon (or a
+/// heavy mod) reserves the cell above too.
+const fn forward(id: u8, weapon: &PartType, torso: &PartType, u: u8, v: u8) -> Part {
+    Part::on(id, weapon, 0, torso, Face::PosX, u, v)
 }
 
 /// The build every fighter starts with (re-expressing the shipped standard build): the small
-/// chassis as the torso, with the energy rifle on the left arm's tip, the blade on the right
-/// arm's tip, the grapple on top beside the sensor and the shotgun on the chest. Valid in
-/// [`BETA`].
+/// chassis as the torso, every weapon on its front facing the aim: the energy rifle low on the
+/// left, the blade low on the right, the shotgun high on the left and the grapple high on the
+/// right. Valid in [`BETA`].
 pub const STANDARD: Assembly = with_weapons(
     frame(&CHASSIS_S),
     [
-        in_hand(7, &ENERGY_RIFLE, 3),
-        in_hand(8, &ENERGY_BLADE, 4),
-        Part::on(9, &GRAPPLE, 0, &CHASSIS_S, Face::PosZ, 0, 1),
-        Part::on(10, &SHOTGUN, 0, &CHASSIS_S, Face::PosX, 1, 3),
+        forward(7, &ENERGY_RIFLE, &CHASSIS_S, 1, 2),
+        forward(8, &ENERGY_BLADE, &CHASSIS_S, 0, 2),
+        forward(9, &GRAPPLE, &CHASSIS_S, 0, 3),
+        forward(10, &SHOTGUN, &CHASSIS_S, 1, 3),
     ],
+    None,
 );
 
-/// A heavy build: the medium chassis, the rail gun along the left arm, the blade on the right
-/// arm's tip, the rocket launcher on top, the grapple on the chest and, for the energy its rail
-/// shots and rockets take, a battery on its back (160 energy, not 100). Valid in [`BETA`].
-pub const HEAVY: Assembly = {
-    let [a, c, d, e, f, g] = frame(&CHASSIS_M);
-    authored(&[
-        a,
-        c,
-        d,
-        e,
-        f,
-        g,
-        along_arm(7, &RAIL_GUN, 3),
-        in_hand(8, &ENERGY_BLADE, 4),
-        Part::on(9, &ROCKET_LAUNCHER, 0, &CHASSIS_M, Face::PosZ, 1, 0),
-        Part::on(10, &GRAPPLE, 0, &CHASSIS_M, Face::PosX, 0, 3),
-        Part::on(11, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0),
-    ])
-};
+/// A heavy build: the medium chassis with, on its front facing the aim, the rail gun high on the
+/// left, the rocket launcher high on the right, the grapple below the rail gun and the blade
+/// below the rockets and, for the energy its rail shots and rockets take, a battery on its back
+/// (160 energy, not 100). Valid in [`BETA`].
+pub const HEAVY: Assembly = with_weapons(
+    frame(&CHASSIS_M),
+    [
+        forward(7, &RAIL_GUN, &CHASSIS_M, 1, 2),
+        forward(8, &ENERGY_BLADE, &CHASSIS_M, 0, 1),
+        forward(9, &ROCKET_LAUNCHER, &CHASSIS_M, 0, 2),
+        forward(10, &GRAPPLE, &CHASSIS_M, 1, 1),
+    ],
+    Some(Part::on(11, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0)),
+);
 
-/// A fast, light loadout on the standard frame: the rapid-cycler rifle (which drains the
-/// pool half again as fast as the shipped rifle), the blade, the grapple, and the shotgun with
-/// an efficiency coil (cheaper blasts, so the pool lasts). Valid in [`BETA`].
+/// A fast, light loadout on the standard frame and mounts: the rapid-cycler rifle (which drains
+/// the pool half again as fast as the shipped rifle), the blade, the grapple, and the shotgun
+/// with an efficiency coil (cheaper blasts, so the pool lasts). Valid in [`BETA`].
 pub const SKIRMISHER: Assembly = with_weapons(
     frame(&CHASSIS_S),
     [
-        in_hand(7, &ENERGY_RIFLE, 3).with(RAPID_CYCLER),
-        in_hand(8, &ENERGY_BLADE, 4),
-        Part::on(9, &GRAPPLE, 0, &CHASSIS_S, Face::PosZ, 0, 1),
-        Part::on(10, &SHOTGUN, 0, &CHASSIS_S, Face::PosX, 1, 3).with(EFFICIENCY_COIL),
+        forward(7, &ENERGY_RIFLE, &CHASSIS_S, 1, 2).with(RAPID_CYCLER),
+        forward(8, &ENERGY_BLADE, &CHASSIS_S, 0, 2),
+        forward(9, &GRAPPLE, &CHASSIS_S, 0, 3),
+        forward(10, &SHOTGUN, &CHASSIS_S, 1, 3).with(EFFICIENCY_COIL),
     ],
+    None,
 );
 
-/// A heavy, long-range loadout: the medium chassis, the long-barrel rifle (a two-cell module)
-/// along the left arm, the blade on the right arm's tip, an overcharged rail gun (106 a
-/// hit instead of 85, for half again the energy a shot) on top and the grapple on the chest; no
-/// battery, so it lives on the root chassis' 100. Valid in [`BETA`].
+/// A heavy, long-range loadout: the medium chassis with, on its front facing the aim, the
+/// long-barrel rifle (a two-cell module) high on the left, an overcharged rail gun (106 a hit
+/// instead of 85, for half again the energy a shot) high on the right, the grapple below the
+/// rifle and the blade below the rail gun; no battery, so it lives on the root chassis' 100.
+/// Valid in [`BETA`].
 pub const MARKSMAN: Assembly = with_weapons(
     frame(&CHASSIS_M),
     [
-        along_arm(7, &ENERGY_RIFLE, 3).with(LONG_BARREL),
-        in_hand(8, &ENERGY_BLADE, 4),
-        Part::on(9, &RAIL_GUN, 0, &CHASSIS_M, Face::PosZ, 1, 0).with(OVERCHARGER),
-        Part::on(10, &GRAPPLE, 0, &CHASSIS_M, Face::PosX, 0, 3),
+        forward(7, &ENERGY_RIFLE, &CHASSIS_M, 1, 2).with(LONG_BARREL),
+        forward(8, &ENERGY_BLADE, &CHASSIS_M, 0, 1),
+        forward(9, &RAIL_GUN, &CHASSIS_M, 0, 2).with(OVERCHARGER),
+        forward(10, &GRAPPLE, &CHASSIS_M, 1, 1),
     ],
+    None,
 );
 
 /// The named loadouts a person picks from until the builder (shooter#57): the unmodified

@@ -241,19 +241,19 @@ mod tests {
     fn a_lost_part_falls_to_the_floor_and_is_gone_at_respawn() {
         let build = Assembly::default();
         let mut parts = PartDamage::fresh(&build);
-        // The right arm (part 4) breaks: it and the blade on it come off.
-        let arm = build
+        // The blade (part 8) breaks and comes off.
+        let blade = build
             .parts()
             .iter()
-            .position(|p| p.id == PartId(4))
+            .position(|p| p.id == PartId(8))
             .unwrap();
-        parts.hurt(&build, arm, 1_000);
+        parts.hurt(&build, blade, 1_000);
         let mut tracker = Tracker::default();
         let frame = rest_frame(&build, Vec3::new(0.0, 0.9, 0.0), Vec3::Z);
         tracker.parts(2, &build, &parts, frame);
         tracker.parts(2, &build, &parts, Mat4::IDENTITY);
         let lost: Vec<PartId> = tracker.detached(2).iter().map(|(id, _)| *id).collect();
-        assert_eq!(lost, [PartId(4), PartId(8)]);
+        assert_eq!(lost, [PartId(8)]);
         assert_eq!(
             tracker.detached(2)[0].1,
             frame,

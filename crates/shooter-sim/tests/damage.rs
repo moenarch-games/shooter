@@ -8,7 +8,7 @@
 use shooter_sim::damage::{BATTERY_BLAST_DAMAGE, PartDamage};
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
-use shooter_sim::robot::parts::{ARMOR_PLATE, CHASSIS_L, CHASSIS_S, SENSOR};
+use shooter_sim::robot::parts::{ARMOR_PLATE, BEAM_LONG, CHASSIS_L, CHASSIS_S, SENSOR};
 use shooter_sim::robot::{BETA, Face, HEAVY, PartId, RawMount, RawPart, STANDARD};
 use shooter_sim::trig;
 use shooter_sim::weapons::{SPLASH_DAMAGE, Weapon};
@@ -180,36 +180,34 @@ fn detached(events: &[Event]) -> Vec<(PartId, bool)> {
         .collect()
 }
 
-/// B's chassis middle at the height of its arms (150 units above its feet).
-fn arm_height(session: &Session) -> [f32; 3] {
-    let center = session.fighters[1].player.center(&session.world);
-    [center[0], center[1] - 90.0 + 150.0, center[2]]
-}
-
 #[test]
 fn front_and_side_shots_strike_the_parts_they_meet() {
-    // From the front, at the chassis' middle: the chassis, the whole bolt.
+    // From the front, below the weapons on its chest: the chassis, the whole bolt.
     let mut session = duel();
     let events = shoot(&mut session, Weapon::EnergyRifle, 32_768, |session| {
-        part_center(session, 1, PartId(0))
-    });
-    assert_eq!(struck(&events), [(PartId(0), 12)]);
-    // From the front at arm height the chest's shotgun is in the way.
-    let mut session = duel();
-    let events = shoot(&mut session, Weapon::EnergyRifle, 32_768, |session| {
-        let mut at = arm_height(session);
-        at[0] -= 10.0;
+        let mut at = part_center(session, 1, PartId(0));
+        at[1] -= 20.0;
         at
     });
+    assert_eq!(struck(&events), [(PartId(0), 12)]);
+    // From the front at the shotgun on the chest: the shotgun, not the chassis behind it.
+    let mut session = duel();
+    let events = shoot(&mut session, Weapon::EnergyRifle, 32_768, |session| {
+        part_center(session, 1, PartId(10))
+    });
     assert_eq!(struck(&events), [(PartId(10), 12)]);
-    // From B's left side at arm height: the rifle at the tip of the left arm, not the chassis
-    // behind it.
+    // From B's left side at the rifle's height: the rifle on the left of its chest, not the
+    // blade beside it.
     let mut session = duel();
-    let events = shoot(&mut session, Weapon::EnergyRifle, 16_384, arm_height);
+    let events = shoot(&mut session, Weapon::EnergyRifle, 16_384, |session| {
+        part_center(session, 1, PartId(7))
+    });
     assert_eq!(struck(&events), [(PartId(7), 12)]);
-    // From its right side: the blade on the right arm's tip.
+    // From its right side: the blade on the right.
     let mut session = duel();
-    let events = shoot(&mut session, Weapon::EnergyRifle, 49_152, arm_height);
+    let events = shoot(&mut session, Weapon::EnergyRifle, 49_152, |session| {
+        part_center(session, 1, PartId(8))
+    });
     assert_eq!(struck(&events), [(PartId(8), 12)]);
 }
 
@@ -243,8 +241,8 @@ fn a_rocket_splash_strikes_each_part_in_reach_once() {
     assert!(hits.iter().all(|(_, damage)| *damage <= leg), "{hits:?}");
 }
 
-/// The standard build with an armor plate (part 11) over the front of its chassis, between the
-/// chest's shotgun and the legs.
+/// The standard build with an armor plate (part 11) over the front of its chassis, below the
+/// weapons on its chest.
 fn plated() -> Assembly {
     let mut candidate = STANDARD.candidate();
     candidate.parts.push(RawPart {
@@ -252,7 +250,7 @@ fn plated() -> Assembly {
         kind: ARMOR_PLATE.id.0,
         mount: Some(RawMount {
             parent: 0,
-            socket: CHASSIS_S.socket(Face::PosX, 0, 1).unwrap().0,
+            socket: CHASSIS_S.socket(Face::PosX, 0, 0).unwrap().0,
             ..RawMount::default()
         }),
         modification: None,
@@ -263,7 +261,7 @@ fn plated() -> Assembly {
 #[test]
 fn armor_plates_stop_strikes_and_penetrating_beams_pass_a_share() {
     let plate = PartId(11);
-    let chest = |session: &Session| part_center(session, 1, PartId(0));
+    let chest = |session: &Session| part_center(session, 1, plate);
     // The rifle pierces 20 %: the plate takes 10 of 12, the chassis behind it 2.
     let mut session = duel();
     rebuild(&mut session, 1, plated());
@@ -280,13 +278,51 @@ fn armor_plates_stop_strikes_and_penetrating_beams_pass_a_share() {
     assert_eq!(Weapon::EnergyBlade.penetration(), 0);
     // Without the plate the rail's whole beam lands on the chassis.
     let mut session = duel();
-    let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
+    let events = shoot(&mut session, Weapon::RailGun, 32_768, |session| {
+        let mut at = part_center(session, 1, PartId(0));
+        at[1] -= 20.0;
+        at
+    });
     assert_eq!(struck(&events), [(PartId(0), 85)]);
+}
+
+/// The standard build with arms, as the loadouts had them before shooter#91: a long beam on
+/// each side of the chassis (parts 3 and 4), the rifle and the blade moved onto their tips.
+fn armed() -> Assembly {
+    let socket = |on: &shooter_sim::robot::PartType, face, u, v| on.socket(face, u, v).unwrap().0;
+    let mut candidate = STANDARD.candidate();
+    for (id, face, u, v) in [(3, Face::PosY, 3, 0), (4, Face::NegY, 0, 3)] {
+        candidate.parts.push(RawPart {
+            id,
+            kind: BEAM_LONG.id.0,
+            mount: Some(RawMount {
+                parent: 0,
+                socket: socket(&CHASSIS_S, face, u, v),
+                ..RawMount::default()
+            }),
+            modification: None,
+        });
+    }
+    for part in &mut candidate.parts {
+        if let Some(arm) = [(7, 3), (8, 4)]
+            .iter()
+            .find(|(id, _)| *id == part.id)
+            .map(|(_, arm)| *arm)
+        {
+            part.mount = Some(RawMount {
+                parent: arm,
+                socket: socket(&BEAM_LONG, Face::PosZ, 0, 0),
+                ..RawMount::default()
+            });
+        }
+    }
+    BETA.validate(&candidate).unwrap()
 }
 
 #[test]
 fn several_parts_come_off_at_once_and_lost_weapons_cannot_fire() {
     let mut session = duel();
+    rebuild(&mut session, 1, armed());
     // A rail beam breaks B's left arm (60): the rifle at its tip comes off with it.
     let events = shoot(&mut session, Weapon::RailGun, 32_768, |session| {
         part_center(session, 1, PartId(3))
@@ -369,8 +405,13 @@ fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_t
         (0..3).all(|axis| (after[axis] - before[axis]).abs() < 0.5),
         "{before:?} {after:?}"
     );
-    // The root chassis (270) is the kill: four rail beams to it, the fourth kills.
-    let chest = |session: &Session| part_center(session, 1, PartId(0));
+    // The root chassis (270) is the kill: four rail beams to it (below the weapons on its
+    // chest), the fourth kills.
+    let chest = |session: &Session| {
+        let mut at = part_center(session, 1, PartId(0));
+        at[1] -= 20.0;
+        at
+    };
     for left in [185, 100, 15] {
         let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
         assert_eq!(struck(&events), [(PartId(0), 85)]);
@@ -489,8 +530,9 @@ fn a_destroyed_battery_takes_its_energy_once_and_blasts_its_neighbours() {
 #[test]
 fn part_damage_travels_in_snapshots_and_a_predictor_follows_it() {
     let mut host = duel();
+    // A rail beam destroys B's rifle on the left of its chest.
     shoot(&mut host, Weapon::RailGun, 32_768, |session| {
-        part_center(session, 1, PartId(3))
+        part_center(session, 1, PartId(7))
     });
     let snapshot = decode_snapshot(&encode_snapshot(&host.snapshot())).unwrap();
     assert_eq!(snapshot, host.snapshot());

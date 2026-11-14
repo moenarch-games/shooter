@@ -17,10 +17,10 @@
 //! The weapons play the weapons kit's states ([`super::weapon`]): a shot's recoil and flash, the
 //! continuous weapons' loops, the rail gun's recharge and the rocket pod's reload, the grapple's
 //! launch and retract (its hook flying to where the host set it), the blade's extend, retract and
-//! quick-melee swing (the kit's `swing` about the blade's wrist; the arm itself stays rigid), and
-//! their glow channels; each mod sits on its weapon's anchor and moves with it. A missing
-//! animation (strafe: the kit has no sideways clip) is reported ([`Animation::missing`]) and
-//! marked over the robot, never a silent dummy.
+//! quick-melee swing (the kit's `swing` about the blade's wrist; the part it is mounted on stays
+//! rigid), and their glow channels; each mod sits on its weapon's anchor and moves with it. A
+//! missing animation (strafe: the kit has no sideways clip) is reported ([`Animation::missing`])
+//! and marked over the robot, never a silent dummy.
 //!
 //! **Joints.** Hinges and rotors turn at the angles the state gives ([`PartStates::joints`];
 //! nothing in the match sets them yet). The kit turns a joint's moving piece about the cube's

@@ -71,6 +71,15 @@ fn standard() -> Vec<RawPart> {
     STANDARD.candidate().parts
 }
 
+/// The standard build with a long beam on each side of its chassis (parts 3 and 4): structure
+/// the loadouts no longer carry (shooter#91).
+fn armed() -> Vec<RawPart> {
+    let mut parts = standard();
+    parts.push(on(3, &BEAM_LONG, 0, &CHASSIS_S, Face::PosY, 3, 0));
+    parts.push(on(4, &BEAM_LONG, 0, &CHASSIS_S, Face::NegY, 0, 3));
+    parts
+}
+
 fn with(parts: &mut [RawPart], id: u8) -> &mut RawPart {
     parts.iter_mut().find(|part| part.id == id).unwrap()
 }
@@ -378,13 +387,17 @@ fn larger_parts_reserve_their_footprint_and_turn_it_with_their_yaw() {
         BETA.validate(&along),
         Err(AssemblyError::Overlap(PartId(2), PartId(9)))
     );
-    // A 40 cm plate on the chest covers the shotgun's cell.
+    // A 40 cm plate on the chest covers the weapons' cells.
     let mut plated = standard();
     plated.push(on(11, &ARMOR_PLATE, 0, &CHASSIS_S, Face::PosX, 0, 2));
     assert_eq!(
         BETA.validate(&build(plated)),
-        Err(AssemblyError::Overlap(PartId(10), PartId(11)))
+        Err(AssemblyError::Overlap(PartId(8), PartId(11)))
     );
+    // Below them it fits.
+    let mut plated = standard();
+    plated.push(on(11, &ARMOR_PLATE, 0, &CHASSIS_S, Face::PosX, 0, 0));
+    assert!(BETA.validate(&build(plated)).is_ok());
     // Two parts on one socket.
     let mut stacked = standard();
     stacked.push(on(11, &SENSOR, 0, &CHASSIS_S, Face::PosZ, 0, 0));
@@ -394,16 +407,19 @@ fn larger_parts_reserve_their_footprint_and_turn_it_with_their_yaw() {
     );
     // A long barrel makes the rifle a two-cell module: below the shotgun it reaches its cell.
     let mut barrel = standard();
-    *with(&mut barrel, 7) = on(7, &ENERGY_RIFLE, 0, &CHASSIS_S, Face::PosX, 1, 2);
-    assert!(BETA.validate(&build(barrel.clone())).is_ok());
+    assert_eq!(
+        with(&mut barrel, 7).mount.unwrap().socket,
+        CHASSIS_S.socket(Face::PosX, 1, 2).unwrap().0
+    );
     *with(&mut barrel, 7) = modded(*with(&mut barrel, 7), LONG_BARREL);
     assert_eq!(
         BETA.validate(&build(barrel)),
         Err(AssemblyError::Overlap(PartId(7), PartId(10)))
     );
-    // Overhanging the face's edge is fine: the rail gun on the arm's one-cell tip.
+    // Overhanging the face's edge is fine: the rail gun across the back of the top, beside the
+    // sensor, its second cell past the edge.
     let mut overhang = standard();
-    *with(&mut overhang, 7) = on(7, &RAIL_GUN, 3, &BEAM_LONG, Face::PosZ, 0, 0);
+    *with(&mut overhang, 7) = on(7, &RAIL_GUN, 0, &CHASSIS_S, Face::PosZ, 0, 1);
     assert!(BETA.validate(&build(overhang)).is_ok());
 }
 
@@ -418,8 +434,8 @@ fn broken_structures_are_rejected() {
     assert!(BETA.validate(&build(cored.clone())).is_ok());
     with(&mut cored, 1).kind = 30;
     assert_eq!(reject(cored), AssemblyError::UnknownPart(30));
-    // A part on an interior socket (the mount face of the arm, which rests on the torso).
-    let mut interior = standard();
+    // A part on an interior socket (the mount face of an arm, which rests on the torso).
+    let mut interior = armed();
     interior.push(on(1, &SENSOR, 3, &BEAM_LONG, Face::NegZ, 0, 0));
     assert_eq!(reject(interior), AssemblyError::InteriorSocket(PartId(1)));
     // The root's own underside is exterior: the legs stand there.
@@ -433,7 +449,7 @@ fn broken_structures_are_rejected() {
         reject(roots),
         AssemblyError::MultipleRoots(PartId(0), PartId(2))
     );
-    let mut rootless = standard();
+    let mut rootless = armed();
     *with(&mut rootless, 0) = on(0, &CHASSIS_S, 3, &BEAM_LONG, Face::PosX, 0, 0);
     assert_eq!(reject(rootless), AssemblyError::NoRoot);
     assert_eq!(
@@ -453,10 +469,10 @@ fn broken_structures_are_rejected() {
     with(&mut on_weapon, 9).mount.as_mut().unwrap().parent = 7;
     assert_eq!(reject(on_weapon), AssemblyError::NoSocket(PartId(9)));
     // Cycles: a part its own parent, two arms on each other.
-    let mut selfish = standard();
+    let mut selfish = armed();
     *with(&mut selfish, 3) = on(3, &BEAM_LONG, 3, &BEAM_LONG, Face::PosX, 0, 0);
     assert_eq!(reject(selfish), AssemblyError::Cycle(PartId(3)));
-    let mut looped = standard();
+    let mut looped = armed();
     *with(&mut looped, 3) = on(3, &BEAM_LONG, 4, &BEAM_LONG, Face::PosX, 0, 0);
     *with(&mut looped, 4) = on(4, &BEAM_LONG, 3, &BEAM_LONG, Face::PosX, 0, 0);
     assert_eq!(reject(looped), AssemblyError::Cycle(PartId(3)));
@@ -607,7 +623,7 @@ fn the_root_chassis_and_batteries_make_the_energy_pool() {
         .push(on(11, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0));
     let charged = BETA.validate(&charged).unwrap();
     assert_eq!(BETA.budget(&charged).capacity, 160);
-    assert_eq!(BETA.budget(&charged).points, 110);
+    assert_eq!(BETA.budget(&charged).points, 104);
     let mut overlapping = charged.candidate();
     overlapping
         .parts
@@ -620,10 +636,17 @@ fn the_root_chassis_and_batteries_make_the_energy_pool() {
     second
         .parts
         .push(on(12, &BATTERY, 0, &CHASSIS_M, Face::NegX, 0, 0));
+    let second = BETA.validate(&second).unwrap();
+    assert_eq!(BETA.budget(&second).capacity, 220);
+    assert_eq!(BETA.budget(&second).points, 109);
+    let mut third = second.candidate();
+    third
+        .parts
+        .push(on(13, &BATTERY, 0, &CHASSIS_M, Face::NegX, 1, 0));
     assert_eq!(
-        BETA.validate(&second),
+        BETA.validate(&third),
         Err(AssemblyError::OverBudget {
-            points: 115,
+            points: 114,
             build_points: 110
         })
     );
@@ -631,8 +654,8 @@ fn the_root_chassis_and_batteries_make_the_energy_pool() {
         build_points: 115,
         ..BETA
     };
-    let second = roomy.validate(&second).unwrap();
-    assert_eq!(roomy.budget(&second).capacity, 220);
+    let third = roomy.validate(&third).unwrap();
+    assert_eq!(roomy.budget(&third).capacity, 280);
     // Every part type's own capacity and regeneration: none regenerates and only the battery
     // stores (the root chassis' baseline is the root's, not its type's).
     for part in BETA.parts {
@@ -645,38 +668,41 @@ fn the_root_chassis_and_batteries_make_the_energy_pool() {
 
 #[test]
 fn budgets_hold_exactly_at_their_limits_and_fail_one_over() {
-    // Build points: the heavy build (with its battery) costs 105.
+    // Build points: the heavy build (with its battery) costs 99.
     let heavy = BETA.budget(&HEAVY);
-    assert_eq!(heavy.points, 105);
+    assert_eq!(heavy.points, 99);
     let exact = Catalog {
-        build_points: 105,
+        build_points: 99,
         ..BETA
     };
     assert_eq!(exact.validate(&HEAVY.candidate()), Ok(HEAVY));
     let short = Catalog {
-        build_points: 104,
+        build_points: 98,
         ..BETA
     };
     assert_eq!(
         short.validate(&HEAVY.candidate()),
         Err(AssemblyError::OverBudget {
-            points: 105,
-            build_points: 104
+            points: 99,
+            build_points: 98
         })
     );
-    // One plate fits the beta's 110 on the heavy build, a second passes it.
+    // Two plates fit the beta's 110 on the heavy build, a third passes it.
     let mut plated = HEAVY.candidate();
     plated
         .parts
         .push(on(12, &ARMOR_PLATE, 0, &CHASSIS_M, Face::NegX, 0, 0));
-    assert!(BETA.validate(&plated).is_ok());
     plated
         .parts
         .push(on(13, &ARMOR_PLATE, 0, &CHASSIS_M, Face::PosY, 0, 0));
+    assert!(BETA.validate(&plated).is_ok());
+    plated
+        .parts
+        .push(on(14, &ARMOR_PLATE, 0, &CHASSIS_M, Face::NegY, 0, 0));
     assert_eq!(
         BETA.validate(&plated),
         Err(AssemblyError::OverBudget {
-            points: 113,
+            points: 111,
             build_points: 110
         })
     );
@@ -707,9 +733,11 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
     }
     assert_eq!(loadout(" Marksman "), Some(MARKSMAN));
     assert_eq!(loadout("sniper"), None);
-    assert_eq!(STANDARD.parts().len(), 10);
-    assert_eq!(BETA.budget(&STANDARD).points, 75);
-    assert_eq!(BETA.budget(&SKIRMISHER).points, 90);
+    // A chassis, a sensor, two legs and four weapons (no arms since shooter#91).
+    assert_eq!(STANDARD.parts().len(), 8);
+    assert_eq!(BETA.budget(&STANDARD).points, 69);
+    assert_eq!(BETA.budget(&SKIRMISHER).points, 84);
+    assert_eq!(BETA.budget(&MARKSMAN).points, 99);
     assert_eq!(
         BETA.mod_on(&SKIRMISHER, Weapon::EnergyRifle),
         Some(RAPID_CYCLER)
@@ -718,7 +746,7 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         BETA.mod_on(&SKIRMISHER, Weapon::Shotgun),
         Some(EFFICIENCY_COIL)
     );
-    assert_eq!(HEAVY.parts().len(), 11, "the heavy build carries a battery");
+    assert_eq!(HEAVY.parts().len(), 9, "the heavy build carries a battery");
     assert_eq!(BETA.mod_on(&MARKSMAN, Weapon::RailGun), Some(OVERCHARGER));
     assert_eq!(
         BETA.mod_on(&MARKSMAN, Weapon::EnergyRifle),
@@ -789,6 +817,48 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
     assert_eq!(energy(&MARKSMAN, Weapon::EnergyRifle), 2_000);
 }
 
+/// The direction `quaternion` (`[x, y, z, w]`) turns a part's own +Z (its mount normal, the way
+/// the weapons kit's muzzles point) to.
+fn mount_normal([x, y, z, w]: [f32; 4]) -> [f32; 3] {
+    [
+        2.0 * (x * z + w * y),
+        2.0 * (y * z - w * x),
+        1.0 - 2.0 * (x * x + y * y),
+    ]
+}
+
+#[test]
+fn every_loadout_weapon_faces_the_aim_from_the_chassis() {
+    // The arm beams are gone (shooter#91): every weapon sits on the root chassis' front, its own
+    // +Z, along which the kit's muzzles and blade point, within a degree of the robot's forward
+    // (+X, the aim at rest).
+    let forward = 1.0_f32.to_radians().cos();
+    for (name, build) in LOADOUTS {
+        assert!(
+            build
+                .parts()
+                .iter()
+                .all(|part| !matches!(BETA.part_type(part.kind).unwrap().kind, Kind::Beam)),
+            "{name}"
+        );
+        let placed = shooter_sim::mechanics::placements(&build);
+        let mut weapons = 0;
+        for (part, placement) in build.parts().iter().zip(&placed) {
+            if !matches!(BETA.part_type(part.kind).unwrap().kind, Kind::Weapon(_)) {
+                continue;
+            }
+            weapons += 1;
+            let mount = part.mount.unwrap();
+            assert_eq!(mount.parent, PartId(0), "{name}: {:?}", part.id);
+            let [x, ..] = mount_normal(placement.orientation);
+            assert!(x > forward, "{name}: {:?} points {x}", part.id);
+            // In front of the chassis, not inside it.
+            assert!(placement.centre[0] > 0.0, "{name}: {:?}", part.id);
+        }
+        assert_eq!(weapons, 4, "{name}");
+    }
+}
+
 /// The bytes `build` travels as (after an input's build flag).
 fn build_bytes(build: &Assembly) -> Vec<u8> {
     let plain = encode_input(Intent::IDLE, 3, None, None);
@@ -811,7 +881,7 @@ fn builds_from_untrusted_bytes_are_validated() {
     let standard = build_bytes(&STANDARD);
     assert_eq!(forged(&standard).unwrap().build, Some(STANDARD));
     // Count, then per part: ID, type, flags, [parent, socket], [angles], [mod].
-    assert_eq!(&standard[..4], &[10, 0, CHASSIS_S.id.0, 0]);
+    assert_eq!(&standard[..4], &[8, 0, CHASSIS_S.id.0, 0]);
     let mut unknown = standard.clone();
     unknown[2] = 99;
     assert_eq!(
@@ -828,7 +898,7 @@ fn builds_from_untrusted_bytes_are_validated() {
     );
     // The sensor moved onto the grapple's socket.
     let mut stacked = standard.clone();
-    stacked[8] = CHASSIS_S.socket(Face::PosZ, 0, 1).unwrap().0;
+    stacked[8] = CHASSIS_S.socket(Face::PosX, 0, 3).unwrap().0;
     assert_eq!(
         forged(&stacked),
         Err(WireError::Build(AssemblyError::Overlap(
@@ -897,8 +967,8 @@ fn duel() -> Session {
     session
 }
 
-/// The yaw and pitch from `from`'s eye to the centre of `to`'s root chassis, where the host
-/// places it (straight ahead while `to` is dead).
+/// The yaw and pitch from `from`'s eye to `to`'s root chassis a cell below its middle, where the
+/// host places it (straight ahead while `to` is dead).
 #[allow(clippy::cast_possible_truncation)]
 fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
     let target = &session.fighters[to];
@@ -907,10 +977,12 @@ fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
     }
     let eye = session.fighters[from].player.eye(&session.world);
     let parts = target.hitboxes(target.player.center(&session.world), target.intent.yaw);
-    let chassis = parts
+    let mut chassis = parts
         .get(PartDamage::root(&target.build).unwrap())
         .unwrap()
         .center;
+    // A cell below its middle: below the weapons on a loadout's chest.
+    chassis[1] -= 20.0;
     let d = [0, 1, 2].map(|axis| chassis[axis] - eye[axis]);
     let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
     let run = d[0].hypot(d[2]).round() as i32;

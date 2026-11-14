@@ -199,7 +199,7 @@ fn modded_duel_shot(seen_ticks_ago: u32, build: Assembly, weapon: Weapon) -> Opt
         let now = session.ticks();
         step(&mut session, Intent::IDLE, strafe, now);
     }
-    // Level with B's chassis, which is all of B at that height (the arms are above it).
+    // At B's chassis, by the bottom of the weapons on its chest.
     let fire = Intent {
         fire: true,
         pitch: chest_pitch(),
@@ -284,9 +284,9 @@ fn the_reticle_sight_is_where_the_hosted_beam_ends() {
         }
         session.step().unwrap();
     };
-    // B, the pillar, the floor, nothing in range.
+    // B's chassis, the pillar, the floor, nothing in range.
     let aims: [(u16, i16, bool); 4] = [
-        (0, 0, true),
+        (0, chest_pitch(), true),
         (0_u16.wrapping_sub(1_722), 0, false),
         (0, -3_000, false),
         (0, 4_000, false),
@@ -339,8 +339,8 @@ fn the_reticle_sight_is_where_the_hosted_beam_ends() {
     }
     assert_eq!(
         met,
-        [false, true, true, false],
-        "B, the pillar, the floor, the sky"
+        [true, true, true, false],
+        "B (the floor behind it), the pillar, the floor, the sky"
     );
 }
 
