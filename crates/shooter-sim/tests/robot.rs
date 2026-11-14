@@ -15,7 +15,7 @@ use shooter_sim::robot::parts::{
 };
 use shooter_sim::robot::{
     ARMORY, AssemblyError, BETA, Candidate, Catalog, EFFICIENCY_COIL, Face, HEAVY, Kind, LOADOUTS,
-    LONG_BARREL, MARKSMAN, MAX_PARTS, ModId, OVERCHARGER, Orientation, PartId, PartType,
+    LONG_BARREL, MARKSMAN, MAX_PARTS, ModId, OVERCHARGER, Orientation, PYRO, PartId, PartType,
     PartTypeId, RAPID_CYCLER, ROOT_CAPACITY, ROOT_REGEN, RawMount, RawPart, SKIRMISHER, STANDARD,
     SocketId, Tuning, loadout,
 };
@@ -738,6 +738,26 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
     assert_eq!(BETA.budget(&STANDARD).points, 69);
     assert_eq!(BETA.budget(&SKIRMISHER).points, 84);
     assert_eq!(BETA.budget(&MARKSMAN).points, 99);
+    // The pyro: the laser (long-barrelled), the flamethrower, the blade and the grapple on the
+    // small chassis, 180 kg and 79 points on the root chassis' 100 energy (shooter#96).
+    let pyro = BETA.budget(&PYRO);
+    assert_eq!((pyro.mass, pyro.capacity, pyro.points), (180, 100, 79));
+    assert_eq!(loadout("PYRO"), Some(PYRO));
+    assert_eq!(
+        BETA.weapons(&PYRO)
+            .map(|(_, weapon)| weapon)
+            .collect::<Vec<_>>(),
+        [
+            Weapon::Laser,
+            Weapon::EnergyBlade,
+            Weapon::Flamethrower,
+            Weapon::Grapple
+        ]
+    );
+    assert_eq!(
+        BETA.mods(&PYRO).collect::<Vec<_>>(),
+        [(PartId(7), Weapon::Laser, LONG_BARREL)]
+    );
     assert_eq!(
         BETA.mod_on(&SKIRMISHER, Weapon::EnergyRifle),
         Some(RAPID_CYCLER)
@@ -790,6 +810,21 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
     let (refire, rail) = fire(&MARKSMAN, Weapon::RailGun);
     assert_eq!(refire, 94);
     assert!(matches!(rail, Delivery::Hitscan { damage, .. } if damage == 106));
+    // The pyro's long-barrelled laser reaches 45 m, not 30; its flame is the shipped one.
+    assert!(matches!(
+        fire(&PYRO, Weapon::Laser).1,
+        Delivery::Hitscan {
+            range_units: 4_500,
+            ..
+        }
+    ));
+    assert_eq!(
+        fire(&PYRO, Weapon::Flamethrower),
+        (
+            Weapon::Flamethrower.refire_ticks(),
+            Weapon::Flamethrower.delivery()
+        )
+    );
     for weapon in Weapon::ALL {
         assert_eq!(
             fire(&STANDARD, weapon),
@@ -1132,6 +1167,60 @@ fn the_overcharged_rail_gun_kills_in_fewer_hits_and_fires_slower() {
     // Overcharged (106): 94 ticks apart, three hits a kill, as before (two for the chassis, then
     // one for the core).
     assert_eq!(rail_record(MARKSMAN, 220), (vec![12, 106, 200], 1));
+}
+
+#[test]
+fn the_host_accepts_every_named_loadout() {
+    let mut session = duel();
+    for (name, build) in LOADOUTS {
+        assert!(session.configure(1, build), "{name}");
+        assert_eq!(session.fighters[0].configured, build, "{name}");
+    }
+}
+
+/// The weapon A holds when it comes back as `build`, configured on the host, after B kills it.
+fn respawned_holding(build: Assembly) -> Weapon {
+    let mut session = duel();
+    assert!(session.configure(1, build));
+    while session.fighters[0].deaths == 0 {
+        let (yaw, pitch) = at_chassis(&session, 1, 0);
+        let intent = Intent {
+            yaw,
+            pitch,
+            fire: true,
+            ..Intent::IDLE
+        };
+        let sequence = session.fighters[1].ack + 1;
+        let view_tick = session.ticks();
+        session.queue(
+            2,
+            Input {
+                sequence,
+                intent,
+                view_tick,
+            },
+        );
+        session.step().unwrap();
+    }
+    while !session.fighters[0].alive() {
+        session.step().unwrap();
+    }
+    assert_eq!(session.fighters[0].build, build);
+    session.fighters[0].arsenal.held
+}
+
+#[test]
+fn a_robot_spawns_holding_its_first_weapon_that_is_not_the_grapple() {
+    // The grapple comes before the laser in the rotation, but the pyro spawns with the laser
+    // (shooter#96); the other loadouts with their first gun.
+    assert_eq!(respawned_holding(PYRO), Weapon::Laser);
+    assert_eq!(respawned_holding(STANDARD), Weapon::EnergyRifle);
+    assert_eq!(respawned_holding(HEAVY), Weapon::RailGun);
+    // Nothing but the grapple and the blade: the grapple.
+    let mut hooked = PYRO.candidate();
+    hooked.parts.retain(|part| part.id != 7 && part.id != 9);
+    let hooked = BETA.validate(&hooked).unwrap();
+    assert_eq!(respawned_holding(hooked), Weapon::Grapple);
 }
 
 #[test]

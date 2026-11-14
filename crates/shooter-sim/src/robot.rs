@@ -916,6 +916,22 @@ pub const MARKSMAN: Assembly = with_weapons(
     None,
 );
 
+/// A close- and mid-range loadout on the standard frame: on the small chassis' front facing the
+/// aim, the laser with a long barrel (a two-cell module: half again the beam's reach) high on
+/// the left, the flamethrower high on the right, the blade below it and the grapple below the
+/// laser; no battery, so it lives on the root chassis' 100. The one named loadout carrying the
+/// laser and the flamethrower (shooter#96). Valid in [`BETA`].
+pub const PYRO: Assembly = with_weapons(
+    frame(&CHASSIS_S),
+    [
+        forward(7, &LASER, &CHASSIS_S, 1, 2).with(LONG_BARREL),
+        forward(8, &ENERGY_BLADE, &CHASSIS_S, 0, 2),
+        forward(9, &FLAMETHROWER, &CHASSIS_S, 0, 3),
+        forward(10, &GRAPPLE, &CHASSIS_S, 1, 1),
+    ],
+    None,
+);
+
 /// The test ranges' build: every weapon, unmodded, on the front of the large chassis (the
 /// light ones in the bottom two rows, the rail gun and the rocket launcher above), on the shared
 /// frame. A fighter fires only what its build carries (shooter#92), so the scripted weapon
@@ -937,12 +953,14 @@ pub const ARMORY: Assembly = authored(&[
 ]);
 
 /// The named loadouts a person picks from until the builder (shooter#57): the unmodified
-/// standard and heavy builds and the two contrasting modded ones, all component trees.
-pub const LOADOUTS: [(&str, Assembly); 4] = [
+/// standard and heavy builds, the two contrasting modded ones and the pyro (the laser and the
+/// flamethrower, shooter#96), all component trees.
+pub const LOADOUTS: [(&str, Assembly); 5] = [
     ("standard", STANDARD),
     ("heavy", HEAVY),
     ("skirmisher", SKIRMISHER),
     ("marksman", MARKSMAN),
+    ("pyro", PYRO),
 ];
 
 /// The loadout called `name` in [`LOADOUTS`] (any case).

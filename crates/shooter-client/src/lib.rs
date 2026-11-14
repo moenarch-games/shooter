@@ -64,8 +64,8 @@ fn game(#[cfg(not(target_arch = "wasm32"))] args: Args, map: MapId) -> game::Gam
 }
 
 /// The loadout to play as: natively `--loadout <name>`, in the browser `?loadout=<name>`, one of
-/// [`shooter_sim::robot::LOADOUTS`] (`standard`, `heavy`, `skirmisher`, `marksman`); none asks
-/// for nothing (the standard build).
+/// [`shooter_sim::robot::LOADOUTS`] (`standard`, `heavy`, `skirmisher`, `marksman`, `pyro`);
+/// none asks for nothing (the standard build).
 ///
 /// # Errors
 ///
@@ -586,14 +586,15 @@ mod tests {
     #[test]
     fn a_loadout_is_a_named_one_or_none() {
         use super::loadout;
-        use shooter_sim::robot::{MARKSMAN, SKIRMISHER};
+        use shooter_sim::robot::{MARKSMAN, PYRO, SKIRMISHER};
         assert_eq!(loadout(None), Ok(None));
         assert_eq!(loadout(Some("")), Ok(None));
         assert_eq!(loadout(Some("skirmisher")), Ok(Some(SKIRMISHER)));
         assert_eq!(loadout(Some("Marksman")), Ok(Some(MARKSMAN)));
+        assert_eq!(loadout(Some("pyro")), Ok(Some(PYRO)));
         let refused = loadout(Some("sniper")).unwrap_err();
         assert!(
-            refused.contains("sniper") && refused.contains("marksman"),
+            refused.contains("sniper") && refused.contains("pyro"),
             "{refused}"
         );
     }

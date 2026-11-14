@@ -7,7 +7,7 @@ use shooter_sim::damage::PartDamage;
 use shooter_sim::melee;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{CHASSIS_L, CHASSIS_S};
-use shooter_sim::robot::{ARMORY, HEAVY, MARKSMAN, SKIRMISHER, STANDARD};
+use shooter_sim::robot::{ARMORY, HEAVY, MARKSMAN, PYRO, SKIRMISHER, STANDARD};
 use shooter_sim::scenarios;
 use shooter_sim::session::{SELF_SPLASH_PERCENT, body_of, slot_of};
 use shooter_sim::tour::run_legs;
@@ -873,6 +873,74 @@ fn the_flame_ignites_before_it_burns_a_fighter() {
         "{burns:?}"
     );
     assert!(burns[35 + ignition..].iter().all(|burnt| *burnt));
+}
+
+/// The pyro loadout (shooter#96) plays its laser and its flamethrower in a match: it holds the
+/// laser from the start (not the grapple, though that comes first in the rotation) and burns B
+/// with it, then takes up the flamethrower and burns B with that.
+#[test]
+fn the_pyro_fires_its_laser_and_its_flamethrower() {
+    // B stands 3 m in front of A: in the laser's reach and the flame's.
+    let arena = Arena {
+        spawns: vec![Spawn {
+            feet: Vec3i::new(0, 0, -300),
+            yaw: 32_768,
+        }],
+        ..duel_arena()
+    };
+    let mut session = Session::with_rules(arena, duel_rules()).unwrap();
+    session.join(1).unwrap();
+    session.join(2).unwrap();
+    equip(&mut session, 0, PYRO);
+    assert_eq!(session.fighters[0].arsenal.held, Weapon::Laser);
+    let mut sequence = 0;
+    // What A's hits on B dealt, while firing `weapon` for `ticks`.
+    let mut fire = |session: &mut Session, weapon: Weapon, ticks: u32| {
+        let (mut fired, mut damage) = (false, 0);
+        for _ in 0..ticks {
+            sequence += 1;
+            let now = session.ticks();
+            let (yaw, pitch) = at_chassis(session, 0, 1);
+            let intent = Intent {
+                yaw,
+                pitch,
+                fire: session.fighters[0].arsenal.held == weapon,
+                select: Some(weapon),
+                ..Intent::IDLE
+            };
+            session.queue(
+                1,
+                Input {
+                    sequence,
+                    intent,
+                    view_tick: now,
+                },
+            );
+            session.step().unwrap();
+            for event in &session.events {
+                match *event {
+                    Event::Fired {
+                        slot: 0,
+                        weapon: shot,
+                        ..
+                    } if shot == weapon => fired = true,
+                    Event::Hit {
+                        victim: 1,
+                        attacker: Some(0),
+                        damage: dealt,
+                        ..
+                    } => damage += dealt,
+                    _ => {}
+                }
+            }
+        }
+        (fired, damage)
+    };
+    let (lasered, laser_damage) = fire(&mut session, Weapon::Laser, 30);
+    assert!(lasered && laser_damage > 0, "laser {laser_damage}");
+    let (burnt, flame_damage) = fire(&mut session, Weapon::Flamethrower, 45);
+    assert!(burnt && flame_damage > 0, "flame {flame_damage}");
+    assert_eq!(session.fighters[0].deaths, 0);
 }
 
 /// Twelve bots on the greybox yard (the default map): they fight and score across its 76 m, and

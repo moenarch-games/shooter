@@ -194,8 +194,10 @@ one rejects the command) and applies at that fighter's next spawn, never while i
 Snapshots carry each fighter's build and the one it comes back as. The cell size, chassis sizes,
 part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part keys await the
 asset kits, and a build does not yet change movement, but it is the arsenal: a fighter spawns
-holding its build's first weapon and fires only what the build mounts (#92). No named loadout
-mounts the laser or the flamethrower yet; the tests' over-budget `ARMORY` build carries every
+holding its build's first weapon in the rotation that is not the grapple (the grapple, then the
+blade, only when it carries nothing else; #96) and fires only what the build mounts (#92). The
+`pyro` loadout
+carries the laser and the flamethrower (#96); the tests' over-budget `ARMORY` build carries every
 weapon. There is no builder screen yet.
 
 **Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
@@ -315,8 +317,11 @@ two-cell module) and the *efficiency coil* (rifle, rail gun, rockets, shotgun: 6
 mod. A mod that does not fit its weapon rejects the build. Pick a named loadout
 with `--loadout <name>` natively or `&loadout=<name>` in the browser (the join overlay's loadout
 field): `standard`, `heavy` (with a battery: 160 energy), `skirmisher` (rapid-cycler rifle,
-efficiency-coiled shotgun) or `marksman` (long-barrel rifle, overcharged rail gun: three hits a
-front kill instead of four, on the root chassis), each a two-legged component tree with a sensor
+efficiency-coiled shotgun), `marksman` (long-barrel rifle, overcharged rail gun: three hits a
+front kill instead of four, on the root chassis) or `pyro` (long-barrel laser reaching 45 m,
+flamethrower, blade and grapple on the small chassis: 180 kg, 79 of 110 points, the root
+chassis' 100 energy; it spawns holding the laser),
+each a two-legged component tree with a sensor
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. Practice
 starts as it; online the host applies it at your next spawn. The weapon panel shows the held

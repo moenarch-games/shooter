@@ -348,6 +348,16 @@ pub fn holdable(armed: impl Fn(Weapon) -> bool) -> impl Iterator<Item = Weapon> 
         .chain(blade_only.then_some(Weapon::EnergyBlade))
 }
 
+/// The weapon a fighter takes up at spawn: the first [`holdable`] one in [`Weapon::ROTATION`]
+/// order that is not the grapple, else the grapple, else the blade (shooter#96). `None` if
+/// nothing is holdable.
+pub fn spawn_weapon(armed: impl Fn(Weapon) -> bool) -> Option<Weapon> {
+    let mut held = holdable(armed);
+    held.clone()
+        .find(|weapon| *weapon != Weapon::Grapple)
+        .or_else(|| held.next())
+}
+
 /// The weapon `steps` places on from `from` among the [`holdable`] ones (next for positive
 /// steps, previous for negative), wrapping round. A `from` no longer holdable (lost, say) counts
 /// from where it stands in [`Weapon::ROTATION`], so one step goes to its nearest holdable
@@ -771,6 +781,25 @@ mod tests {
         assert_eq!(cycled(EnergyRifle, 1, blade), Some(EnergyBlade));
         assert_eq!(cycled(EnergyBlade, -1, blade), Some(EnergyBlade));
         assert_eq!(cycled(EnergyRifle, 1, |_| false), None);
+    }
+
+    #[test]
+    fn a_fighter_spawns_holding_its_first_weapon_that_is_not_the_grapple() {
+        use Weapon::{EnergyBlade, EnergyRifle, Flamethrower, Grapple, Laser};
+        let pyro = |weapon| matches!(weapon, Laser | Flamethrower | Grapple | EnergyBlade);
+        assert_eq!(spawn_weapon(pyro), Some(Laser));
+        let standard = |weapon| matches!(weapon, EnergyRifle | Grapple | EnergyBlade);
+        assert_eq!(spawn_weapon(standard), Some(EnergyRifle));
+        // Nothing but the grapple and the blade: the grapple; the blade alone: the blade.
+        assert_eq!(
+            spawn_weapon(|weapon| matches!(weapon, Grapple | EnergyBlade)),
+            Some(Grapple)
+        );
+        assert_eq!(
+            spawn_weapon(|weapon| weapon == EnergyBlade),
+            Some(EnergyBlade)
+        );
+        assert_eq!(spawn_weapon(|_| false), None);
     }
 
     #[test]
