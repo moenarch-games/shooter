@@ -16,7 +16,7 @@ use shooter_sim::scenarios::scripted_intent;
 use shooter_sim::session::MAX_HEALTH;
 use shooter_sim::session::{body_of, slot_of};
 use shooter_sim::weapons;
-use shooter_sim::{Event, Intent, MapId, TICK_HZ, Weapon};
+use shooter_sim::{ArenaModule, Event, Intent, MapId, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -478,6 +478,20 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        // The modules lying on their pads (ready to take).
+        #[allow(clippy::cast_precision_loss)]
+        let modules: Vec<(Vec3, ArenaModule)> = snapshot
+            .iter()
+            .flat_map(|snapshot| &snapshot.pickups)
+            .filter(|pickup| pickup.ready_in == 0)
+            .map(|pickup| {
+                let center = [pickup.center.x, pickup.center.y, pickup.center.z];
+                (
+                    Vec3::from(center.map(|axis| axis as f32)) * METRES_PER_UNIT,
+                    pickup.module,
+                )
+            })
+            .collect();
         let me = local.and_then(|slot| snapshot.and_then(|snapshot| snapshot.slot(slot)));
         let alive = me.filter(|me| me.alive && self.game.local_center().is_some());
         #[allow(clippy::cast_precision_loss)]
@@ -572,6 +586,7 @@ impl App {
                 text.health,
                 camera,
                 forward,
+                &modules,
                 reticle,
             );
         }

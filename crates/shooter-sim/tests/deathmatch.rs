@@ -34,7 +34,7 @@ fn bots_fight_score_and_respawn() {
     };
     let mut session = Session::with_rules(Arena::greybox(), rules).unwrap();
     assert_eq!(session.fighters.len(), 12);
-    let (mut kills, mut shots, mut spawns) = (0, 0, 0);
+    let (mut kills, mut shots, mut spawns, mut modules) = (0, 0, 0, 0);
     for _ in 0..90 * 60 {
         session.step().unwrap();
         for event in &session.events {
@@ -42,14 +42,17 @@ fn bots_fight_score_and_respawn() {
                 Event::Killed { .. } => kills += 1,
                 Event::Fired { .. } => shots += 1,
                 Event::Spawned { .. } => spawns += 1,
+                Event::ModuleTaken { .. } => modules += 1,
                 _ => {}
             }
         }
     }
-    println!("{shots} shots, {kills} kills, {spawns} respawns");
+    println!("{shots} shots, {kills} kills, {spawns} respawns, {modules} modules taken");
     assert!(shots > 100, "{shots} shots");
     assert!(kills >= 3, "{kills} kills in 90 s");
     assert!(spawns >= kills - 12, "{spawns} respawns for {kills} kills");
+    // Bots do not seek the module pads, but they cross them.
+    assert!(modules > 0, "no module taken");
     let deaths: i32 = session.fighters.iter().map(|f| f.deaths).sum();
     assert!(deaths > 0);
     for fighter in &session.fighters {
@@ -99,6 +102,7 @@ fn duel_arena() -> Arena {
             feet: Vec3i::new(0, 0, 600),
             yaw: 32_768,
         }],
+        module_pads: Vec::new(),
     }
 }
 

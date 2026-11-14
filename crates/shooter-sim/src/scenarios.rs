@@ -1,5 +1,5 @@
 //! Scripted fast moves, each in a small arena of its own (or the greybox): sprint and slide,
-//! double jump onto a ledge, a jump pad onto the platform, slides up and down a ramp, a slide
+//! double jump onto a ledge, a thruster-module jump onto a higher one, a jump pad onto the platform, slides up and down a ramp, a slide
 //! into a thin wall, a sprint up a step, a rocket jump, a grapple onto a ledge, a shooting range
 //! and a close range for the shotgun, laser and flamethrower. The movement and weapon tests check
 //! what each one does and the Rapier A/B test runs each on both backends.
@@ -7,6 +7,7 @@
 use crate::arena::{Arena, Piece, Post};
 use crate::physics::RampRise;
 use crate::physics::Vec3i;
+use crate::pickups::{ArenaModule, ModulePad};
 use crate::player::Intent;
 use crate::robot::{Assembly, HEAVY, SKIRMISHER};
 use crate::tour::{Leg, NORTH, SOUTH, hold, stand, walk};
@@ -71,6 +72,7 @@ fn open(spawn: [i32; 3], pieces: Vec<Piece>) -> Arena {
         spawn: Vec3i::new(spawn[0], spawn[1], spawn[2]),
         spawn_yaw: SOUTH,
         spawns: Vec::new(),
+        module_pads: Vec::new(),
     }
 }
 
@@ -104,6 +106,27 @@ pub const DOUBLE_JUMP: Scenario = Scenario {
         walk("rise", SOUTH, 18),
         jump_toward("air jump", SOUTH),
         walk("climb", SOUTH, 40),
+        stand("on the ledge", 30),
+    ],
+};
+
+/// The [`DOUBLE_JUMP`] run at a 2 m ledge, with thrusters ([`crate::pickups`]) lying where the
+/// player spawns: it takes them, and one thruster jump (2.25 m) climbs the ledge that neither a
+/// plain jump nor a plain double jump's first leap could.
+pub const THRUSTER_JUMP: Scenario = Scenario {
+    name: "thruster jump onto a ledge",
+    arena: || Arena {
+        module_pads: vec![ModulePad {
+            center: Vec3i::new(0, 0, -600),
+            module: ArenaModule::Thrusters,
+        }],
+        ..open([0, 0, -600], vec![block([0, 100, 0], [200, 100, 200])])
+    },
+    legs: &[
+        stand("take the thrusters", 10),
+        walk("run up", SOUTH, 6),
+        jump_toward("jump", SOUTH),
+        walk("climb", SOUTH, 50),
         stand("on the ledge", 30),
     ],
 };
@@ -376,6 +399,7 @@ pub const CLOSE_RANGE: Scenario = Scenario {
 pub const ALL: &[Scenario] = &[
     SPRINT_AND_SLIDE,
     DOUBLE_JUMP,
+    THRUSTER_JUMP,
     JUMP_PAD,
     RAMP_SLIDE,
     THIN_WALL,

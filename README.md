@@ -44,7 +44,7 @@ same simulation in-process: you in slot 0 against eleven bots, no server needed.
 
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID (`greybox`), its arena
-(geometry, collision, spawn points, jump pads) and the player count it is laid out for (the
+(geometry, collision, spawn points, jump pads, module pickup pads) and the player count it is laid out for (the
 greybox: 2 to 12). The greybox is the only map so far; the beta's three arenas will join it. The
 recommended capacity never changes the slot count (12 unless the host sets another per match, at
 most one per spawn point: the greybox has 13). The host picks each match's map
@@ -94,7 +94,7 @@ the host's reconnect grace. A public host is described in [docs/hosting.md](docs
 Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
 mouse. Steer in the air with WASD. The HUD (health, weapon, frags and place, the round clock, the
-kill feed) is the page's overlay in the browser and the window title plus a health bar natively,
+carried module and its uses left, the kill and pickup feed) is the page's overlay in the browser and the window title plus a health bar natively,
 until render-engine draws screen overlays.
 
 **Camera and aim.** Native and browser clients share one third-person follow camera
@@ -170,6 +170,23 @@ field): `standard`, `heavy`, `skirmisher` (rapid-cycler rifle, heat-sunk shotgun
 humanoid component tree. Practice starts as it; online the host applies it at your next spawn.
 The HUD's status line shows the held weapon's mod and every equipped one.
 
+**Module pickups.** A few powerful modules lie on pads at contested points of a map, placed in
+the map's data (`shooter_sim::pickups`, `Arena::module_pads`). Any robot that walks (or jumps
+low) onto a pad takes its module, whatever its build; the module works on top of the build and
+its mods and never changes the build. Two provisional modules: the *rail capacitor* (rail gun:
+150% damage, 75% refire time, stacking on a rail mod; 5 boosted shots) and *thrusters* (every
+jump, the air jump too, leaves at 9 m/s instead of 6: a 2.25 m jump onto the platform; 6
+boosted jumps). On the greybox the capacitor lies on the platform's south-east corner, the perch
+that sees the whole hall, and the thrusters in the open south-west quarter under its sightline.
+A module lasts until its uses are spent, its holder dies or the round ends (owner decision on
+#62); nothing drops. A robot carries one module, and taking another replaces it. A pad is back
+30 s after it was taken; every pad is ready at the start of a round. When several robots reach a
+ready pad in the same tick the nearest (feet to pad centre) takes it, then the lowest slot. The
+host owns all of it; snapshots carry the pads and each fighter's module, the HUD's status line
+shows the carried module and its uses left, the feed announces pickups, and the pads are drawn
+as tinted plates with the module floating over them while it is there. Values are provisional
+(Atlas Q2.i46.3); the shared energy pool (#72) does not exist yet, so modules cost no energy.
+
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points,
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
 degrees of wandering error, strafing as they fire; the flamethrower inside 5 m, the rifle (even
@@ -177,7 +194,7 @@ slots) or the shotgun (odd slots) up close, rockets or the laser at mid range, t
 and inside 3 m they rush in and swing the blade.
 
 The movement and the weapons are checked against Rapier on a scripted tour of the arena and on
-scripted moves (sprint, slide, double jump, jump pad, ramp slides, a thin wall, a step, a rocket
+scripted moves (sprint, slide, double jump, a thruster-module jump, jump pad, ramp slides, a thin wall, a step, a rocket
 jump, a grapple onto a ledge, a shooting range, a close range for the shotgun, laser and flamethrower):
 `cargo test -p shooter-sim --features physics-ab --test physics_ab`.
 `cargo test -p shooter-sim --test robot` checks the sockets and canonical orientations, valid
@@ -185,6 +202,9 @@ builds of every form (the loadouts, a mini-tank, a robo-dog, a humanoid, station
 grappling-only machines), every rejection (core, cycles, double parents, overlaps, the part
 ceiling, mods), the budgets at their limits, tampered builds on the wire, modded fire and builds
 through a replayed match; the A/B also runs the shooting and close ranges as the modded loadouts.
+`cargo test -p shooter-sim --test pickups` checks contested pads, pad respawn, modules lasting a
+life until spent or death, round and map starts, the rail capacitor's lag-compensated hits and
+frags, thrusters, robots of different builds and the wire.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
 lag compensation of shots and swings, that the reticle's aim ends where the hosted beam does, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
 clients through a real game-server host on loopback and resumes a severed connection in its slot.

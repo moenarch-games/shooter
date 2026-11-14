@@ -806,6 +806,7 @@ fn duel() -> Session {
             feet: Vec3i::new(0, 0, 600),
             yaw: 32_768,
         }],
+        module_pads: Vec::new(),
     };
     let rules = Rules {
         slots: 2,

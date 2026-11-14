@@ -13,6 +13,9 @@
 //! [`MAX_REWIND_TICKS`] back), while the arena's geometry blocks the ray as it is now. Rockets
 //! and shotgun pellets are projectiles: they fly through the world as it is each tick and meet
 //! fighters where they are then, like the flame.
+//!
+//! Module pickups lie on the map's pads; the host resolves who takes them, applies, expires and
+//! clears their effects and brings the pads back ([`crate::pickups`] has the rules).
 
 use crate::aim;
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
@@ -22,10 +25,11 @@ use crate::grapple::Hook;
 use crate::maps::MapId;
 use crate::melee;
 use crate::physics::{BodyId, PhysicsError, Vec3i, World};
+use crate::pickups::{self, ArenaModule, Carried, PAD_RESPAWN_TICKS, Pickup};
 use crate::player::{
     EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player, STEP_UP,
 };
-use crate::robot::{Assembly, BETA};
+use crate::robot::{Assembly, BETA, Tuning};
 use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
 use std::collections::VecDeque;
 
@@ -168,6 +172,8 @@ pub struct Fighter {
     pub configured: Assembly,
     /// The grapple's hook while it is set.
     pub hook: Option<Hook>,
+    /// The module pickup it carries this life, if any ([`crate::pickups`]).
+    pub carried: Option<Carried>,
     pub health: i32,
     /// While dead: the tick it comes back.
     pub respawn_at: Option<u32>,
@@ -201,6 +207,7 @@ impl Fighter {
             build: Assembly::default(),
             configured: Assembly::default(),
             hook: None,
+            carried: None,
             health: 0,
             respawn_at: None,
             frags: 0,
@@ -261,6 +268,31 @@ impl Fighter {
     #[must_use]
     pub const fn grounded(&self) -> bool {
         self.grounded
+    }
+
+    /// How `weapon` fires for it: its build's mod on the weapon, then the module it carries.
+    #[must_use]
+    pub fn tuning(&self, weapon: Weapon) -> Tuning {
+        tuning_of(&self.build, self.carried, weapon)
+    }
+}
+
+fn tuning_of(build: &Assembly, carried: Option<Carried>, weapon: Weapon) -> Tuning {
+    let tuning = BETA.tuning(build, weapon);
+    carried.map_or(tuning, |carried| carried.module.tune(weapon, tuning))
+}
+
+/// One use of `fighter`'s module spent; the last one spends the module.
+fn spend_module(fighter: &mut Fighter, events: &mut Vec<Event>) {
+    let Some(carried) = fighter.carried else {
+        return;
+    };
+    fighter.carried = carried.spend();
+    if fighter.carried.is_none() {
+        events.push(Event::ModuleSpent {
+            slot: fighter.slot,
+            module: carried.module,
+        });
     }
 }
 
@@ -352,6 +384,14 @@ pub enum Event {
     Spawned { slot: u8, yaw: u16 },
     /// The round is over.
     RoundOver { winner: Option<u8> },
+    /// `slot` took `module` from the map's pad `pad` (its index in [`Arena::module_pads`]).
+    ModuleTaken {
+        slot: u8,
+        pad: u8,
+        module: ArenaModule,
+    },
+    /// `slot` spent its module's last use.
+    ModuleSpent { slot: u8, module: ArenaModule },
 }
 
 /// What a hitscan ray struck.
@@ -391,6 +431,8 @@ pub struct Session {
     pub rockets: Vec<Rocket>,
     /// Shotgun pellets in flight.
     pub pellets: Vec<Pellet>,
+    /// The module pads, in the map's order ([`Arena::module_pads`]).
+    pub pickups: Vec<Pickup>,
     /// What the last tick did, in order.
     pub events: Vec<Event>,
     tick: u32,
@@ -448,11 +490,13 @@ impl Session {
             dummies: Vec::new(),
             rockets: Vec::new(),
             pellets: Vec::new(),
+            pickups: Vec::new(),
             events: Vec::new(),
             tick: 0,
             history: VecDeque::new(),
             dealt: vec![0; usize::from(rules.slots)],
         };
+        session.reset_pickups();
         session.spawn_everyone()?;
         session.dummies = Dummy::spawn_all(&mut session.world, &session.arena.posts)?;
         session.record();
@@ -497,6 +541,7 @@ impl Session {
         fighter.arsenal = Arsenal::default();
         fighter.build = fighter.configured;
         fighter.hook = None;
+        fighter.carried = None;
         fighter.health = MAX_HEALTH;
         fighter.respawn_at = None;
         fighter.intent = Intent {
@@ -719,9 +764,20 @@ impl Session {
                 }
             };
             let hooked = fighter.hook.is_some();
-            let moved = fighter
-                .player
-                .apply(&mut self.world, &self.arena, intent, hooked)?;
+            let moved = fighter.player.apply(
+                &mut self.world,
+                &self.arena,
+                intent,
+                hooked,
+                pickups::jump_velocity(fighter.carried),
+            )?;
+            if moved.jumped
+                && fighter
+                    .carried
+                    .is_some_and(|carried| carried.module.spent_by_jump())
+            {
+                spend_module(fighter, &mut self.events);
+            }
             if fighter.slot == 0 {
                 moves = moved;
             }
@@ -739,13 +795,13 @@ impl Session {
             let intent = fighter.intent;
             // A set hook holds while the trigger stays down: no second hook until it is let go.
             let hooked = fighter.hook.is_some();
-            let build = fighter.build;
+            let (build, carried) = (fighter.build, fighter.carried);
             let fired = fighter.arsenal.trigger_tuned(
                 intent.select,
                 intent.melee && playing,
                 intent.fire && playing && !hooked,
                 self.tick,
-                |weapon| BETA.tuning(&build, weapon).refire_ticks(weapon),
+                |weapon| tuning_of(&build, carried, weapon).refire_ticks(weapon),
             );
             if hooked && !(intent.fire && playing && fighter.arsenal.held == Weapon::Grapple) {
                 fighter.hook = None;
@@ -755,6 +811,14 @@ impl Session {
                     local_fired = Some(weapon);
                 }
                 self.fire(slot, weapon, intent)?;
+                // The shot went out boosted; it spends a use of the module that boosted it.
+                let fighter = &mut self.fighters[slot];
+                if fighter
+                    .carried
+                    .is_some_and(|carried| carried.module.spent_by_shot(weapon))
+                {
+                    spend_module(fighter, &mut self.events);
+                }
             }
         }
         for fighter in &mut self.fighters {
@@ -788,6 +852,9 @@ impl Session {
             if fighter.alive() && fighter.player.feet(&self.world)[1] < KILL_HEIGHT_UNITS as f32 {
                 self.kill(slot, None, None);
             }
+        }
+        if playing {
+            self.run_pickups();
         }
         let mut report = StepReport {
             fired: local_fired,
@@ -919,11 +986,57 @@ impl Session {
         }
         self.rockets.clear();
         self.pellets.clear();
+        self.reset_pickups();
         self.phase = Phase::Playing {
             ends_at: (self.rules.time_limit_ticks > 0)
                 .then_some(self.tick + self.rules.time_limit_ticks),
         };
         self.spawn_everyone()
+    }
+
+    /// Every pad of the map ready again, as at the start of a round.
+    fn reset_pickups(&mut self) {
+        self.pickups = self
+            .arena
+            .module_pads
+            .iter()
+            .map(|&pad| Pickup { pad, ready_in: 0 })
+            .collect();
+    }
+
+    /// One tick of the module pads, after the world stepped: empty pads come back, and each ready
+    /// pad goes to the living fighter nearest its centre within its reach (the lowest slot on a
+    /// tie), in pad order.
+    #[allow(clippy::cast_possible_truncation)]
+    fn run_pickups(&mut self) {
+        for index in 0..self.pickups.len() {
+            let pickup = &mut self.pickups[index];
+            pickup.ready_in = pickup.ready_in.saturating_sub(1);
+            if !pickup.ready() {
+                continue;
+            }
+            let pad = pickup.pad;
+            let taker = self
+                .fighters
+                .iter()
+                .filter(|fighter| fighter.alive())
+                .filter_map(|fighter| {
+                    let center = self.world.body(fighter.player.body)?.position();
+                    let feet = Vec3i::new(center.x, center.y - PLAYER_HALF_EXTENTS.y, center.z);
+                    Some((pad.reach(feet)?, fighter.slot))
+                })
+                .min();
+            let Some((_, slot)) = taker else {
+                continue;
+            };
+            self.pickups[index].ready_in = PAD_RESPAWN_TICKS;
+            self.fighters[usize::from(slot)].carried = Some(Carried::fresh(pad.module));
+            self.events.push(Event::ModuleTaken {
+                slot,
+                pad: index as u8,
+                module: pad.module,
+            });
+        }
     }
 
     fn record(&mut self) {
@@ -999,6 +1112,8 @@ impl Session {
         self.world.remove_body(fighter.player.body);
         fighter.health = 0;
         fighter.hook = None;
+        // A carried module ends with its carrier; nothing is dropped.
+        fighter.carried = None;
         fighter.respawn_at = Some(self.tick + self.rules.respawn_ticks);
         fighter.deaths += 1;
         match killer.filter(|killer| *killer != victim) {
@@ -1029,8 +1144,9 @@ impl Session {
             eye,
             direction: unit,
         });
-        // The weapon's mod in the shooter's build, if any, decides its damage and range.
-        match BETA.tuning(&shooter.build, weapon).delivery(weapon) {
+        // The weapon's mod in the shooter's build, if any, and the module it carries decide its
+        // damage and range.
+        match shooter.tuning(weapon).delivery(weapon) {
             Delivery::Rocket => {
                 self.rockets.push(Rocket::launch(body, eye, direction));
             }
