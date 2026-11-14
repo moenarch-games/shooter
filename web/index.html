@@ -183,6 +183,12 @@
             placeholder="certificate SHA-256 (development host)"
             aria-label="Certificate SHA-256, for a development host"
           />
+          <select name="loadout" aria-label="Robot loadout">
+            <option value="">Standard loadout</option>
+            <option value="heavy">Heavy</option>
+            <option value="skirmisher">Skirmisher (rapid-cycler rifle, heat sink)</option>
+            <option value="marksman">Marksman (long-barrel rifle, overcharged rail gun)</option>
+          </select>
           <button>Join match</button>
           <a id="practice" href="?" hidden>Practice offline</a>
         </form>
@@ -196,6 +202,8 @@
       const join = document.getElementById("join");
       join.connect.value = query.get("connect") ?? "";
       join.certHash.value = query.get("certHash") ?? "";
+      // &loadout=<name> picks the robot build, online and in practice (the wasm reads it).
+      join.loadout.value = query.get("loadout") ?? "";
       // The player name (&name=…, the host sanitizes it) is remembered on this device only.
       const NAME_KEY = "shooter.name";
       const remembered = () => {
@@ -215,11 +223,14 @@
         } catch {}
         // An empty name stays out of the URL (the host shows "Player N").
         nameInput.disabled = !name;
+        join.loadout.disabled = !join.loadout.value;
       });
       if (query.get("connect")) {
         const host = URL.canParse(query.get("connect")) ? new URL(query.get("connect")).host : "?";
         document.getElementById("mode").textContent = `Click to play: online deathmatch at ${host}`;
-        document.getElementById("practice").hidden = false;
+        const practice = document.getElementById("practice");
+        practice.hidden = false;
+        if (query.get("loadout")) practice.search = `?loadout=${encodeURIComponent(query.get("loadout"))}`;
       }
       // ?frames=<n> is the profile run: a scripted practice match, nobody to click.
       if (query.get("frames")) overlay.hidden = true;

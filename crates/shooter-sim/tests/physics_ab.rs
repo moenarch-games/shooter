@@ -9,17 +9,24 @@
 //! `cargo test -p shooter-sim --features physics-ab --test physics_ab`
 
 use shooter_sim::physics::{Backend, using_backend};
+use shooter_sim::robot::{MARKSMAN, SKIRMISHER, STANDARD};
 use shooter_sim::scenarios::{self, Scenario};
 use shooter_sim::tour::{self, Leg, Sample, end_of};
-use shooter_sim::{Arena, Session};
+use shooter_sim::{Arena, Assembly, Session, Weapon};
 
 /// Largest per-axis distance (units) between the two backends' paths at any tick.
 const PATH_TOLERANCE_UNITS: f32 = 6.0;
 
 fn run_on(backend: Backend, arena: fn() -> Arena, legs: &[Leg]) -> Vec<Sample> {
+    run_as(backend, arena, legs, STANDARD)
+}
+
+/// [`run_on`] with the local fighter built as `build` (its weapon mods).
+fn run_as(backend: Backend, arena: fn() -> Arena, legs: &[Leg], build: Assembly) -> Vec<Sample> {
     using_backend(backend, || {
         let mut session = Session::new(arena()).expect("arena builds");
         assert_eq!(session.world.backend(), backend);
+        session.fighters[0].build = build;
         tour::run_legs(&mut session, legs).expect("script runs")
     })
 }
@@ -33,8 +40,12 @@ fn tour_scenario() -> Scenario {
 }
 
 fn compare(scenario: Scenario) {
-    let engine = run_on(Backend::Engine, scenario.arena, scenario.legs);
-    let rapier = run_on(Backend::Rapier, scenario.arena, scenario.legs);
+    compare_as(scenario, STANDARD);
+}
+
+fn compare_as(scenario: Scenario, build: Assembly) {
+    let engine = run_as(Backend::Engine, scenario.arena, scenario.legs, build);
+    let rapier = run_as(Backend::Rapier, scenario.arena, scenario.legs, build);
     assert_eq!(engine.len(), rapier.len());
     let name = scenario.name;
 
@@ -156,6 +167,37 @@ fn the_grapple_matches_the_rapier_oracle() {
 #[test]
 fn the_close_range_matches_the_rapier_oracle() {
     compare(scenarios::CLOSE_RANGE);
+}
+
+/// The shots and hits of `scenario` on physics-engine as `build`.
+fn combat(scenario: Scenario, build: Assembly) -> Vec<(u32, Option<Weapon>, i32)> {
+    run_as(Backend::Engine, scenario.arena, scenario.legs, build)
+        .iter()
+        .filter(|s| s.fired.is_some() || s.damage > 0)
+        .map(|s| (s.tick, s.fired, s.damage))
+        .collect()
+}
+
+/// Weapon mods on both backends: the skirmisher's rapid-cycler rifle and the marksman's
+/// long-barrel rifle and overcharged rail gun on the shooting range, the skirmisher's heat-sunk
+/// shotgun on the close range. They fire and hit alike on both, and differently from the shipped
+/// weapons.
+#[test]
+fn modded_loadouts_match_the_rapier_oracle() {
+    for build in [SKIRMISHER, MARKSMAN] {
+        compare_as(scenarios::SHOOTING_RANGE, build);
+        assert_ne!(
+            combat(scenarios::SHOOTING_RANGE, build),
+            combat(scenarios::SHOOTING_RANGE, STANDARD),
+            "{build:?} changes the fire"
+        );
+    }
+    compare_as(scenarios::CLOSE_RANGE, SKIRMISHER);
+    // The heat sink leaves the shotgun (and the rest of the close range) as shipped.
+    assert_eq!(
+        combat(scenarios::CLOSE_RANGE, SKIRMISHER),
+        combat(scenarios::CLOSE_RANGE, STANDARD)
+    );
 }
 
 #[test]

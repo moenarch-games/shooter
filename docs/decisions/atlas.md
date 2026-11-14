@@ -141,6 +141,12 @@ implemented yet.
   carries the mass of everything else, the torso supplies the power everything draws, the parts'
   cooling sheds the weapons' heat, and a build costs at most 120 build points. Two of each part
   (light and heavy) and the eight shipped weapons, all available from the start.
+  Weapon mods (shooter#51, D2.i46.8), same catalog: at most one mod per mounted weapon, costing
+  points, mass, power and heat or adding cooling, fitting named weapons only, and tuning its
+  weapon's damage, refire and range in percent: rapid cycler, overcharger, long barrel (makes its
+  weapon heavy) and heat sink. Every mod that changes the fire gives up damage, refire or range.
+  Until the builder (shooter#57), people pick a named loadout (`robot::LOADOUTS`: standard,
+  heavy, skirmisher, marksman), sent through the existing build request.
 - **Q2.i46.5**: Layout details of the three arenas: topology, destructible pieces, pickup points
   and each map's player capacity (D2.i46.11, D2.i46.12).
   Defaults in use until decided (shooter#48): the map catalog (`shooter_sim::maps`) holds only

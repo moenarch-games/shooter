@@ -2,7 +2,7 @@
 //! robot and which weapon module sits on each hardpoint, the curated component catalog, and the
 //! one validation path every build passes, whether it comes from a client, a snapshot or code.
 //!
-//! A [`Candidate`] is untrusted raw data (socket, component and weapon codes as they arrived);
+//! A [`Candidate`] is untrusted raw data (socket, component, weapon and mod codes as they arrived);
 //! [`Catalog::validate`] turns it into an [`Assembly`], the only form the simulation stores and
 //! sends, or rejects it with an [`AssemblyError`]. A build is valid when every socket holds a
 //! component of its kind (torso, head and locomotion are required, arms are optional), every
@@ -16,11 +16,19 @@
 //! proposal for the stable part and weapon IDs of the forthcoming robot and weapon kits
 //! (moritzbrantner/asset-tooling#595, #594) and are reconciled with them when the kits ship.
 //!
+//! **Weapon modifications** (Atlas D2.i46.8, shooter#51): a mounted weapon may carry one
+//! [`Mod`] from the catalog. A mod costs build points and weighs on the mass, power and cooling
+//! budgets like any part, may make its weapon a heavy module (it then needs a heavy hardpoint),
+//! fits only the weapons it names, and changes how that weapon fires ([`Tuning`]: damage, refire
+//! and range). Every mod trades something away: none is strictly better. The catalog and its
+//! numbers are provisional like the rest of [`BETA`].
+//!
 //! A build does not yet change how a fighter moves or which weapons it carries: every fighter
-//! still has the full arsenal. Limb damage (shooter#56), weapon mods (shooter#51), locomotion
-//! (shooter#58) and the builder (shooter#57) apply it.
+//! still has the full arsenal, and a weapon without a mod on it fires as shipped. A mounted
+//! weapon's mod applies whenever it fires, on the host and in a client's prediction alike. Limb
+//! damage (shooter#56), locomotion (shooter#58) and the builder (shooter#57) apply the rest.
 
-use crate::weapons::Weapon;
+use crate::weapons::{Delivery, Weapon};
 use std::fmt;
 
 /// Where a component attaches. The torso is the root; the other sockets are on it.
@@ -173,11 +181,88 @@ pub struct Module {
     pub points: u16,
 }
 
-/// The components and modules builds are made of, and the build-point budget.
+/// A weapon modification's stable code in the catalog (on the wire).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub struct ModId(pub u8);
+
+/// How a mod changes its weapon's fire, in percent of the shipped weapon's values (100 changes
+/// nothing). Damage and range round down (to at least 1), refire rounds up; a continuous weapon
+/// keeps firing every tick.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Tuning {
+    pub damage_percent: u16,
+    pub refire_percent: u16,
+    pub range_percent: u16,
+}
+
+impl Tuning {
+    /// The shipped weapon, unchanged.
+    pub const BASE: Self = Self {
+        damage_percent: 100,
+        refire_percent: 100,
+        range_percent: 100,
+    };
+
+    /// Ticks between two of `weapon`'s shots.
+    #[must_use]
+    pub fn refire_ticks(self, weapon: Weapon) -> u32 {
+        let base = weapon.refire_ticks();
+        if base <= 1 {
+            return base;
+        }
+        (base * u32::from(self.refire_percent)).div_ceil(100).max(1)
+    }
+
+    /// How `weapon`'s shot reaches its target, tuned.
+    #[must_use]
+    pub fn delivery(self, weapon: Weapon) -> Delivery {
+        let scale = |value: i32, percent: u16| (value * i32::from(percent) / 100).max(1);
+        match weapon.delivery() {
+            Delivery::Hitscan {
+                damage,
+                range_units,
+            } => Delivery::Hitscan {
+                damage: scale(damage, self.damage_percent),
+                range_units: scale(range_units, self.range_percent),
+            },
+            Delivery::Pellets { damage } => Delivery::Pellets {
+                damage: scale(damage, self.damage_percent),
+            },
+            Delivery::Flame { damage } => Delivery::Flame {
+                damage: scale(damage, self.damage_percent),
+            },
+            other => other,
+        }
+    }
+}
+
+/// A weapon modification (D2.i46.8): what it costs a build, which weapons it fits and how it
+/// changes their fire. Masses are kilograms; power, heat and cooling share the components' unit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Mod {
+    pub id: ModId,
+    /// Its stable data ID.
+    pub key: &'static str,
+    /// The weapons it fits.
+    pub fits: &'static [Weapon],
+    /// It makes its weapon a heavy module (a heavy hardpoint only).
+    pub heavy: bool,
+    pub mass: u16,
+    pub draw: u16,
+    /// Heat it adds...
+    pub heat: u16,
+    /// ...or sheds.
+    pub cooling: u16,
+    pub points: u16,
+    pub tuning: Tuning,
+}
+
+/// The components, modules and weapon mods builds are made of, and the build-point budget.
 #[derive(Clone, Copy, Debug)]
 pub struct Catalog {
     pub components: &'static [Component],
     pub modules: &'static [Module],
+    pub mods: &'static [Mod],
     pub build_points: u16,
 }
 
@@ -220,6 +305,37 @@ const fn module(
     }
 }
 
+const fn modification(
+    id: u8,
+    key: &'static str,
+    fits: &'static [Weapon],
+    heavy: bool,
+    [mass, draw, heat, cooling, points]: [u16; 5],
+    [damage_percent, refire_percent, range_percent]: [u16; 3],
+) -> Mod {
+    Mod {
+        id: ModId(id),
+        key,
+        fits,
+        heavy,
+        mass,
+        draw,
+        heat,
+        cooling,
+        points,
+        tuning: Tuning {
+            damage_percent,
+            refire_percent,
+            range_percent,
+        },
+    }
+}
+
+/// The weapons the firing mods fit: the single-shot guns whose damage is worth tuning.
+const SINGLE_SHOT: &[Weapon] = &[Weapon::EnergyRifle, Weapon::RailGun, Weapon::Shotgun];
+/// The hitscan beams a longer barrel reaches further with.
+const BEAMS: &[Weapon] = &[Weapon::EnergyRifle, Weapon::RailGun, Weapon::Laser];
+
 /// The beta's components, every one available from the start (no unlocks, D2.i46.5): two of
 /// each kind, light and heavy, and the eight shipped weapons. Provisional values (Q2.i46.4).
 #[rustfmt::skip]
@@ -246,6 +362,17 @@ pub const BETA: Catalog = Catalog {
         module(Weapon::Laser,          "weapon.laser",           Size::Light, [14, 30, 30, 15]),
         module(Weapon::Flamethrower,   "weapon.flamethrower",    Size::Light, [18, 20, 35, 15]),
     ],
+    mods: &[
+        //           code key                fits          heavy  mass draw heat cool points  damage% refire% range%
+        // Faster fire for less damage a shot; hot and power-hungry.
+        modification(1, "mod.rapid-cycler", SINGLE_SHOT,  false, [4,   10,  20,  0,   10], [75,  65,  100]),
+        // More damage a shot for slower fire; the most power.
+        modification(2, "mod.overcharger",  SINGLE_SHOT,  false, [6,   20,  15,  0,   10], [125, 130, 100]),
+        // Half again the range, a little slower fire, and too heavy for a light mount.
+        modification(3, "mod.long-barrel",  BEAMS,        true,  [10,  0,   0,   0,   5],  [100, 110, 150]),
+        // Sheds heat for the rest of the build; mass and points, no change to the fire.
+        modification(4, "mod.heat-sink",    &Weapon::ALL, false, [10,  0,   0,   20,  5],  [100, 100, 100]),
+    ],
     build_points: 120,
 };
 
@@ -255,6 +382,8 @@ pub const BETA: Catalog = Catalog {
 pub struct Candidate {
     pub parts: Vec<(u8, u8)>,
     pub mounts: Vec<(u8, u8)>,
+    /// `(hardpoint, mod)` codes: the mod on the weapon at that hardpoint.
+    pub mods: Vec<(u8, u8)>,
 }
 
 /// A validated robot build, in canonical (socket and hardpoint) order.
@@ -262,6 +391,7 @@ pub struct Candidate {
 pub struct Assembly {
     parts: [Option<ComponentId>; Socket::ALL.len()],
     mounts: [Option<Weapon>; Hardpoint::ALL.len()],
+    mods: [Option<ModId>; Hardpoint::ALL.len()],
 }
 
 /// The build every fighter starts with: a light torso, the sensor head, two light arms and the
@@ -281,6 +411,7 @@ pub const STANDARD: Assembly = Assembly {
         Some(Weapon::Grapple),
         Some(Weapon::Shotgun),
     ],
+    mods: [None; Hardpoint::ALL.len()],
 };
 
 /// A heavy build that spends the whole build-point budget: the heavy torso, the sensor head, a
@@ -300,7 +431,55 @@ pub const HEAVY: Assembly = Assembly {
         Some(Weapon::RocketLauncher),
         Some(Weapon::Grapple),
     ],
+    mods: [None; Hardpoint::ALL.len()],
 };
+
+/// A fast, light loadout on the standard frame: the rapid-cycler rifle in the left hand, the
+/// blade, the grapple, and the shotgun with a heat sink (without it the cycler overheats the
+/// standard frame). Draws exactly the light torso's power. Valid in [`BETA`].
+pub const SKIRMISHER: Assembly = Assembly {
+    mods: [Some(ModId(1)), None, None, Some(ModId(4))],
+    ..STANDARD
+};
+
+/// A heavy, long-range loadout that spends the whole build-point budget: the heavy torso with an
+/// overcharged rail gun (two hits a kill instead of three) on the left shoulder and the grapple on the
+/// right, a heavy left arm for the long-barrel rifle, the blade in the light right hand, the
+/// runner legs. Valid in [`BETA`].
+pub const MARKSMAN: Assembly = Assembly {
+    parts: [
+        Some(ComponentId(2)),
+        Some(ComponentId(10)),
+        Some(ComponentId(21)),
+        Some(ComponentId(20)),
+        Some(ComponentId(30)),
+    ],
+    mounts: [
+        Some(Weapon::EnergyRifle),
+        Some(Weapon::EnergyBlade),
+        Some(Weapon::RailGun),
+        Some(Weapon::Grapple),
+    ],
+    mods: [Some(ModId(3)), None, Some(ModId(2)), None],
+};
+
+/// The named loadouts a person picks from until the builder (shooter#57): the unmodified
+/// standard and heavy builds and the two contrasting modded ones.
+pub const LOADOUTS: [(&str, Assembly); 4] = [
+    ("standard", STANDARD),
+    ("heavy", HEAVY),
+    ("skirmisher", SKIRMISHER),
+    ("marksman", MARKSMAN),
+];
+
+/// The loadout called `name` in [`LOADOUTS`] (any case).
+#[must_use]
+pub fn loadout(name: &str) -> Option<Assembly> {
+    LOADOUTS
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name.trim()))
+        .map(|(_, build)| *build)
+}
 
 impl Default for Assembly {
     fn default() -> Self {
@@ -319,6 +498,27 @@ impl Assembly {
     #[must_use]
     pub const fn mount(&self, hardpoint: Hardpoint) -> Option<Weapon> {
         self.mounts[hardpoint as usize]
+    }
+
+    /// The mod on the weapon at `hardpoint`.
+    #[must_use]
+    pub const fn modification(&self, hardpoint: Hardpoint) -> Option<ModId> {
+        self.mods[hardpoint as usize]
+    }
+
+    /// The mod on `weapon`, wherever it is mounted.
+    #[must_use]
+    pub fn mod_on(&self, weapon: Weapon) -> Option<ModId> {
+        self.mounts()
+            .find(|(_, mounted)| *mounted == weapon)
+            .and_then(|(hardpoint, _)| self.modification(hardpoint))
+    }
+
+    /// The mods with the weapon each is on, in hardpoint order.
+    pub fn mods(&self) -> impl Iterator<Item = (Hardpoint, Weapon, ModId)> + '_ {
+        self.mounts().filter_map(|(hardpoint, weapon)| {
+            Some((hardpoint, weapon, self.modification(hardpoint)?))
+        })
     }
 
     /// The installed components, in socket order.
@@ -346,6 +546,10 @@ impl Assembly {
             mounts: self
                 .mounts()
                 .map(|(hardpoint, weapon)| (hardpoint.index(), weapon.index()))
+                .collect(),
+            mods: self
+                .mods()
+                .map(|(hardpoint, _, id)| (hardpoint.index(), id.0))
                 .collect(),
         }
     }
@@ -375,6 +579,13 @@ pub enum AssemblyError {
     UnknownWeapon(u8),
     /// The weapon is not in the catalog.
     UnavailableWeapon(Weapon),
+    UnknownMod(u8),
+    /// The hardpoint carries two mods.
+    DuplicateMod(Hardpoint),
+    /// A mod on a hardpoint with no weapon.
+    Unmounted(Hardpoint),
+    /// The mod does not fit the weapon.
+    DoesNotFit(ModId, Weapon),
     DuplicateSocket(Socket),
     DuplicateHardpoint(Hardpoint),
     DuplicateWeapon(Weapon),
@@ -413,6 +624,14 @@ impl fmt::Display for AssemblyError {
             Self::UnknownHardpoint(code) => write!(formatter, "unknown hardpoint {code}"),
             Self::UnknownWeapon(code) => write!(formatter, "unknown weapon {code}"),
             Self::UnavailableWeapon(weapon) => write!(formatter, "{weapon:?} is not available"),
+            Self::UnknownMod(code) => write!(formatter, "unknown weapon mod {code}"),
+            Self::DuplicateMod(hardpoint) => write!(formatter, "{hardpoint:?} has two mods"),
+            Self::Unmounted(hardpoint) => {
+                write!(formatter, "a mod on {hardpoint:?}, which holds no weapon")
+            }
+            Self::DoesNotFit(id, weapon) => {
+                write!(formatter, "mod {} does not fit {weapon:?}", id.0)
+            }
             Self::DuplicateSocket(socket) => write!(formatter, "{socket:?} is filled twice"),
             Self::DuplicateHardpoint(hardpoint) => {
                 write!(formatter, "{hardpoint:?} is filled twice")
@@ -465,9 +684,24 @@ impl Catalog {
         self.modules.iter().find(|module| module.weapon == weapon)
     }
 
+    #[must_use]
+    pub fn modification(&self, id: ModId) -> Option<&Mod> {
+        self.mods.iter().find(|modification| modification.id == id)
+    }
+
+    /// How `weapon` fires in `build`: its mod's tuning, else the shipped weapon's.
+    #[must_use]
+    pub fn tuning(&self, build: &Assembly, weapon: Weapon) -> Tuning {
+        build
+            .mod_on(weapon)
+            .and_then(|id| self.modification(id))
+            .map_or(Tuning::BASE, |modification| modification.tuning)
+    }
+
     /// The one validation path for a build: structure first (known, unique codes), then
-    /// attachment (kinds, required sockets, hardpoints), then the budgets (mass, power, cooling,
-    /// build points), each in a fixed order so the same candidate always fails the same way.
+    /// attachment (kinds, required sockets, hardpoints, which mods fit where), then the budgets
+    /// (mass, power, cooling, build points), each in a fixed order so the same candidate always
+    /// fails the same way.
     ///
     /// # Errors
     ///
@@ -476,6 +710,7 @@ impl Catalog {
         let mut assembly = Assembly {
             parts: [None; Socket::ALL.len()],
             mounts: [None; Hardpoint::ALL.len()],
+            mods: [None; Hardpoint::ALL.len()],
         };
         for &(socket, id) in &candidate.parts {
             let socket = Socket::from_index(socket).ok_or(AssemblyError::UnknownSocket(socket))?;
@@ -501,6 +736,18 @@ impl Catalog {
             }
             *slot = Some(weapon);
         }
+        for &(hardpoint, id) in &candidate.mods {
+            let hardpoint = Hardpoint::from_index(hardpoint)
+                .ok_or(AssemblyError::UnknownHardpoint(hardpoint))?;
+            let modification = self
+                .modification(ModId(id))
+                .ok_or(AssemblyError::UnknownMod(id))?;
+            let slot = &mut assembly.mods[usize::from(hardpoint.index())];
+            if slot.is_some() {
+                return Err(AssemblyError::DuplicateMod(hardpoint));
+            }
+            *slot = Some(modification.id);
+        }
         for socket in Socket::ALL {
             if socket.required() && assembly.part(socket).is_none() {
                 return Err(AssemblyError::Missing(socket));
@@ -520,11 +767,29 @@ impl Catalog {
                 .and_then(|id| self.component(id))
                 .and_then(|component| component.mounts)
                 .ok_or(AssemblyError::NoHardpoint(hardpoint))?;
-            if module.size > carries {
+            let modification = assembly
+                .modification(hardpoint)
+                .and_then(|id| self.modification(id));
+            if let Some(modification) = modification
+                && !modification.fits.contains(&weapon)
+            {
+                return Err(AssemblyError::DoesNotFit(modification.id, weapon));
+            }
+            let size = if modification.is_some_and(|modification| modification.heavy) {
+                Size::Heavy
+            } else {
+                module.size
+            };
+            if size > carries {
                 return Err(AssemblyError::TooHeavyForMount(hardpoint, weapon));
             }
             if module.hand_only && !hardpoint.hand() {
                 return Err(AssemblyError::HandOnly(hardpoint, weapon));
+            }
+        }
+        for hardpoint in Hardpoint::ALL {
+            if assembly.modification(hardpoint).is_some() && assembly.mount(hardpoint).is_none() {
+                return Err(AssemblyError::Unmounted(hardpoint));
             }
         }
         let budget = self.budget(&assembly);
@@ -585,6 +850,16 @@ impl Catalog {
             budget.draw += u32::from(module.draw);
             budget.heat += u32::from(module.heat);
             budget.points += u32::from(module.points);
+        }
+        for (_, _, id) in assembly.mods() {
+            let Some(modification) = self.modification(id) else {
+                continue;
+            };
+            budget.carried += u32::from(modification.mass);
+            budget.draw += u32::from(modification.draw);
+            budget.heat += u32::from(modification.heat);
+            budget.cooling += u32::from(modification.cooling);
+            budget.points += u32::from(modification.points);
         }
         budget
     }

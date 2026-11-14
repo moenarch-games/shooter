@@ -7,7 +7,7 @@
 use crate::interpolation::Interpolation;
 use shooter_sim::physics::World;
 use shooter_sim::session::LOCAL_PLAYER;
-use shooter_sim::{Event, Intent, MapId, Rules, Session, Snapshot, StepReport};
+use shooter_sim::{Assembly, Event, Intent, MapId, Rules, Session, Snapshot, StepReport};
 
 /// The practice match's bot seed.
 pub const PRACTICE_SEED: u64 = 1;
@@ -45,6 +45,27 @@ impl Game {
             // Drawn between the last two ticks; shots see the match as it is.
             others: Interpolation::new(1.0),
         }
+    }
+
+    /// Plays as `build` (a named loadout, `shooter_sim::robot::LOADOUTS`): in practice from the
+    /// start (called before the first tick), online it is asked of the host, which applies it at
+    /// the next spawn.
+    #[must_use]
+    pub fn with_loadout(mut self, build: Assembly) -> Self {
+        match &mut self {
+            Self::Practice {
+                session, snapshot, ..
+            } => {
+                if let Some(slot) = session.slot_of_player(LOCAL_PLAYER) {
+                    let local = &mut session.fighters[usize::from(slot)];
+                    local.build = build;
+                    local.configured = build;
+                    *snapshot = session.snapshot();
+                }
+            }
+            Self::Online(online) => online.request_build(build),
+        }
+        self
     }
 
     /// One local tick holding `intent`.
@@ -171,7 +192,9 @@ pub mod online {
     use shooter_sim::session::{HALF, MAX_HEALTH};
     use shooter_sim::weapons::{self, Delivery};
     use shooter_sim::wire::encode_input;
-    use shooter_sim::{Event, Intent, MapId, Rules, Session, Snapshot, StepReport, Weapon};
+    use shooter_sim::{
+        Assembly, Event, Intent, MapId, Rules, Session, Snapshot, StepReport, Weapon,
+    };
     use std::collections::VecDeque;
 
     /// A prediction further than this (units, any axis) from the server's state is corrected.
@@ -191,6 +214,8 @@ pub mod online {
         connection: Connection,
         /// The name picked for this match (sanitized as the host does).
         name: Option<String>,
+        /// The loadout asked of the host, if any.
+        build: Option<Assembly>,
         player_id: Option<u32>,
         /// A one-fighter session on the host's map, from the first snapshot on.
         predictor: Option<Session>,
@@ -234,6 +259,7 @@ pub mod online {
             Self {
                 connection: Connection::open(url, certificate),
                 name: name.and_then(names::sanitize),
+                build: None,
                 player_id: None,
                 predictor: None,
                 predicting: false,
@@ -245,6 +271,12 @@ pub mod online {
                 status: Some(status),
                 resumed: 0,
             }
+        }
+
+        /// Asks the host to bring the local fighter back as `build` (it rides along with the
+        /// inputs until a snapshot shows it configured).
+        pub const fn request_build(&mut self, build: Assembly) {
+            self.build = Some(build);
         }
 
         /// The host's map, once a snapshot has named it.
@@ -442,6 +474,10 @@ pub mod online {
                 self.pending.clear();
                 return Ok(());
             }
+            // Predicted shots fire at the host's pace for this life's build (its weapon mods).
+            if let Some(predictor) = self.predictor.as_mut() {
+                predictor.fighters[0].build = me.build;
+            }
             let place = |predictor: &mut Session| {
                 predictor
                     .place(0, me.position, me.velocity, me.motion, me.held, me.hook)
@@ -539,8 +575,16 @@ pub mod online {
                     latest.name(me.slot)
                 });
                 let name = self.name.as_deref().filter(|name| shown != Some(*name));
-                self.connection
-                    .send(self.sequence, &encode_input(intent, view_tick, name, None));
+                // So does the requested loadout, until a snapshot shows it configured.
+                let configured = self
+                    .latest
+                    .as_ref()
+                    .and_then(|latest| latest.of_player(self.player_id?).map(|me| me.configured));
+                let build = self.build.filter(|build| configured != Some(*build));
+                self.connection.send(
+                    self.sequence,
+                    &encode_input(intent, view_tick, name, build.as_ref()),
+                );
                 if self.predicting {
                     report = self.predict(intent)?;
                     let shots = self.predicted_shots();

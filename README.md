@@ -147,6 +147,20 @@ build and the one it comes back as. The budgets and point values are provisional
 Q2.i46.4), and a build does not yet change movement or the arsenal: every fighter still carries
 every weapon, the box fighter is still drawn, and there is no builder screen yet.
 
+**Weapon mods.** A mounted weapon may carry one mod, which costs build points, weighs on the
+mass, power and cooling budgets and changes how that weapon fires (on the host, in the client's
+prediction and in lag-compensated hits alike); a weapon without one fires as shipped. Four
+provisional mods: the *rapid cycler* (rifle, rail gun, shotgun: 65% refire time, 75% damage, hot
+and power-hungry), the *overcharger* (same guns: 125% damage, 130% refire time, the most power),
+the *long barrel* (rifle, rail gun, laser: 150% range, 110% refire time, and its weapon needs a
+heavy mount) and the *heat sink* (any weapon: sheds 20 heat, fire unchanged, mass and points). A
+mod that does not fit its weapon or its mount, or breaks a budget, rejects the build. Pick a
+named loadout with `--loadout <name>` natively or `&loadout=<name>` in the browser (the join
+overlay's loadout field): `standard`, `heavy`, `skirmisher` (rapid-cycler rifle, heat-sunk
+shotgun) or `marksman` (long-barrel rifle on a heavy arm, overcharged rail gun: two hits a kill
+instead of three). Practice starts as it; online the host applies it at your next spawn. The
+HUD's status line shows the held weapon's mod and every equipped one.
+
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points,
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
 degrees of wandering error, strafing as they fire; the flamethrower inside 5 m, the rifle (even
@@ -157,8 +171,9 @@ The movement and the weapons are checked against Rapier on a scripted tour of th
 scripted moves (sprint, slide, double jump, jump pad, ramp slides, a thin wall, a step, a rocket
 jump, a grapple onto a ledge, a shooting range, a close range for the shotgun, laser and flamethrower):
 `cargo test -p shooter-sim --features physics-ab --test physics_ab`.
-`cargo test -p shooter-sim --test robot` checks valid and invalid robot builds, the budgets at
-their limits, tampered builds on the wire and builds through a replayed match.
+`cargo test -p shooter-sim --test robot` checks valid and invalid robot builds and weapon mods,
+the budgets at their limits, tampered builds on the wire, modded fire and builds through a
+replayed match; the A/B also runs the shooting and close ranges as the modded loadouts.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
 lag compensation of shots and swings, that the reticle's aim ends where the hosted beam does, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
 clients through a real game-server host on loopback and resumes a severed connection in its slot.

@@ -11,11 +11,13 @@ real players.
    bots and scripted people (`--people`, default 2). The people join one second apart and send
    one command per tick at a fixed input latency (`--latency`, default 6 ticks = 100 ms), so
    their shots are lag-compensated. The first person's first command asks for the heavy robot
-   build (`shooter_sim::robot::HEAVY`), which it comes back as after its first death. Every
-   second person leaves three quarters of the way in. It plays the default map (`--map` picks
+   build (`shooter_sim::robot::HEAVY`), which it comes back as after its first death; the
+   second person's asks for the modded skirmisher loadout (`shooter_sim::robot::SKIRMISHER`).
+   Every second person leaves three quarters of the way in. It plays the default map (`--map` picks
    another catalogued one). The replay file is the bot seed, the slot count and the map ID
    followed by game-server's own replay log: admissions, commands, removals and a digest of
-   every tick's snapshot. Files from before the slot count (format 2) are refused.
+   every tick's snapshot. Files of an earlier format (format 2, before the slot count, or
+   format 3, before weapon mods) are refused.
 2. **Verify** it: `shooter-replay verify` replays the log into a fresh match on the recorded map
    (a file naming a map this build does not know is rejected) through
    game-server's `verify_replay`, and every tick must match its digest. Recording the same

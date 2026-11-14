@@ -22,6 +22,7 @@ use shooter_sim::MapId;
 /// in the config directory for later runs, [`remembered_name`]); in the browser the page's
 /// `?connect=<url>[&certHash=<sha-256 hex>][&name=<name>]` does (the page remembers the name).
 /// Anything else is offline practice against bots on `map`. Online, the host picks the map.
+/// Either way `--loadout <name>` (`?loadout=<name>`) picks the robot build ([`loadout`]).
 fn game(#[cfg(not(target_arch = "wasm32"))] args: Args, map: MapId) -> game::Game {
     #[cfg(not(target_arch = "wasm32"))]
     let (url, trust, name) = (args.connect, args.cert, remembered_name(args.name));
@@ -38,14 +39,48 @@ fn game(#[cfg(not(target_arch = "wasm32"))] args: Args, map: MapId) -> game::Gam
             hash => (query, hash.flatten(), name),
         }
     };
-    if let Some(url) = url {
-        return game::Game::Online(Box::new(game::online::Online::connect(
+    #[cfg(not(target_arch = "wasm32"))]
+    let requested = args.loadout;
+    #[cfg(target_arch = "wasm32")]
+    let requested = web::query("loadout");
+    let game = match url {
+        Some(url) => game::Game::Online(Box::new(game::online::Online::connect(
             url,
             trust,
             name.as_deref(),
-        )));
+        ))),
+        None => game::Game::practice(map),
+    };
+    match loadout(requested.as_deref()) {
+        Ok(Some(build)) => game.with_loadout(build),
+        Ok(None) => game,
+        Err(error) => {
+            fail(&error);
+            game
+        }
     }
-    game::Game::practice(map)
+}
+
+/// The loadout to play as: natively `--loadout <name>`, in the browser `?loadout=<name>`, one of
+/// [`shooter_sim::robot::LOADOUTS`] (`standard`, `heavy`, `skirmisher`, `marksman`); none asks
+/// for nothing (the standard build).
+///
+/// # Errors
+///
+/// If `requested` names no loadout.
+pub fn loadout(requested: Option<&str>) -> Result<Option<shooter_sim::Assembly>, String> {
+    requested
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| {
+            shooter_sim::robot::loadout(name).ok_or_else(|| {
+                let names: Vec<&str> = shooter_sim::robot::LOADOUTS
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect();
+                format!("unknown loadout {name:?} (one of {})", names.join(", "))
+            })
+        })
+        .transpose()
 }
 
 /// The practice and profile-run map: natively `--map <id>`, in the browser `?map=<id>`, else
@@ -72,6 +107,8 @@ struct Args {
     map: Option<String>,
     /// `--frames <n>`: the offscreen profile run instead of a window ([`offscreen`]).
     frames: Option<u32>,
+    /// `--loadout <name>`: the loadout to play as ([`loadout`]).
+    loadout: Option<String>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -85,6 +122,7 @@ impl Args {
                 "--cert" => parsed.cert = args.next().map(std::path::PathBuf::from),
                 "--name" => parsed.name = args.next(),
                 "--map" => parsed.map = args.next(),
+                "--loadout" => parsed.loadout = args.next(),
                 "--frames" => parsed.frames = args.next().and_then(|n| n.parse().ok()),
                 other => log(&format!("unknown argument {other}")),
             }
@@ -486,6 +524,45 @@ mod tests {
         assert!(
             refused.contains("nowhere") && refused.contains("greybox"),
             "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_loadout_is_a_named_one_or_none() {
+        use super::loadout;
+        use shooter_sim::robot::{MARKSMAN, SKIRMISHER};
+        assert_eq!(loadout(None), Ok(None));
+        assert_eq!(loadout(Some("")), Ok(None));
+        assert_eq!(loadout(Some("skirmisher")), Ok(Some(SKIRMISHER)));
+        assert_eq!(loadout(Some("Marksman")), Ok(Some(MARKSMAN)));
+        let refused = loadout(Some("sniper")).unwrap_err();
+        assert!(
+            refused.contains("sniper") && refused.contains("marksman"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn the_hud_shows_the_equipped_mods() {
+        use crate::game::Game;
+        use crate::hud::Hud;
+        use shooter_sim::robot::{MARKSMAN, STANDARD};
+        let status = |build| {
+            let game = Game::practice(super::MapId::DEFAULT).with_loadout(build);
+            Hud::default()
+                .text(game.snapshot(), game.local_slot(), None, false, 0.0)
+                .status
+        };
+        let marksman = status(MARKSMAN);
+        assert!(
+            marksman.contains("Energy rifle + long barrel")
+                && marksman.contains("mods: Energy rifle + long barrel, Rail gun + overcharger"),
+            "{marksman}"
+        );
+        let standard = status(STANDARD);
+        assert!(
+            standard.contains("Energy rifle") && !standard.contains("mods"),
+            "{standard}"
         );
     }
 }

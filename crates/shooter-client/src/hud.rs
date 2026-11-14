@@ -1,10 +1,11 @@
 //! The heads-up display, a stopgap until render-engine draws screen overlays
 //! (moritzbrantner/render-engine#101): the text is built here once, then shown by the page's DOM
 //! in the browser and in the window title natively (the native health bar is drawn in the scene,
-//! see `scene::Actors`). Health, weapon, frags and place, the round clock, a kill feed, a respawn
+//! see `scene::Actors`). Health, weapon (with its mod), frags and place, the equipped weapon mods, the round clock, a kill feed, a respawn
 //! or connection banner, and the scoreboard (held Tab, or between rounds).
 
-use shooter_sim::{Controller, Event, FighterState, Phase, Snapshot, TICK_HZ, Weapon};
+use shooter_sim::robot::{BETA, ModId};
+use shooter_sim::{Assembly, Controller, Event, FighterState, Phase, Snapshot, TICK_HZ, Weapon};
 
 /// Kill feed lines stay this long (seconds).
 const FEED_SECONDS: f32 = 4.0;
@@ -37,6 +38,38 @@ const fn weapon_name(weapon: Weapon) -> &'static str {
         Weapon::Shotgun => "Shotgun",
         Weapon::Laser => "Laser",
         Weapon::Flamethrower => "Flamethrower",
+    }
+}
+
+/// A weapon mod's name, from its catalog key.
+fn mod_name(id: ModId) -> &'static str {
+    match BETA.modification(id).map(|modification| modification.key) {
+        Some("mod.rapid-cycler") => "rapid cycler",
+        Some("mod.overcharger") => "overcharger",
+        Some("mod.long-barrel") => "long barrel",
+        Some("mod.heat-sink") => "heat sink",
+        _ => "mod",
+    }
+}
+
+/// The held weapon with its mod in `build`, if any: "Rail gun + overcharger".
+fn held(weapon: Weapon, build: &Assembly) -> String {
+    build.mod_on(weapon).map_or_else(
+        || weapon_name(weapon).to_owned(),
+        |id| format!("{} + {}", weapon_name(weapon), mod_name(id)),
+    )
+}
+
+/// The equipped mods, "mods: Energy rifle + rapid cycler, Shotgun + heat sink", or nothing.
+fn equipped(build: &Assembly) -> String {
+    let mods: Vec<String> = build
+        .mods()
+        .map(|(_, weapon, id)| format!("{} + {}", weapon_name(weapon), mod_name(id)))
+        .collect();
+    if mods.is_empty() {
+        String::new()
+    } else {
+        format!("   mods: {}", mods.join(", "))
     }
 }
 
@@ -128,14 +161,15 @@ impl Hud {
         };
         let status_line = me.map_or_else(String::new, |me| {
             format!(
-                "♥ {}   {}   {} frags (to {})   #{} of {}   {}",
+                "♥ {}   {}   {} frags (to {})   #{} of {}   {}{}",
                 me.health.max(0),
-                weapon_name(me.held),
+                held(me.held, &me.build),
                 me.frags,
                 snapshot.frag_limit,
                 place.map_or(0, |place| place + 1),
                 ranked.len(),
-                round
+                round,
+                equipped(&me.build)
             )
         });
         let banner = if let Some(status) = status {
