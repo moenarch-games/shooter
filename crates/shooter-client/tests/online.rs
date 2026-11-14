@@ -9,6 +9,7 @@ use game_server::{
 };
 use shooter_client::game::Game;
 use shooter_client::game::online::Online;
+use shooter_sim::robot::{SKIRMISHER, STANDARD};
 use shooter_sim::{Controller, Intent, MapId};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -90,7 +91,10 @@ const FORWARD: Intent = Intent {
 #[test]
 fn two_clients_play_a_hosted_deathmatch() {
     let host = Host::start(0);
-    let (mut first, mut second) = (host.connect(Some("Ripley")), host.connect(None));
+    let (mut first, mut second) = (
+        host.connect(Some("Ripley")).with_loadout(SKIRMISHER),
+        host.connect(None),
+    );
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut start = None;
     let mut moved = 0.0f32;
@@ -126,6 +130,9 @@ fn two_clients_play_a_hosted_deathmatch() {
     // The first client's name reached the host and everyone's snapshots.
     assert_eq!(snapshot.name(a), Some("Ripley"));
     assert_eq!(snapshot.name(b), None);
+    // So did its loadout, validated, for its next life; the second asked for none.
+    assert_eq!(walker.configured, SKIRMISHER);
+    assert_eq!(snapshot.slot(b).unwrap().configured, STANDARD);
     // The second client draws the walker from its interpolation buffer.
     assert!(second.other_center(a, 0.5).is_some());
 }

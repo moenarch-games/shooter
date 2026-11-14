@@ -4,13 +4,14 @@
 
 use shooter_sim::melee;
 use shooter_sim::physics::Vec3i;
+use shooter_sim::robot::{MARKSMAN, SKIRMISHER, STANDARD};
 use shooter_sim::scenarios;
 use shooter_sim::session::{MAX_HEALTH, SELF_SPLASH_PERCENT};
 use shooter_sim::tour::run_legs;
 use shooter_sim::weapons;
 use shooter_sim::wire::{decode_input, decode_snapshot, encode_input, encode_snapshot};
 use shooter_sim::{
-    Arena, Controller, Event, Input, Intent, Phase, Pilot, Rules, Session, Spawn, Weapon,
+    Arena, Assembly, Controller, Event, Input, Intent, Phase, Pilot, Rules, Session, Spawn, Weapon,
 };
 
 fn bot_match(seed: u64, ticks: u32) -> Session {
@@ -108,9 +109,15 @@ fn duel_rules() -> Rules {
 /// A (slot 0) faces B (slot 1) 12 m away; B strafes out of the line of fire for 12 ticks, then A
 /// fires the rifle having seen B at `seen_ticks_ago`. Whether B was hit.
 fn duel_shot(seen_ticks_ago: u32) -> bool {
+    modded_duel_shot(seen_ticks_ago, STANDARD, Weapon::EnergyRifle).is_some()
+}
+
+/// [`duel_shot`] with A built as `build` and firing `weapon`: the damage B took, if hit.
+fn modded_duel_shot(seen_ticks_ago: u32, build: Assembly, weapon: Weapon) -> Option<i32> {
     let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
     assert_eq!(session.join(1).unwrap(), Some(0));
     assert_eq!(session.join(2).unwrap(), Some(1));
+    session.fighters[0].build = build;
     let mut sequence = 0;
     let mut step = |session: &mut Session, a: Intent, b: Intent, view_tick: u32| {
         sequence += 1;
@@ -132,9 +139,13 @@ fn duel_shot(seen_ticks_ago: u32) -> bool {
         );
         session.step().unwrap();
     };
+    let take = Intent {
+        select: Some(weapon),
+        ..Intent::IDLE
+    };
     for _ in 0..10 {
         let now = session.ticks();
-        step(&mut session, Intent::IDLE, Intent::IDLE, now);
+        step(&mut session, take, Intent::IDLE, now);
     }
     let strafe = Intent {
         strafe: 1,
@@ -150,22 +161,40 @@ fn duel_shot(seen_ticks_ago: u32) -> bool {
     };
     let seen = session.ticks() - seen_ticks_ago;
     step(&mut session, fire, strafe, seen);
-    assert!(
-        session
-            .events
-            .iter()
-            .any(|event| matches!(event, Event::Fired { slot: 0, .. }))
-    );
-    session
-        .events
-        .iter()
-        .any(|event| matches!(event, Event::Hit { victim: 1, .. }))
+    assert!(session.events.iter().any(
+        |event| matches!(event, Event::Fired { slot: 0, weapon: fired, .. } if *fired == weapon)
+    ));
+    session.events.iter().find_map(|event| match event {
+        Event::Hit {
+            victim: 1, damage, ..
+        } => Some(*damage),
+        _ => None,
+    })
 }
 
 #[test]
 fn hitscan_is_lag_compensated() {
     assert!(!duel_shot(0), "B has moved out of the line of fire");
     assert!(duel_shot(12), "A saw B in the line of fire 12 ticks ago");
+}
+
+/// Weapon mods change the host's lag-compensated hits, not whether they land: the same rewound
+/// shot deals the modded damage.
+#[test]
+fn modded_hitscan_is_lag_compensated_for_the_modded_damage() {
+    let shot = |build, weapon| {
+        (
+            modded_duel_shot(0, build, weapon),
+            modded_duel_shot(12, build, weapon),
+        )
+    };
+    assert_eq!(shot(STANDARD, Weapon::EnergyRifle), (None, Some(12)));
+    // The rapid cycler's rifle bolts are lighter, the overcharged rail gun's beam heavier.
+    assert_eq!(shot(SKIRMISHER, Weapon::EnergyRifle), (None, Some(9)));
+    assert_eq!(shot(STANDARD, Weapon::RailGun), (None, Some(85)));
+    assert_eq!(shot(MARKSMAN, Weapon::RailGun), (None, Some(106)));
+    // The long barrel changes the range, not the damage.
+    assert_eq!(shot(MARKSMAN, Weapon::EnergyRifle), (None, Some(12)));
 }
 
 /// A (slot 0) and B (slot 1) face each other 2 m apart; B strafes for 24 ticks (out of the

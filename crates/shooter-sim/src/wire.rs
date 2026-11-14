@@ -17,7 +17,7 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 8;
+pub const WIRE_VERSION: u8 = 9;
 const NONE: u8 = u8::MAX;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -233,10 +233,10 @@ impl Out {
         self.u8(weapon.index());
     }
     /// A robot build in canonical order: a count and `(socket, component)` codes, then a count
-    /// and `(hardpoint, weapon)` codes.
+    /// and `(hardpoint, weapon)` codes, then a count and `(hardpoint, mod)` codes.
     fn build(&mut self, build: &Assembly) {
         let candidate = build.candidate();
-        for pairs in [&candidate.parts, &candidate.mounts] {
+        for pairs in [&candidate.parts, &candidate.mounts, &candidate.mods] {
             self.u8(count(pairs.len()));
             for &(at, code) in pairs {
                 self.u8(at);
@@ -309,8 +309,13 @@ impl In<'_> {
         };
         let parts = pairs()?;
         let mounts = pairs()?;
-        BETA.validate(&Candidate { parts, mounts })
-            .map_err(WireError::Build)
+        let mods = pairs()?;
+        BETA.validate(&Candidate {
+            parts,
+            mounts,
+            mods,
+        })
+        .map_err(WireError::Build)
     }
     fn finish(self) -> Result<(), WireError> {
         if self.0.is_empty() {

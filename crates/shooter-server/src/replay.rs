@@ -2,7 +2,7 @@
 //!
 //! A replay is a scripted deathmatch hosted through game-server's [`MatchRuntime`] with replay
 //! capture on: the seeded bots plus a few scripted people who join (the first asking for a
-//! heavy robot build), play with a fixed input latency (so their shots are lag-compensated) and
+//! heavy robot build, the second for the modded skirmisher loadout), play with a fixed input latency (so their shots are lag-compensated) and
 //! leave. game-server's [`ReplayLog`] holds every
 //! admission, command and removal and a digest of every tick's snapshot; with the bot seed that is
 //! the whole match on its map, and [`verify`] replays it into a fresh [`DeathmatchHost`] and checks every
@@ -284,7 +284,7 @@ pub fn verify(replay: &Replay) -> Result<ReplayVerification, Error> {
 mod tests {
     use super::*;
     use shooter_sim::Event;
-    use shooter_sim::robot::HEAVY;
+    use shooter_sim::robot::{HEAVY, SKIRMISHER};
 
     fn short() -> Script {
         Script {
@@ -349,14 +349,18 @@ mod tests {
             count(|r| matches!(r, ReplayRecord::PlayerRemoved { .. })),
             1
         );
-        let (mut shots, mut ticks, mut heavy) = (0, 0, false);
+        let (mut shots, mut ticks, mut heavy, mut modded) = (0, 0, false, false);
         replay
             .play(u64::MAX, |session| {
                 ticks += 1;
-                heavy |= session
-                    .fighters
-                    .iter()
-                    .any(|fighter| fighter.human().is_some() && fighter.configured == HEAVY);
+                let configured = |build| {
+                    session
+                        .fighters
+                        .iter()
+                        .any(|fighter| fighter.human().is_some() && fighter.configured == build)
+                };
+                heavy |= configured(HEAVY);
+                modded |= configured(SKIRMISHER);
                 shots += session
                     .events
                     .iter()
@@ -368,5 +372,9 @@ mod tests {
         assert_eq!(ticks, Script::DEFAULT.ticks);
         assert!(shots > 20, "{shots} shots from slots 0 and 1");
         assert!(heavy, "the first person's build request is in the replay");
+        assert!(
+            modded,
+            "the second person's modded build request is in the replay"
+        );
     }
 }

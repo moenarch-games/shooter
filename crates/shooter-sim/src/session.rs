@@ -24,7 +24,7 @@ use crate::physics::{BodyId, PhysicsError, Vec3i, World};
 use crate::player::{
     EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player, STEP_UP,
 };
-use crate::robot::Assembly;
+use crate::robot::{Assembly, BETA};
 use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
 use std::collections::VecDeque;
 
@@ -737,11 +737,13 @@ impl Session {
             let intent = fighter.intent;
             // A set hook holds while the trigger stays down: no second hook until it is let go.
             let hooked = fighter.hook.is_some();
-            let fired = fighter.arsenal.trigger(
+            let build = fighter.build;
+            let fired = fighter.arsenal.trigger_tuned(
                 intent.select,
                 intent.melee && playing,
                 intent.fire && playing && !hooked,
                 self.tick,
+                |weapon| BETA.tuning(&build, weapon).refire_ticks(weapon),
             );
             if hooked && !(intent.fire && playing && fighter.arsenal.held == Weapon::Grapple) {
                 fighter.hook = None;
@@ -1025,7 +1027,8 @@ impl Session {
             eye,
             direction: unit,
         });
-        match weapon.delivery() {
+        // The weapon's mod in the shooter's build, if any, decides its damage and range.
+        match BETA.tuning(&shooter.build, weapon).delivery(weapon) {
             Delivery::Rocket => {
                 self.rockets.push(Rocket::launch(body, eye, direction));
             }

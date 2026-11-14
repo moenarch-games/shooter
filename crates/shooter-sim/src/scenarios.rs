@@ -8,7 +8,7 @@ use crate::arena::{Arena, Piece, Post};
 use crate::physics::RampRise;
 use crate::physics::Vec3i;
 use crate::player::Intent;
-use crate::robot::{Assembly, HEAVY};
+use crate::robot::{Assembly, HEAVY, SKIRMISHER};
 use crate::tour::{Leg, NORTH, SOUTH, hold, stand, walk};
 use crate::weapons::{MAX_PITCH, Weapon};
 
@@ -413,8 +413,13 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
 }
 
 /// The robot build scripted person `index` asks for when it joins: the first person comes back
-/// as the [`HEAVY`] build after its first death, the others keep the standard build.
+/// as the [`HEAVY`] build after its first death, the second as the modded [`SKIRMISHER`]
+/// (rapid-cycler rifle, heat-sunk shotgun), the others keep the standard build.
 #[must_use]
 pub const fn scripted_build(index: u8) -> Option<Assembly> {
-    if index == 0 { Some(HEAVY) } else { None }
+    match index {
+        0 => Some(HEAVY),
+        1 => Some(SKIRMISHER),
+        _ => None,
+    }
 }

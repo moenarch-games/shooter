@@ -236,6 +236,19 @@ impl Arsenal {
         fire: bool,
         tick: u32,
     ) -> Option<Weapon> {
+        self.trigger_tuned(select, melee, fire, tick, Weapon::refire_ticks)
+    }
+
+    /// [`Arsenal::trigger`] with each weapon's refire from `refire` (its mod's,
+    /// [`crate::robot::Tuning::refire_ticks`]).
+    pub fn trigger_tuned(
+        &mut self,
+        select: Option<Weapon>,
+        melee: bool,
+        fire: bool,
+        tick: u32,
+        refire: impl Fn(Weapon) -> u32,
+    ) -> Option<Weapon> {
         if let Some(weapon) =
             select.filter(|weapon| *weapon != self.held && Weapon::ROTATION.contains(weapon))
         {
@@ -243,11 +256,11 @@ impl Arsenal {
             self.ready_at = self.ready_at.max(tick + SWITCH_TICKS);
         }
         let fired = if melee && tick >= self.blade_ready_at {
-            self.blade_ready_at = tick + Weapon::EnergyBlade.refire_ticks();
+            self.blade_ready_at = tick + refire(Weapon::EnergyBlade);
             self.ready_at = self.ready_at.max(tick + crate::melee::GUN_LOCKOUT_TICKS);
             Some(Weapon::EnergyBlade)
         } else if fire && tick >= self.ready_at {
-            self.ready_at = tick + self.held.refire_ticks();
+            self.ready_at = tick + refire(self.held);
             Some(self.held)
         } else {
             None

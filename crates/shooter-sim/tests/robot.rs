@@ -5,10 +5,17 @@
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::{
     AssemblyError, BETA, Candidate, Catalog, Component, ComponentId, HEAVY, Hardpoint, Kind,
-    Module, STANDARD, Size, Socket,
+    LOADOUTS, MARKSMAN, ModId, Module, SKIRMISHER, STANDARD, Size, Socket, Tuning, loadout,
 };
+use shooter_sim::session::MAX_HEALTH;
+use shooter_sim::weapons::Delivery;
 use shooter_sim::wire::{WireError, decode_input, decode_snapshot, encode_input, encode_snapshot};
-use shooter_sim::{Arena, Assembly, Input, Intent, Rules, Session, Spawn, Weapon};
+use shooter_sim::{Arena, Assembly, Event, Input, Intent, Rules, Session, Spawn, Weapon};
+
+const RAPID_CYCLER: ModId = ModId(1);
+const OVERCHARGER: ModId = ModId(2);
+const LONG_BARREL: ModId = ModId(3);
+const HEAT_SINK: ModId = ModId(4);
 
 const TORSO: u8 = Socket::Torso.index();
 const HEAD: u8 = Socket::Head.index();
@@ -26,6 +33,7 @@ fn candidate(parts: &[(u8, u8)], mounts: &[(u8, Weapon)]) -> Candidate {
             .iter()
             .map(|&(hardpoint, weapon)| (hardpoint, weapon.index()))
             .collect(),
+        mods: Vec::new(),
     }
 }
 
@@ -171,6 +179,7 @@ fn invalid_codes_sockets_and_mounts_are_rejected() {
         BETA.validate(&Candidate {
             parts: parts.clone(),
             mounts: mounts.to_vec(),
+            mods: Vec::new(),
         })
     };
     assert_eq!(raw(&[(4, 0)]), Err(AssemblyError::UnknownHardpoint(4)));
@@ -247,6 +256,7 @@ fn tight(build_points: u16) -> Catalog {
     Catalog {
         components,
         modules,
+        mods: &[],
         build_points,
     }
 }
@@ -325,7 +335,8 @@ fn builds_from_untrusted_bytes_are_validated() {
     tampered.extend_from_slice(&[
         1, 5, TORSO, 1, HEAD, 10, LEFT_ARM, 20, RIGHT_ARM, 20, LEGS, 30,
     ]);
-    tampered.extend_from_slice(&[1, LEFT_HAND, Weapon::RailGun.index()]);
+    let parts = tampered.clone();
+    tampered.extend_from_slice(&[1, LEFT_HAND, Weapon::RailGun.index(), 0]);
     assert_eq!(
         decode_input(&tampered),
         Err(WireError::Build(AssemblyError::TooHeavyForMount(
@@ -333,8 +344,26 @@ fn builds_from_untrusted_bytes_are_validated() {
             Weapon::RailGun
         )))
     );
+    // A long barrel (a heavy mod) on the standard frame's light-arm rifle: refused, not dropped.
+    let mut modded = parts.clone();
+    modded.extend_from_slice(&[1, LEFT_HAND, Weapon::EnergyRifle.index()]);
+    modded.extend_from_slice(&[1, LEFT_HAND, LONG_BARREL.0]);
+    assert_eq!(
+        decode_input(&modded),
+        Err(WireError::Build(AssemblyError::TooHeavyForMount(
+            Hardpoint::LeftHand,
+            Weapon::EnergyRifle
+        )))
+    );
+    let mut unknown_mod = parts;
+    unknown_mod.extend_from_slice(&[1, LEFT_HAND, Weapon::EnergyRifle.index()]);
+    unknown_mod.extend_from_slice(&[1, LEFT_HAND, 99]);
+    assert_eq!(
+        decode_input(&unknown_mod),
+        Err(WireError::Build(AssemblyError::UnknownMod(99)))
+    );
     let mut unknown = plain[..plain.len() - 1].to_vec();
-    unknown.extend_from_slice(&[1, 1, TORSO, 200, 0]);
+    unknown.extend_from_slice(&[1, 1, TORSO, 200, 0, 0]);
     assert_eq!(
         decode_input(&unknown),
         Err(WireError::Build(AssemblyError::UnknownComponent(200)))
@@ -475,6 +504,301 @@ fn matches_with_configured_builds_replay_exactly() {
         }
         assert!(session.fighters[1].deaths > 0);
         assert_eq!(session.fighters[1].build, HEAVY);
+        snapshots
+    };
+    assert_eq!(play(), play());
+}
+
+/// `candidate` plus `(hardpoint, mod)` codes.
+fn with_mods(mut candidate: Candidate, mods: &[(u8, ModId)]) -> Candidate {
+    candidate.mods = mods
+        .iter()
+        .map(|&(hardpoint, id)| (hardpoint, id.0))
+        .collect();
+    candidate
+}
+
+#[test]
+fn every_mod_trades_something_away() {
+    let mut ids: Vec<u8> = BETA.mods.iter().map(|m| m.id.0).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), BETA.mods.len(), "unique mod codes");
+    assert_eq!(
+        BETA.mods.len(),
+        4,
+        "a cooling, an energy, a firing and a mount mod"
+    );
+    for modification in BETA.mods {
+        let key = modification.key;
+        assert!(key.starts_with("mod."), "{key}");
+        assert!(!modification.fits.is_empty(), "{key} fits something");
+        // Every mod costs build points and mass...
+        assert!(modification.points > 0 && modification.mass > 0, "{key}");
+        // ...and one that changes the fire gives something up for it: less damage, slower fire
+        // or less range.
+        let tuning = modification.tuning;
+        if tuning != Tuning::BASE {
+            assert!(
+                tuning.damage_percent < 100
+                    || tuning.refire_percent > 100
+                    || tuning.range_percent < 100,
+                "{key} is strictly better"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_modded_loadouts_are_valid_and_contrast() {
+    for (name, build) in LOADOUTS {
+        assert_eq!(BETA.validate(&build.candidate()), Ok(build), "{name}");
+        assert_eq!(loadout(name), Some(build));
+        let budget = BETA.budget(&build);
+        assert!(budget.carried <= budget.load && budget.draw <= budget.power);
+        assert!(budget.heat <= budget.cooling && budget.points <= budget.build_points);
+    }
+    assert_eq!(loadout(" Marksman "), Some(MARKSMAN));
+    assert_eq!(loadout("sniper"), None);
+    // The skirmisher draws every bit of the light torso's power; the marksman spends every point.
+    let skirmisher = BETA.budget(&SKIRMISHER);
+    assert_eq!((skirmisher.draw, skirmisher.power), (100, 100));
+    assert_eq!(BETA.budget(&MARKSMAN).points, u32::from(BETA.build_points));
+    assert_eq!(SKIRMISHER.mod_on(Weapon::EnergyRifle), Some(RAPID_CYCLER));
+    assert_eq!(SKIRMISHER.mod_on(Weapon::Shotgun), Some(HEAT_SINK));
+    assert_eq!(MARKSMAN.mod_on(Weapon::RailGun), Some(OVERCHARGER));
+    assert_eq!(MARKSMAN.mod_on(Weapon::EnergyRifle), Some(LONG_BARREL));
+    assert_eq!(STANDARD.mods().count(), 0);
+
+    let fire = |build: &Assembly, weapon: Weapon| {
+        let tuning = BETA.tuning(build, weapon);
+        (tuning.refire_ticks(weapon), tuning.delivery(weapon))
+    };
+    // The skirmisher's rifle fires faster and lighter: more damage a second, less a bolt.
+    assert_eq!(
+        fire(&SKIRMISHER, Weapon::EnergyRifle),
+        (
+            4,
+            Delivery::Hitscan {
+                damage: 9,
+                range_units: 8_000
+            }
+        )
+    );
+    // The marksman's rifle reaches 120 m but cycles slower; its rail gun kills in two hits
+    // instead of three but fires nearly a third slower.
+    assert_eq!(
+        fire(&MARKSMAN, Weapon::EnergyRifle),
+        (
+            7,
+            Delivery::Hitscan {
+                damage: 12,
+                range_units: 12_000
+            }
+        )
+    );
+    let (refire, rail) = fire(&MARKSMAN, Weapon::RailGun);
+    assert_eq!(refire, 94);
+    assert!(
+        matches!(rail, Delivery::Hitscan { damage, .. } if damage == 106 && 2 * damage >= MAX_HEALTH)
+    );
+    // Without a mod every weapon fires as shipped (the basic guns need nothing), and a heat sink
+    // leaves the fire alone.
+    for weapon in Weapon::ALL {
+        assert_eq!(
+            fire(&STANDARD, weapon),
+            (weapon.refire_ticks(), weapon.delivery())
+        );
+    }
+    for (build, weapon) in [(SKIRMISHER, Weapon::Shotgun), (MARKSMAN, Weapon::Laser)] {
+        assert_eq!(
+            fire(&build, weapon),
+            (weapon.refire_ticks(), weapon.delivery())
+        );
+    }
+}
+
+#[test]
+fn invalid_mod_combinations_are_rejected_not_dropped() {
+    let standard = || STANDARD.candidate();
+    let modded = |mods: &[(u8, ModId)]| BETA.validate(&with_mods(standard(), mods));
+    // Structure: unknown codes, two mods on one hardpoint, a mod with no weapon under it.
+    assert_eq!(
+        BETA.validate(&Candidate {
+            mods: vec![(LEFT_HAND, 99)],
+            ..standard()
+        }),
+        Err(AssemblyError::UnknownMod(99))
+    );
+    assert_eq!(
+        modded(&[(7, HEAT_SINK)]),
+        Err(AssemblyError::UnknownHardpoint(7))
+    );
+    assert_eq!(
+        modded(&[(RIGHT_HAND, HEAT_SINK), (RIGHT_HAND, HEAT_SINK)]),
+        Err(AssemblyError::DuplicateMod(Hardpoint::RightHand))
+    );
+    let mut bare = standard();
+    bare.mounts
+        .retain(|&(hardpoint, _)| hardpoint != RIGHT_HAND);
+    assert_eq!(
+        BETA.validate(&with_mods(bare, &[(RIGHT_HAND, HEAT_SINK)])),
+        Err(AssemblyError::Unmounted(Hardpoint::RightHand))
+    );
+    // Attachment: mods fit only their weapons, a long barrel needs a heavy mount.
+    assert_eq!(
+        modded(&[(LEFT_SHOULDER, OVERCHARGER)]),
+        Err(AssemblyError::DoesNotFit(OVERCHARGER, Weapon::Grapple))
+    );
+    assert_eq!(
+        modded(&[(RIGHT_HAND, RAPID_CYCLER)]),
+        Err(AssemblyError::DoesNotFit(RAPID_CYCLER, Weapon::EnergyBlade))
+    );
+    assert_eq!(
+        modded(&[(Hardpoint::RightShoulder.index(), LONG_BARREL)]),
+        Err(AssemblyError::DoesNotFit(LONG_BARREL, Weapon::Shotgun))
+    );
+    assert_eq!(
+        modded(&[(LEFT_HAND, LONG_BARREL)]),
+        Err(AssemblyError::TooHeavyForMount(
+            Hardpoint::LeftHand,
+            Weapon::EnergyRifle
+        ))
+    );
+    let mut heavy_arm = standard();
+    heavy_arm.parts[2] = (LEFT_ARM, 21);
+    assert!(
+        BETA.validate(&with_mods(heavy_arm, &[(LEFT_HAND, LONG_BARREL)]))
+            .is_ok()
+    );
+    // Budgets: the rapid cycler overheats the standard frame without the heat sink, the
+    // overcharger draws more than its torso supplies, and a mod past the build points is refused.
+    assert_eq!(
+        modded(&[(LEFT_HAND, RAPID_CYCLER)]),
+        Err(AssemblyError::Overheated {
+            heat: 55,
+            cooling: 50
+        })
+    );
+    assert_eq!(
+        modded(&[(LEFT_HAND, OVERCHARGER)]),
+        Err(AssemblyError::Underpowered {
+            draw: 110,
+            power: 100
+        })
+    );
+    let mut over = MARKSMAN.candidate();
+    over.mods
+        .push((Hardpoint::RightShoulder.index(), HEAT_SINK.0));
+    assert_eq!(
+        BETA.validate(&over),
+        Err(AssemblyError::OverBudget {
+            points: 125,
+            build_points: 120
+        })
+    );
+}
+
+#[test]
+fn modded_builds_travel_in_inputs_and_snapshots() {
+    for build in [SKIRMISHER, MARKSMAN] {
+        let sent = encode_input(Intent::IDLE, 3, None, Some(&build));
+        assert_eq!(decode_input(&sent).unwrap().build, Some(build));
+    }
+    let mut session = duel();
+    session.fighters[0].build = MARKSMAN;
+    session.configure(2, SKIRMISHER);
+    let snapshot = session.snapshot();
+    assert_eq!(snapshot.slot(0).unwrap().build, MARKSMAN);
+    assert_eq!(snapshot.slot(1).unwrap().configured, SKIRMISHER);
+    assert_eq!(
+        decode_snapshot(&encode_snapshot(&snapshot)).unwrap(),
+        snapshot
+    );
+}
+
+/// The ticks person 1, built as `build`, fired the rail gun on over `ticks` ticks of the trigger
+/// held at person 2, and person 2's deaths.
+fn rail_record(build: Assembly, ticks: u32) -> (Vec<u32>, i32) {
+    let mut session = duel();
+    session.fighters[0].build = build;
+    let mut fired = Vec::new();
+    for _ in 0..ticks {
+        let tick = session.ticks();
+        rail(&mut session, 1);
+        let shot = session.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Fired {
+                    slot: 0,
+                    weapon: Weapon::RailGun,
+                    ..
+                }
+            )
+        });
+        if shot {
+            fired.push(tick);
+        }
+    }
+    (fired, session.fighters[1].deaths)
+}
+
+#[test]
+fn the_overcharged_rail_gun_kills_in_fewer_hits_and_fires_slower() {
+    // Shipped: 72 ticks apart, three hits a kill.
+    assert_eq!(rail_record(STANDARD, 120), (vec![12, 84], 0));
+    assert_eq!(rail_record(STANDARD, 200), (vec![12, 84, 156], 1));
+    // Overcharged: 94 ticks apart, two hits a kill.
+    assert_eq!(rail_record(MARKSMAN, 120), (vec![12, 106], 1));
+}
+
+#[test]
+fn a_configured_modded_build_applies_at_the_next_spawn() {
+    let mut session = duel();
+    assert!(session.configure(1, MARKSMAN));
+    let rail_tuning = |session: &Session| BETA.tuning(&session.fighters[0].build, Weapon::RailGun);
+    assert_eq!(rail_tuning(&session), Tuning::BASE);
+    // Person 1 falls to person 2's rail gun and comes back as the marksman.
+    let intent = Intent {
+        yaw: 32_768,
+        fire: true,
+        select: Some(Weapon::RailGun),
+        ..Intent::IDLE
+    };
+    while session.fighters[0].deaths == 0 {
+        let sequence = session.fighters[1].ack + 1;
+        let view_tick = session.ticks();
+        session.queue(
+            2,
+            Input {
+                sequence,
+                intent,
+                view_tick,
+            },
+        );
+        session.step().unwrap();
+        assert_eq!(rail_tuning(&session), Tuning::BASE, "alive: not rebuilt");
+    }
+    while !session.fighters[0].alive() {
+        session.step().unwrap();
+    }
+    assert_eq!(session.fighters[0].build, MARKSMAN);
+    assert_eq!(rail_tuning(&session).damage_percent, 125);
+}
+
+#[test]
+fn matches_with_modded_builds_replay_exactly() {
+    let play = || {
+        let mut session = duel();
+        session.fighters[0].build = MARKSMAN;
+        session.configure(2, SKIRMISHER);
+        let mut snapshots = Vec::new();
+        for _ in 0..600 {
+            rail(&mut session, 1);
+            snapshots.extend(encode_snapshot(&session.snapshot()));
+        }
+        assert!(session.fighters[1].deaths > 1);
+        assert_eq!(session.fighters[1].build, SKIRMISHER);
         snapshots
     };
     assert_eq!(play(), play());
