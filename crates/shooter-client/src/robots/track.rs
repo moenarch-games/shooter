@@ -1,5 +1,6 @@
 //! What the robots' poses need beyond a snapshot, followed per fighter slot from the match's
-//! events: seconds since each fighter's last shot, where each one died (a dead fighter has no
+//! events: seconds since each fighter's last shot, with which weapon and how many it has fired
+//! (the rocket pod's tubes alternate), where each one died (a dead fighter has no
 //! position in a snapshot), so it can topple there until it respawns, and where each part it has
 //! lost this life came off, so the part falls from there to the floor and lies there until the
 //! fighter respawns (presentation only: the host decides what is lost, [`shooter_sim::damage`];
@@ -68,6 +69,7 @@ pub struct Remains {
 #[derive(Clone, Debug)]
 pub struct Tracker {
     since_fired: Vec<f32>,
+    fired: Vec<(Weapon, u32)>,
     alive: Vec<Option<Remains>>,
     dead: Vec<Option<Remains>>,
     lost: Vec<Vec<Lost>>,
@@ -77,6 +79,7 @@ impl Default for Tracker {
     fn default() -> Self {
         Self {
             since_fired: vec![f32::INFINITY; SLOTS],
+            fired: vec![(Weapon::EnergyRifle, 0); SLOTS],
             alive: vec![None; SLOTS],
             dead: vec![None; SLOTS],
             lost: vec![Vec::new(); SLOTS],
@@ -85,7 +88,8 @@ impl Default for Tracker {
 }
 
 impl Tracker {
-    /// One tick of `seconds`: `events` and the local fighter's own shot (`fired`, as predicted).
+    /// One tick of `seconds`: `events` and the local fighter's own shot (`fired`, as predicted;
+    /// its own `Fired` events are not counted again).
     pub fn tick(
         &mut self,
         events: &[Event],
@@ -102,12 +106,15 @@ impl Tracker {
         for lost in self.lost.iter_mut().flatten() {
             lost.age += seconds;
         }
-        if let (Some(slot), Some(_)) = (local, fired) {
-            self.since_fired[usize::from(slot)] = 0.0;
+        if let (Some(slot), Some(weapon)) = (local, fired) {
+            self.shot(slot, weapon);
         }
         for event in events {
             match *event {
-                Event::Fired { slot, .. } => self.since_fired[usize::from(slot)] = 0.0,
+                // The local fighter's own shots count once, as predicted (`fired`).
+                Event::Fired { slot, weapon, .. } if Some(slot) != local => {
+                    self.shot(slot, weapon);
+                }
                 Event::Killed { victim, .. } => {
                     let slot = usize::from(victim);
                     self.dead[slot] = self.alive[slot].take();
@@ -175,9 +182,22 @@ impl Tracker {
             .collect()
     }
 
+    fn shot(&mut self, slot: u8, weapon: Weapon) {
+        let slot = usize::from(slot);
+        self.since_fired[slot] = 0.0;
+        let (_, shots) = self.fired[slot];
+        self.fired[slot] = (weapon, shots.wrapping_add(1));
+    }
+
     #[must_use]
     pub fn since_fired(&self, slot: u8) -> f32 {
         self.since_fired[usize::from(slot)]
+    }
+
+    /// The weapon of `slot`'s last shot and how many shots it has fired.
+    #[must_use]
+    pub fn fired(&self, slot: u8) -> (Weapon, u32) {
+        self.fired[usize::from(slot)]
     }
 
     /// The fighters lying dead, by slot.
@@ -255,5 +275,19 @@ mod tests {
         tracker.tick(&[], Some(1), None, 0.1);
         assert!((tracker.since_fired(1) - 0.1).abs() < 1e-6);
         assert!(tracker.since_fired(2).is_infinite());
+        assert_eq!(tracker.fired(1), (Weapon::Laser, 1));
+        tracker.tick(
+            &[Event::Fired {
+                slot: 2,
+                weapon: Weapon::RocketLauncher,
+                eye: [0.0; 3],
+                direction: [0.0, 0.0, 1.0],
+            }],
+            Some(1),
+            None,
+            0.1,
+        );
+        assert_eq!(tracker.fired(2), (Weapon::RocketLauncher, 1));
+        assert!(tracker.since_fired(2) < 1e-6);
     }
 }
