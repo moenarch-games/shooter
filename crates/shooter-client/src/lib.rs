@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod camera;
 pub mod controls;
 pub mod effects;
 pub mod game;

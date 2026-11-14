@@ -1,10 +1,10 @@
 # Agent Instructions
 
 A sci-fi arena shooter, native (wgpu) and browser (WebGPU on Pages), built on the owner's
-foundation crates. What ships today is a first-person, six-slot deathmatch on one greybox arena
-with box fighters and placeholder guns. The robot beta (third-person, modular robots, about 12
-slots, three arenas; Atlas D1.i46.1 and D2.i46.\*, tracker #45) is intent, not implementation:
-describe shipped behaviour as it is until a feature lands. Read `README.md`, the Decision Atlas
+foundation crates. What ships today is a third-person, 12-slot deathmatch on one greybox arena
+with box fighters and placeholder guns. The rest of the robot beta (modular robots, about 12
+slots, three arenas; Atlas D1.i46.1 and D2.i46.\*, tracker #45) is mostly intent, not
+implementation: describe shipped behaviour as it is until a feature lands. Read `README.md`, the Decision Atlas
 (`docs/decisions/atlas.md`) and `.conventions/index.md` before a task. Follow Decisions; ask the owner only an open Question
 that materially changes the task.
 
@@ -12,9 +12,9 @@ that materially changes the task.
 
 | Crate | Role |
 | --- | --- |
-| `shooter-sim` | Deterministic simulation the clients and the host share: the map catalog (`maps`: stable map IDs, each map's arena and recommended capacity; the greybox is the only map and the test and A/B fixture), movement, the energy weapons, the grapple hook and the energy blade (quick melee), health, deaths, respawns and deathmatch rounds, lag-compensated hitscan and swings, the seeded bots, the robot build schema, catalog and validation (`robot`), and the wire format (`wire`). No rendering, input devices or I/O |
+| `shooter-sim` | Deterministic simulation the clients and the host share: the map catalog (`maps`: stable map IDs, each map's arena and recommended capacity; the greybox is the only map and the test and A/B fixture), movement, the energy weapons, the grapple hook and the energy blade (quick melee), health, deaths, respawns and deathmatch rounds, lag-compensated hitscan and swings, the shared aim (`aim`: where a shot from the eye lands, for the host's hitscan and the clients' reticle), the seeded bots, the robot build schema, catalog and validation (`robot`), and the wire format (`wire`). No rendering, input devices or I/O |
 | `shooter-server` | The deathmatch as a game-server `GameSimulation`, the `shooter-server` WebTransport host binary, and `shooter-replay` (record, verify and promote scripted match replays into foundation fixtures, `docs/foundation-data.md`) |
-| `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame, input-bindings controls, render-engine weapon lights and particles, game-audio cues, the HUD stopgap (page DOM / window title), offline practice in-process and online play with prediction (wtransport natively, game-server's `BrowserSession` in the browser) |
+| `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame and the third-person camera and reticle (`camera`), input-bindings controls, render-engine weapon lights and particles, game-audio cues, the HUD stopgap (page DOM / window title), offline practice in-process and online play with prediction (wtransport natively, game-server's `BrowserSession` in the browser) |
 | `web/` | The page around the `wasm32` build; `scripts/build-web.sh` writes `web/dist` |
 
 ## Commands

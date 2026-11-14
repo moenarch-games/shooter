@@ -1,14 +1,14 @@
 # shooter
 
-A fast first-person sci-fi arena shooter for native and browser, built on the moenarch
+A fast third-person sci-fi arena shooter for native and browser, built on the moenarch
 foundation crates. It is experimental. Its second purpose is to give those crates a new,
 demanding consumer: every gap or regression it finds is filed on the crate that owns it.
 
 Product intent lives in the [Decision Atlas](docs/decisions/atlas.md). The owner has set a beta
 direction (Atlas D1.i46.1, D2.i46.\*, tracker #45): a third-person arena shooter with modular
-robots, about 12 slots and three arenas. None of that is implemented yet; everything below
-describes what works today: a first-person, six-slot deathmatch on one greybox arena with box
-fighters.
+robots, about 12 slots and three arenas. The third-person camera, the robot build schema and
+the 12 slots are in; the rest is not implemented yet. Everything below describes what works
+today: a third-person, 12-slot deathmatch on one greybox arena with box fighters.
 
 ## What a player does
 
@@ -33,20 +33,21 @@ weapons.
 ## Play
 
 The current slice is a deathmatch in a greybox arena with two jump pads onto the central platform,
-six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower), the grapple hook and an energy blade. Six slots; bots fill every slot no
+six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower), the grapple hook and an energy blade. Twelve slots by default; bots fill every slot no
 person holds. A kill scores a frag; dying by your own rocket or a fall costs one. The dead respawn after 2 s at the spawn point
 farthest from everyone else. A round ends at 15 frags or after 5 minutes, the scores show for 8 s
 and a fresh round starts. Every fighter has 200 health. The guns, the fighters (boxes) and the
 sounds are placeholders until asset-tooling delivers models and clips.
 
 **Practice offline.** The native client without arguments, and the browser build (Pages), run the
-same simulation in-process: you in slot 0 against five bots, no server needed.
+same simulation in-process: you in slot 0 against eleven bots, no server needed.
 
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID (`greybox`), its arena
 (geometry, collision, spawn points, jump pads) and the player count it is laid out for (the
-greybox: 2 to 8). The greybox is the only map so far; the beta's three arenas will join it. The
-recommended capacity never changes the slot count (six). The host picks each match's map
+greybox: 2 to 12). The greybox is the only map so far; the beta's three arenas will join it. The
+recommended capacity never changes the slot count (12 unless the host sets another per match, at
+most one per spawn point: the greybox has 13). The host picks each match's map
 (`SHOOTER_MATCH_IDS=dm=greybox`, [docs/hosting.md](docs/hosting.md)) and its snapshots name it,
 so a joining client builds and predicts on that map; practice takes `--map <id>` natively or
 `?map=<id>` in the browser. Replays record their map and restore it; an unknown map ID is
@@ -90,11 +91,22 @@ move smoothly; hitscan hits and blade swings are checked where the attacker saw 
 connection (not a closed one) shows "reconnecting" and rejoins the same slot, score kept, within
 the host's reconnect grace. A public host is described in [docs/hosting.md](docs/hosting.md).
 
-Click to capture the mouse. WASD moves, the mouse looks, Space jumps (press again in the air to
+Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
 mouse. Steer in the air with WASD. The HUD (health, weapon, frags and place, the round clock, the
 kill feed) is the page's overlay in the browser and the window title plus a health bar natively,
 until render-engine draws screen overlays.
+
+**Camera and aim.** Native and browser clients share one third-person follow camera
+(`shooter-client`'s `camera`): 3.5 m behind the eye along the aim, 0.6 m right of it and 0.3 m
+above, a 1.2 rad (69°) vertical field of view. It keeps 0.2 m clear of the arena (it is pulled
+in at once in front of a wall, floor or ceiling and eases back out), never through it; fighters
+do not push it, and your own fighter is not drawn while the camera is inside it. Shots and
+swings still leave the fighter, not the camera: every shot from the eye along the aim, the blade
+from the feet, exactly as before (`shooter_sim::aim`). The reticle is drawn where that shot
+meets the arena or another fighter as you see them, the same function the host resolves
+hitscan with, so it sits slightly off the screen's centre (more for close targets) and lands on
+cover in front of your fighter even where the camera sees past it.
 
 The left mouse button fires; 1 to 7 pick the weapon:
 
@@ -163,7 +175,7 @@ jump, a grapple onto a ledge, a shooting range, a close range for the shotgun, l
 the budgets at their limits, tampered builds on the wire, modded fire and builds through a
 replayed match; the A/B also runs the shooting and close ranges as the modded loadouts.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
-lag compensation of shots and swings, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
+lag compensation of shots and swings, that the reticle's aim ends where the hosted beam does, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
 clients through a real game-server host on loopback and resumes a severed connection in its slot.
 
 When a crate can't do something yet, the shooter files an issue on that crate and uses Rapier

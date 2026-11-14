@@ -106,7 +106,11 @@ fn two_clients_play_a_hosted_deathmatch() {
             moved = moved.max((center[0] - origin[0]).hypot(center[2] - origin[2]));
         }
         let both = first.local_slot().is_some() && second.local_slot().is_some();
-        if both && moved > 300.0 {
+        // Eleven bots may have just killed the walker: wait until the second client draws it.
+        let drawn = first
+            .local_slot()
+            .is_some_and(|walker| second.other_center(walker, 0.5).is_some());
+        if both && drawn && moved > 300.0 {
             break;
         }
         std::thread::sleep(Duration::from_millis(16));

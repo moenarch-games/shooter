@@ -15,7 +15,7 @@ shooter-sim = { path = "crates/shooter-sim" }
 # never ships in a client.
 physics-engine = { git = "https://github.com/moritzbrantner/physics-engine", rev = "a7e04ef68eb6116565ea2731e4df8a47875d5248" }
 rapier3d = "=0.36.1"
-render-engine = { git = "https://github.com/moritzbrantner/render-engine.git", rev = "9aadac9b5be5651f571c71836ff833c89a450202" }
+render-engine = { git = "https://github.com/moritzbrantner/render-engine.git", rev = "780e5d89d08de410a4d493204b5878a78293a006" }
 input-bindings-core = { git = "https://github.com/moritzbrantner/input-bindings.git", rev = "561002ee94ab062f59c0d72dbca35b58734524dd" }
 game-audio = { git = "https://github.com/moritzbrantner/game-audio.git", rev = "29739b442ee0ef3aedb61a82845645ceeb8c7342" }
 # Default features off here: native crates enable `transport` (the host and wtransport), the

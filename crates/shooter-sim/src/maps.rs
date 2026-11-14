@@ -7,8 +7,9 @@
 //! a map comes from asset-tooling (moritzbrantner/asset-tooling#593); its layout, placement and
 //! collision data live here.
 //!
-//! A map recommends a player-capacity range ([`Capacity`]); it never sets a match's slot count,
-//! which stays with [`crate::Rules`].
+//! A map recommends a player-capacity range ([`Capacity`]) and bounds a match's slot count by
+//! its spawn points ([`MapId::max_slots`]); the slot count itself stays with [`crate::Rules`]
+//! (12 by default, the host may set another per match).
 
 use crate::arena::Arena;
 use std::fmt;
@@ -95,9 +96,16 @@ impl MapId {
     #[must_use]
     pub const fn capacity(self) -> Capacity {
         match self {
-            // Up to one fighter per spawn point.
-            Self::Greybox => Capacity { min: 2, max: 8 },
+            // The default 12 slots, one spawn point to spare.
+            Self::Greybox => Capacity { min: 2, max: 12 },
         }
+    }
+
+    /// The most slots a match on it may have: one per spawn point, so nobody starts a round on
+    /// top of someone else.
+    #[must_use]
+    pub fn max_slots(self) -> u8 {
+        u8::try_from(self.arena().spawn_points().len()).unwrap_or(u8::MAX)
     }
 
     /// Its arena: geometry, jump pads, spawn points.
