@@ -5,6 +5,7 @@
 
 use crate::physics::RampRise;
 use crate::physics::{BodyId, PhysicsError, RigidBody, Vec3i, World};
+use crate::pickups::{ArenaModule, ModulePad};
 
 /// One fixed piece of arena geometry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,6 +103,9 @@ pub struct Arena {
     pub spawn_yaw: u16,
     /// More deathmatch spawn points after the first one ([`Arena::spawn`]).
     pub spawns: Vec<Spawn>,
+    /// Where the contested module pickups lie ([`crate::pickups`]), in the order the host
+    /// resolves them.
+    pub module_pads: Vec<ModulePad>,
 }
 
 /// The floor's body; pieces take the IDs after it, players start at [`FIRST_PLAYER_BODY`].
@@ -136,7 +140,7 @@ const fn ramp(center: [i32; 3], half: [i32; 3], rises: RampRise) -> Piece {
 impl Arena {
     /// The first greybox: a 40 m square hall with 4 m walls, a central 2 m platform reached by
     /// two ramps, crates to hop onto, pillars, low cover walls and two jump pads that throw a
-    /// player onto the platform from the east and the north.
+    /// player onto the platform from the east and the north, and two module pickups.
     #[must_use]
     pub fn greybox() -> Self {
         let half_size = 2_000;
@@ -197,6 +201,21 @@ impl Arena {
             spawn_at([1_700, 0, -800], 53_740),
             spawn_at([-1_700, 0, 800], 20_972),
         ];
+        // Module pickups at contested points. The rail capacitor lies on the platform's
+        // south-east corner: the perch that sees, and is seen from, the whole hall, reached by
+        // the ramps, the jump pads or a grapple. The thrusters lie in the open south-west
+        // quarter between the two ramps' feet, under the perch's sightline: whoever takes them
+        // is exposed to it, and their 2.25 m jump climbs straight onto the platform.
+        let module_pads = vec![
+            ModulePad {
+                center: Vec3i::new(300, 200, 300),
+                module: ArenaModule::RailCapacitor,
+            },
+            ModulePad {
+                center: Vec3i::new(-1_000, 0, 1_000),
+                module: ArenaModule::Thrusters,
+            },
+        ];
         Self {
             half_size,
             pieces,
@@ -207,6 +226,7 @@ impl Arena {
             // Half a turn: facing -Z, toward the platform.
             spawn_yaw: 32_768,
             spawns,
+            module_pads,
         }
     }
 

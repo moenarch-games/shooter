@@ -257,12 +257,15 @@ impl Player {
     ///   momentum toward the wished direction.
     /// - On a grapple's rope (`hooked`), the player moves as in the air even on ground: the
     ///   rope's pull drags it along instead of the feet stopping it.
+    /// - Every jump, the air jump too, leaves upward at `jump_velocity` (subunits per tick:
+    ///   [`JUMP_VELOCITY_SUBUNITS_PER_TICK`], or more with thrusters, [`crate::pickups`]).
     pub fn apply(
         &mut self,
         world: &mut World,
         arena: &Arena,
         intent: Intent,
         hooked: bool,
+        jump_velocity: i32,
     ) -> Result<Moves, PhysicsError> {
         let current = world
             .body(self.body)
@@ -307,7 +310,7 @@ impl Player {
                 horizontal = walk_velocity(intent);
             }
             if intent.jump {
-                vertical = JUMP_VELOCITY_SUBUNITS_PER_TICK;
+                vertical = jump_velocity;
                 motion.sliding = false;
                 moves.jumped = true;
             }
@@ -322,7 +325,7 @@ impl Player {
                     let speed = length(horizontal).max(wish_speed(intent));
                     horizontal = scale(direction, speed);
                 }
-                vertical = JUMP_VELOCITY_SUBUNITS_PER_TICK;
+                vertical = jump_velocity;
                 moves.jumped = true;
                 moves.air_jumped = true;
             }

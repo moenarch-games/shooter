@@ -25,8 +25,9 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
-/// 4: the logged commands carry wire-9 inputs (robot builds with weapon mods).
-const FORMAT: u8 = 4;
+/// 5: the logged commands are wire-10 inputs and the digests cover wire-10 snapshots (module
+/// pickups); 4 carried wire-9 inputs (robot builds with weapon mods).
+const FORMAT: u8 = 5;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 

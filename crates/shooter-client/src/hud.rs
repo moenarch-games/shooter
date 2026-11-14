@@ -1,11 +1,15 @@
 //! The heads-up display, a stopgap until render-engine draws screen overlays
 //! (moritzbrantner/render-engine#101): the text is built here once, then shown by the page's DOM
 //! in the browser and in the window title natively (the native health bar is drawn in the scene,
-//! see `scene::Actors`). Health, weapon (with its mod), frags and place, the equipped weapon mods, the round clock, a kill feed, a respawn
+//! see `scene::Actors`). Health, weapon (with its mod), frags and place, the equipped weapon mods, the module pickup carried (with
+//! its uses left), the round clock, a feed of kills and module pickups, a respawn
 //! or connection banner, and the scoreboard (held Tab, or between rounds).
 
 use shooter_sim::robot::{BETA, ModId};
-use shooter_sim::{Assembly, Controller, Event, FighterState, Phase, Snapshot, TICK_HZ, Weapon};
+use shooter_sim::{
+    ArenaModule, Assembly, Carried, Controller, Event, FighterState, Phase, Snapshot, TICK_HZ,
+    Weapon,
+};
 
 /// Kill feed lines stay this long (seconds).
 const FEED_SECONDS: f32 = 4.0;
@@ -73,6 +77,28 @@ fn equipped(build: &Assembly) -> String {
     }
 }
 
+const fn module_name(module: ArenaModule) -> &'static str {
+    match module {
+        ArenaModule::RailCapacitor => "Rail capacitor",
+        ArenaModule::Thrusters => "Thrusters",
+    }
+}
+
+/// The carried module and its uses left, "   module: Thrusters (4 jumps)", or nothing.
+fn carrying(carried: Option<Carried>) -> String {
+    carried.map_or_else(String::new, |carried| {
+        let uses = match carried.module {
+            ArenaModule::RailCapacitor => "rail shots",
+            ArenaModule::Thrusters => "jumps",
+        };
+        format!(
+            "   module: {} ({} {uses})",
+            module_name(carried.module),
+            carried.uses_left
+        )
+    })
+}
+
 fn name(snapshot: &Snapshot, slot: u8, local: Option<u8>) -> String {
     if Some(slot) == local {
         return "You".to_owned();
@@ -119,6 +145,14 @@ impl Hud {
                     "Round over: {} wins",
                     winner.map_or_else(|| "nobody".to_owned(), |w| name(snapshot, w, local))
                 ),
+                Event::ModuleTaken { slot, module, .. } => format!(
+                    "{} took the {}",
+                    name(snapshot, slot, local),
+                    module_name(module).to_lowercase()
+                ),
+                Event::ModuleSpent { slot, module } if Some(slot) == local => {
+                    format!("{} spent", module_name(module))
+                }
                 _ => continue,
             };
             self.feed.push((line, 0.0));
@@ -161,7 +195,7 @@ impl Hud {
         };
         let status_line = me.map_or_else(String::new, |me| {
             format!(
-                "♥ {}   {}   {} frags (to {})   #{} of {}   {}{}",
+                "♥ {}   {}   {} frags (to {})   #{} of {}   {}{}{}",
                 me.health.max(0),
                 held(me.held, &me.build),
                 me.frags,
@@ -169,6 +203,7 @@ impl Hud {
                 place.map_or(0, |place| place + 1),
                 ranked.len(),
                 round,
+                carrying(me.carried),
                 equipped(&me.build)
             )
         });
