@@ -33,7 +33,7 @@
 //! has lost (`shooter_sim::damage`: a destroyed part and what hung from it, its weapons and their
 //! mods too) draws at rest where its entry puts its robot frame ([`super::track`] lets it fall
 //! from where it came off to the floor); the rest of the robot keeps animating without them. The entries name each lost part,
-//! not subtrees: when a core's ancestor is destroyed, the core stays and the rest falls away.
+//! not subtrees: when the root chassis is destroyed the robot is dead, and everything comes off.
 
 use super::kit::{KitData, Rig};
 use super::model::{Model, Visual};

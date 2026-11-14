@@ -6,7 +6,7 @@ use shooter_sim::aim;
 use shooter_sim::damage::PartDamage;
 use shooter_sim::melee;
 use shooter_sim::physics::Vec3i;
-use shooter_sim::robot::parts::CORE;
+use shooter_sim::robot::parts::{CHASSIS_L, CHASSIS_S};
 use shooter_sim::robot::{MARKSMAN, SKIRMISHER, STANDARD};
 use shooter_sim::scenarios;
 use shooter_sim::session::{SELF_SPLASH_PERCENT, body_of, slot_of};
@@ -60,7 +60,7 @@ fn bots_fight_score_and_respawn() {
     assert!(deaths > 0);
     for fighter in &session.fighters {
         assert!(matches!(fighter.pilot, Pilot::Bot(_)));
-        assert!(fighter.core_health() <= CORE.health);
+        assert!(fighter.chassis_health() <= CHASSIS_L.health);
     }
 }
 
@@ -138,17 +138,18 @@ fn chest_pitch() -> i16 {
     trig::yaw_from_vector(-45, 1_190).unwrap() as i16
 }
 
-/// The yaw and pitch from `from`'s eye to the centre of `to`'s core, where the host places it.
+/// The yaw and pitch from `from`'s eye to the centre of `to`'s root chassis, where the host
+/// places it.
 #[allow(clippy::cast_possible_truncation)]
-fn at_core(session: &Session, from: usize, to: usize) -> (u16, i16) {
+fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
     let eye = session.fighters[from].player.eye(&session.world);
     let target = &session.fighters[to];
     let parts = target.hitboxes(target.player.center(&session.world), target.intent.yaw);
-    let core = parts
-        .get(PartDamage::core(&target.build).unwrap())
+    let chassis = parts
+        .get(PartDamage::root(&target.build).unwrap())
         .unwrap()
         .center;
-    let d = [0, 1, 2].map(|axis| core[axis] - eye[axis]);
+    let d = [0, 1, 2].map(|axis| chassis[axis] - eye[axis]);
     let run = d[0].hypot(d[2]);
     let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
     let pitch = trig::yaw_from_vector(d[1].round() as i32, run.round() as i32).unwrap() as i16;
@@ -475,7 +476,10 @@ fn the_blade_strikes_the_nearest_part_whatever_gun_is_held() {
     );
     // A light part takes one swing: it is destroyed and comes off.
     assert!(lost.iter().any(|(_, _, destroyed)| *destroyed), "{lost:?}");
-    assert!(session.fighters[1].alive(), "the core is on B's back");
+    assert!(
+        session.fighters[1].alive(),
+        "four swings do not break the root chassis"
+    );
     assert_eq!(session.fighters[0].arsenal.held, Weapon::RocketLauncher);
 }
 
@@ -509,11 +513,11 @@ fn rail_kills_score_and_the_round_ends_and_restarts() {
     session.join(2).unwrap();
     let mut kills = 0;
     let mut over = false;
-    // A aims at B's core: the shots break what is in front of it (the chassis), then the core.
+    // A aims at B's root chassis: four rail beams break it, the kill.
     for sequence in 1..4_000 {
         let now = session.ticks();
         let (yaw, pitch) = if session.fighters[1].alive() {
-            at_core(&session, 0, 1)
+            at_chassis(&session, 0, 1)
         } else {
             (0, 0)
         };
@@ -586,7 +590,7 @@ fn a_rocket_jump_costs_health() {
         (20..=100 * SELF_SPLASH_PERCENT / 100).contains(&most),
         "lost {lost:?}"
     );
-    assert!(local.core_health() > 0);
+    assert!(local.chassis_health() > 0);
 }
 
 /// The grapple scenario played by a person on a host: the host sets the hook, the snapshot
@@ -744,8 +748,8 @@ fn the_flame_burns_other_fighters_never_its_owner() {
     session.join(1).unwrap();
     session.join(2).unwrap();
     let (mut burnt, mut first) = (0, None);
-    // A walks up to 3 m short of B, burning the parts nearest it (the front), then the core once
-    // nothing is left in front of it.
+    // A walks up to 3 m short of B, burning the parts nearest it (the front) and the root chassis
+    // among them, until it breaks.
     for sequence in 1..1_200 {
         if session.fighters[1].deaths > 0 {
             break;
@@ -792,7 +796,7 @@ fn the_flame_burns_other_fighters_never_its_owner() {
         first.is_some_and(|gap| gap <= reach && gap > reach - 60.0),
         "first burn {first:?} apart"
     );
-    assert!(burnt >= i32::from(CORE.health), "burnt {burnt}");
+    assert!(burnt >= i32::from(CHASSIS_S.health), "burnt {burnt}");
     assert_eq!(
         session.fighters[0].parts,
         PartDamage::fresh(&session.fighters[0].build)

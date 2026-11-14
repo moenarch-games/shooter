@@ -601,7 +601,7 @@ impl App {
                     .then(|| center * METRES_PER_UNIT),
                 eye_above_center: eye_above_center * METRES_PER_UNIT,
                 forward,
-                health: crate::hud::core_share(me),
+                health: crate::hud::chassis_share(me),
                 glow: self.glows[usize::from(me.slot)],
                 held: me.held,
                 hook: self
@@ -658,7 +658,7 @@ impl App {
                 center: drawn.map(|center| Vec3::from(center) * METRES_PER_UNIT),
                 eye_above_center: EYE_ABOVE_CENTER,
                 forward: looking(fighter.yaw, fighter.pitch),
-                health: crate::hud::core_share(fighter),
+                health: crate::hud::chassis_share(fighter),
                 glow: self.glows[slot],
                 held: fighter.held,
                 hook: fighter

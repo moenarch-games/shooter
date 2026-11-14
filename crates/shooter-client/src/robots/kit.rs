@@ -16,7 +16,9 @@
 //! (`shooter_sim::robot::parts`, `BETA.mods`). Every kit key must be a catalog part or mod, every
 //! catalog mod must be in the weapons kit and every catalog part in a kit or a declared
 //! placeholder ([`placeholder_owner`]: the wheels and tracks of asset-tooling#634); anything else
-//! fails the load loudly ([`complete`]).
+//! fails the load loudly ([`complete`]). The one exception is a robot-kit entry for a part the
+//! simulation has retired, listed by name with the issue that retired it ([`RETIRED_KIT_PARTS`]:
+//! the control core, shooter#89): the load skips it and nothing draws it.
 
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::material::{Sampler, TextureData};
@@ -120,6 +122,25 @@ pub fn pinned_tar(bundle: Bundle) -> String {
 #[must_use]
 pub fn placeholder_owner(key: &str) -> Option<&'static str> {
     matches!(key, "robot.wheel" | "robot.track").then_some("asset-tooling#634")
+}
+
+/// Robot-kit entries the pinned release still ships for parts the simulation has retired, and
+/// the issue that retired each: the load skips them (nothing draws them) instead of failing.
+/// `robot.core` went when the root chassis became the vital part (shooter#89); a later
+/// `shooter-combat-robot` release can drop it, and then this list empties.
+pub const RETIRED_KIT_PARTS: [(&str, &str); 1] = [("robot.core", "shooter#89")];
+
+/// The issue that retired `key` in `bundle`, if the kit may still carry it as a retired part.
+#[must_use]
+pub fn retired(bundle: Bundle, key: &str) -> Option<&'static str> {
+    (bundle == Bundle::Robot)
+        .then(|| {
+            RETIRED_KIT_PARTS
+                .iter()
+                .find(|(retired, _)| *retired == key)
+        })
+        .flatten()
+        .map(|(_, issue)| *issue)
 }
 
 /// `bytes`' SHA-256 in lowercase hex.
@@ -232,6 +253,9 @@ impl Plan {
             let variant = asset["variant"]
                 .as_str()
                 .ok_or_else(|| format!("{name}: {key} has no variant"))?;
+            if retired(bundle, key).is_some() {
+                continue;
+            }
             if !bundle.holds(key) {
                 return Err(format!(
                     "{name}: entry {key} is no part or mod of the simulation's catalog this kit draws"
@@ -1226,14 +1250,14 @@ mod tests {
         let (bytes, pin) = manifest(&asset("weapon.laser"));
         let error = Plan::checked(Bundle::Robot, &bytes, &pin).unwrap_err();
         assert!(error.contains("weapon.laser"), "{error}");
-        let (bytes, pin) = manifest(&asset("robot.core"));
+        let (bytes, pin) = manifest(&asset("robot.sensor"));
         let error = Plan::checked(Bundle::Weapons, &bytes, &pin).unwrap_err();
-        assert!(error.contains("robot.core"), "{error}");
+        assert!(error.contains("robot.sensor"), "{error}");
         // A weapons kit without its descriptor is refused.
         let (bytes, pin) = manifest(&asset("mod.long-barrel"));
         let error = Plan::checked(Bundle::Weapons, &bytes, &pin).unwrap_err();
         assert!(error.contains(DESCRIPTOR), "{error}");
-        // Kits with only the core and the plate leave the other parts and every mod unmapped.
+        // Kits with only the sensor leave the other parts and every mod unmapped.
         let plan = |key: &str| Plan {
             bundle: Bundle::Robot,
             entries: vec![EntryRef {
@@ -1248,8 +1272,27 @@ mod tests {
             }],
             descriptor: None,
         };
-        let error = complete(&[plan("robot.core")]).unwrap_err();
+        let error = complete(&[plan("robot.sensor")]).unwrap_err();
         assert!(error.contains("neither in a kit"), "{error}");
+    }
+
+    #[test]
+    fn the_retired_control_core_is_skipped_by_name_in_the_robot_kit_only() {
+        // The retired core is no catalog part any more...
+        assert!(BETA.parts.iter().all(|part| part.key != "robot.core"));
+        assert_eq!(retired(Bundle::Robot, "robot.core"), Some("shooter#89"));
+        assert_eq!(retired(Bundle::Weapons, "robot.core"), None);
+        assert_eq!(retired(Bundle::Robot, "robot.sensor"), None);
+        // ...so a robot kit that still ships it loads without it...
+        let damaged = asset("robot.armor.plate").replace("\"default\"", "\"damaged\"");
+        let (bytes, pin) = manifest(&format!("{}, {damaged}", asset("robot.core")));
+        let plan = Plan::checked(Bundle::Robot, &bytes, &pin).unwrap();
+        assert_eq!(plan.entries.len(), 1);
+        assert!(plan.entries.iter().all(|entry| entry.key != "robot.core"));
+        // ...while a weapons kit naming it is still refused, like any other stray key.
+        let (bytes, pin) = manifest(&asset("robot.core"));
+        let error = Plan::checked(Bundle::Weapons, &bytes, &pin).unwrap_err();
+        assert!(error.contains("robot.core"), "{error}");
     }
 
     #[test]

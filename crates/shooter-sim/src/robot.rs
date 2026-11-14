@@ -1,4 +1,4 @@
-//! Robot builds (Atlas D2.i70.1, D2.i70.2): a robot is one generic component tree assembled
+//! Robot builds (Atlas D2.i70.1, D2.i89.1): a robot is one generic component tree assembled
 //! free-form on a grid of universal sockets, the curated part catalog it is assembled from, and
 //! the one validation path every build passes, whether it comes from a client, a snapshot, a
 //! replay or code.
@@ -37,16 +37,20 @@
 //! outward normal.
 //!
 //! **Rules.** Only objective rules reject a build: known codes, one root chassis, existing parents
-//! and sockets, no cycles, footprints on their faces without overlaps, exactly one control core
-//! (on an exterior socket of the player's choice, which every free socket is), mods on the
-//! weapons they fit, each weapon at most once (the arsenal looks a weapon's mod up by weapon), the
+//! and sockets, no cycles, footprints on their faces without overlaps, mods on the weapons they
+//! fit, each weapon at most once (the arsenal looks a weapon's mod up by weapon), the
 //! technical part-count ceiling [`MAX_PARTS`], and the build points. Nothing requires
 //! locomotion: stationary, asymmetrical or grappling-only robots are valid. Every attachment is
 //! rigid; only joint and locomotion parts move ([`crate::mechanics`] places every part in space
 //! and builds the robot's bodies, joints and motors from the tree).
 //!
-//! **Energy** (D2.i70.3, D2.i70.4): the control core holds a baseline energy capacity and
-//! regenerates it; each optional battery ([`Kind::Battery`]) adds stored capacity only (no
+//! **The vital part** (D2.i89.1, superseding D2.i70.2): the root chassis is the robot's vital
+//! part; its destruction is the only kill. There is no separate control core: the part code it had
+//! (30, `robot.core`) is retired, so an old build naming it is an unknown part.
+//!
+//! **Energy** (D2.i70.3 as D2.i89.1 amends it, D2.i70.4): the root chassis holds the baseline
+//! energy capacity and regenerates it ([`ROOT_CAPACITY`], [`ROOT_REGEN`]; other chassis sections
+//! hold none); each optional battery ([`Kind::Battery`]) adds stored capacity only (no
 //! regeneration). Every part draws from that one shared pool ([`crate::energy`]): no wiring, no
 //! circuits, and no heat or cooling. A build's capacity and regeneration are in its
 //! [`Catalog::budget`].
@@ -69,14 +73,14 @@
 //! alike. Every part has component health; [`crate::damage`] places the parts on the fighter
 //! as hitboxes, resolves strikes onto them and detaches what is destroyed: a lost weapon part
 //! no longer fires, a lost battery takes its energy with it, a robot without a connected
-//! locomotion part cannot walk, and the core is the only kill. [`crate::mechanics`] builds any
-//! valid build as a mechanical robot, but the match's fighters do not use it yet (shooter#73's
+//! locomotion part cannot walk, and the root chassis is the only kill. [`crate::mechanics`]
+//! builds any valid build as a mechanical robot, but the match's fighters do not use it yet (shooter#73's
 //! second half); locomotion (shooter#58) and the builder (shooter#57) apply the rest.
 
 use crate::weapons::{Delivery, Weapon};
 use parts::{
-    BATTERY, BEAM_LONG, CHASSIS_M, CHASSIS_S, CORE, ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, LEG,
-    RAIL_GUN, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    BATTERY, BEAM_LONG, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, LEG, RAIL_GUN,
+    ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
 
@@ -85,6 +89,12 @@ pub const CELL_MM: u32 = 200;
 /// The technical part-count ceiling: the most parts one build may have (provisional, Atlas
 /// Q2.i70.1), separate from the build points.
 pub const MAX_PARTS: usize = 32;
+/// The baseline energy capacity the root chassis holds (whole units, [`crate::energy`]): the
+/// retired control core's (D2.i89.1; provisional, Atlas Q2.i70.1).
+pub const ROOT_CAPACITY: u16 = 100;
+/// The energy the root chassis regenerates a second (whole units): the retired control core's
+/// (D2.i89.1; provisional, Atlas Q2.i70.1).
+pub const ROOT_REGEN: u16 = 24;
 
 /// A face of a part's cuboid, in the part's own frame. `NegZ` is its mount face.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
@@ -147,16 +157,14 @@ impl Faces {
 /// What a part type is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Kind {
-    /// A cuboid chassis section; a build's root is one.
+    /// A cuboid chassis section; a build's root is one, and the root is the robot's vital part
+    /// and its baseline energy (D2.i89.1).
     Chassis,
     /// A structural beam extending the tree.
     Beam,
     /// A movable joint: its base is rigid with its parent, its top face and what is mounted
     /// there turn about one axis ([`crate::mechanics`]).
     Joint(Joint),
-    /// The control core: exactly one per build (D2.i70.2); the baseline energy capacity and its
-    /// regeneration (D2.i70.3).
-    Core,
     /// A battery: stored energy capacity only (D2.i70.3).
     Battery,
     Sensor,
@@ -240,9 +248,9 @@ pub struct PartType {
     /// The faces with sockets.
     pub sockets: Faces,
     pub mass: u16,
-    /// Energy it stores (the core and batteries).
+    /// Energy it stores (batteries; the root chassis' baseline is [`ROOT_CAPACITY`]).
     pub capacity: u16,
-    /// Energy it regenerates a second (the core).
+    /// Energy it regenerates a second (none; the root chassis' is [`ROOT_REGEN`]).
     pub regen: u16,
     /// Its component health ([`crate::damage`]): it works fully until this reaches zero, then
     /// it is destroyed.
@@ -485,15 +493,18 @@ pub mod parts {
     // energy regenerated a second, and points (weapons: mass and points; what an activation
     // costs is the weapon's, `Weapon::energy`), and last the component health
     // ([`crate::damage`]).
+    // A chassis' health is what a root chassis needs as the robot's vital part (D2.i89.1): within
+    // (255, 318], four unmodded rail hits (85) and three overcharged ones (106) kill from the
+    // front, as the chassis and then the control core took before (shooter#89). Provisional.
     /// 20 × 40 × 80 cm: 28 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_S: PartType = tough(part(1, "robot.chassis.20x40x80", Kind::Chassis, [1, 2, 4], Faces::ALL, [60, 0, 0, 10]), 120);
+    pub const CHASSIS_S: PartType = tough(part(1, "robot.chassis.20x40x80", Kind::Chassis, [1, 2, 4], Faces::ALL, [60, 0, 0, 10]), 270);
     /// 40 × 40 × 80 cm: 40 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_M: PartType = tough(part(2, "robot.chassis.40x40x80", Kind::Chassis, [2, 2, 4], Faces::ALL, [110, 0, 0, 20]), 160);
+    pub const CHASSIS_M: PartType = tough(part(2, "robot.chassis.40x40x80", Kind::Chassis, [2, 2, 4], Faces::ALL, [110, 0, 0, 20]), 290);
     /// 40 × 60 × 80 cm: 52 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_L: PartType = tough(part(3, "robot.chassis.40x60x80", Kind::Chassis, [2, 3, 4], Faces::ALL, [150, 0, 0, 30]), 200);
+    pub const CHASSIS_L: PartType = tough(part(3, "robot.chassis.40x60x80", Kind::Chassis, [2, 3, 4], Faces::ALL, [150, 0, 0, 30]), 310);
     /// 20 × 20 × 40 cm.
     #[rustfmt::skip]
     pub const BEAM_SHORT: PartType = tough(part(10, "robot.beam.20x20x40", Kind::Beam, [1, 1, 2], Faces::ALL, [5, 0, 0, 2]), 50);
@@ -508,9 +519,8 @@ pub mod parts {
     /// A continuous rotor (a turret's base): one socket, on its moving side.
     #[rustfmt::skip]
     pub const ROTOR: PartType = tough(driven(part(21, "robot.joint.rotor", Kind::Joint(Joint::Rotor), [1, 1, 1], Faces::TOP, [10, 0, 0, 6]), [60, 40, 2]), 40);
-    /// The control core: the baseline energy capacity (100) and the regeneration (24 a second).
-    #[rustfmt::skip]
-    pub const CORE: PartType = tough(part(30, "robot.core", Kind::Core, [1, 1, 1], Faces::NONE, [15, 100, 24, 10]), 100);
+    // Code 30 was the control core (`robot.core`), removed when the root chassis became the
+    // vital part (shooter#89); it stays retired, so an old build naming it is an unknown part.
     /// A 20 × 40 × 20 cm battery: 60 more stored energy and nothing else (D2.i70.3), with 60
     /// component health for per-part damage (shooter#56).
     #[rustfmt::skip]
@@ -596,7 +606,7 @@ pub const LONG_BARREL: ModId = ModId(3);
 // old build naming it is an unknown mod.
 pub const EFFICIENCY_COIL: ModId = ModId(5);
 
-/// The beta's catalog: three chassis sizes, two beams, two joints, the core, a battery, a sensor,
+/// The beta's catalog: three chassis sizes, two beams, two joints, a battery, a sensor,
 /// legs, wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
 /// Provisional values (Q2.i70.1, Q2.i70.2).
 #[rustfmt::skip]
@@ -605,7 +615,7 @@ pub const BETA: Catalog = Catalog {
         parts::CHASSIS_S, parts::CHASSIS_M, parts::CHASSIS_L,
         parts::BEAM_SHORT, parts::BEAM_LONG,
         parts::HINGE, parts::ROTOR,
-        parts::CORE, parts::BATTERY, parts::SENSOR,
+        parts::BATTERY, parts::SENSOR,
         parts::LEG, parts::WHEEL, parts::TRACK,
         parts::ARMOR_PLATE,
         parts::ENERGY_RIFLE, parts::RAIL_GUN, parts::ROCKET_LAUNCHER, parts::GRAPPLE,
@@ -623,7 +633,9 @@ pub const BETA: Catalog = Catalog {
         // Shots cost 60 % of the energy but charge a quarter slower: sustained fire on less.
         modification(5, "mod.efficiency-coil",  SHOTS,       false, [6,  5],  [100, 125, 100, 60]),
     ],
-    build_points: 120,
+    // 110: the 120 every build had less the 10 its mandatory control core took (shooter#89), so
+    // a build's headroom stays what it was.
+    build_points: 110,
 };
 
 /// A part's orientation on its socket: binary angles (65 536 a turn), yaw about the socket's
@@ -813,14 +825,14 @@ const fn authored(parts: &[Part]) -> Assembly {
     assembly
 }
 
-/// The humanoid frame the named loadouts share, on chassis `torso`: the core on its back, the
-/// sensor on its top, a long beam for an arm on each side, two legs underneath (IDs 0 to 6).
-const fn frame(torso: &PartType) -> [Part; 7] {
+/// The humanoid frame the named loadouts share, on chassis `torso` (the root, the vital part):
+/// the sensor on its top, a long beam for an arm on each side, two legs underneath (IDs 0 and 2
+/// to 6; ID 1 was the retired control core's and stays unused, so the other IDs keep theirs).
+const fn frame(torso: &PartType) -> [Part; 6] {
     let (side, _) = Face::PosY.grid(torso.cells);
     let (_, right) = Face::NegY.grid(torso.cells);
     [
         Part::root(0, torso),
-        Part::on(1, &CORE, 0, torso, Face::NegX, 2, 0),
         Part::on(2, &SENSOR, 0, torso, Face::PosZ, 0, 0),
         Part::on(3, &BEAM_LONG, 0, torso, Face::PosY, side - 1, 0),
         Part::on(4, &BEAM_LONG, 0, torso, Face::NegY, 0, right - 1),
@@ -829,10 +841,10 @@ const fn frame(torso: &PartType) -> [Part; 7] {
     ]
 }
 
-const fn with_weapons(frame: [Part; 7], weapons: [Part; 4]) -> Assembly {
-    let [a, b, c, d, e, f, g] = frame;
+const fn with_weapons(frame: [Part; 6], weapons: [Part; 4]) -> Assembly {
+    let [a, c, d, e, f, g] = frame;
     let [h, i, j, k] = weapons;
-    authored(&[a, b, c, d, e, f, g, h, i, j, k])
+    authored(&[a, c, d, e, f, g, h, i, j, k])
 }
 
 /// A weapon on the tip of arm `arm` (3 left, 4 right).
@@ -861,13 +873,11 @@ pub const STANDARD: Assembly = with_weapons(
 
 /// A heavy build: the medium chassis, the rail gun along the left arm, the blade on the right
 /// arm's tip, the rocket launcher on top, the grapple on the chest and, for the energy its rail
-/// shots and rockets take, a battery on its back beside the core (160 energy, not 100). Valid in
-/// [`BETA`].
+/// shots and rockets take, a battery on its back (160 energy, not 100). Valid in [`BETA`].
 pub const HEAVY: Assembly = {
-    let [a, b, c, d, e, f, g] = frame(&CHASSIS_M);
+    let [a, c, d, e, f, g] = frame(&CHASSIS_M);
     authored(&[
         a,
-        b,
         c,
         d,
         e,
@@ -881,8 +891,8 @@ pub const HEAVY: Assembly = {
     ])
 };
 
-/// A fast, light loadout on the standard frame: the rapid-cycler rifle (which drains the core's
-/// energy half again as fast as the shipped rifle), the blade, the grapple, and the shotgun with
+/// A fast, light loadout on the standard frame: the rapid-cycler rifle (which drains the
+/// pool half again as fast as the shipped rifle), the blade, the grapple, and the shotgun with
 /// an efficiency coil (cheaper blasts, so the pool lasts). Valid in [`BETA`].
 pub const SKIRMISHER: Assembly = with_weapons(
     frame(&CHASSIS_S),
@@ -897,7 +907,7 @@ pub const SKIRMISHER: Assembly = with_weapons(
 /// A heavy, long-range loadout: the medium chassis, the long-barrel rifle (a two-cell module)
 /// along the left arm, the blade on the right arm's tip, an overcharged rail gun (106 a
 /// hit instead of 85, for half again the energy a shot) on top and the grapple on the chest; no
-/// battery, so it lives on the core's 100. Valid in [`BETA`].
+/// battery, so it lives on the root chassis' 100. Valid in [`BETA`].
 pub const MARKSMAN: Assembly = with_weapons(
     frame(&CHASSIS_M),
     [
@@ -984,9 +994,9 @@ pub struct Budget {
     pub parts: u32,
     /// Total mass (no limit: nothing carries it yet, shooter#73).
     pub mass: u32,
-    /// The shared energy pool's capacity (whole units): the core's and every battery's.
+    /// The shared energy pool's capacity (whole units): the root chassis' and every battery's.
     pub capacity: u32,
-    /// Energy regenerated a second (whole units): the core's.
+    /// Energy regenerated a second (whole units): the root chassis'.
     pub regen: u32,
     pub points: u32,
     pub build_points: u32,
@@ -1017,8 +1027,6 @@ pub enum AssemblyError {
     Cycle(PartId),
     /// The second part's footprint covers a cell the first's holds.
     Overlap(PartId, PartId),
-    NoCore,
-    MultipleCores(PartId, PartId),
     /// A mod on a part that is not a weapon.
     NotAWeapon(PartId),
     /// The mod does not fit the weapon.
@@ -1059,14 +1067,6 @@ impl fmt::Display for AssemblyError {
             Self::Overlap(first, second) => {
                 write!(formatter, "parts {} and {} overlap", first.0, second.0)
             }
-            Self::NoCore => formatter.write_str("no control core"),
-            Self::MultipleCores(first, second) => {
-                write!(
-                    formatter,
-                    "parts {} and {} are both cores",
-                    first.0, second.0
-                )
-            }
             Self::NotAWeapon(id) => write!(formatter, "a mod on part {}, no weapon", id.0),
             Self::DoesNotFit(id, weapon) => {
                 write!(formatter, "mod {} does not fit {weapon:?}", id.0)
@@ -1084,6 +1084,17 @@ impl fmt::Display for AssemblyError {
 }
 
 impl std::error::Error for AssemblyError {}
+
+/// The energy capacity and regeneration a second (whole units) `part`, of type `kind`, gives the
+/// shared pool: its type's, and the baseline too if it is the root chassis (D2.i89.1).
+#[must_use]
+pub fn energy(part: &Part, kind: &PartType) -> (u16, u16) {
+    if part.mount.is_none() && kind.kind == Kind::Chassis {
+        (kind.capacity + ROOT_CAPACITY, kind.regen + ROOT_REGEN)
+    } else {
+        (kind.capacity, kind.regen)
+    }
+}
 
 /// The cells of a face of `grid` that a footprint of `(width, length)` reserves from `(u, v)`,
 /// turned `quarters` quarter turns about the face's normal (cells past the face's edge overhang
@@ -1171,8 +1182,8 @@ impl Catalog {
 
     /// The one validation path for a build, in a fixed order so the same candidate always fails
     /// the same way: the part ceiling and known codes; unique IDs (canonical ID order); one root
-    /// chassis; parents and their sockets; connection to the root; footprints; the core; mods and
-    /// weapons; then the build points.
+    /// chassis; parents and their sockets; connection to the root; footprints; mods and weapons;
+    /// then the build points.
     ///
     /// # Errors
     ///
@@ -1285,12 +1296,6 @@ impl Catalog {
             }
         }
 
-        let mut cores = parts.iter().filter(|part| type_of(part).kind == Kind::Core);
-        let core = cores.next().ok_or(AssemblyError::NoCore)?;
-        if let Some(second) = cores.next() {
-            return Err(AssemblyError::MultipleCores(core.id, second.id));
-        }
-
         let mut seen = Vec::new();
         for part in &parts {
             let weapon = self.weapon(part);
@@ -1329,9 +1334,10 @@ impl Catalog {
         };
         for part in assembly.parts() {
             if let Some(kind) = self.part_type(part.kind) {
+                let (capacity, regen) = energy(part, kind);
                 budget.mass += u32::from(kind.mass);
-                budget.capacity += u32::from(kind.capacity);
-                budget.regen += u32::from(kind.regen);
+                budget.capacity += u32::from(capacity);
+                budget.regen += u32::from(regen);
                 budget.points += u32::from(kind.points);
             }
             if let Some(modification) = part.modification.and_then(|id| self.modification(id)) {

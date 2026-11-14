@@ -1,8 +1,9 @@
 //! The shared robot energy pool (Atlas D2.i70.3, D2.i70.4): one pool a robot, no wiring graph,
 //! no circuits, no heat.
 //!
-//! **Capacity and regeneration.** The control core holds a baseline capacity and regenerates it;
-//! each battery adds stored capacity only ([`crate::robot::Kind::Battery`]). A robot's pool is its
+//! **Capacity and regeneration.** The root chassis holds a baseline capacity and regenerates it
+//! (Atlas D2.i89.1, [`crate::robot::ROOT_CAPACITY`], [`crate::robot::ROOT_REGEN`]); each battery
+//! adds stored capacity only ([`crate::robot::Kind::Battery`]). A robot's pool is its
 //! build's ([`Pool::of`]); it comes to life full and refills by [`Pool::regen`] every tick, never
 //! past its capacity. A battery the robot loses ([`crate::damage`]) takes its capacity with it
 //! ([`Pool::attached`]) and its share of the charge, once ([`Pool::shrink`]). Everything is
@@ -30,7 +31,7 @@
 
 use crate::TICK_HZ;
 use crate::damage::PartDamage;
-use crate::robot::{Assembly, BETA};
+use crate::robot::{Assembly, BETA, energy};
 
 /// Milli-units in one energy unit: the fixed point of charges and costs.
 pub const MILLI: u32 = 1_000;
@@ -45,8 +46,8 @@ pub struct Pool {
 }
 
 impl Pool {
-    /// The pool `build` gives (its parts in [`BETA`]): capacity in milli-units, and the core's
-    /// regeneration a second spread over the ticks of a second (rounded down).
+    /// The pool `build` gives (its parts in [`BETA`]): capacity in milli-units, and the root
+    /// chassis' regeneration a second spread over the ticks of a second (rounded down).
     #[must_use]
     pub fn of(build: &Assembly) -> Self {
         let budget = BETA.budget(build);
@@ -57,7 +58,7 @@ impl Pool {
     }
 
     /// The pool of `build`'s parts still connected ([`crate::damage`]): a lost battery's
-    /// capacity (and a lost core's regeneration) is gone.
+    /// capacity is gone (and a destroyed root chassis' baseline, though that is the kill).
     #[must_use]
     pub fn attached(build: &Assembly, damage: &PartDamage) -> Self {
         let (capacity, regen) = build
@@ -65,12 +66,9 @@ impl Pool {
             .iter()
             .enumerate()
             .filter(|(index, _)| damage.attached(*index))
-            .filter_map(|(_, part)| BETA.part_type(part.kind))
-            .fold((0, 0), |(capacity, regen), part| {
-                (
-                    capacity + u32::from(part.capacity),
-                    regen + u32::from(part.regen),
-                )
+            .filter_map(|(_, part)| Some(energy(part, BETA.part_type(part.kind)?)))
+            .fold((0, 0), |(capacity, regen), (more, faster)| {
+                (capacity + u32::from(more), regen + u32::from(faster))
             });
         Self {
             capacity: capacity * MILLI,

@@ -1,6 +1,6 @@
-//! The shared robot energy pool (`shooter_sim::energy`, Atlas D2.i70.3): the core's capacity and
-//! regeneration and the batteries' stored capacity, first-come-first-served requests within a
-//! tick in their fixed order (thruster jump, blade swing, gun), refused requests that leave the
+//! The shared robot energy pool (`shooter_sim::energy`, Atlas D2.i70.3, D2.i89.1): the root
+//! chassis' capacity and regeneration and the batteries' stored capacity,
+//! first-come-first-served requests within a tick in their fixed order (thruster jump, blade swing, gun), refused requests that leave the
 //! charge untouched, regeneration restarting a starved weapon, the charge on the wire and
 //! builds that no longer exist (the heat sink) rejected.
 
@@ -102,7 +102,7 @@ fn a_request_is_granted_whole_or_not_at_all() {
 }
 
 #[test]
-fn the_core_and_batteries_set_the_pool_and_a_life_starts_full() {
+fn the_root_chassis_and_batteries_set_the_pool_and_a_life_starts_full() {
     assert_eq!(
         Pool::of(&STANDARD),
         Pool {

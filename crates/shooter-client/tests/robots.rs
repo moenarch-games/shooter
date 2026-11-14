@@ -8,7 +8,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use render_engine::glam::{Mat4, Vec3};
-use shooter_client::robots::kit::{Bundle, KitData, MAX_TOTAL_BYTES, Plan};
+use shooter_client::robots::kit::{Bundle, KitData, MAX_TOTAL_BYTES, Plan, RETIRED_KIT_PARTS};
 use shooter_client::robots::load;
 use shooter_client::robots::model::{Model, Visual};
 use shooter_client::robots::pose::{
@@ -80,11 +80,19 @@ fn the_pinned_kits_decode_within_their_bounds() {
     let bytes: usize = files.values().map(Vec::len).sum();
     assert!(bytes < MAX_TOTAL_BYTES, "{bytes}");
     let kit = kit();
-    // Twelve robot parts at full detail and the plate's damaged look, eight weapons and four
+    // Eleven robot parts at full detail and the plate's damaged look, eight weapons and four
     // mods; a material and four textures for each kit.
-    assert_eq!(plans[0].entries.len(), 13);
+    assert_eq!(plans[0].entries.len(), 12);
     assert_eq!(plans[1].entries.len(), 12);
-    assert_eq!(kit.entries.len(), 25);
+    assert_eq!(kit.entries.len(), 24);
+    // The pinned robot kit still ships the retired control core (shooter#89): the load skips it
+    // by name. Once a kit release drops it, this fails, and `RETIRED_KIT_PARTS` empties.
+    let manifest =
+        std::fs::read_to_string(load::directory(Bundle::Robot).join("manifest.json")).unwrap();
+    for (key, _) in RETIRED_KIT_PARTS {
+        assert!(manifest.contains(&format!("\"{key}\"")), "{key}");
+        assert!(kit.entry(key, "default").is_none(), "{key}");
+    }
     assert_eq!(kit.materials.len(), 2);
     assert_eq!(kit.textures.len(), 8);
     assert!(kit.textures[..4].iter().all(|t| t.width == 1024));
@@ -848,7 +856,7 @@ fn the_browser_reads_each_kit_from_its_pinned_tar() {
     let (_, on_disk) = plans_and_files();
     assert_eq!(files, on_disk);
     let kit = load::finish(&plans, &files).unwrap();
-    assert_eq!(kit.entries.len(), 25);
+    assert_eq!(kit.entries.len(), 24);
     // Anything but a plain archive of regular files is refused.
     assert!(load::untar(&[7; 1024]).is_err());
     let mut tar = std::fs::read(load::directory(Bundle::Weapons).join("kit.tar")).unwrap();
