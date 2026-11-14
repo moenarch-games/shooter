@@ -1,7 +1,7 @@
 {
   "release": "shooter-weapons",
   "tar": "https://github.com/moritzbrantner/asset-tooling/releases/download/shooter-weapons/shooter-weapons.kit.tar",
-  "sha256": "1797f145f6c1fb5ecca6f51bce4203a6be6f93039219cfdb94966588ab4d1e54",
-  "manifestSha256": "66a574131f5d43abd8e9f84b05503e5b65f2b587729acaafe630a55724a04b9d",
-  "assetTooling": "cd14e0b0154bd7cefd463dab31e615d1c3864240"
+  "sha256": "edf919d656a0bb8f1cd49242290adad7c7203fd28901ac0984597f04254234d8",
+  "manifestSha256": "34d3e4a5ad0eb9a55105392c11e0e3dfef168b8c13e40cbd1a3363a210a1c0e5",
+  "assetTooling": "c9030e009221123f5ce0ba71b7a01f55f30a089e"
 }

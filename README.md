@@ -277,9 +277,7 @@ and `target/weapon-kit` for the native client (`$SHOOTER_ROBOT_KIT` and `$SHOOTE
 others) and `scripts/build-web.sh` puts each kit's release tar in `web/dist`, which the browser
 fetches in one request a kit and reads in memory. Every file is checked against the bundles' pins
 and bounds (4 MiB a file, 8 MiB a load, 16 MiB and 30 s a tar in the browser), every kit key must
-be a catalog part or mod (or a robot-kit part the simulation retired, listed by name and skipped:
-the pinned release still ships the removed control core, `robot.core`, until a kit release drops
-it), every catalog mod a weapons-kit entry and every catalog part a kit entry
+be a catalog part or mod, every catalog mod a weapons-kit entry and every catalog part a kit entry
 or a declared placeholder; otherwise the load fails, the HUD says why and the fighters stay
 boxes. Each part sits where the simulation places it (`mechanics::placements`), so loadouts look
 different, and each mod sits on its weapon's anchor from the weapons kit's descriptor. Wheels and
