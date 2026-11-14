@@ -1,18 +1,21 @@
-//! The robot kit as the clients draw it, against the pinned asset-tooling release in
-//! `target/robot-kit` (or `$SHOOTER_ROBOT_KIT`; fetch it with `scripts/fetch-robot-kit.sh`): it
-//! decodes within its bounds, every loadout maps onto kit entries and labelled placeholders, the
-//! parts sit inside the cuboids the simulation places, and the poses, lost parts and joint pivots
-//! follow the authoritative state.
+//! The robot and weapons kits as the clients draw them, against the pinned asset-tooling
+//! releases in `target/robot-kit` and `target/weapon-kit` (or `$SHOOTER_ROBOT_KIT`,
+//! `$SHOOTER_WEAPON_KIT`; fetch them with `scripts/fetch-robot-kit.sh`): they decode within their
+//! bounds, every loadout maps onto kit entries (wheels and tracks onto labelled placeholders), the
+//! parts sit inside the cuboids the simulation places, mods sit on their weapons' anchors, and
+//! the poses, weapon states, muzzles, lost parts and joint pivots follow the authoritative state.
 
 #![cfg(not(target_arch = "wasm32"))]
 
 use render_engine::glam::{Mat4, Vec3};
-use shooter_client::robots::kit::{KitData, MAX_TOTAL_BYTES, Plan};
+use shooter_client::robots::kit::{Bundle, KitData, MAX_TOTAL_BYTES, Plan};
 use shooter_client::robots::load;
 use shooter_client::robots::model::{Model, Visual};
 use shooter_client::robots::pose::{
-    self, Action, Activity, Animation, HALF_HEIGHT, PartStates, RobotState, SIM_JOINT_ANCHOR, SOLE,
+    self, Action, Activity, Animation, HALF_HEIGHT, PartStates, Posed, RobotState,
+    SIM_JOINT_ANCHOR, SOLE,
 };
+use shooter_client::robots::weapon::{self, Memory};
 use shooter_sim::mechanics::{Layout, fixtures, placements};
 use shooter_sim::robot::{HEAVY, LOADOUTS, MARKSMAN, PartId, SKIRMISHER, STANDARD};
 use shooter_sim::weapons::Weapon;
@@ -21,7 +24,7 @@ use std::sync::OnceLock;
 fn kit() -> &'static KitData {
     static KIT: OnceLock<KitData> = OnceLock::new();
     KIT.get_or_init(|| {
-        load::read(&load::directory()).unwrap_or_else(|error| {
+        load::read().unwrap_or_else(|error| {
             panic!("{error}\n(the robot kit tests need scripts/fetch-robot-kit.sh first)")
         })
     })
@@ -33,30 +36,59 @@ fn standing() -> RobotState {
         forward: Vec3::Z,
         velocity: Vec3::ZERO,
         sliding: false,
-        hooked: false,
+        hook: None,
         since_fired: f32::INFINITY,
+        fired: Weapon::EnergyRifle,
+        shots: 0,
         held: Weapon::EnergyRifle,
+        energy: 1.0,
         swing: None,
         dead_for: None,
     }
 }
 
+/// `model` posed for `state` with its weapons' transitions long done.
+fn posed(model: &Model, state: &RobotState, phase: f32, parts: &PartStates) -> Posed {
+    pose::pose(model, kit(), state, phase, parts, &Memory::settled(state))
+}
+
+/// Both pinned manifests' plans and the files they read.
+fn plans_and_files() -> (Vec<Plan>, load::Files) {
+    let mut plans = Vec::new();
+    let mut files = load::Files::new();
+    for bundle in Bundle::ALL {
+        let directory = load::directory(bundle);
+        let plan = Plan::of(
+            bundle,
+            &std::fs::read(directory.join("manifest.json")).unwrap(),
+        )
+        .expect("the pinned manifest");
+        for file in plan.files() {
+            files.insert(
+                file.path.clone(),
+                std::fs::read(directory.join(&file.path)).unwrap(),
+            );
+        }
+        plans.push(plan);
+    }
+    (plans, files)
+}
+
 #[test]
-fn the_pinned_kit_decodes_within_its_bounds() {
-    let manifest = std::fs::read(load::directory().join("manifest.json")).unwrap();
-    let plan = Plan::of(&manifest).expect("the pinned manifest");
-    let bytes: usize = plan
-        .files()
-        .iter()
-        .map(|file| file.byte_length.unwrap_or(0))
-        .sum();
+fn the_pinned_kits_decode_within_their_bounds() {
+    let (plans, files) = plans_and_files();
+    let bytes: usize = files.values().map(Vec::len).sum();
     assert!(bytes < MAX_TOTAL_BYTES, "{bytes}");
     let kit = kit();
-    // Twelve parts at full detail and the plate's damaged look; one material, four textures.
-    assert_eq!(kit.entries.len(), 13);
-    assert_eq!(kit.materials.len(), 1);
-    assert_eq!(kit.textures.len(), 4);
-    assert!(kit.textures.iter().all(|t| t.width == 1024));
+    // Twelve robot parts at full detail and the plate's damaged look, eight weapons and four
+    // mods; a material and four textures for each kit.
+    assert_eq!(plans[0].entries.len(), 13);
+    assert_eq!(plans[1].entries.len(), 12);
+    assert_eq!(kit.entries.len(), 25);
+    assert_eq!(kit.materials.len(), 2);
+    assert_eq!(kit.textures.len(), 8);
+    assert!(kit.textures[..4].iter().all(|t| t.width == 1024));
+    assert!(kit.textures[4..].iter().all(|t| t.width == 512));
     let leg = &kit.entries[kit.entry("robot.leg", "default").unwrap()];
     let rig = leg.rig.as_ref().expect("the leg is rigged");
     for joint in ["base", "hip", "knee", "ankle"] {
@@ -75,22 +107,27 @@ fn the_pinned_kit_decodes_within_its_bounds() {
 
 #[test]
 fn a_tampered_file_is_refused() {
-    let directory = load::directory();
-    let plan = Plan::of(&std::fs::read(directory.join("manifest.json")).unwrap()).unwrap();
-    let mut files = load::Files::new();
-    for file in plan.files() {
-        files.insert(
-            file.path.clone(),
-            std::fs::read(directory.join(&file.path)).unwrap(),
-        );
+    let (plans, mut files) = plans_and_files();
+    let decode = shooter_client::robots::kit::decode;
+    for plan in &plans {
+        let first = plan.entries[0].scene.path.clone();
+        let original = files[&first].clone();
+        files.get_mut(&first).unwrap().push(b' ');
+        let error = decode(&plans, &files).unwrap_err();
+        assert!(error.contains(&first), "{error}");
+        files.remove(&first);
+        let error = decode(&plans, &files).unwrap_err();
+        assert!(error.contains("missing"), "{error}");
+        files.insert(first, original);
     }
-    let first = plan.entries[0].scene.path.clone();
-    files.get_mut(&first).unwrap().push(b' ');
-    let error = shooter_client::robots::kit::decode(&plan, &files).unwrap_err();
-    assert!(error.contains(&first), "{error}");
-    files.remove(&first);
-    let error = shooter_client::robots::kit::decode(&plan, &files).unwrap_err();
-    assert!(error.contains("missing"), "{error}");
+    // The weapons kit's descriptor is pinned like any other file.
+    let descriptor = plans[1].descriptor.clone().unwrap().path;
+    files.get_mut(&descriptor).unwrap()[0] ^= 1;
+    let error = decode(&plans, &files).unwrap_err();
+    assert!(error.contains(&descriptor), "{error}");
+    // Without the weapons kit, the catalog's weapons and mods are unmapped.
+    let error = decode(&plans[..1], &files).unwrap_err();
+    assert!(error.contains("weapon."), "{error}");
 }
 
 #[test]
@@ -102,14 +139,9 @@ fn loadouts_draw_their_own_parts_with_labelled_placeholders() {
         for (part, drawn) in build.parts().iter().zip(&model.parts) {
             assert_eq!(part.id, drawn.id);
             let kit_part = matches!(drawn.visual, Visual::Kit { entry, .. } if kit.entries[entry].key == drawn.key);
-            let placeholder = matches!(
-                drawn.visual,
-                Visual::Placeholder {
-                    owner: "asset-tooling#594"
-                }
-            ) && drawn.key.starts_with("weapon.");
-            assert!(kit_part || placeholder, "{name}: {}", drawn.key);
+            assert!(kit_part, "{name}: {}", drawn.key);
         }
+        assert!(model.placeholders().is_empty(), "{name}");
         assert_eq!(model.gait, Some("walk-biped"), "{name}");
     }
     let keys = |model: &Model| -> Vec<&str> { model.parts.iter().map(|p| p.key).collect() };
@@ -119,30 +151,35 @@ fn loadouts_draw_their_own_parts_with_labelled_placeholders() {
     assert!(keys(&standard).contains(&"robot.chassis.20x40x80"));
     assert!(keys(&heavy).contains(&"robot.chassis.40x40x80"));
     assert!(keys(&heavy).contains(&"robot.battery"));
+    // The mods sit on the weapons they are in the build on.
+    let mods = |build| -> Vec<String> {
+        let model = Model::of(build, kit).unwrap();
+        model
+            .mods
+            .iter()
+            .map(|m| {
+                format!(
+                    "{} on {} at {}",
+                    m.key, model.parts[m.part].key, m.anchor.name
+                )
+            })
+            .collect()
+    };
+    assert!(mods(&STANDARD).is_empty());
     assert_eq!(
-        standard.placeholders(),
+        mods(&SKIRMISHER),
         [
-            ("weapon.energy-rifle", "asset-tooling#594"),
-            ("weapon.energy-blade", "asset-tooling#594"),
-            ("weapon.grapple-hook", "asset-tooling#594"),
-            ("weapon.shotgun", "asset-tooling#594"),
+            "mod.rapid-cycler on weapon.energy-rifle at mod-side",
+            "mod.efficiency-coil on weapon.shotgun at mod-side",
         ]
     );
-    // A heavy mod lengthens its weapon's placeholder like its footprint.
-    let marksman = Model::of(&MARKSMAN, kit).unwrap();
-    let skirmisher = Model::of(&SKIRMISHER, kit).unwrap();
-    let rifle = |model: &Model| {
-        let part = model
-            .parts
-            .iter()
-            .find(|p| p.key == "weapon.energy-rifle")
-            .unwrap();
-        part.robot_from_local
-            .to_scale_rotation_translation()
-            .0
-            .element_product()
-    };
-    assert!(rifle(&marksman) > rifle(&skirmisher) * 1.9);
+    assert_eq!(
+        mods(&MARKSMAN),
+        [
+            "mod.long-barrel on weapon.energy-rifle at mod-muzzle",
+            "mod.overcharger on weapon.rail-gun at mod-side",
+        ]
+    );
 }
 
 /// The robot-frame bounds of a kit entry's mesh placed by `robot_from_local`.
@@ -179,9 +216,16 @@ fn every_kit_part_sits_inside_the_cuboid_the_simulation_places() {
                 "{name}: {} {lo}..{hi} outside {cuboid_lo}..{cuboid_hi}",
                 drawn.key
             );
-            // And fills it: no part is drawn turned onto another axis.
+            // And fills it: no part is drawn turned onto another axis (a weapon reaches along its
+            // barrel, the part's +z; a heavy mod's second cell stays empty).
+            let fills = if drawn.key.starts_with("weapon.") {
+                let barrel = drawn.robot_from_local.transform_vector3(Vec3::Y).abs();
+                (hi - lo).dot(barrel) >= (cuboid_hi - cuboid_lo).dot(barrel) * 0.6
+            } else {
+                (hi - lo).cmpge((cuboid_hi - cuboid_lo) * 0.6).all()
+            };
             assert!(
-                (hi - lo).cmpge((cuboid_hi - cuboid_lo) * 0.6).all(),
+                fills,
                 "{name}: {} {lo}..{hi} does not fill {cuboid_lo}..{cuboid_hi}",
                 drawn.key
             );
@@ -218,7 +262,7 @@ fn a_standing_robot_stands_on_the_capsule_feet_and_faces_its_look() {
     let kit = kit();
     let model = Model::of(&STANDARD, kit).unwrap();
     let state = standing();
-    let posed = pose::pose(&model, kit, &state, 0.0, &PartStates::default());
+    let posed = posed(&model, &state, 0.0, &PartStates::default());
     assert_eq!(
         posed.animation,
         Animation {
@@ -257,10 +301,10 @@ fn running_walks_the_gait_clip_with_the_feet_on_the_floor() {
         ..standing()
     };
     assert!(pose::advance_phase(0.5, &model, &backing, 0.1) < 0.5);
-    let rest = pose::pose(&model, kit, &standing(), 0.0, &PartStates::default());
-    let posed = pose::pose(&model, kit, &running, 0.3, &PartStates::default());
-    assert_eq!(posed.animation.activity, Activity::Run);
-    assert!(posed.animation.missing().is_none());
+    let rest = posed(&model, &standing(), 0.0, &PartStates::default());
+    let running_pose = posed(&model, &running, 0.3, &PartStates::default());
+    assert_eq!(running_pose.animation.activity, Activity::Run);
+    assert!(running_pose.animation.missing().is_none());
     let legs: Vec<usize> = (0..model.parts.len())
         .filter(|&i| model.parts[i].key == "robot.leg")
         .collect();
@@ -275,18 +319,12 @@ fn running_walks_the_gait_clip_with_the_feet_on_the_floor() {
         (posed.parts[leg].world_from_local * palette[rig.joint("ankle").unwrap()])
             .transform_point3(SOLE)
     };
-    let (a, b) = (sole(&posed, legs[0]), sole(&posed, legs[1]));
+    let (a, b) = (sole(&running_pose, legs[0]), sole(&running_pose, legs[1]));
     assert!(sole(&rest, legs[0]).distance(a) > 0.05);
     let spread = (0..10).map(|step| {
         #[allow(clippy::cast_precision_loss)]
-        let posed = pose::pose(
-            &model,
-            kit,
-            &running,
-            step as f32 / 10.0,
-            &PartStates::default(),
-        );
-        (sole(&posed, legs[0]).z - sole(&posed, legs[1]).z).abs()
+        let at = posed(&model, &running, step as f32 / 10.0, &PartStates::default());
+        (sole(&at, legs[0]).z - sole(&at, legs[1]).z).abs()
     });
     assert!(spread.fold(0.0, f32::max) > 0.2);
     let feet = running.center.y - HALF_HEIGHT;
@@ -317,7 +355,7 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
         ),
         (
             RobotState {
-                hooked: true,
+                hook: Some(Vec3::new(0.0, 8.0, 9.0)),
                 ..standing()
             },
             "grapple (procedural tuck)",
@@ -344,8 +382,8 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
                 swing: Some(0.5),
                 ..standing()
             },
-            "idle + blade",
-            Some("blade swing"),
+            "idle + blade (kit swing)",
+            None,
         ),
         (
             RobotState {
@@ -357,7 +395,7 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
         ),
     ];
     for (state, label, missing) in cases {
-        let posed = pose::pose(&model, kit, &state, 0.0, &PartStates::default());
+        let posed = posed(&model, &state, 0.0, &PartStates::default());
         assert_eq!(posed.animation.missing(), missing, "{label}");
         assert!(posed.animation.label(&model).starts_with(label), "{label}");
         if let Some(missing) = missing {
@@ -365,9 +403,8 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
         }
     }
     // A slide crouches: the body drops while the feet stay down.
-    let slide = pose::pose(
+    let slide = posed(
         &model,
-        kit,
         &RobotState {
             sliding: true,
             ..standing()
@@ -375,13 +412,12 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
         0.0,
         &PartStates::default(),
     );
-    let idle = pose::pose(&model, kit, &standing(), 0.0, &PartStates::default());
+    let idle = posed(&model, &standing(), 0.0, &PartStates::default());
     let height = |posed: &pose::Posed| posed.world_from_robot.w_axis.y;
     assert!(height(&slide) < height(&idle) - 0.1);
     // A death topples it onto its back.
-    let dead = pose::pose(
+    let dead = posed(
         &model,
-        kit,
         &RobotState {
             dead_for: Some(5.0),
             ..standing()
@@ -391,12 +427,11 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
     );
     let up = dead.world_from_robot.transform_vector3(Vec3::Y);
     assert!(up.dot(-Vec3::Z) > 0.99, "{up}");
-    // Firing kicks the held weapon (a highlighted placeholder) back and flashes it.
-    let firing = pose::pose(
+    // Firing plays the rifle's fire clip: its barrel kicks back toward the weapon's mount.
+    let firing = posed(
         &model,
-        kit,
         &RobotState {
-            since_fired: 0.0,
+            since_fired: 0.1,
             ..standing()
         },
         0.0,
@@ -407,10 +442,19 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
         .iter()
         .position(|p| p.key == "weapon.energy-rifle")
         .unwrap();
-    assert!(firing.parts[rifle].held && firing.parts[rifle].flash);
-    let kick =
-        firing.parts[rifle].world_from_local.w_axis - idle.parts[rifle].world_from_local.w_axis;
-    assert!(kick.z < -0.01, "{kick}");
+    let muzzle = |posed: &Posed| {
+        posed
+            .muzzles
+            .iter()
+            .find(|m| m.weapon == Weapon::EnergyRifle)
+            .unwrap()
+            .position
+    };
+    let kick = muzzle(&firing) - muzzle(&idle);
+    let barrel = idle.parts[rifle]
+        .world_from_local
+        .transform_vector3(Vec3::Y);
+    assert!(kick.dot(barrel) < -0.01, "{kick}");
 }
 
 #[test]
@@ -432,8 +476,8 @@ fn a_detached_arm_falls_away_with_its_blade_while_the_legs_keep_walking() {
         detached: &detached,
         ..PartStates::default()
     };
-    let whole = pose::pose(&model, kit, &running, 0.3, &PartStates::default());
-    let lost = pose::pose(&model, kit, &running, 0.3, &states);
+    let whole = posed(&model, &running, 0.3, &PartStates::default());
+    let lost = posed(&model, &running, 0.3, &states);
     for (index, part) in model.parts.iter().enumerate() {
         let off = part.id == arm || part.id == blade;
         assert_eq!(lost.parts[index].detached, off, "{}", part.key);
@@ -484,8 +528,8 @@ fn joints_turn_about_the_simulations_anchor_and_carry_their_children() {
         joints: &angles,
         ..PartStates::default()
     };
-    let rest = pose::pose(&model, kit, &standing(), 0.0, &PartStates::default());
-    let turned = pose::pose(&model, kit, &standing(), 0.0, &states);
+    let rest = posed(&model, &standing(), 0.0, &PartStates::default());
+    let turned = posed(&model, &standing(), 0.0, &states);
     // The hinge's moving plate and the barrel on it turn together: the plate's top normal stays
     // the barrel's mount normal, and the point where they meet stays put.
     let rig = kit.entries[kit.entry("robot.joint.hinge", "default").unwrap()]
@@ -496,9 +540,10 @@ fn joints_turn_about_the_simulations_anchor_and_carry_their_children() {
     let plate = turned.parts[hinge].world_from_local
         * turned.parts[hinge].palette.as_ref().unwrap()[moving];
     let plate_up = plate.transform_vector3(Vec3::Y).normalize();
+    // The barrel is a kit weapon: its part's +z (out of its socket) is its glTF +Y.
     let barrel_up = turned.parts[barrel]
         .world_from_local
-        .transform_vector3(Vec3::Z)
+        .transform_vector3(Vec3::Y)
         .normalize();
     assert!(plate_up.dot(barrel_up) > 0.999, "{plate_up} {barrel_up}");
     let meet = |posed: &pose::Posed| {
@@ -509,7 +554,304 @@ fn joints_turn_about_the_simulations_anchor_and_carry_their_children() {
     assert!(meet(&rest).distance(meet(&turned)) < 1e-4);
     let rest_up = rest.parts[barrel]
         .world_from_local
-        .transform_vector3(Vec3::Z)
+        .transform_vector3(Vec3::Y)
         .normalize();
     assert!((rest_up.angle_between(barrel_up) - 0.6).abs() < 1e-3);
+}
+
+/// The model part of `build` that is `key`.
+fn part_of(model: &Model, key: &str) -> usize {
+    model.parts.iter().position(|p| p.key == key).unwrap()
+}
+
+#[test]
+fn every_weapon_has_its_states_channels_and_muzzle_in_the_kit() {
+    let kit = kit();
+    for weapon in Weapon::ALL {
+        let key = shooter_sim::robot::BETA
+            .parts
+            .iter()
+            .find(|p| p.kind == shooter_sim::robot::Kind::Weapon(weapon))
+            .unwrap()
+            .key;
+        let entry = &kit.entries[kit.entry(key, "default").unwrap()];
+        let (rig, gear) = (entry.rig.as_ref().unwrap(), entry.gear.as_ref().unwrap());
+        assert!(gear.charge.is_some(), "{key}");
+        for node in gear.charge.iter().chain(&gear.fire) {
+            assert!(rig.joint(node).is_some(), "{key}: {node}");
+        }
+        for anchor in &gear.anchors {
+            let node = anchor.node.as_deref().unwrap();
+            assert!(rig.joint(node).is_some(), "{key}: {}", anchor.name);
+        }
+        // The clips this client plays are the kit's states.
+        let clips: &[&str] = match weapon {
+            Weapon::EnergyRifle | Weapon::Shotgun | Weapon::Flamethrower => &["fire"],
+            Weapon::Laser => &["beam"],
+            Weapon::RailGun => &["fire", "charge"],
+            Weapon::RocketLauncher => &["fire-a", "fire-b", "reload"],
+            Weapon::Grapple => &["launch", "retract"],
+            Weapon::EnergyBlade => &["extend", "retract", "swing"],
+        };
+        for clip in clips {
+            assert!(
+                gear.states.iter().any(|state| state == clip),
+                "{key}: {clip}"
+            );
+        }
+        let muzzle = match weapon {
+            Weapon::EnergyBlade => "blade-tip",
+            Weapon::RocketLauncher => "muzzle-a",
+            _ => "muzzle",
+        };
+        assert!(gear.anchor(muzzle).is_some(), "{key}: {muzzle}");
+    }
+}
+
+#[test]
+fn shots_start_at_the_muzzles_and_mods_ride_their_weapons() {
+    let kit = kit();
+    let model = Model::of(&STANDARD, kit).unwrap();
+    let idle = posed(&model, &standing(), 0.0, &PartStates::default());
+    // The rifle, grapple and shotgun have muzzles (the blade none), each at the far end of its
+    // weapon, pointing out of its socket.
+    let weapons: Vec<Weapon> = idle.muzzles.iter().map(|m| m.weapon).collect();
+    assert_eq!(
+        weapons,
+        [Weapon::EnergyRifle, Weapon::Grapple, Weapon::Shotgun]
+    );
+    for muzzle in &idle.muzzles {
+        let key = match muzzle.weapon {
+            Weapon::EnergyRifle => "weapon.energy-rifle",
+            Weapon::Grapple => "weapon.grapple-hook",
+            _ => "weapon.shotgun",
+        };
+        let frame = idle.parts[part_of(&model, key)].world_from_local;
+        let out = frame.transform_vector3(Vec3::Y).normalize();
+        assert!(muzzle.direction.dot(out) > 0.99, "{key}");
+        let along = (muzzle.position - frame.transform_point3(Vec3::ZERO)).dot(out);
+        assert!(along > 0.25 && along < 0.41, "{key}: {along}");
+    }
+    assert_eq!(idle.grapple, Some(idle.muzzles[1].position));
+    // The long barrel's muzzle replaces the marksman rifle's, 9 cm further out.
+    let marksman = Model::of(&MARKSMAN, kit).unwrap();
+    let modded = posed(&marksman, &standing(), 0.0, &PartStates::default());
+    let rifle = modded.parts[part_of(&marksman, "weapon.energy-rifle")].world_from_local;
+    let muzzle = modded
+        .muzzles
+        .iter()
+        .find(|m| m.weapon == Weapon::EnergyRifle)
+        .unwrap();
+    let out = rifle.transform_vector3(Vec3::Y).normalize();
+    let along = (muzzle.position - rifle.transform_point3(Vec3::ZERO)).dot(out);
+    assert!((along - 0.40).abs() < 0.005, "{along}");
+    // The mods are drawn on their anchors, and stay on them when a shot kicks the barrel.
+    assert_eq!(modded.mods.len(), 2);
+    let barrel = modded.mods[0].transform_point3(Vec3::ZERO);
+    let firing = posed(
+        &marksman,
+        &RobotState {
+            since_fired: 0.1,
+            ..standing()
+        },
+        0.0,
+        &PartStates::default(),
+    );
+    let kicked = firing.mods[0].transform_point3(Vec3::ZERO);
+    assert!((kicked - barrel).dot(out) < -0.01, "{barrel} {kicked}");
+    // A lost weapon takes its mod along.
+    let fallen = Mat4::from_translation(Vec3::new(5.0, 0.0, 5.0));
+    let detached = [
+        (PartId(3), fallen),
+        (
+            marksman.parts[part_of(&marksman, "weapon.energy-rifle")].id,
+            fallen,
+        ),
+    ];
+    let lost = posed(
+        &marksman,
+        &standing(),
+        0.0,
+        &PartStates {
+            detached: &detached,
+            ..PartStates::default()
+        },
+    );
+    assert!(lost.mods[0].w_axis.x > 4.0, "{}", lost.mods[0].w_axis);
+    assert!(lost.muzzles.iter().all(|m| m.weapon != Weapon::EnergyRifle));
+}
+
+#[test]
+fn weapon_states_follow_the_shots_hook_and_blade() {
+    let kit = kit();
+    let heavy = Model::of(&HEAVY, kit).unwrap();
+    let entry = |model: &Model, key| {
+        let Visual::Kit { entry, .. } = model.parts[part_of(model, key)].visual else {
+            panic!()
+        };
+        &kit.entries[entry]
+    };
+    let locals = |model: &Model, key, state: &RobotState, memory: &Memory| {
+        let part = &model.parts[part_of(model, key)];
+        let entry = entry(model, key);
+        let shooter_sim::robot::Kind::Weapon(held) = part.kind else {
+            panic!()
+        };
+        weapon::locals(
+            entry.rig.as_ref().unwrap(),
+            entry.gear.as_ref().unwrap(),
+            held,
+            part.refire,
+            state,
+            memory,
+        )
+        .0
+    };
+    let rig = |model: &Model, key| entry(model, key).rig.as_ref().unwrap();
+    // The charge glow shows the energy pool.
+    let low = RobotState {
+        energy: 0.25,
+        ..standing()
+    };
+    let rail = locals(&heavy, "weapon.rail-gun", &low, &Memory::settled(&low));
+    let charge = rig(&heavy, "weapon.rail-gun").joint("glow-charge").unwrap();
+    assert!((rail[charge].scale.y - 0.25).abs() < 1e-6);
+    // The rocket pod's tubes alternate; then both reload over its refire.
+    let rocket = |shots, since| {
+        let state = RobotState {
+            fired: Weapon::RocketLauncher,
+            since_fired: since,
+            shots,
+            ..standing()
+        };
+        let rig = rig(&heavy, "weapon.rocket-launcher");
+        let locals = locals(
+            &heavy,
+            "weapon.rocket-launcher",
+            &state,
+            &Memory::settled(&state),
+        );
+        let (a, b) = (
+            rig.joint("rocket-a").unwrap(),
+            rig.joint("rocket-b").unwrap(),
+        );
+        (locals[a].translation.y, locals[b].translation.y)
+    };
+    let (a, b) = rocket(1, 0.1);
+    assert!(a > 0.31 && (b - 0.3).abs() < 1e-4, "{a} {b}");
+    let (a, b) = rocket(2, 0.1);
+    assert!(b > 0.31 && (a - 0.3).abs() < 1e-4, "{a} {b}");
+    let (a, b) = rocket(2, 0.5);
+    assert!(a < 0.29 && b < 0.29, "reloading {a} {b}");
+    let (a, b) = rocket(2, 5.0);
+    assert!((a - 0.3).abs() < 1e-4 && (b - 0.3).abs() < 1e-4, "{a} {b}");
+    // The rail gun recharges over its refire (the overcharger's is longer).
+    let marksman = Model::of(&MARKSMAN, kit).unwrap();
+    let rail_refire = |model: &Model| model.parts[part_of(model, "weapon.rail-gun")].refire;
+    assert!((rail_refire(&heavy) - 1.2).abs() < 1e-4);
+    assert!(rail_refire(&marksman) > 1.5);
+    let recharging = RobotState {
+        fired: Weapon::RailGun,
+        since_fired: 0.75,
+        ..standing()
+    };
+    let rail = locals(
+        &heavy,
+        "weapon.rail-gun",
+        &recharging,
+        &Memory::settled(&recharging),
+    );
+    assert!(rail[charge].scale.y > 0.3 && rail[charge].scale.y < 0.7);
+
+    // The grapple's hook flies to where the host set it: its cable end reaches the target.
+    let standard = Model::of(&STANDARD, kit).unwrap();
+    let target = standing().center + Vec3::new(1.0, 3.0, 4.0);
+    let hooked = RobotState {
+        hook: Some(target),
+        ..standing()
+    };
+    let posed_hooked = posed(&standard, &hooked, 0.0, &PartStates::default());
+    let grapple = part_of(&standard, "weapon.grapple-hook");
+    let grapple_entry = entry(&standard, "weapon.grapple-hook");
+    let hook = grapple_entry.rig.as_ref().unwrap().joint("hook").unwrap();
+    let cable = grapple_entry
+        .gear
+        .as_ref()
+        .unwrap()
+        .anchor("cable")
+        .unwrap();
+    let end = (posed_hooked.parts[grapple].world_from_local
+        * posed_hooked.parts[grapple].palette.as_ref().unwrap()[hook])
+        .transform_point3(cable.position);
+    assert!(end.distance(target) < 1e-3, "{end} {target}");
+    // Just set, it is still on its way; released, it flies back.
+    let mut memory = Memory::settled(&standing());
+    memory.advance(&hooked, 0.05);
+    let flying = pose::pose(
+        &standard,
+        kit,
+        &hooked,
+        0.0,
+        &PartStates::default(),
+        &memory,
+    );
+    let end = (flying.parts[grapple].world_from_local
+        * flying.parts[grapple].palette.as_ref().unwrap()[hook])
+        .transform_point3(cable.position);
+    assert!(end.distance(target) > 1.0);
+    memory.advance(&standing(), 0.1);
+    assert!(memory.hook_for < 0.2 && memory.last_hook == Some(target));
+
+    // The blade is away unless held or swinging, and a swing turns it about its wrist.
+    let blade = rig(&standard, "weapon.energy-blade");
+    let (edge, wrist) = (blade.joint("blade").unwrap(), blade.joint("wrist").unwrap());
+    let away = locals(
+        &standard,
+        "weapon.energy-blade",
+        &standing(),
+        &Memory::settled(&standing()),
+    );
+    assert!(away[edge].scale.y < 0.1);
+    let swinging = RobotState {
+        swing: Some(0.5),
+        ..standing()
+    };
+    let swung = locals(
+        &standard,
+        "weapon.energy-blade",
+        &swinging,
+        &Memory::settled(&swinging),
+    );
+    assert!((swung[edge].scale.y - 1.0).abs() < 1e-4);
+    assert!(swung[wrist].rotation.angle_between(away[wrist].rotation) > 0.5);
+}
+
+#[test]
+fn the_browser_reads_each_kit_from_its_pinned_tar() {
+    // What the browser does with `robot-kit/kit.tar` and `weapon-kit/kit.tar`, natively.
+    let mut total = 0;
+    let mut files = load::Files::new();
+    let mut plans = Vec::new();
+    for bundle in Bundle::ALL {
+        let directory = load::directory(bundle);
+        let tar = std::fs::read(directory.join("kit.tar")).expect("fetched with its tar");
+        assert!(tar.len() < load::MAX_TAR_BYTES);
+        assert_eq!(
+            shooter_client::robots::kit::sha256(&tar),
+            shooter_client::robots::kit::pinned_tar(bundle)
+        );
+        let mut entries = load::untar(&tar).unwrap();
+        let plan = Plan::of(bundle, &entries.remove("manifest.json").unwrap()).unwrap();
+        load::take(&plan, &mut entries, &mut total, &mut files).unwrap();
+        plans.push(plan);
+    }
+    let (_, on_disk) = plans_and_files();
+    assert_eq!(files, on_disk);
+    let kit = load::finish(&plans, &files).unwrap();
+    assert_eq!(kit.entries.len(), 25);
+    // Anything but a plain archive of regular files is refused.
+    assert!(load::untar(&[7; 1024]).is_err());
+    let mut tar = std::fs::read(load::directory(Bundle::Weapons).join("kit.tar")).unwrap();
+    tar[156] = b'2';
+    assert!(load::untar(&tar).unwrap_err().contains("regular file"));
 }

@@ -34,12 +34,13 @@ pub type GpuReady = Result<Gpu, String>;
 /// The browser's robot kit fetch result, filled in when it finishes.
 #[cfg(target_arch = "wasm32")]
 type KitInbox = std::rc::Rc<
-    std::cell::RefCell<Option<Result<(robots::kit::Plan, robots::load::Files), String>>>,
+    std::cell::RefCell<Option<Result<(Vec<robots::kit::Plan>, robots::load::Files), String>>>,
 >;
 
-/// Where the browser fetches the robot kit: beside the page (`scripts/build-web.sh`).
+/// Where the browser fetches the kits: `robot-kit/` and `weapon-kit/` beside the page
+/// (`scripts/build-web.sh`).
 #[cfg(target_arch = "wasm32")]
-const KIT_URL: &str = "robot-kit/";
+const KIT_URL: &str = "";
 
 /// The HUD's note while the kit is not drawn yet.
 const KIT_LOADING: &str = "robot kit loading: box placeholders stand in";
@@ -113,6 +114,9 @@ pub struct App {
     kit_inbox: KitInbox,
     /// Shots and deaths per slot, for the robots' poses.
     tracker: Tracker,
+    /// This frame's ticks' events, rockets and pellets, whose effects start once the robots are
+    /// posed (shots are drawn from their weapons' muzzles).
+    pending: Vec<Pending>,
     /// Each slot's hit glow, 1 when just hit.
     glows: Vec<f32>,
     /// Seconds since each slot's last blade swing (others', from the match's events), and since
@@ -165,6 +169,7 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             kit_inbox: fetch_kit(),
             tracker: Tracker::default(),
+            pending: Vec::new(),
             glows: vec![0.0; usize::from(u8::MAX)],
             swings: vec![f32::INFINITY; usize::from(u8::MAX)],
             local_swing: f32::INFINITY,
@@ -245,6 +250,7 @@ impl App {
             robots: None,
             kit_status: Some(KIT_LOADING.to_owned()),
             tracker: Tracker::default(),
+            pending: Vec::new(),
             glows: vec![0.0; usize::from(u8::MAX)],
             swings: vec![f32::INFINITY; usize::from(u8::MAX)],
             local_swing: f32::INFINITY,
@@ -289,7 +295,7 @@ impl App {
         self.effects = Some(Effects::new(&mut gpu.world));
         self.actors = Some(Actors::new(&mut gpu.world));
         #[cfg(not(target_arch = "wasm32"))]
-        self.robots_ready(&mut gpu, robots::load::read(&robots::load::directory()));
+        self.robots_ready(&mut gpu, robots::load::read());
         if let Some(window) = &self.window {
             let size = window.inner_size();
             gpu.resize(size.width, size.height);
@@ -324,7 +330,7 @@ impl App {
         let Some(fetched) = self.kit_inbox.borrow_mut().take() else {
             return;
         };
-        let kit = fetched.and_then(|(plan, files)| robots::load::finish(&plan, &files));
+        let kit = fetched.and_then(|(plans, files)| robots::load::finish(&plans, &files));
         if let Some(mut gpu) = self.gpu.take() {
             self.robots_ready(&mut gpu, kit);
             self.gpu = Some(gpu);
@@ -497,10 +503,12 @@ impl App {
         }
         if let Some(snapshot) = self.game.snapshot() {
             self.hud.events(snapshot, &tick.events, local);
-            if let (Some(gpu), Some(effects)) = (&mut self.gpu, &mut self.effects) {
-                effects.play(&mut gpu.world, &tick.events);
-                effects.rockets(&mut gpu.world, &snapshot.rockets);
-                effects.pellets(&mut gpu.world, &snapshot.pellets);
+            if self.gpu.is_some() && self.effects.is_some() {
+                self.pending.push(Pending {
+                    events: tick.events.clone(),
+                    rockets: snapshot.rockets.clone(),
+                    pellets: snapshot.pellets.clone(),
+                });
             }
         }
         true
@@ -614,6 +622,7 @@ impl App {
             self.tracker.parts(me.slot, &me.build, &me.parts, frame);
             if view.center.is_some() {
                 let moved = Vec3::from(self.center) - Vec3::from(self.previous_center);
+                let (fired, shots) = self.tracker.fired(me.slot);
                 robot_views.push(RobotView {
                     slot: me.slot,
                     build: me.build,
@@ -622,9 +631,12 @@ impl App {
                         forward,
                         velocity: moved * f32::from(TICK_HZ) * METRES_PER_UNIT,
                         sliding: self.game.local_sliding(),
-                        hooked: view.hook.is_some(),
+                        hook: view.hook,
                         since_fired: self.tracker.since_fired(me.slot),
+                        fired,
+                        shots,
                         held: me.held,
+                        energy: energy_share(me),
                         swing: view.swing,
                         dead_for: None,
                     },
@@ -668,6 +680,7 @@ impl App {
                 let frame = robots::track::rest_frame(&fighter.build, at, view.forward);
                 self.tracker
                     .parts(fighter.slot, &fighter.build, &fighter.parts, frame);
+                let (fired, shots) = self.tracker.fired(fighter.slot);
                 robot_views.push(RobotView {
                     slot: fighter.slot,
                     build: fighter.build,
@@ -678,9 +691,12 @@ impl App {
                             * f32::from(TICK_HZ)
                             * METRES_PER_UNIT,
                         sliding: fighter.motion.sliding,
-                        hooked: fighter.hook.is_some(),
+                        hook: view.hook,
                         since_fired: self.tracker.since_fired(fighter.slot),
+                        fired,
+                        shots,
                         held: fighter.held,
+                        energy: energy_share(fighter),
                         swing: view.swing,
                         dead_for: None,
                     },
@@ -699,9 +715,12 @@ impl App {
                     forward: remains.forward,
                     velocity: Vec3::ZERO,
                     sliding: false,
-                    hooked: false,
+                    hook: None,
                     since_fired: f32::INFINITY,
+                    fired: remains.held,
+                    shots: 0,
                     held: remains.held,
+                    energy: 0.0,
                     swing: None,
                     dead_for: Some(remains.dead_for),
                 },
@@ -767,6 +786,22 @@ impl App {
             self.kit_status = Some(format!("{error}: box placeholders stand in"));
             Vec::new()
         });
+        if let (Some(gpu), Some(effects)) = (&mut self.gpu, &mut self.effects) {
+            let muzzle = |slot: u8, weapon: Weapon| {
+                drawn
+                    .iter()
+                    .find(|robot| robot.slot == slot)?
+                    .muzzles
+                    .iter()
+                    .find(|muzzle| muzzle.weapon == weapon)
+                    .copied()
+            };
+            for tick in self.pending.drain(..) {
+                effects.play(&mut gpu.world, &tick.events, muzzle);
+                effects.rockets(&mut gpu.world, &tick.rockets);
+                effects.pellets(&mut gpu.world, &tick.pellets);
+            }
+        }
         for robot in &drawn {
             if let Some(view) = fighters.iter_mut().find(|view| view.slot == robot.slot) {
                 view.robot = true;
@@ -818,8 +853,23 @@ impl App {
     }
 }
 
+/// One tick's effects, started after the frame's robots are posed.
+struct Pending {
+    events: Vec<Event>,
+    rockets: Vec<shooter_sim::wire::RocketState>,
+    pellets: Vec<shooter_sim::wire::PelletState>,
+}
+
 /// A robot's lost parts and where each one's robot frame is ([`robots::PartStates::detached`]).
 type Detached = Vec<(PartId, Mat4)>;
+
+/// `fighter`'s energy as a share of its pool's capacity (its weapons' charge glow).
+fn energy_share(fighter: &FighterState) -> f32 {
+    let pool = shooter_sim::energy::Pool::attached(&fighter.build, &fighter.parts);
+    #[allow(clippy::cast_precision_loss)]
+    let share = fighter.energy as f32 / pool.capacity.max(1) as f32;
+    share.clamp(0.0, 1.0)
+}
 
 /// The parts `fighter` still has that have taken damage (drawn in their damaged variant where
 /// the kit has one).
@@ -839,7 +889,7 @@ fn damaged_parts(fighter: &FighterState) -> Vec<PartId> {
 }
 
 /// The HUD's robot line for the local fighter: its animation state and its placeholder parts,
-/// "robot: run (walk-biped) + fire · placeholders (asset-tooling#594): weapon.energy-rifle, …".
+/// "robot: run (walk-biped) + fire · placeholders (asset-tooling#634): robot.wheel, …".
 fn robot_line(robot: &robots::Drawn) -> String {
     let mut owners: Vec<&str> = robot.placeholders.iter().map(|(_, owner)| *owner).collect();
     owners.dedup();

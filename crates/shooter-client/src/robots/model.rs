@@ -1,18 +1,21 @@
 //! A validated build as drawn parts: each part of the component tree mapped to its kit entry
 //! (or a labelled placeholder) and placed at rest where the simulation places it
 //! ([`shooter_sim::mechanics::placements`]), in the robot's frame (+X forward, +Y up, +Z right,
-//! metres; the root chassis centred on the origin).
+//! metres; the root chassis centred on the origin), and each weapon's mod on the anchor of the
+//! weapon it sits on.
 //!
-//! The kit's glTF frame ([asset-tooling `docs/combat-robot-kit.md`], socket-grid convention): a
-//! part's own x, y and z are glTF +X, −Z and +Y, and the glTF origin is the mount anchor, the
-//! centre of the mount face's first cell. The simulation places a part by its cuboid's minimum
-//! corner, so a kit mesh is drawn at `corner · rotation · anchor · axes`.
+//! The kits' glTF frame ([asset-tooling `docs/combat-robot-kit.md`, `docs/shooter-weapons.md`],
+//! socket-grid convention): a part's own x, y and z are glTF +X, −Z and +Y, and the glTF origin
+//! is the mount anchor, the centre of the mount face's first cell. The simulation places a part
+//! by its cuboid's minimum corner, so a kit mesh is drawn at `corner · rotation · anchor · axes`.
+//! A weapon points out of its socket, along its part's +z.
 
-use super::kit::{KitData, placeholder_owner};
+use super::kit::{Anchor, KitData, placeholder_owner};
 use crate::scene::METRES_PER_UNIT;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use shooter_sim::mechanics::placements;
 use shooter_sim::robot::{Assembly, BETA, CELL_MM, Kind, Locomotion, PartId};
+use shooter_sim::{TICK_HZ, Weapon};
 
 /// glTF +X, +Y and +Z as the part's x, z and −y.
 pub const PART_FROM_GLTF: Mat4 = Mat4::from_cols(Vec4::X, Vec4::Z, Vec4::NEG_Y, Vec4::W);
@@ -50,12 +53,31 @@ pub struct ModelPart {
     pub robot_from_local: Mat4,
     /// A leg's offset in its gait's cycle (0..1).
     pub phase: f32,
+    /// A weapon's seconds between shots in this build (its mod's tuning included).
+    pub refire: f32,
+}
+
+/// A weapon's mod as drawn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelMod {
+    /// The weapon it is on (an index into [`Model::parts`]).
+    pub part: usize,
+    pub key: &'static str,
+    /// Its kit entry ([`KitData::entries`]).
+    pub entry: usize,
+    /// The weapon's anchor it sits on (in the weapon's glTF frame, riding its node).
+    pub anchor: Anchor,
+    /// Its own muzzle (in its frame), which replaces the weapon's while it is on: the long
+    /// barrel's.
+    pub muzzle: Option<Anchor>,
 }
 
 /// A build as drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Model {
     pub parts: Vec<ModelPart>,
+    /// The weapons' mods.
+    pub mods: Vec<ModelMod>,
     /// The lowest and highest point at rest (metres, robot frame): where its feet stand and its
     /// top.
     pub floor: f32,
@@ -72,9 +94,11 @@ impl Model {
     ///
     /// # Errors
     ///
-    /// If a part is not in the catalog, or neither in the kit nor a declared placeholder.
+    /// If a part is not in the catalog, or neither in the kit nor a declared placeholder, or a
+    /// mod is not in the kit or its weapon lacks the anchor it sits on.
     pub fn of(build: &Assembly, kit: &KitData) -> Result<Self, String> {
         let mut parts = Vec::with_capacity(build.parts().len());
+        let mut mods = Vec::new();
         let (mut floor, mut top, mut back) = (f32::MAX, f32::MIN, f32::MAX);
         let mut legs = Vec::new();
         for (part, placement) in build.parts().iter().zip(placements(build)) {
@@ -118,6 +142,21 @@ impl Model {
             if part_type.kind == Kind::Locomotion(Locomotion::Leg) {
                 legs.push((parts.len(), centre));
             }
+            let weapon = match part_type.kind {
+                Kind::Weapon(weapon) => Some(weapon),
+                _ => None,
+            };
+            if let (Some(id), Some(_), Visual::Kit { entry, .. }) =
+                (part.modification, weapon, visual)
+            {
+                mods.push(Self::modification(
+                    kit,
+                    id,
+                    entry,
+                    parts.len(),
+                    part_type.key,
+                )?);
+            }
             parts.push(ModelPart {
                 id: part.id,
                 key: part_type.key,
@@ -128,6 +167,7 @@ impl Model {
                 visual,
                 robot_from_local,
                 phase: 0.0,
+                refire: weapon.map_or(0.0, |weapon| refire(build, weapon)),
             });
         }
         let gait = match legs.len() {
@@ -152,10 +192,45 @@ impl Model {
         }
         Ok(Self {
             parts,
+            mods,
             floor,
             top,
             back,
             gait,
+        })
+    }
+
+    /// Mod `id` on the weapon `part` (kit entry `weapon`, catalog key `on`).
+    fn modification(
+        kit: &KitData,
+        id: shooter_sim::robot::ModId,
+        weapon: usize,
+        part: usize,
+        on: &str,
+    ) -> Result<ModelMod, String> {
+        let key = BETA
+            .modification(id)
+            .ok_or_else(|| format!("robot: mod {} is not in the catalog", id.0))?
+            .key;
+        let entry = kit
+            .entry(key, "default")
+            .ok_or_else(|| format!("robot: mod {key} has no kit entry"))?;
+        let gear = kit.entries[entry].gear.as_ref();
+        let mounts_on = gear
+            .and_then(|gear| gear.mounts_on.as_deref())
+            .ok_or_else(|| format!("robot: mod {key} names no anchor to sit on"))?;
+        let anchor = kit.entries[weapon]
+            .gear
+            .as_ref()
+            .and_then(|gear| gear.anchor(mounts_on))
+            .ok_or_else(|| format!("robot: {on} has no {mounts_on} anchor for {key}"))?
+            .clone();
+        Ok(ModelMod {
+            part,
+            key,
+            entry,
+            anchor,
+            muzzle: gear.and_then(|gear| gear.anchor("muzzle")).cloned(),
         })
     }
 
@@ -189,4 +264,11 @@ impl Model {
         }
         out
     }
+}
+
+/// Seconds between two of `weapon`'s shots in `build` (its mod's tuning included).
+fn refire(build: &Assembly, weapon: Weapon) -> f32 {
+    #[allow(clippy::cast_precision_loss)]
+    let ticks = BETA.tuning(build, weapon).refire_ticks(weapon) as f32;
+    ticks / f32::from(TICK_HZ)
 }

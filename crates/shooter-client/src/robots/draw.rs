@@ -1,10 +1,11 @@
-//! The robots in render-engine's world: the kit's meshes, textures and material uploaded once,
-//! and per fighter slot the instances (and, for skinned parts, joint palettes) of its build,
-//! rebuilt when its build changes and posed every frame ([`super::pose`]).
+//! The robots in render-engine's world: the kits' meshes, textures and materials uploaded once,
+//! and per fighter slot the instances (and, for skinned parts, joint palettes) of its build and
+//! its weapons' mods, rebuilt when its build changes and posed every frame ([`super::pose`]).
 
 use super::kit::{KitData, KitMaterial};
 use super::model::{Model, Visual};
-use super::pose::{self, PartStates, RobotState};
+use super::pose::{self, Muzzle, PartStates, RobotState};
+use super::weapon::Memory;
 use render_engine::glam::{Mat4, Quat, Vec3, Vec4};
 use render_engine::material::{AlphaMode, StandardMaterial};
 use render_engine::mesh::{MeshData, Shape};
@@ -41,8 +42,10 @@ pub struct Drawn {
     pub label: String,
     /// Its placeholder parts and the issues that make them.
     pub placeholders: Vec<(&'static str, &'static str)>,
-    /// Where its grapple weapon is (the cable's start).
+    /// Where its grapple's cable starts (the launcher's muzzle).
     pub grapple: Option<Vec3>,
+    /// Its attached weapons' muzzles, where their shots are drawn from.
+    pub muzzles: Vec<Muzzle>,
 }
 
 struct SlotRobot {
@@ -50,6 +53,8 @@ struct SlotRobot {
     model: Rc<Model>,
     /// One per model part, with its skin when skinned.
     instances: Vec<(InstanceId, Option<SkinId>)>,
+    /// One per mod ([`Model::mods`]).
+    mods: Vec<InstanceId>,
     /// This fighter's copies of the kit's materials (hit glow).
     materials: Vec<MaterialId>,
     /// The quantised glow `materials` show (render-engine rebuilds a material's GPU buffer on
@@ -57,6 +62,8 @@ struct SlotRobot {
     glow: Option<u8>,
     marker: InstanceId,
     phase: f32,
+    /// Its weapons' transitions, from its first frame.
+    memory: Option<Memory>,
 }
 
 /// Every fighter's robot.
@@ -66,8 +73,6 @@ pub struct Robots {
     materials: Vec<StandardMaterial>,
     placeholder_mesh: MeshId,
     placeholder: MaterialId,
-    placeholder_held: MaterialId,
-    placeholder_flash: MaterialId,
     marker_mesh: MeshId,
     marker_material: MaterialId,
     models: HashMap<Assembly, Rc<Model>>,
@@ -108,7 +113,7 @@ fn material(kit: &KitMaterial, textures: &[TextureId]) -> StandardMaterial {
 }
 
 impl Robots {
-    /// Uploads `kit` into `world` and checks that every named loadout draws.
+    /// Uploads `kit` (both kits) into `world` and checks that every named loadout draws.
     ///
     /// # Errors
     ///
@@ -140,9 +145,6 @@ impl Robots {
             materials,
             placeholder_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::ONE))),
             placeholder: world.add_material(&glowing(purple, 600.0)),
-            placeholder_held: world.add_material(&glowing(purple.with_w(0.75), 3_000.0)),
-            placeholder_flash: world
-                .add_material(&glowing(Vec4::new(1.0, 0.85, 1.0, 0.9), 30_000.0)),
             marker_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::splat(MARKER_SIZE)))),
             marker_material: world.add_material(&glowing(Vec4::new(1.0, 0.0, 0.8, 1.0), 20_000.0)),
             kit,
@@ -168,6 +170,9 @@ impl Robots {
             if let Some(skin) = skin {
                 world.remove_skin(skin);
             }
+        }
+        for instance in robot.mods {
+            world.remove_instance(instance);
         }
         world.remove_instance(robot.marker);
         for material in robot.materials {
@@ -209,6 +214,18 @@ impl Robots {
                 ),
             })
             .collect();
+        let mods = model
+            .mods
+            .iter()
+            .map(|modification| {
+                world.add_instance(Instance {
+                    mesh: self.meshes[modification.entry],
+                    material: materials[self.kit.entries[modification.entry].material],
+                    world_from_local: HIDDEN,
+                    skin: None,
+                })
+            })
+            .collect();
         let marker = world.add_instance(Instance {
             mesh: self.marker_mesh,
             material: self.marker_material,
@@ -219,10 +236,12 @@ impl Robots {
             build,
             model,
             instances,
+            mods,
             materials,
             glow: None,
             marker,
             phase: 0.0,
+            memory: None,
         }
     }
 
@@ -262,12 +281,17 @@ impl Robots {
                 continue;
             };
             robot.phase = pose::advance_phase(robot.phase, &robot.model, &view.state, seconds);
+            let memory = robot
+                .memory
+                .get_or_insert_with(|| Memory::settled(&view.state));
+            memory.advance(&view.state, seconds);
             let posed = pose::pose(
                 &robot.model,
                 &self.kit,
                 &view.state,
                 robot.phase,
                 &view.parts,
+                memory,
             );
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let glow = (view.glow.clamp(0.0, 1.0) * 8.0).round() as u8;
@@ -301,16 +325,7 @@ impl Robots {
                             robot.materials[self.kit.entries[entry].material],
                         )
                     }
-                    Visual::Placeholder { .. } => (
-                        self.placeholder_mesh,
-                        if posed_part.flash {
-                            self.placeholder_flash
-                        } else if posed_part.held {
-                            self.placeholder_held
-                        } else {
-                            self.placeholder
-                        },
-                    ),
+                    Visual::Placeholder { .. } => (self.placeholder_mesh, self.placeholder),
                 };
                 if let (Some(skin), Some(palette)) = (skin, &posed_part.palette) {
                     world.set_skin(*skin, palette);
@@ -324,6 +339,11 @@ impl Robots {
                         skin: *skin,
                     },
                 );
+            }
+            for (instance, world_from_local) in robot.mods.iter().zip(&posed.mods) {
+                let mut placed = world.instance(*instance);
+                placed.world_from_local = *world_from_local;
+                world.set_instance(*instance, placed);
             }
             let marker = if posed.animation.missing().is_some() {
                 Mat4::from_rotation_translation(
@@ -343,6 +363,7 @@ impl Robots {
                 label: posed.animation.label(&robot.model),
                 placeholders: robot.model.placeholders(),
                 grapple: posed.grapple,
+                muzzles: posed.muzzles,
             });
         }
         for (slot, robot) in self.slots.iter().enumerate() {
@@ -350,7 +371,10 @@ impl Robots {
                 continue;
             };
             let instances = robot.instances.iter().map(|(instance, _)| *instance);
-            for instance in instances.chain([robot.marker]) {
+            for instance in instances
+                .chain(robot.mods.iter().copied())
+                .chain([robot.marker])
+            {
                 let mut hidden = world.instance(instance);
                 hidden.world_from_local = HIDDEN;
                 world.set_instance(instance, hidden);

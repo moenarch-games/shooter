@@ -1,8 +1,12 @@
 //! Weapon effects as render-engine lights and particles: muzzle flashes, beam trails, impact
 //! sparks, blade strikes, the laser's beam, flames and their ignition, shotgun pellet tracers,
 //! rocket exhaust and explosions. The simulation's [`Event`]s start them;
-//! they live on their own clock (presentation only, never fed back into the simulation).
+//! they live on their own clock (presentation only, never fed back into the simulation). A shot
+//! leaves the shooter's eye in the simulation but is drawn from its weapon's muzzle frame in the
+//! weapons kit, as the fighter's robot was drawn that frame ([`crate::robots::Muzzle`]; a fighter
+//! not drawn as a robot shoots from the stand-in gun's barrel, [`gun_pose`]).
 
+use crate::robots::Muzzle;
 use crate::scene::{METRES_PER_UNIT, gun_pose};
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::particles::{
@@ -233,6 +237,9 @@ pub struct Effects {
     fireball: EmitterId,
     exhaust: EmitterId,
     flashes: Vec<Flash>,
+    /// This tick's shots: each one's eye (units, as the simulation fired it) and the muzzle it
+    /// is drawn from (metres), so its beam and pellets start there too.
+    shots: Vec<([f32; 3], Vec3)>,
 }
 
 fn index(weapon: Weapon) -> usize {
@@ -328,6 +335,7 @@ impl Effects {
             fireball: world.add_emitter(&fireball(41)),
             exhaust: world.add_emitter(&exhaust(51)),
             flashes: Vec::new(),
+            shots: Vec::new(),
         }
     }
 
@@ -342,9 +350,28 @@ impl Effects {
         });
     }
 
-    /// Starts the effects of a tick's events. Shots leave the eye in the simulation but are drawn
-    /// from the held gun's barrel.
-    pub fn play(&mut self, world: &mut World, events: &[Event]) {
+    /// Where a shot from `eye` (units) toward `toward` (metres) is drawn from: the muzzle this
+    /// tick's `Fired` from that eye was drawn from, else the stand-in gun's barrel.
+    fn muzzle_of(&self, eye: [f32; 3], toward: Vec3) -> Vec3 {
+        self.shots
+            .iter()
+            .rev()
+            .find(|(from, _)| *from == eye)
+            .map_or_else(
+                || gun_pose(units(eye), toward - units(eye)).1,
+                |(_, at)| *at,
+            )
+    }
+
+    /// Starts the effects of a tick's events, each shot from its weapon's muzzle where `muzzle`
+    /// (a slot's weapon) says the robot drew it.
+    pub fn play(
+        &mut self,
+        world: &mut World,
+        events: &[Event],
+        muzzle: impl Fn(u8, Weapon) -> Option<Muzzle>,
+    ) {
+        self.shots.clear();
         for (at, event) in events.iter().enumerate() {
             match *event {
                 // The blade has no muzzle: its swing is drawn by the actors.
@@ -367,13 +394,17 @@ impl Effects {
                     self.flash(end + normal * 0.15, blade, 200_000.0, 5.0, 0.15);
                 }
                 Event::Fired {
+                    slot,
                     weapon,
                     eye,
                     direction,
-                    ..
                 } => {
                     let direction = Vec3::from(direction);
-                    let muzzle = gun_pose(units(eye), direction).1;
+                    let muzzle = muzzle(slot, weapon).map_or_else(
+                        || gun_pose(units(eye), direction).1,
+                        |muzzle| muzzle.position,
+                    );
+                    self.shots.push((eye, muzzle));
                     // Continuous weapons fire every tick: a light glow, not a flash.
                     let (count, lumens) = match weapon {
                         Weapon::RailGun => (24, 400_000.0),
@@ -398,8 +429,8 @@ impl Effects {
                     normal,
                     struck,
                 } => {
-                    let (from, end) = (units(from), units(end));
-                    let muzzle = gun_pose(from, end - from).1;
+                    let end = units(end);
+                    let muzzle = self.muzzle_of(from, end);
                     let span = end - muzzle;
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     let steps = (span.length() / FLAME_SPACING).ceil().max(1.0) as u32;
@@ -421,8 +452,8 @@ impl Effects {
                     normal,
                     struck,
                 } => {
-                    let (from, end) = (units(from), units(end));
-                    let muzzle = gun_pose(from, end - from).1;
+                    let end = units(end);
+                    let muzzle = self.muzzle_of(from, end);
                     let (spacing, _, _) = TRAIL[index(weapon)];
                     let span = end - muzzle;
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -457,7 +488,7 @@ impl Effects {
                     normal,
                     launched,
                 } => {
-                    let (from, end) = (units(from), units(at));
+                    let end = units(at);
                     self.tracer(world, from, end, launched);
                     let normal = Vec3::from(normal);
                     world.burst(self.impact, 3, facing(end + normal * 0.02, normal));
@@ -480,13 +511,13 @@ impl Effects {
         }
     }
 
-    /// Trail motes along a pellet's stretch from `from` to `to` (from the gun's barrel when it
-    /// starts at the shooter's eye).
-    fn tracer(&mut self, world: &mut World, from: Vec3, to: Vec3, launched: bool) {
+    /// Trail motes along a pellet's stretch from `from` (units) to `to` (metres), from the
+    /// shotgun's muzzle when it starts at the shooter's eye.
+    fn tracer(&mut self, world: &mut World, from: [f32; 3], to: Vec3, launched: bool) {
         let start = if launched {
-            gun_pose(from, to - from).1
+            self.muzzle_of(from, to)
         } else {
-            from
+            units(from)
         };
         let (spacing, _, _) = TRAIL[index(Weapon::Shotgun)];
         let span = to - start;
@@ -506,7 +537,7 @@ impl Effects {
     /// Tracers along each shotgun pellet's stretch this simulation tick.
     pub fn pellets(&mut self, world: &mut World, pellets: &[PelletState]) {
         for pellet in pellets {
-            self.tracer(world, units(pellet.from), units(pellet.to), pellet.launched);
+            self.tracer(world, pellet.from, units(pellet.to), pellet.launched);
         }
     }
 

@@ -41,7 +41,8 @@ person holds. A kill scores a frag; dying by your own rocket, your own battery's
 farthest from everyone else. A round ends at 15 frags or after 5 minutes, the scores show for 8 s
 and a fresh round starts. A fighter is its robot build with per-part health (below, **Part
 damage**): destroying its core is the kill. Each fighter is drawn as its robot build (below, **Robot
-models**); the weapon models and the sounds are placeholders until asset-tooling delivers them.
+models**), its weapons and mods from asset-tooling's weapons kit; the sounds are placeholders
+until asset-tooling delivers them.
 
 **Practice offline.** The native client without arguments, and the browser build (Pages), run the
 same simulation in-process: you in slot 0 against eleven bots, no server needed.
@@ -73,7 +74,7 @@ so a joining client builds and predicts on that map; practice takes `--map <id>`
 refused everywhere.
 
 ```sh
-scripts/fetch-robot-kit.sh                 # the pinned robot kit into target/robot-kit
+scripts/fetch-robot-kit.sh                 # the pinned robot and weapons kits into target/robot-kit, target/weapon-kit
 cargo run -p shooter-client --release      # native window, practice
 scripts/build-web.sh                       # browser build (and the kit) into web/dist (needs a WebGPU browser)
 python3 -m http.server -d web/dist
@@ -243,29 +244,41 @@ bindings (#74). Masses, torques, rates, draws and gait timings are provisional; 
 (66 joints) steps in about 0.16 ms a tick natively on physics-engine (0.20 ms on Rapier).
 
 **Robot models** (`shooter_client::robots`, #54). Both clients draw every fighter as its validated
-build from asset-tooling's `shooter-combat-robot` kit: the chassis, beams, hinge, rotor, core,
-sensor, battery, the armor plate (and its damaged look) and the rigged leg with its walk clips.
-The release is pinned by SHA-256 (`assets/robot-kit.pin.json`); `scripts/fetch-robot-kit.sh`
-fetches it into `target/robot-kit` for the native client (`$SHOOTER_ROBOT_KIT` names another
-directory) and `scripts/build-web.sh` puts it in `web/dist/robot-kit`, which the browser fetches.
-Every file is checked against the bundle's pins and bounds (4 MiB a file, 8 MiB a load, 20 s a
-request in the browser), every kit key must be a catalog part and every catalog part a kit entry
+build from two asset-tooling kits: `shooter-combat-robot` (the chassis, beams, hinge, rotor, core,
+sensor, battery, the armor plate and its damaged look, and the rigged leg with its walk clips) and
+`shooter-weapons` (the eight weapons, rigged with their states and glow channels, and the four
+mods). Each release is pinned by SHA-256 (`assets/robot-kit.pin.json`,
+`assets/weapon-kit.pin.json`); `scripts/fetch-robot-kit.sh` fetches them into `target/robot-kit`
+and `target/weapon-kit` for the native client (`$SHOOTER_ROBOT_KIT` and `$SHOOTER_WEAPON_KIT` name
+others) and `scripts/build-web.sh` puts each kit's release tar in `web/dist`, which the browser
+fetches in one request a kit and reads in memory. Every file is checked against the bundles' pins
+and bounds (4 MiB a file, 8 MiB a load, 16 MiB and 30 s a tar in the browser), every kit key must
+be a catalog part or mod, every catalog mod a weapons-kit entry and every catalog part a kit entry
 or a declared placeholder; otherwise the load fails, the HUD says why and the fighters stay
 boxes. Each part sits where the simulation places it (`mechanics::placements`), so loadouts look
-different. Weapons (asset-tooling#594), wheels and tracks (#634) are not modelled yet: they draw
-as translucent purple boxes of their cells (the held weapon brighter) and the HUD lists them. The
-robot stands on its capsule's feet and faces its look; its legs rest when idle, walk the kit's
-clips when running (at most 2.5 cycles a second, so feet slide at full speed), tuck while
-airborne or grappling and crouch in a slide. Firing kicks and flashes the held weapon, the
-grapple cable starts at the grapple, and a dead robot topples over until it respawns. Strafing
-(no sideways clip) and the blade swing (no swing clip, the arm is rigid) are missing animations:
-a magenta marker floats over the robot and the HUD names it. Hinges and rotors would turn about
-the simulation's anchor (the centre of their top face, where the kit pivots at the cube's
-centre), but nothing in a match turns them yet. Parts a robot has lost (from the host's per-part
-state in each snapshot) fall from where they came off to the floor and lie there until it
-respawns, while the rest of it keeps animating; damaged parts draw their damaged look where the
-kit has one (the armor plate). `cargo run -p shooter-client --release --example
-robot_gallery -- <dir>` renders the loadouts, the mechanics fixtures and every pose offscreen.
+different, and each mod sits on its weapon's anchor from the weapons kit's descriptor. Wheels and
+tracks (asset-tooling#634) are not modelled yet: they draw as translucent purple boxes of their
+cells and the HUD lists them. The robot stands on its capsule's feet and faces its look; its legs
+rest when idle, walk the kit's clips when running (at most 2.5 cycles a second, so feet slide at
+full speed), tuck while airborne or grappling and crouch in a slide. The weapons play the kit's
+states from the match (`robots::weapon`): a shot's recoil and muzzle flash, the laser's and
+flamethrower's loops while firing, the rail gun's recharge and the rocket pod's alternating tubes
+and reload over their (mod-tuned) refire time, the grapple's launch (its hook flies to where the
+host set it, the cable runs from the launcher) and retract, and the blade extending when held or
+swung, retracting otherwise, and the kit's quick-melee swing about its wrist (the arm itself stays
+rigid); between shots each weapon's charge light shows the robot's energy pool. Shots, beams,
+flames and pellets are drawn from the weapon's muzzle frame (the long barrel's when it has one)
+rather than a guessed offset. The named loadouts mount most weapons pointing sideways or up (only
+chest weapons point forward), so most shots leave a muzzle that does not face the aim; the
+simulation decides where shots start and what they hit. A dead robot topples over until it
+respawns. Strafing (no sideways clip) is a missing animation: a magenta marker floats over the
+robot and the HUD names it. Hinges and rotors would turn about the simulation's anchor (the centre
+of their top face, where the kit pivots at the cube's centre), but nothing in a match turns them
+yet. Parts a robot has lost (from the host's per-part state in each snapshot) fall from where they
+came off to the floor with their weapons and mods and lie there until it respawns, while the rest
+of it keeps animating; damaged parts draw their damaged look where the kit has one (the armor
+plate). `cargo run -p shooter-client --release --example robot_gallery -- <dir>` renders the
+loadouts, the mechanics fixtures, every pose, the weapons' states and the mods offscreen.
 
 **Weapon mods.** A weapon part may carry one mod, which costs build points and mass and changes
 how that weapon fires (on the host, in the client's prediction and in lag-compensated hits

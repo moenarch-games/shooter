@@ -9,7 +9,11 @@
 //! writes `loadouts.ppm` (the four named loadouts and the mechanics fixtures: the biped, the
 //! robo-dog and the paired turret with its rotor and hinge turned), `poses.ppm` (the standard
 //! build idle, running, strafing, airborne, grappling, sliding, firing, swinging the blade, dead,
-//! and with its right arm shot off) and `close.ppm` (the heavy build close up).
+//! and with its right arm shot off), `weapons.ppm` (the weapons' states and the mods: the rifle
+//! held with the blade away, the rifle firing, a blade swing, the rocket pod firing, the rail gun
+//! recharging, the skirmisher's grapple hooked with its mods, the marksman's long barrel and
+//! overcharger), `close.ppm` (the heavy build close up) and `mods.ppm` (the skirmisher and
+//! marksman close up).
 
 use render_engine::glam::{Mat4, Vec3};
 use shooter_client::gpu::Gpu;
@@ -26,9 +30,12 @@ fn standing(at: Vec3, forward: Vec3) -> RobotState {
         forward,
         velocity: Vec3::ZERO,
         sliding: false,
-        hooked: false,
+        hook: None,
         since_fired: f32::INFINITY,
+        fired: Weapon::EnergyRifle,
+        shots: 0,
         held: Weapon::EnergyRifle,
+        energy: 1.0,
         swing: None,
         dead_for: None,
     }
@@ -65,7 +72,7 @@ fn main() -> Result<(), String> {
     // The greybox: the gallery's line stands on its open floor.
     let arena = MapId::Greybox.arena();
     shooter_client::scene::build(&mut gpu.world, &arena);
-    let kit = robots::load::read(&robots::load::directory())?;
+    let kit = robots::load::read()?;
     let mut robots = Robots::new(&mut gpu.world, kit)?;
 
     // A line across the open floor, the robots facing the camera (−Z).
@@ -143,7 +150,7 @@ fn main() -> Result<(), String> {
             ),
             (
                 RobotState {
-                    hooked: true,
+                    hook: Some(base(4).center + Vec3::new(0.0, 3.0, -2.0)),
                     held: Weapon::Grapple,
                     center: base(4).center + Vec3::Y * 0.5,
                     ..base(4)
@@ -159,7 +166,7 @@ fn main() -> Result<(), String> {
             ),
             (
                 RobotState {
-                    since_fired: 0.02,
+                    since_fired: 0.06,
                     ..base(6)
                 },
                 0.0,
@@ -223,6 +230,112 @@ fn main() -> Result<(), String> {
         middle + Vec3::new(0.0, 0.9, -7.0),
         middle,
         &out.join("poses.ppm"),
+    )?;
+
+    // The weapons' states, three-quarter on.
+    let three_quarter = Vec3::new(-1.0, 0.0, -0.45).normalize();
+    let weapons: Vec<(Assembly, RobotState)> = {
+        let base = |index| standing(at(index, 1.3), three_quarter);
+        vec![
+            (STANDARD, base(0)),
+            (
+                STANDARD,
+                RobotState {
+                    since_fired: 0.07,
+                    ..base(1)
+                },
+            ),
+            (
+                STANDARD,
+                RobotState {
+                    swing: Some(0.35),
+                    ..base(2)
+                },
+            ),
+            (
+                HEAVY,
+                RobotState {
+                    held: Weapon::RocketLauncher,
+                    fired: Weapon::RocketLauncher,
+                    since_fired: 0.12,
+                    shots: 1,
+                    ..base(3)
+                },
+            ),
+            (
+                HEAVY,
+                RobotState {
+                    held: Weapon::RailGun,
+                    fired: Weapon::RailGun,
+                    since_fired: 0.75,
+                    energy: 0.4,
+                    ..base(4)
+                },
+            ),
+            (
+                SKIRMISHER,
+                RobotState {
+                    held: Weapon::Shotgun,
+                    hook: Some(base(5).center + Vec3::new(0.7, 1.6, -1.6)),
+                    ..base(5)
+                },
+            ),
+            (
+                MARKSMAN,
+                RobotState {
+                    held: Weapon::RailGun,
+                    fired: Weapon::RailGun,
+                    since_fired: 0.1,
+                    ..base(6)
+                },
+            ),
+        ]
+    };
+    let views: Vec<RobotView> = weapons
+        .iter()
+        .enumerate()
+        .map(|(index, (build, state))| RobotView {
+            slot: u8::try_from(index).unwrap_or(0),
+            build: *build,
+            state: *state,
+            glow: 0.0,
+            parts: PartStates::default(),
+        })
+        .collect();
+    let middle = at(3, 1.3) + Vec3::Y * 1.2;
+    shoot(
+        &mut gpu,
+        &mut robots,
+        &views,
+        middle + Vec3::new(0.0, 0.6, -4.6),
+        middle,
+        &out.join("weapons.ppm"),
+    )?;
+
+    let views = [
+        RobotView {
+            slot: 0,
+            build: SKIRMISHER,
+            state: standing(origin, Vec3::new(-0.5, 0.0, -1.0)),
+            glow: 0.0,
+            parts: PartStates::default(),
+        },
+        RobotView {
+            slot: 1,
+            build: MARKSMAN,
+            state: standing(origin - Vec3::X * 1.6, Vec3::new(-0.5, 0.0, -1.0)),
+            glow: 0.0,
+            parts: PartStates::default(),
+        },
+    ];
+    let middle = origin - Vec3::X * 0.8 + Vec3::Y * 1.1;
+    shoot(
+        &mut gpu,
+        &mut robots,
+        &views,
+        middle + Vec3::new(-0.6, 0.3, -2.6),
+        middle,
+        &out.join("mods.ppm"),
     )?;
 
     let views = [RobotView {

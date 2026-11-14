@@ -353,8 +353,8 @@ struct FighterInstances {
 /// The moving things drawn over the arena: every fighter (the local one too, seen from the
 /// third-person camera) with its gun, swung blade and grapple cable, the rockets, the modules lying on their pads, the reticle
 /// and (natively; the page draws its own) a health bar. Placeholder primitives: a fighter drawn as
-/// its robot ([`crate::robots`]) shows no box body or held gun box here, and the weapon models
-/// wait for asset-tooling.
+/// its robot ([`crate::robots`]) shows no box body or held gun box here (its weapons are the
+/// weapons kit's); the swung blade's sweep still shows the simulation's arc for every fighter.
 pub struct Actors {
     fighters: Vec<FighterInstances>,
     fighter_mesh: MeshId,

@@ -3,7 +3,7 @@
 A sci-fi arena shooter, native (wgpu) and browser (WebGPU on Pages), built on the owner's
 foundation crates. What ships today is a third-person, 12-slot deathmatch on greybox arenas (the 76 m greybox yard by default)
 with the fighters drawn as their robot builds from asset-tooling's kit (still moving as capsules)
-and placeholder guns. The rest of the robot beta (modular robots, about 12
+and their weapons and mods from its weapons kit. The rest of the robot beta (modular robots, about 12
 slots, three arenas; Atlas D1.i46.1 and D2.i46.\*, tracker #45) is mostly intent, not
 implementation: describe shipped behaviour as it is until a feature lands. Read `README.md`, the Decision Atlas
 (`docs/decisions/atlas.md`) and `.conventions/index.md` before a task. Follow Decisions; ask the owner only an open Question
@@ -15,7 +15,7 @@ that materially changes the task.
 | --- | --- |
 | `shooter-sim` | Deterministic simulation the clients and the host share: the map catalog (`maps`: stable map IDs, each map's arena and recommended capacity; the greybox yard is the default map, the 40 m greybox the test and A/B fixture), movement, the energy weapons, the grapple hook and the energy blade (quick melee), per-part damage (`damage`: part health, part hitboxes on the fighter, penetration, blasts, lost parts, the core as the only kill), deaths, respawns and deathmatch rounds, lag-compensated hitscan and swings, the shared aim (`aim`: where a shot from the eye lands, for the host's hitscan and the clients' reticle), the seeded bots, the robot build schema, catalog and validation (`robot`), mechanical robots (`mechanics`: compound bodies, motorised joints, wheels, tracks and legs with gait presets, motor energy, exact state, on `physics::articulated`), the contested module pickups (`pickups`), and the wire format (`wire`). No rendering, input devices or I/O |
 | `shooter-server` | The deathmatch as a game-server `GameSimulation`, the `shooter-server` WebTransport host binary, and `shooter-replay` (record, verify and promote scripted match replays into foundation fixtures, `docs/foundation-data.md`) |
-| `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame and the third-person camera and reticle (`camera`), input-bindings controls, render-engine weapon lights and particles, the fighters as robots from the pinned asset-tooling kit (`robots`: bundle pins and bounds, glTF and Basis decode, parts placed as the simulation places them, poses, labelled placeholders), game-audio cues, the HUD stopgap (page DOM / window title), offline practice in-process and online play with prediction (wtransport natively, game-server's `BrowserSession` in the browser) |
+| `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame and the third-person camera and reticle (`camera`), input-bindings controls, render-engine weapon lights and particles, the fighters as robots from the pinned asset-tooling robot and weapons kits (`robots`: bundle pins and bounds, glTF and Basis decode, parts placed as the simulation places them, mods on their weapons' anchors, poses, weapon states and glow, muzzle frames, labelled placeholders for wheels and tracks), game-audio cues, the HUD stopgap (page DOM / window title), offline practice in-process and online play with prediction (wtransport natively, game-server's `BrowserSession` in the browser) |
 | `web/` | The page around the `wasm32` build; `scripts/build-web.sh` writes `web/dist` |
 
 ## Commands
@@ -28,9 +28,9 @@ cargo test -p shooter-sim --test deathmatch --locked                       # bot
 cargo test -p shooter-sim --test mechanics --locked                        # mechanical robots: fixtures, gaits, motor energy, exact restore
 cargo test -p shooter-sim --test damage --locked                           # per-part damage: front/side hits, splash, plates, lost parts, core kill, battery blast
 cargo test -p shooter-client --test online --locked                        # two clients through a real host on loopback
-scripts/fetch-robot-kit.sh                                                 # the pinned asset-tooling robot kit into target/robot-kit (the client and its tests read it)
-cargo test -p shooter-client --test robots --locked                        # the robot kit: pins, part mapping, placement, poses, lost parts, joint pivots
-cargo run -p shooter-client --release --example robot_gallery -- DIR       # loadouts, mechanics fixtures and every pose rendered offscreen (PPM)
+scripts/fetch-robot-kit.sh                                                 # the pinned asset-tooling robot and weapons kits into target/robot-kit, target/weapon-kit (the client and its tests read them)
+cargo test -p shooter-client --test robots --locked                        # the kits: pins, tars, part and mod mapping, placement, poses, weapon states, muzzles, lost parts, joint pivots
+cargo run -p shooter-client --release --example robot_gallery -- DIR       # loadouts, mechanics fixtures, every pose, weapon states and mods rendered offscreen (PPM)
 cargo run -p shooter-client --release                                      # native client, practice vs bots
 scripts/dev.sh [clients|web]                                               # local host + native clients (or the browser build) online
 scripts/build-web.sh && python3 -m http.server -d web/dist                 # browser client (?connect=…&certHash=… joins a host)
@@ -39,7 +39,7 @@ cargo run -p shooter-client --release -- --frames 600 [--capture DIR]      # nat
 scripts/profile.sh [OUT] [native|web|all]                                  # runtime-profiler bundles: bot match, offscreen native client, browser (?frames=120)
 ```
 
-CI (`.github/workflows/validate.yml`) runs fmt, Clippy, the robot kit fetch and the full test suite with `physics-ab`, the
+CI (`.github/workflows/validate.yml`) runs fmt, Clippy, the kits' fetch and the full test suite with `physics-ab`, the
 native build and a `wasm32` check; `pages.yml` builds and deploys `web/dist` from `main`;
 `profile.yml` uploads the bot-match and native-client (lavapipe) profiles, and in a second job the
 browser client's (headless Chromium, SwiftShader WebGPU), as artifacts (no thresholds).

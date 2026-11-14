@@ -14,10 +14,13 @@
 //! | slide | crouched, the body lowered so the feet stay down | procedural |
 //! | death | the robot topples over backwards until it respawns | procedural (lost parts lie where they fell) |
 //!
-//! Firing kicks the held weapon back and flashes it; a blade swing is **missing animation** (the
-//! arm is rigid and the kit has no swing clip); the energy blade's sweep is still drawn by the
-//! weapon effects. A missing animation is reported ([`Animation::missing`]) and marked over the
-//! robot, never a silent dummy.
+//! The weapons play the weapons kit's states ([`super::weapon`]): a shot's recoil and flash, the
+//! continuous weapons' loops, the rail gun's recharge and the rocket pod's reload, the grapple's
+//! launch and retract (its hook flying to where the host set it), the blade's extend, retract and
+//! quick-melee swing (the kit's `swing` about the blade's wrist; the arm itself stays rigid), and
+//! their glow channels; each mod sits on its weapon's anchor and moves with it. A missing
+//! animation (strafe: the kit has no sideways clip) is reported ([`Animation::missing`]) and
+//! marked over the robot, never a silent dummy.
 //!
 //! **Joints.** Hinges and rotors turn at the angles the state gives ([`PartStates::joints`];
 //! nothing in the match sets them yet). The kit turns a joint's moving piece about the cube's
@@ -27,13 +30,14 @@
 //! rotor both pivots lie on its axis, so they agree exactly.
 //!
 //! **Lost parts** ([`PartStates::detached`]): every part the authoritative state says the robot
-//! has lost (`shooter_sim::damage`: a destroyed part and what hung from it) draws at rest where
-//! its entry puts its robot frame ([`super::track`] lets it fall from where it came off to the
-//! floor); the rest of the robot keeps animating without them. The entries name each lost part,
+//! has lost (`shooter_sim::damage`: a destroyed part and what hung from it, its weapons and their
+//! mods too) draws at rest where its entry puts its robot frame ([`super::track`] lets it fall
+//! from where it came off to the floor); the rest of the robot keeps animating without them. The entries name each lost part,
 //! not subtrees: when a core's ancestor is destroyed, the core stays and the rest falls away.
 
 use super::kit::{KitData, Rig};
 use super::model::{Model, Visual};
+use super::weapon::{self, Memory};
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3};
 use shooter_sim::robot::{Joint, Kind, Locomotion, PartId};
 use shooter_sim::weapons::Weapon;
@@ -51,9 +55,8 @@ fn stride(clip: &str) -> f32 {
 pub const MAX_CYCLES_PER_SECOND: f32 = 2.5;
 /// A fall or rise faster than this (metres a second) is airborne.
 pub const AIRBORNE_SPEED: f32 = 1.0;
-/// How long a shot's recoil and flash last (seconds) and how far the weapon kicks (metres).
+/// How long after a shot the robot is labelled firing (seconds).
 pub const RECOIL_SECONDS: f32 = 0.1;
-const RECOIL: f32 = 0.05;
 /// How long a death's topple takes (seconds).
 pub const TOPPLE_SECONDS: f32 = 0.7;
 /// The capsule's half height (metres): the robot's feet stand at its bottom.
@@ -82,11 +85,16 @@ pub struct RobotState {
     /// Metres a second.
     pub velocity: Vec3,
     pub sliding: bool,
-    /// Its grapple hook holds.
-    pub hooked: bool,
-    /// Seconds since its last shot.
+    /// Where its grapple hook holds (metres), while it does.
+    pub hook: Option<Vec3>,
+    /// Seconds since its last shot (or swing, or hook), and the weapon that made it.
     pub since_fired: f32,
+    pub fired: Weapon,
+    /// How many shots it has fired this life (the rocket pod's tubes alternate).
+    pub shots: u32,
     pub held: Weapon,
+    /// Its energy pool's share of its capacity (0..=1): the weapons' charge glow.
+    pub energy: f32,
     /// How far through a blade swing it is (0..=1), while swinging.
     pub swing: Option<f32>,
     /// Seconds since it died, while dead.
@@ -129,7 +137,7 @@ impl Animation {
             Activity::Death
         } else if state.sliding {
             Activity::Slide
-        } else if state.hooked {
+        } else if state.hook.is_some() {
             Activity::Grapple
         } else if state.velocity.y.abs() > AIRBORNE_SPEED {
             Activity::Airborne
@@ -157,9 +165,8 @@ impl Animation {
     /// The animation it lacks, if any: drawn with a marker and named in the HUD.
     #[must_use]
     pub const fn missing(self) -> Option<&'static str> {
-        match (self.activity, self.action) {
-            (_, Action::Blade) => Some("blade swing"),
-            (Activity::Strafe, _) => Some("strafe"),
+        match self.activity {
+            Activity::Strafe => Some("strafe"),
             _ => None,
         }
     }
@@ -187,7 +194,7 @@ impl Animation {
         let action = match self.action {
             Action::None => "",
             Action::Fire => " + fire",
-            Action::Blade => " + blade",
+            Action::Blade => " + blade (kit swing)",
         };
         let missing = self
             .missing()
@@ -237,9 +244,15 @@ pub struct PosedPart {
     pub damaged: bool,
     /// Detached from the robot.
     pub detached: bool,
-    /// The held weapon (a placeholder drawn highlighted), flashing while it fires.
-    pub held: bool,
-    pub flash: bool,
+}
+
+/// Where a weapon's shots are drawn from: its muzzle (or emitter, launcher; the long barrel's
+/// when it has one), metres, and the way it points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Muzzle {
+    pub weapon: Weapon,
+    pub position: Vec3,
+    pub direction: Vec3,
 }
 
 /// A robot as drawn this frame.
@@ -250,8 +263,12 @@ pub struct Posed {
     pub parts: Vec<PosedPart>,
     /// Where a missing-animation marker floats: over its top.
     pub marker: Vec3,
-    /// Where its grapple weapon is (the cable's start), if it has one attached.
+    /// Where its grapple's cable starts (the launcher's muzzle), if it has one attached.
     pub grapple: Option<Vec3>,
+    /// Each mod's mesh frame ([`Model::mods`] order).
+    pub mods: Vec<Mat4>,
+    /// Its attached weapons' muzzles.
+    pub muzzles: Vec<Muzzle>,
 }
 
 /// A rotation of `angle` about `axis` through `pivot`.
@@ -278,14 +295,17 @@ fn facing(forward: Vec3) -> Mat3 {
     Mat3::from_cols(forward, Vec3::Y, forward.cross(Vec3::Y))
 }
 
-/// `model` posed for `state`, its legs at gait `phase`, with `parts`' per-part state.
+/// `model` posed for `state`, its legs at gait `phase`, with `parts`' per-part state and its
+/// weapons' `memory`.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn pose(
     model: &Model,
     kit: &KitData,
     state: &RobotState,
     phase: f32,
     parts: &PartStates,
+    memory: &Memory,
 ) -> Posed {
     let animation = Animation::of(state);
     let count = model.parts.len();
@@ -299,6 +319,8 @@ pub fn pose(
     // Joint motions (robot frame) and every part's palette.
     let mut motion = vec![Mat4::IDENTITY; count];
     let mut palettes: Vec<Option<Vec<Mat4>>> = vec![None; count];
+    // Attached weapons' joints, posed once their place in the world is known (the hook).
+    let mut weapons = vec![None; count];
     for (index, part) in model.parts.iter().enumerate() {
         let Visual::Kit { entry, .. } = part.visual else {
             continue;
@@ -320,6 +342,14 @@ pub fn pose(
                     _ => rig.rest(),
                 };
                 rig.palette(&rotations)
+            }
+            Kind::Weapon(held) if attached && kit.entries[entry].gear.is_some() => {
+                let gear = kit.entries[entry]
+                    .gear
+                    .as_ref()
+                    .unwrap_or_else(|| unreachable!());
+                weapons[index] = Some(weapon::locals(rig, gear, held, part.refire, state, memory));
+                continue;
             }
             Kind::Joint(joint) if attached => {
                 let angle = parts
@@ -395,42 +425,93 @@ pub fn pose(
         );
     }
 
-    let recoil = (RECOIL_SECONDS - state.since_fired).max(0.0) / RECOIL_SECONDS * RECOIL;
     let mut grapple = None;
-    let posed = model
-        .parts
-        .iter()
-        .enumerate()
-        .map(|(index, part)| {
-            let held = part.kind == Kind::Weapon(state.held);
-            let firing = held && animation.action == Action::Fire;
-            let world_from_local = match lost[index] {
-                Some(world) => world * model.parts[index].robot_from_local,
-                None if firing => {
-                    world_from_robot
-                        * Mat4::from_translation(-Vec3::X * recoil)
-                        * robot_from_local[index]
+    let mut muzzles = Vec::new();
+    let mut posed = Vec::with_capacity(count);
+    for (index, part) in model.parts.iter().enumerate() {
+        let world_from_local = match lost[index] {
+            Some(world) => world * model.parts[index].robot_from_local,
+            None => world_from_robot * robot_from_local[index],
+        };
+        if let (Some((mut locals, reach)), Visual::Kit { entry, .. }) =
+            (weapons[index].take(), part.visual)
+        {
+            let kit_entry = &kit.entries[entry];
+            if let (Some(rig), Some(gear), Kind::Weapon(held)) =
+                (&kit_entry.rig, &kit_entry.gear, part.kind)
+            {
+                if let Some(reach) = reach {
+                    let target = world_from_local.inverse().transform_point3(reach.target);
+                    weapon::reach_hook(rig, gear, &mut locals, target, reach.reach);
                 }
-                None => world_from_robot * robot_from_local[index],
+                let palette = rig.palette_of(&locals);
+                // A mod's muzzle replaces the weapon's; the rocket pod shows the tube that fired.
+                let mod_muzzle = model.mods.iter().find_map(|modification| {
+                    let muzzle = modification.muzzle.as_ref()?;
+                    (modification.part == index).then(|| {
+                        let frame = world_from_local
+                            * anchored(rig, &palette, &modification.anchor)
+                            * modification.anchor.frame();
+                        (frame, muzzle)
+                    })
+                });
+                let name = match held {
+                    Weapon::RocketLauncher if state.shots.is_multiple_of(2) => "muzzle-b",
+                    Weapon::RocketLauncher => "muzzle-a",
+                    _ => "muzzle",
+                };
+                let found = mod_muzzle.or_else(|| {
+                    let anchor = gear.anchor(name)?;
+                    Some((world_from_local * anchored(rig, &palette, anchor), anchor))
+                });
+                if let Some((frame, anchor)) = found {
+                    let muzzle = Muzzle {
+                        weapon: held,
+                        position: frame.transform_point3(anchor.position),
+                        direction: frame.transform_vector3(anchor.normal).normalize_or(Vec3::X),
+                    };
+                    if held == Weapon::Grapple {
+                        grapple = Some(muzzle.position);
+                    }
+                    muzzles.push(muzzle);
+                }
+                palettes[index] = Some(palette);
+            }
+        }
+        posed.push(PosedPart {
+            world_from_local,
+            palette: palettes[index].take(),
+            damaged: parts.damaged.contains(&part.id)
+                && matches!(
+                    part.visual,
+                    Visual::Kit {
+                        damaged: Some(_),
+                        ..
+                    }
+                ),
+            detached: lost[index].is_some(),
+        });
+    }
+    // Each mod on its weapon's anchor, moving with the node it rides (at rest on a lost weapon).
+    let mods = model
+        .mods
+        .iter()
+        .map(|modification| {
+            let weapon = &posed[modification.part];
+            let Visual::Kit { entry, .. } = model.parts[modification.part].visual else {
+                return weapon.world_from_local;
             };
-            if part.kind == Kind::Weapon(Weapon::Grapple) && lost[index].is_none() {
-                grapple = Some(world_from_local.transform_point3(Vec3::ZERO));
-            }
-            PosedPart {
-                world_from_local,
-                palette: palettes[index].take(),
-                damaged: parts.damaged.contains(&part.id)
-                    && matches!(
-                        part.visual,
-                        Visual::Kit {
-                            damaged: Some(_),
-                            ..
-                        }
-                    ),
-                detached: lost[index].is_some(),
-                held,
-                flash: firing,
-            }
+            let at = kit.entries[entry]
+                .rig
+                .as_ref()
+                .map_or(Mat4::IDENTITY, |rig| {
+                    let palette = weapon
+                        .palette
+                        .clone()
+                        .unwrap_or_else(|| rig.palette(&rig.rest()));
+                    anchored(rig, &palette, &modification.anchor)
+                });
+            weapon.world_from_local * at * modification.anchor.frame()
         })
         .collect();
     Posed {
@@ -439,5 +520,17 @@ pub fn pose(
         world_from_robot,
         parts: posed,
         grapple,
+        mods,
+        muzzles,
     }
+}
+
+/// The skinning transform of the node `anchor` rides (its weapon's glTF frame, posed).
+fn anchored(rig: &Rig, palette: &[Mat4], anchor: &super::kit::Anchor) -> Mat4 {
+    anchor
+        .node
+        .as_deref()
+        .and_then(|node| rig.joint(node))
+        .and_then(|joint| palette.get(joint).copied())
+        .unwrap_or(Mat4::IDENTITY)
 }
