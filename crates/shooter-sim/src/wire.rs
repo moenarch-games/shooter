@@ -1,8 +1,9 @@
 //! The match on the wire, inside game-server's command and snapshot frames: a person's input
 //! (one per tick) and the shared snapshot every client gets each tick (the match's map, the
 //! fighters with the
-//! exact physics state a client resumes prediction from and their robot builds, the rockets, the
-//! shotgun pellets and the tick's events). Robot builds travel as raw codes and are decoded
+//! exact physics state a client resumes prediction from, their robot builds and the module each
+//! carries, the rockets, the shotgun pellets, the module pads and the tick's events). Robot builds
+//! travel as raw codes and are decoded
 //! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored.
 //! Little-endian; positions and velocities travel as exact `f32` bits.
 //!
@@ -11,13 +12,15 @@
 
 use crate::grapple::Hook;
 use crate::maps::MapId;
+use crate::physics::Vec3i;
+use crate::pickups::{ArenaModule, Carried};
 use crate::player::{Intent, Motion};
 use crate::robot::{Assembly, AssemblyError, BETA, Candidate};
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 9;
+pub const WIRE_VERSION: u8 = 10;
 const NONE: u8 = u8::MAX;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,6 +75,17 @@ pub struct FighterState {
     pub build: Assembly,
     /// The build it comes back as at its next spawn.
     pub configured: Assembly,
+    /// The module pickup it carries and the uses it has left.
+    pub carried: Option<Carried>,
+}
+
+/// A module pad: where it lies (units, the map's anchor), its module and the ticks until the
+/// module is back (0: ready to take).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PickupState {
+    pub center: Vec3i,
+    pub module: ArenaModule,
+    pub ready_in: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -101,6 +115,8 @@ pub struct Snapshot {
     pub fighters: Vec<FighterState>,
     pub rockets: Vec<RocketState>,
     pub pellets: Vec<PelletState>,
+    /// The module pads, in the map's order.
+    pub pickups: Vec<PickupState>,
     pub events: Vec<Event>,
     /// The names people picked, by slot (slots without one show as "Player N").
     pub names: Vec<(u8, String)>,
@@ -160,6 +176,7 @@ fn state_of(session: &Session, fighter: &Fighter) -> Option<FighterState> {
         ack: fighter.ack,
         build: fighter.build,
         configured: fighter.configured,
+        carried: fighter.carried,
     })
 }
 
@@ -192,6 +209,15 @@ impl Session {
                     from: pellet.from_units(),
                     to: pellet.position_units(),
                     launched: pellet.age == 1,
+                })
+                .collect(),
+            pickups: self
+                .pickups
+                .iter()
+                .map(|pickup| PickupState {
+                    center: pickup.pad.center,
+                    module: pickup.pad.module,
+                    ready_in: pickup.ready_in,
                 })
                 .collect(),
             events: self.events.clone(),
@@ -231,6 +257,9 @@ impl Out {
     }
     fn weapon(&mut self, weapon: Weapon) {
         self.u8(weapon.index());
+    }
+    fn module(&mut self, module: ArenaModule) {
+        self.u8(module.tag());
     }
     /// A robot build in canonical order: a count and `(socket, component)` codes, then a count
     /// and `(hardpoint, weapon)` codes, then a count and `(hardpoint, mod)` codes.
@@ -290,6 +319,9 @@ impl In<'_> {
     }
     fn weapon(&mut self) -> Result<Weapon, WireError> {
         Weapon::from_index(self.u8()?).ok_or(WireError::Malformed("unknown weapon"))
+    }
+    fn module(&mut self) -> Result<ArenaModule, WireError> {
+        ArenaModule::from_tag(self.u8()?).ok_or(WireError::Malformed("unknown module"))
     }
     fn text(&mut self) -> Result<String, WireError> {
         let length = usize::from(self.u8()?);
@@ -521,6 +553,17 @@ fn encode_event(out: &mut Out, event: &Event) {
             out.u8(7);
             out.option(winner);
         }
+        Event::ModuleTaken { slot, pad, module } => {
+            out.u8(9);
+            out.u8(slot);
+            out.u8(pad);
+            out.module(module);
+        }
+        Event::ModuleSpent { slot, module } => {
+            out.u8(10);
+            out.u8(slot);
+            out.module(module);
+        }
     }
 }
 
@@ -574,6 +617,15 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
             at: input.vec3()?,
             normal: input.vec3()?,
             launched: input.u8()? != 0,
+        },
+        9 => Event::ModuleTaken {
+            slot: input.u8()?,
+            pad: input.u8()?,
+            module: input.module()?,
+        },
+        10 => Event::ModuleSpent {
+            slot: input.u8()?,
+            module: input.module()?,
         },
         _ => return Err(WireError::Malformed("unknown event")),
     })
@@ -642,6 +694,14 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
             out.u8(1);
             out.build(&fighter.configured);
         }
+        match fighter.carried {
+            Some(carried) => {
+                out.u8(1);
+                out.module(carried.module);
+                out.u8(carried.uses_left);
+            }
+            None => out.u8(0),
+        }
     }
     out.u8(count(snapshot.rockets.len()));
     for rocket in snapshot.rockets.iter().take(usize::from(u8::MAX)) {
@@ -653,6 +713,14 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         out.vec3(pellet.from);
         out.vec3(pellet.to);
         out.u8(u8::from(pellet.launched));
+    }
+    out.u8(count(snapshot.pickups.len()));
+    for pickup in snapshot.pickups.iter().take(usize::from(u8::MAX)) {
+        for axis in [pickup.center.x, pickup.center.y, pickup.center.z] {
+            out.i32(axis);
+        }
+        out.module(pickup.module);
+        out.u32(pickup.ready_in);
     }
     out.u8(count(snapshot.events.len()));
     for event in snapshot.events.iter().take(usize::from(u8::MAX)) {
@@ -719,11 +787,20 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 ack: input.u32()?,
                 build: input.build()?,
                 configured: Assembly::default(),
+                carried: None,
             };
             fighter.configured = match input.u8()? {
                 0 => fighter.build,
                 1 => input.build()?,
                 _ => return Err(WireError::Malformed("unknown build state")),
+            };
+            fighter.carried = match input.u8()? {
+                0 => None,
+                1 => Some(Carried {
+                    module: input.module()?,
+                    uses_left: input.u8()?,
+                }),
+                _ => return Err(WireError::Malformed("unknown module state")),
             };
             Ok(fighter)
         })
@@ -745,6 +822,15 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
             })
         })
         .collect::<Result<Vec<_>, WireError>>()?;
+    let pickups = (0..input.u8()?)
+        .map(|_| {
+            Ok(PickupState {
+                center: Vec3i::new(input.i32()?, input.i32()?, input.i32()?),
+                module: input.module()?,
+                ready_in: input.u32()?,
+            })
+        })
+        .collect::<Result<Vec<_>, WireError>>()?;
     let events = (0..input.u8()?)
         .map(|_| decode_event(&mut input))
         .collect::<Result<Vec<_>, _>>()?;
@@ -760,6 +846,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
         fighters,
         rockets,
         pellets,
+        pickups,
         events,
         names,
     })

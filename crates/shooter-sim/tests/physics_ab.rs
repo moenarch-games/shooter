@@ -1,5 +1,5 @@
 //! Rapier A/B: the scripted tour through the greybox arena and every fast-move scenario
-//! (sprint, slide, double jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
+//! (sprint, slide, double jump, a thruster-module jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
 //! a shooting range, a close range for the shotgun, laser and flamethrower) on physics-engine and on the Rapier oracle
 //! (`shooter_sim::physics::using_backend`).
 //! Both must follow the same path within a few centimetres, agree on support at the end of every
@@ -127,6 +127,12 @@ fn sprint_and_slide_match_the_rapier_oracle() {
 #[test]
 fn the_double_jump_matches_the_rapier_oracle() {
     compare(scenarios::DOUBLE_JUMP);
+}
+
+/// The thrusters module (`shooter_sim::pickups`), taken from a pad, then a 2.25 m jump.
+#[test]
+fn the_thruster_jump_matches_the_rapier_oracle() {
+    compare(scenarios::THRUSTER_JUMP);
 }
 
 #[test]

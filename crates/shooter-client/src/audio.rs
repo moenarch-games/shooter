@@ -184,7 +184,9 @@ impl Sounds {
                 | Event::Pellet { .. }
                 | Event::Killed { .. }
                 | Event::Spawned { .. }
-                | Event::RoundOver { .. } => {}
+                | Event::RoundOver { .. }
+                | Event::ModuleTaken { .. }
+                | Event::ModuleSpent { .. } => {}
             }
         }
     }

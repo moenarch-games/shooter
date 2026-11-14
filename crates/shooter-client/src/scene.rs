@@ -1,5 +1,5 @@
 //! The arena as render-engine content: one mesh per piece at its true size (so normals stay
-//! exact), a checkered floor for a sense of speed, glowing jump pads, and the hall's lighting;
+//! exact), a checkered floor for a sense of speed, glowing jump pads, the module pickups' pads, and the hall's lighting;
 //! and the [`Actors`] that move over it.
 
 use crate::camera::{self, basis};
@@ -13,7 +13,8 @@ use render_engine::scene::{
 use render_engine::world::{Instance, InstanceId, MaterialId, MeshId, World};
 use shooter_sim::physics::RampRise;
 use shooter_sim::physics::Vec3i;
-use shooter_sim::{Arena, Piece, Weapon};
+use shooter_sim::pickups::REACH_UNITS;
+use shooter_sim::{Arena, ArenaModule, Piece, Weapon};
 
 /// Simulation units (cm) to render metres.
 pub const METRES_PER_UNIT: f32 = 0.01;
@@ -205,7 +206,41 @@ pub fn build(world: &mut World, arena: &Arena) {
             skin: None,
         });
     }
+
+    // Module pickup pads: dark plates as wide as their reach, tinted by the module they hold;
+    // the module itself floats over the plate while it is there ([`Actors`]).
+    #[allow(clippy::cast_precision_loss)]
+    let reach = REACH_UNITS as f32 * METRES_PER_UNIT;
+    let plate = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
+        reach * 2.0,
+        PAD_THICKNESS,
+        reach * 2.0,
+    ))));
+    for pad in &arena.module_pads {
+        let rgb = module_tint(pad.module);
+        let material = material(world, (rgb * 0.3).to_array(), 0.4);
+        world.add_instance(Instance {
+            mesh: plate,
+            material,
+            world_from_local: Mat4::from_translation(
+                metres(pad.center) + Vec3::Y * (PAD_THICKNESS / 2.0),
+            ),
+            skin: None,
+        });
+    }
 }
+
+/// A module pickup's colour: the weapon it boosts, or the grapple's green for movement.
+const fn module_tint(module: ArenaModule) -> Vec3 {
+    match module {
+        ArenaModule::RailCapacitor => tint(Weapon::RailGun),
+        ArenaModule::Thrusters => tint(Weapon::Grapple),
+    }
+}
+
+/// How high over its pad a module floats (metres, its centre) and its cube's edge.
+const MODULE_HEIGHT: f32 = 0.6;
+const MODULE_SIZE: f32 = 0.35;
 
 /// Where something moving is drawn hidden: under the floor.
 const HIDDEN: Mat4 = Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::Z, Vec4::new(0.0, -100.0, 0.0, 1.0));
@@ -311,7 +346,7 @@ struct FighterInstances {
 }
 
 /// The moving things drawn over the arena: every fighter (the local one too, seen from the
-/// third-person camera) with its gun, swung blade and grapple cable, the rockets, the reticle
+/// third-person camera) with its gun, swung blade and grapple cable, the rockets, the modules lying on their pads, the reticle
 /// and (natively; the page draws its own) a health bar. Placeholder primitives until
 /// asset-tooling delivers the weapon and robot models.
 pub struct Actors {
@@ -328,6 +363,11 @@ pub struct Actors {
     cable_material: MaterialId,
     /// Grapple cables, reused frame to frame (hidden when unused).
     cables: Vec<InstanceId>,
+    module_mesh: MeshId,
+    /// By module wire tag.
+    module_materials: [MaterialId; ArenaModule::ALL.len()],
+    /// Modules on their pads, reused frame to frame (hidden when unused).
+    modules: Vec<InstanceId>,
     reticle: InstanceId,
     /// Natively: the health bar's mesh, material and instance (HUD stopgap).
     health_bar: Option<(MeshId, MaterialId, InstanceId)>,
@@ -416,6 +456,10 @@ impl Actors {
             )))),
             cable_material: world.add_material(&glowing(tint(Weapon::Grapple), 6_000.0)),
             cables: Vec::new(),
+            module_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::splat(MODULE_SIZE)))),
+            module_materials: ArenaModule::ALL
+                .map(|module| world.add_material(&glowing(module_tint(module), 4_000.0))),
+            modules: Vec::new(),
             reticle,
             health_bar,
         }
@@ -441,7 +485,7 @@ impl Actors {
 
     /// Places everything for this frame. `camera`/`forward` is the camera; `reticle` where the
     /// reticle is drawn ([`camera::reticle`]), while the local fighter is alive; `health` is its
-    /// health (0..=1).
+    /// health (0..=1); `modules` the modules lying on their pads (each pad's centre, metres).
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
@@ -451,6 +495,7 @@ impl Actors {
         health: Option<f32>,
         camera: Vec3,
         forward: Vec3,
+        modules: &[(Vec3, ArenaModule)],
         reticle: Option<Vec3>,
     ) {
         let cables: Vec<(Vec3, Vec3)> = fighters
@@ -563,6 +608,27 @@ impl Actors {
                 .get(index)
                 .map_or(HIDDEN, |at| Mat4::from_translation(*at));
             Self::place(world, *instance, self.rocket_mesh, self.rocket_material, at);
+        }
+        while self.modules.len() < modules.len() {
+            let instance = world.add_instance(Instance {
+                mesh: self.module_mesh,
+                material: self.module_materials[0],
+                world_from_local: HIDDEN,
+                skin: None,
+            });
+            self.modules.push(instance);
+        }
+        for (index, instance) in self.modules.iter().enumerate() {
+            let (at, material) =
+                modules
+                    .get(index)
+                    .map_or((HIDDEN, self.module_materials[0]), |(pad, module)| {
+                        (
+                            Mat4::from_translation(*pad + Vec3::Y * MODULE_HEIGHT),
+                            self.module_materials[usize::from(module.tag())],
+                        )
+                    });
+            Self::place(world, *instance, self.module_mesh, material, at);
         }
         let mut instance = world.instance(self.reticle);
         instance.world_from_local = reticle.map_or(HIDDEN, Mat4::from_translation);

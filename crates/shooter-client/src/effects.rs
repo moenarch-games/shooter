@@ -472,7 +472,9 @@ impl Effects {
                 | Event::Hit { .. }
                 | Event::Killed { .. }
                 | Event::Spawned { .. }
-                | Event::RoundOver { .. } => {}
+                | Event::RoundOver { .. }
+                | Event::ModuleTaken { .. }
+                | Event::ModuleSpent { .. } => {}
             }
         }
     }

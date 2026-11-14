@@ -22,7 +22,7 @@ pub struct Tick {
 pub enum Game {
     Practice {
         session: Box<Session>,
-        snapshot: Snapshot,
+        snapshot: Box<Snapshot>,
         others: Interpolation,
     },
     Online(Box<online::Online>),
@@ -41,7 +41,7 @@ impl Game {
         let snapshot = session.snapshot();
         Self::Practice {
             session: Box::new(session),
-            snapshot,
+            snapshot: Box::new(snapshot),
             // Drawn between the last two ticks; shots see the match as it is.
             others: Interpolation::new(1.0),
         }
@@ -60,7 +60,7 @@ impl Game {
                     let local = &mut session.fighters[usize::from(slot)];
                     local.build = build;
                     local.configured = build;
-                    *snapshot = session.snapshot();
+                    **snapshot = session.snapshot();
                 }
             }
             Self::Online(online) => online.request_build(build),
@@ -77,7 +77,7 @@ impl Game {
                 others,
             } => {
                 let report = session.tick(intent).map_err(|error| error.to_string())?;
-                *snapshot = session.snapshot();
+                **snapshot = session.snapshot();
                 others.push(snapshot);
                 others.advance();
                 Ok(Tick {
@@ -474,9 +474,14 @@ pub mod online {
                 self.pending.clear();
                 return Ok(());
             }
-            // Predicted shots fire at the host's pace for this life's build (its weapon mods).
+            // Predicted shots fire at the host's pace for this life's build (its weapon mods)
+            // and module, and jumps leave as the host's do; the pads are as the host has them.
             if let Some(predictor) = self.predictor.as_mut() {
                 predictor.fighters[0].build = me.build;
+                predictor.fighters[0].carried = me.carried;
+                for (pickup, host) in predictor.pickups.iter_mut().zip(&snapshot.pickups) {
+                    pickup.ready_in = host.ready_in;
+                }
             }
             let place = |predictor: &mut Session| {
                 predictor
