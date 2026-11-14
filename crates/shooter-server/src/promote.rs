@@ -46,11 +46,12 @@ pub fn game_server(replay: &Replay, to: u64, source: &str) -> Result<(Vec<u8>, S
     let _ = writeln!(manifest, "source={source}");
     let _ = writeln!(
         manifest,
-        "description=scripted deathmatch: six slots, seeded bots, scripted people at 100 ms \
+        "description=scripted deathmatch: seeded bots in every slot no person holds, scripted people at 100 ms \
          input latency (lag-compensated shots), one leaves and is removed after the grace"
     );
     let _ = writeln!(manifest, "tick_hz={TICK_HZ}");
     let _ = writeln!(manifest, "map={}", replay.map);
+    let _ = writeln!(manifest, "slots={}", replay.slots);
     let _ = writeln!(manifest, "bot_seed={}", replay.seed);
     let _ = writeln!(manifest, "replay_format_version={}", bytes[4]);
     let _ = writeln!(manifest, "replay_bytes={}", bytes.len());

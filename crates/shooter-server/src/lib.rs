@@ -33,13 +33,23 @@ pub fn seed_of(match_id: &str) -> u64 {
 }
 
 impl DeathmatchHost {
-    /// A deathmatch on `map` full of bots, seeded `seed`.
+    /// A deathmatch on `map` with `slots` slots, all bots, seeded `seed`.
     ///
     /// # Errors
     ///
-    /// If the arena does not build.
-    pub fn new(map: MapId, seed: u64) -> Result<Self, SimulationError> {
-        Session::on_map(map, Rules::deathmatch(seed))
+    /// If `slots` is 0 or more than the map's [`MapId::max_slots`], or the arena does not build.
+    pub fn new(map: MapId, slots: u8, seed: u64) -> Result<Self, SimulationError> {
+        if slots == 0 || slots > map.max_slots() {
+            return Err(SimulationError::new(format!(
+                "{slots} slots on {map} (1 to {})",
+                map.max_slots()
+            )));
+        }
+        let rules = Rules {
+            slots,
+            ..Rules::deathmatch(seed)
+        };
+        Session::on_map(map, rules)
             .map(|session| Self { session })
             .map_err(failed)
     }
@@ -60,7 +70,7 @@ impl GameSimulation for DeathmatchHost {
     }
 
     fn max_players(&self) -> usize {
-        usize::from(DEATHMATCH_SLOTS)
+        usize::from(self.session.rules.slots)
     }
 
     fn current_tick(&self) -> u64 {
@@ -119,25 +129,57 @@ impl GameSimulation for DeathmatchHost {
     }
 }
 
-/// One match a host serves: its route ID and its map. Written `<id>` (on [`MapId::DEFAULT`])
-/// or `<id>=<map>`.
+/// One match a host serves: its route ID, its map and its slot count. Written `<id>` (on
+/// [`MapId::DEFAULT`]) or `<id>=<map>`, either followed by `:<slots>` (default
+/// [`DEATHMATCH_SLOTS`]; [`build_host`] refuses more than the map's [`MapId::max_slots`]).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatchSpec {
     pub id: String,
     pub map: MapId,
+    pub slots: u8,
 }
 
-impl std::str::FromStr for MatchSpec {
-    type Err = UnknownMap;
+/// A match spec that does not parse.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SpecError {
+    Map(UnknownMap),
+    /// The text after `:` is not a slot count.
+    Slots(String),
+}
 
-    fn from_str(spec: &str) -> Result<Self, UnknownMap> {
+impl std::fmt::Display for SpecError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Map(error) => error.fmt(formatter),
+            Self::Slots(text) => write!(formatter, "{text:?} is no slot count"),
+        }
+    }
+}
+
+impl std::error::Error for SpecError {}
+
+impl std::str::FromStr for MatchSpec {
+    type Err = SpecError;
+
+    fn from_str(spec: &str) -> Result<Self, SpecError> {
+        let (spec, slots) = match spec.rsplit_once(':') {
+            Some((spec, slots)) => (
+                spec,
+                slots
+                    .trim()
+                    .parse()
+                    .map_err(|_| SpecError::Slots(slots.trim().to_owned()))?,
+            ),
+            None => (spec, DEATHMATCH_SLOTS),
+        };
         let (id, map) = match spec.split_once('=') {
-            Some((id, map)) => (id.trim(), map.trim().parse()?),
+            Some((id, map)) => (id.trim(), map.trim().parse().map_err(SpecError::Map)?),
             None => (spec.trim(), MapId::DEFAULT),
         };
         Ok(Self {
             id: id.to_owned(),
             map,
+            slots,
         })
     }
 }
@@ -173,8 +215,8 @@ pub fn build_host(
     let mut host = MatchHost::new(matches.len()).map_err(BuildError::Host)?;
     for spec in matches {
         let route = MatchId::new(spec.id.clone()).map_err(BuildError::MatchId)?;
-        let simulation =
-            DeathmatchHost::new(spec.map, seed_of(&spec.id)).map_err(BuildError::Simulation)?;
+        let simulation = DeathmatchHost::new(spec.map, spec.slots, seed_of(&spec.id))
+            .map_err(BuildError::Simulation)?;
         host.insert(route, MatchRuntime::new(simulation, reconnect_grace_ticks))
             .map_err(|failure| BuildError::Host(failure.into_parts().0))?;
     }
@@ -191,7 +233,7 @@ mod tests {
     #[test]
     fn two_people_join_a_bot_match_and_move() {
         let mut runtime = MatchRuntime::new(
-            DeathmatchHost::new(MapId::Greybox, seed_of("dm")).unwrap(),
+            DeathmatchHost::new(MapId::Greybox, DEATHMATCH_SLOTS, seed_of("dm")).unwrap(),
             300,
         );
         let first = runtime
@@ -239,20 +281,48 @@ mod tests {
         assert_eq!(host.len(), 2);
         assert!(build_host(&specs(&["bad id!"]), 120).is_err());
         assert_ne!(seed_of("dm"), seed_of("dm-2"));
+        let max = MapId::Greybox.max_slots();
+        assert!(build_host(&specs(&["duel:2", &format!("big:{max}")]), 120).is_ok());
+        assert!(build_host(&specs(&["none:0"]), 120).is_err());
+        assert!(build_host(&specs(&[&format!("crowd:{}", max + 1)]), 120).is_err());
     }
 
     #[test]
-    fn a_match_spec_names_its_map() {
+    fn a_match_takes_its_slot_count() {
+        for slots in [2, 6, DEATHMATCH_SLOTS] {
+            let host = DeathmatchHost::new(MapId::Greybox, slots, seed_of("dm")).unwrap();
+            assert_eq!(host.max_players(), usize::from(slots));
+            assert_eq!(host.session().fighters.len(), usize::from(slots));
+        }
+    }
+
+    #[test]
+    fn a_match_spec_names_its_map_and_slots() {
         let spec = |text: &str| text.parse::<MatchSpec>();
         assert_eq!(
             spec("dm"),
             Ok(MatchSpec {
                 id: "dm".to_owned(),
-                map: MapId::DEFAULT
+                map: MapId::DEFAULT,
+                slots: DEATHMATCH_SLOTS,
             })
         );
         assert_eq!(spec(" arena = greybox ").unwrap().map, MapId::Greybox);
-        assert_eq!(spec("dm=nowhere"), Err(UnknownMap("nowhere".to_owned())));
+        assert_eq!(spec("dm=greybox:8").unwrap().slots, 8);
+        assert_eq!(
+            spec("dm:4"),
+            Ok(MatchSpec {
+                id: "dm".to_owned(),
+                map: MapId::DEFAULT,
+                slots: 4,
+            })
+        );
+        assert_eq!(
+            spec("dm=nowhere"),
+            Err(SpecError::Map(UnknownMap("nowhere".to_owned())))
+        );
+        assert_eq!(spec("dm:many"), Err(SpecError::Slots("many".to_owned())));
         assert!(spec("dm=").is_err());
+        assert!(spec("dm:").is_err());
     }
 }

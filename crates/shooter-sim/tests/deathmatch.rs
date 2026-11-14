@@ -25,7 +25,13 @@ fn bot_match(seed: u64, ticks: u32) -> Session {
 
 #[test]
 fn bots_fight_score_and_respawn() {
-    let mut session = Session::with_rules(Arena::greybox(), Rules::deathmatch(7)).unwrap();
+    // No frag limit: twelve bots reach it within the 90 s, and a fresh round clears the scores.
+    let rules = Rules {
+        frag_limit: 0,
+        ..Rules::deathmatch(7)
+    };
+    let mut session = Session::with_rules(Arena::greybox(), rules).unwrap();
+    assert_eq!(session.fighters.len(), 12);
     let (mut kills, mut shots, mut spawns) = (0, 0, 0);
     for _ in 0..90 * 60 {
         session.step().unwrap();
@@ -41,7 +47,7 @@ fn bots_fight_score_and_respawn() {
     println!("{shots} shots, {kills} kills, {spawns} respawns");
     assert!(shots > 100, "{shots} shots");
     assert!(kills >= 3, "{kills} kills in 90 s");
-    assert!(spawns >= kills - 6, "{spawns} respawns for {kills} kills");
+    assert!(spawns >= kills - 12, "{spawns} respawns for {kills} kills");
     let deaths: i32 = session.fighters.iter().map(|f| f.deaths).sum();
     assert!(deaths > 0);
     for fighter in &session.fighters {

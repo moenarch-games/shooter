@@ -180,7 +180,9 @@ impl Arena {
             },
         ];
         // Deathmatch spawns round the hall, each facing the platform: the north, east and west
-        // walls' middles, the four corners and the platform's top.
+        // walls' middles, the four corners, the platform's top and one more along each wall (a
+        // pinwheel between the middles and the corners). With the first one that is a point of
+        // its own for each of a 12-slot match's fighters at the start of a round, and one spare.
         let spawns = vec![
             spawn_at([0, 0, -1_700], 0),
             spawn_at([1_700, 0, 0], 49_152),
@@ -190,6 +192,10 @@ impl Arena {
             spawn_at([1_600, 0, 1_600], 40_960),
             spawn_at([-1_600, 0, -1_600], 8_192),
             spawn_at([0, 200, -200], 32_768),
+            spawn_at([800, 0, 1_600], 37_604),
+            spawn_at([-800, 0, -1_700], 4_588),
+            spawn_at([1_700, 0, -800], 53_740),
+            spawn_at([-1_700, 0, 800], 20_972),
         ];
         Self {
             half_size,

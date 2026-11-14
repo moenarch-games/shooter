@@ -1,7 +1,7 @@
 //! Records, verifies and promotes deterministic match replays (docs/foundation-data.md).
 //!
 //! ```text
-//! shooter-replay record [--map ID] [--seed N] [--ticks N] [--people N] [--latency N] [-o FILE]
+//! shooter-replay record [--map ID] [--slots N] [--seed N] [--ticks N] [--people N] [--latency N] [-o FILE]
 //! shooter-replay verify FILE
 //! shooter-replay promote FILE --target game-server|physics|render [--from T] [--to T] -o OUT
 //! ```
@@ -19,7 +19,7 @@ use std::time::Instant;
 use std::{env, fs};
 
 const USAGE: &str =
-    "usage: shooter-replay record [--map ID] [--seed N] [--ticks N] [--people N] [--latency N] [-o FILE]
+    "usage: shooter-replay record [--map ID] [--slots N] [--seed N] [--ticks N] [--people N] [--latency N] [-o FILE]
        shooter-replay verify FILE
        shooter-replay promote FILE --target game-server|physics|render [--from T] [--to T] -o OUT";
 
@@ -75,6 +75,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .flags
                     .get("map")
                     .map_or(Ok(Script::DEFAULT.map), |map| map.parse())?,
+                slots: args.number("slots", Script::DEFAULT.slots)?,
                 seed: args.number("seed", Script::DEFAULT.seed)?,
                 ticks: args.number("ticks", Script::DEFAULT.ticks)?,
                 people: args.number("people", Script::DEFAULT.people)?,
@@ -85,8 +86,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let elapsed = started.elapsed();
             let bytes = replay.encode()?;
             println!(
-                "{}: {} ticks, {} records, {} bytes, {:.1} ms ({:.3} ms a tick)",
+                "{}, {} slots: {} ticks, {} records, {} bytes, {:.1} ms ({:.3} ms a tick)",
                 replay.map,
+                replay.slots,
                 replay.ticks(),
                 replay.log.records().len(),
                 bytes.len(),

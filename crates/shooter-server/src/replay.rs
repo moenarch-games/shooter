@@ -8,9 +8,9 @@
 //! the whole match on its map, and [`verify`] replays it into a fresh [`DeathmatchHost`] and checks every
 //! tick. Nothing here comes from real players.
 //!
-//! A file is `SHRP`, a format byte, the bot seed (u64 big-endian), the map ID (a length byte and
-//! its [`MapId::as_str`]) and the game-server log. A file naming a map this build does not know
-//! is rejected.
+//! A file is `SHRP`, a format byte, the bot seed (u64 big-endian), the slot count (a byte), the
+//! map ID (a length byte and its [`MapId::as_str`]) and the game-server log. A file naming a map
+//! this build does not know is rejected.
 //! [`crate::promote`] turns a replay into fixtures for the foundation crates.
 
 use crate::DeathmatchHost;
@@ -19,20 +19,23 @@ use game_server::{
     ReplayRecord, ReplayVerification, SimulationError, verify_replay,
 };
 use shooter_sim::scenarios::{scripted_build, scripted_intent};
+use shooter_sim::session::DEATHMATCH_SLOTS;
 use shooter_sim::wire::encode_input;
 use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
-const FORMAT: u8 = 2;
-/// The magic, the format byte and the seed; the map follows.
-const HEADER_BYTES: usize = MAGIC.len() + 1 + 8;
+const FORMAT: u8 = 3;
+/// The magic, the format byte, the seed and the slot count; the map follows.
+const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 
 /// How a scripted match is played.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Script {
     /// The map it is played on.
     pub map: MapId,
+    /// The match's slots (bots in every one no scripted person holds).
+    pub slots: u8,
     /// Seeds the bots.
     pub seed: u64,
     /// Ticks to play (60 per second).
@@ -48,6 +51,7 @@ impl Script {
     /// 30 s of the `replay` match with two scripted people at 100 ms.
     pub const DEFAULT: Self = Self {
         map: MapId::DEFAULT,
+        slots: DEATHMATCH_SLOTS,
         seed: 0x7265_706c_6179,
         ticks: 30 * 60,
         people: 2,
@@ -73,10 +77,12 @@ impl Script {
 /// Ticks a disconnected scripted person keeps their slot before game-server removes them.
 const RECONNECT_GRACE_TICKS: u64 = 30;
 
-/// A recorded match: its map, the bot seed and game-server's log of everything else.
+/// A recorded match: its map, its slot count, the bot seed and game-server's log of everything
+/// else.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Replay {
     pub map: MapId,
+    pub slots: u8,
     pub seed: u64,
     pub log: ReplayLog,
 }
@@ -126,7 +132,7 @@ fn rejected(error: impl fmt::Display) -> Error {
 ///
 /// If the arena does not build or game-server rejects a step.
 pub fn record(script: Script) -> Result<Replay, Error> {
-    let host = DeathmatchHost::new(script.map, script.seed)?;
+    let host = DeathmatchHost::new(script.map, script.slots, script.seed)?;
     let mut runtime = MatchRuntime::new_with_replay_capture(host, RECONNECT_GRACE_TICKS);
     let mut leases = vec![None; usize::from(script.people)];
     let mut sequences = vec![0_u32; usize::from(script.people)];
@@ -170,6 +176,7 @@ pub fn record(script: Script) -> Result<Replay, Error> {
         .ok_or(Error::Runtime("replay capture is off".to_owned()))?;
     Ok(Replay {
         map: script.map,
+        slots: script.slots,
         seed: script.seed,
         log,
     })
@@ -186,6 +193,7 @@ impl Replay {
         bytes.extend_from_slice(MAGIC);
         bytes.push(FORMAT);
         bytes.extend_from_slice(&self.seed.to_be_bytes());
+        bytes.push(self.slots);
         let map = self.map.as_str().as_bytes();
         bytes.push(u8::try_from(map.len()).map_err(|_| Error::Format("map ID too long"))?);
         bytes.extend_from_slice(map);
@@ -204,7 +212,8 @@ impl Replay {
             return Err(Error::Format("unknown format"));
         }
         let mut seed = [0; 8];
-        seed.copy_from_slice(&bytes[MAGIC.len() + 1..HEADER_BYTES]);
+        seed.copy_from_slice(&bytes[MAGIC.len() + 1..HEADER_BYTES - 1]);
+        let slots = bytes[HEADER_BYTES - 1];
         let rest = &bytes[HEADER_BYTES..];
         let (&length, rest) = rest.split_first().ok_or(Error::Format("no map ID"))?;
         let (map, log) = rest
@@ -216,6 +225,7 @@ impl Replay {
             .map_err(Error::Map)?;
         Ok(Self {
             map,
+            slots,
             seed: u64::from_be_bytes(seed),
             log: ReplayLog::decode(log)?,
         })
@@ -238,7 +248,7 @@ impl Replay {
         until: u64,
         mut observe: impl FnMut(&Session) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        let mut host = DeathmatchHost::new(self.map, self.seed)?;
+        let mut host = DeathmatchHost::new(self.map, self.slots, self.seed)?;
         for record in self.log.records() {
             match record {
                 ReplayRecord::PlayerAdmitted { player_id, .. } => host.add_player(*player_id)?,
@@ -275,7 +285,7 @@ impl Replay {
 /// If the arena does not build or any tick diverges.
 pub fn verify(replay: &Replay) -> Result<ReplayVerification, Error> {
     Ok(verify_replay(
-        DeathmatchHost::new(replay.map, replay.seed)?,
+        DeathmatchHost::new(replay.map, replay.slots, replay.seed)?,
         &replay.log,
     )?)
 }
@@ -334,6 +344,31 @@ mod tests {
         let mut replay = record(short()).unwrap();
         replay.seed ^= 1;
         assert!(verify(&replay).is_err());
+        let mut replay = record(short()).unwrap();
+        replay.slots -= 1;
+        assert!(
+            verify(&replay).is_err(),
+            "the slot count is part of the match"
+        );
+    }
+
+    #[test]
+    fn a_replay_restores_its_slot_count() {
+        assert_eq!(Script::DEFAULT.slots, 12);
+        for slots in [4, DEATHMATCH_SLOTS] {
+            let replay = record(Script { slots, ..short() }).unwrap();
+            let decoded = Replay::decode(&replay.encode().unwrap()).unwrap();
+            assert_eq!(decoded.slots, slots);
+            assert_eq!(verify(&decoded).unwrap().checkpoints_verified, 600);
+            let mut fighters = 0;
+            decoded
+                .play(1, |session| {
+                    fighters = session.fighters.len();
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(fighters, usize::from(slots));
+        }
     }
 
     #[test]
