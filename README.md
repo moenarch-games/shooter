@@ -40,7 +40,7 @@ six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower)
 person holds. A kill scores a frag; dying by your own rocket, your own battery's blast or a fall costs one. The dead respawn after 2 s at the spawn point
 farthest from everyone else. A round ends at 15 frags or after 5 minutes, the scores show for 8 s
 and a fresh round starts. A fighter is its robot build with per-part health (below, **Part
-damage**): destroying its core is the kill. Each fighter is drawn as its robot build (below, **Robot
+damage**): destroying its root chassis is the kill. Each fighter is drawn as its robot build (below, **Robot
 models**), its weapons and mods from asset-tooling's weapons kit; the sounds are placeholders
 until asset-tooling delivers them.
 
@@ -114,8 +114,8 @@ the host's reconnect grace. A public host is described in [docs/hosting.md](docs
 
 Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
-mouse. Steer in the air with WASD. The HUD (the core's health and the parts damaged and lost, energy, weapon, frags and place, the round clock, the
-carried module and its uses left, the kill and pickup feed) is the page's overlay in the browser and the window title plus a core health bar natively,
+mouse. Steer in the air with WASD. The HUD (the root chassis' health and the parts damaged and lost, energy, weapon, frags and place, the round clock, the
+carried module and its uses left, the kill and pickup feed) is the page's overlay in the browser and the window title plus a chassis health bar natively,
 until render-engine draws screen overlays.
 
 **Camera and aim.** Native and browser clients share one third-person follow camera
@@ -159,14 +159,15 @@ away. The reach, arc and height band are the values of mmorpg's player swing. Yo
 is drawn and heard as soon as you press; the host decides what it strikes.
 
 **Robot builds.** The simulation already knows the beta's free-form robot build
-(`shooter_sim::robot`, Atlas D2.i70.1, D2.i70.2): one component tree assembled on universal
+(`shooter_sim::robot`, Atlas D2.i70.1, D2.i89.1): one component tree assembled on universal
 sockets, one per 20 cm surface cell (a 20 × 40 × 80 cm chassis has 28). Each part has a stable ID,
 one parent socket and an exact orientation (binary angles, stored in one canonical form); a larger
 part reserves its footprint of neighbouring cells on its parent's face, and no two parts may
-claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints, the control core, a battery, a sensor, legs, wheels, tracks, an armor plate and the eight
-shipped weapons. A build is valid with one chassis root, no cycles, exactly one control core on
-any free socket, each weapon at most once, at most 32 parts and at most 120 build points; there is
-no power, heat or cooling budget. Nothing requires locomotion: tanks, four-legged dogs,
+claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints, a battery, a sensor, legs, wheels, tracks, an armor plate and the eight
+shipped weapons. A build is valid with one chassis root, no cycles, each weapon at most once, at
+most 32 parts and at most 110 build points; there is no power, heat or cooling budget. The root
+chassis is the robot's vital part (Atlas D2.i89.1, #89): there is no separate control core, and a
+build naming the retired core (part code 30) is rejected as an unknown part. Nothing requires locomotion: tanks, four-legged dogs,
 humanoids, stationary turrets and grappling-only machines are all valid. Every fighter starts as
 the standard build; a person's command may ask for another, which the host validates (an invalid
 one rejects the command) and applies at that fighter's next spawn, never while it is alive.
@@ -176,12 +177,13 @@ asset kits, and a build does not yet change movement or the arsenal: every fight
 every weapon, and there is no builder screen yet.
 
 **Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
-D2.i70.4): the control core stores 100 and regenerates 24 a second, and each battery (a
+D2.i70.4, D2.i89.1): the root chassis stores 100 and regenerates 24 a second (other chassis
+sections nothing), and each battery (a
 20 × 40 × 20 cm part, 5 build points, 20 kg) adds 60 stored energy and nothing else. A robot
 spawns with its pool full. Every activation pays from it: a rifle bolt 2, a rail shot 30, a
 rocket 20, a grapple hook 10, a blade swing 5, a shotgun blast 12, and the laser and the
-flamethrower 0.6 and 0.5 every tick they burn (36 and 30 a second, more than the core
-regenerates). A request is granted whole or not at all: with too little energy the shot, swing or
+flamethrower 0.6 and 0.5 every tick they burn (36 and 30 a second, more than the root
+chassis regenerates). A request is granted whole or not at all: with too little energy the shot, swing or
 hook simply does not happen (no cooldown is spent) and works again once regeneration has paid for
 it; the charge never goes below zero. Within a tick a robot's requests go first come, first
 served in a fixed order: a thruster jump, then the blade swing, then the gun (provisional, Atlas
@@ -192,9 +194,10 @@ with a part it hung from) takes its capacity and its share of the charge with it
 destroyed one also blasts its neighbours (below, **Part damage**). Motors draw from the same
 pool (below).
 
-**Part damage** (`shooter_sim::damage`, Atlas D2.i70.2, D2.i70.8, #56). Every part of a build
-has its own health (provisional, Atlas Q2.i70.1: chassis 120, 160 and 200 by size, beams 50 and
-60, hinge and rotor 40, core 100, battery 60, sensor 30, leg 70, wheel 50, track 90, armor plate
+**Part damage** (`shooter_sim::damage`, Atlas D2.i89.1, D2.i70.8, #56, #89). Every part of a
+build has its own health (provisional, Atlas Q2.i70.1: chassis 270, 290 and 310 by size, so a front
+rail kill still takes four hits, or three overcharged; beams 50 and 60, hinge and rotor 40,
+battery 60, sensor 30, leg 70, wheel 50, track 90, armor plate
 120, light weapons 40, heavy ones 60). The host places each fighter's parts as boxes where the
 simulation lays out its build, standing on the capsule's feet and facing its look (the capsule
 still moves it; the mechanical robots do not drive fighters yet, #73), and resolves every strike
@@ -206,18 +209,18 @@ provisional). A blast (a rocket's splash, a battery's) hurts every part within r
 falloff to that part; the blade and the flame strike the part nearest the attacker's eye.
 Lag-compensated shots and swings place the parts at the centre and facing the shooter saw. A part
 works fully until zero; then it is destroyed for the rest of that life and everything no longer
-connected to the core through the part tree falls away with it (the core is a leaf, so breaking
-an arm drops the arm and its weapon, and breaking the root chassis drops everything but the
-core). Destroying the core is the only kill; respawn restores the configured build whole. A lost
+connected to the root chassis through the part tree falls away with it (breaking an arm drops the
+arm and its weapon; another chassis section is ordinary structure). Destroying the root chassis
+is the only kill; respawn restores the configured build whole. A lost
 weapon part no longer fires or swings (a gun the build never carried still fires as shipped:
 every fighter keeps the full arsenal); a destroyed battery sets off a small blast (40 at its
 centre, 0.8 m; provisional, Atlas Q2.i70.5) through the same damage, and a battery it destroys
 blasts in turn, once each; a robot with no connected leg, wheel or track cannot walk, jump or
-slide but stays alive while its core does. Losing some of its legs changes nothing yet: how the
+slide but stays alive while its root chassis does. Losing some of its legs changes nothing yet: how the
 surviving ones move it is the mechanical robots' (#73), and the capsule invents no fallback.
 Snapshots carry every part's health (the lost parts follow from it), with a hit's part and each
 detachment as events; the client's prediction takes the host's part state, replays reproduce it
-and bots aim at their target's core and switch off a lost gun.
+and bots aim at their target's root chassis and switch off a lost gun.
 
 **Mechanics** (`shooter_sim::mechanics`, Atlas D2.i70.5, the first half of #73). The simulation
 can build any valid robot as a mechanical one in a dynamic world of its own
@@ -244,7 +247,7 @@ bindings (#74). Masses, torques, rates, draws and gait timings are provisional; 
 (66 joints) steps in about 0.16 ms a tick natively on physics-engine (0.20 ms on Rapier).
 
 **Robot models** (`shooter_client::robots`, #54). Both clients draw every fighter as its validated
-build from two asset-tooling kits: `shooter-combat-robot` (the chassis, beams, hinge, rotor, core,
+build from two asset-tooling kits: `shooter-combat-robot` (the chassis, beams, hinge, rotor,
 sensor, battery, the armor plate and its damaged look, and the rigged leg with its walk clips) and
 `shooter-weapons` (the eight weapons, rigged with their states and glow channels, and the four
 mods). Each release is pinned by SHA-256 (`assets/robot-kit.pin.json`,
@@ -253,7 +256,9 @@ and `target/weapon-kit` for the native client (`$SHOOTER_ROBOT_KIT` and `$SHOOTE
 others) and `scripts/build-web.sh` puts each kit's release tar in `web/dist`, which the browser
 fetches in one request a kit and reads in memory. Every file is checked against the bundles' pins
 and bounds (4 MiB a file, 8 MiB a load, 16 MiB and 30 s a tar in the browser), every kit key must
-be a catalog part or mod, every catalog mod a weapons-kit entry and every catalog part a kit entry
+be a catalog part or mod (or a robot-kit part the simulation retired, listed by name and skipped:
+the pinned release still ships the removed control core, `robot.core`, until a kit release drops
+it), every catalog mod a weapons-kit entry and every catalog part a kit entry
 or a declared placeholder; otherwise the load fails, the HUD says why and the fighters stay
 boxes. Each part sits where the simulation places it (`mechanics::placements`), so loadouts look
 different, and each mod sits on its weapon's anchor from the weapons kit's descriptor. Wheels and
@@ -292,7 +297,7 @@ mod. A mod that does not fit its weapon rejects the build. Pick a named loadout
 with `--loadout <name>` natively or `&loadout=<name>` in the browser (the join overlay's loadout
 field): `standard`, `heavy` (with a battery: 160 energy), `skirmisher` (rapid-cycler rifle,
 efficiency-coiled shotgun) or `marksman` (long-barrel rifle along an arm, overcharged rail gun:
-two hits a kill instead of three, on the core's 100), each a humanoid component tree. Practice
+three hits a front kill instead of four, on the root chassis), each a humanoid component tree. Practice
 starts as it; online the host applies it at your next spawn. The HUD's status line shows the held
 weapon's mod and every equipped one.
 
@@ -334,7 +339,7 @@ biped and quadruped presets, badly mounted legs, motor energy draw, and that a r
 and a replay continue bit for bit.
 `cargo test -p shooter-sim --test robot` checks the sockets and canonical orientations, valid
 builds of every form (the loadouts, a mini-tank, a robo-dog, a humanoid, stationary and
-grappling-only machines), every rejection (core, cycles, double parents, overlaps, the part
+grappling-only machines), every rejection (the retired core code, cycles, double parents, overlaps, the part
 ceiling, mods), the budgets at their limits, tampered builds on the wire, modded fire and builds
 through a replayed match; the A/B also runs the shooting and close ranges as the modded loadouts.
 `cargo test -p shooter-sim --test pickups` checks contested pads, pad respawn, modules lasting a

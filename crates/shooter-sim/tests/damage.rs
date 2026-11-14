@@ -1,14 +1,14 @@
-//! Per-part damage on the host (`shooter_sim::damage`, Atlas D2.i70.2, D2.i70.8): which part a
+//! Per-part damage on the host (`shooter_sim::damage`, Atlas D2.i89.1, D2.i70.8): which part a
 //! shot from the front or the side strikes, splash on every part in reach once, armor plates
 //! and penetration, several parts lost at once and what they take with them (weapons that no
-//! longer fire, a robot that no longer walks), the core as the only kill and respawn restoring
-//! the build, a destroyed battery's energy and blast, the wire and a predictor following the
+//! longer fire, a robot that no longer walks), the root chassis as the only kill and respawn
+//! restoring the build, a destroyed battery's energy and blast, the wire and a predictor following the
 //! host, and bot matches that lose parts and replay exactly.
 
 use shooter_sim::damage::{BATTERY_BLAST_DAMAGE, PartDamage};
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
-use shooter_sim::robot::parts::{ARMOR_PLATE, CHASSIS_S};
+use shooter_sim::robot::parts::{ARMOR_PLATE, CHASSIS_L, CHASSIS_S, SENSOR};
 use shooter_sim::robot::{BETA, Face, HEAVY, PartId, RawMount, RawPart, STANDARD};
 use shooter_sim::trig;
 use shooter_sim::weapons::{SPLASH_DAMAGE, Weapon};
@@ -337,21 +337,21 @@ fn several_parts_come_off_at_once_and_lost_weapons_cannot_fire() {
 }
 
 #[test]
-fn losing_the_chassis_leaves_the_core_alive_and_immobile_and_the_core_is_the_kill() {
+fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_the_kill() {
     let mut session = duel();
-    let chest = |session: &Session| part_center(session, 1, PartId(0));
-    shoot(&mut session, Weapon::RailGun, 32_768, chest);
-    let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
-    // The root breaks: everything but the core (a leaf on it) falls away; B lives on.
-    let lost = detached(&events);
-    assert_eq!(lost.len(), STANDARD.parts().len() - 1, "{lost:?}");
-    assert_eq!(lost[0], (PartId(0), true));
-    assert!(lost.iter().all(|(part, _)| *part != PartId(1)));
+    // Each leg (70) breaks to one rail beam and comes off alone; B lives on without them.
+    for leg in [PartId(5), PartId(6)] {
+        let events = shoot(&mut session, Weapon::RailGun, 32_768, |session| {
+            part_center(session, 1, leg)
+        });
+        assert_eq!(struck(&events), [(leg, 85)]);
+        assert_eq!(detached(&events), [(leg, true)]);
+    }
     let b = &session.fighters[1];
     assert!(b.alive());
-    assert_eq!(b.core_health(), 100);
+    assert_eq!(b.chassis_health(), 270);
     assert!(!b.parts.mobile(&b.build));
-    assert!(b.parts.weapon_lost(&b.build, Weapon::Shotgun));
+    assert!(!b.parts.weapon_lost(&b.build, Weapon::Shotgun));
     // It cannot walk or jump (no leg, wheel or track), only turn.
     let before = session.fighters[1].player.center(&session.world);
     for _ in 0..60 {
@@ -369,12 +369,17 @@ fn losing_the_chassis_leaves_the_core_alive_and_immobile_and_the_core_is_the_kil
         (0..3).all(|axis| (after[axis] - before[axis]).abs() < 0.5),
         "{before:?} {after:?}"
     );
-    // The core, exposed now, is the kill: two rail hits.
-    let core = |session: &Session| part_center(session, 1, PartId(1));
-    let events = shoot(&mut session, Weapon::RailGun, 32_768, core);
-    assert_eq!(struck(&events), [(PartId(1), 85)]);
-    assert!(session.fighters[1].alive());
-    let events = shoot(&mut session, Weapon::RailGun, 32_768, core);
+    // The root chassis (270) is the kill: four rail beams to it, the fourth kills.
+    let chest = |session: &Session| part_center(session, 1, PartId(0));
+    for left in [185, 100, 15] {
+        let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
+        assert_eq!(struck(&events), [(PartId(0), 85)]);
+        assert!(detached(&events).is_empty());
+        assert!(session.fighters[1].alive());
+        assert_eq!(session.fighters[1].chassis_health(), left);
+    }
+    let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
+    assert_eq!(struck(&events), [(PartId(0), 85)]);
     assert!(events.contains(&Event::Killed {
         victim: 1,
         killer: Some(0),
@@ -391,12 +396,57 @@ fn losing_the_chassis_leaves_the_core_alive_and_immobile_and_the_core_is_the_kil
 }
 
 #[test]
+fn another_chassis_section_is_ordinary_structure_and_only_the_root_is_vital() {
+    // The large chassis as the root, a small one on its roof and a sensor on top of that.
+    let socket = |on: &shooter_sim::robot::PartType, face, u, v| on.socket(face, u, v).unwrap().0;
+    let part = |id, kind: &shooter_sim::robot::PartType, parent, socket| RawPart {
+        id,
+        kind: kind.id.0,
+        mount: Some(RawMount {
+            parent,
+            socket,
+            ..RawMount::default()
+        }),
+        modification: None,
+    };
+    let build = BETA
+        .validate(&shooter_sim::robot::Candidate {
+            parts: vec![
+                RawPart {
+                    id: 0,
+                    kind: CHASSIS_L.id.0,
+                    mount: None,
+                    modification: None,
+                },
+                part(1, &CHASSIS_S, 0, socket(&CHASSIS_L, Face::PosZ, 0, 0)),
+                part(2, &SENSOR, 1, socket(&CHASSIS_S, Face::PosZ, 0, 0)),
+            ],
+        })
+        .unwrap();
+    let mut damage = PartDamage::fresh(&build);
+    assert_eq!(PartDamage::root(&build), Some(0));
+    assert_eq!(damage.chassis_health(&build), CHASSIS_L.health);
+    // The section breaks: it and the sensor on it fall away, the robot lives.
+    let change = damage.hurt(&build, 1, i32::from(CHASSIS_S.health)).unwrap();
+    assert!(change.destroyed);
+    assert_eq!(change.lost, 0b110);
+    assert!(damage.attached(0));
+    assert_eq!(damage.chassis_health(&build), CHASSIS_L.health);
+    // The root breaks: everything is lost and its health, the robot's life, is gone.
+    let change = damage.hurt(&build, 0, i32::from(CHASSIS_L.health)).unwrap();
+    assert!(change.destroyed);
+    assert_eq!(change.lost, 0b001);
+    assert_eq!(damage.lost(), 0b111);
+    assert_eq!(damage.chassis_health(&build), 0);
+}
+
+#[test]
 fn a_destroyed_battery_takes_its_energy_once_and_blasts_its_neighbours() {
     let mut session = duel();
     rebuild(&mut session, 1, HEAVY);
     let battery = PartId(11);
     assert_eq!(session.fighters[1].pool().capacity, 160_000);
-    // B turned away: its battery (60) on its back beside the core faces A.
+    // B turned away: its battery (60) on its back faces A.
     let events = shoot(&mut session, Weapon::RailGun, 0, |session| {
         part_center(session, 1, battery)
     });
@@ -408,15 +458,16 @@ fn a_destroyed_battery_takes_its_energy_once_and_blasts_its_neighbours() {
         .filter(|event| matches!(event, Event::Exploded { .. }))
         .count();
     assert_eq!(blasts, 1);
-    // The blast hurts its neighbours (the core beside it among them) through the same damage,
-    // each part once, by at most the blast's damage, credited to A.
-    let core = hits
+    // The blast hurts its neighbours (the root chassis it sits on among them) through the same
+    // damage, each part once, by at most the blast's damage, credited to A.
+    let chassis = hits
         .iter()
-        .find(|(part, _)| *part == PartId(1))
-        .expect("the blast reached the core");
-    assert!((1..=BATTERY_BLAST_DAMAGE).contains(&core.1), "{hits:?}");
+        .find(|(part, _)| *part == PartId(0))
+        .expect("the blast reached the root chassis");
+    assert!((1..=BATTERY_BLAST_DAMAGE).contains(&chassis.1), "{hits:?}");
     let b = &session.fighters[1];
     assert!(b.alive());
+    assert_eq!(b.chassis_health(), 290 - u16::try_from(chassis.1).unwrap());
     // Its capacity and its share of the charge are gone: 160 full, 100 left.
     assert_eq!(b.pool().capacity, 100_000);
     assert_eq!(b.energy, 100_000);
@@ -446,12 +497,12 @@ fn part_damage_travels_in_snapshots_and_a_predictor_follows_it() {
     let me = *snapshot.slot(1).unwrap();
     assert_eq!(me.parts, host.fighters[1].parts);
     assert!(me.parts.weapon_lost(&me.build, Weapon::EnergyRifle));
-    assert_eq!(me.core_health(), 100);
+    assert_eq!(me.chassis_health(), 270);
     // A health above its part's is malformed, not stored.
     let mut tampered = host.snapshot();
     let fighter = &mut tampered.fighters[1];
     let mut health = fighter.parts.health().to_vec();
-    health[0] = 121;
+    health[0] = 271;
     assert!(PartDamage::from_health(&fighter.build, &health).is_err());
     // A predictor resuming from the snapshot takes the host's part damage: B's lost rifle does
     // not fire there either, its shotgun does.

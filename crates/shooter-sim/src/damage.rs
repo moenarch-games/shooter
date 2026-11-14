@@ -1,17 +1,15 @@
-//! Per-part damage (Atlas D2.i70.2, D2.i70.8): every part of a robot's build has its own
+//! Per-part damage (Atlas D2.i89.1, D2.i70.8): every part of a robot's build has its own
 //! health, strikes land on the parts they meet, a part at zero is destroyed and falls away with
-//! everything that hung from it, and the core is the only kill.
+//! everything that hung from it, and the root chassis is the only kill.
 //!
 //! **State** ([`PartDamage`]): one health a part (in the build's part-ID order) and which parts
 //! are lost. A part works fully until its health reaches zero (no gradual degradation); at zero
-//! it is destroyed for the rest of that life. Lost means not connected to the core any more: the
-//! parts reachable from the core through the single-parent tree without crossing a destroyed
-//! part stay; the rest are lost, destroyed or not ([`PartDamage::lost`]). The core is always a
-//! leaf (it has no sockets), so this is the branch below the destroyed part whenever the core is
-//! not in that branch; when the destroyed part is one of the core's ancestors (the root chassis,
-//! say), it is the rest of the robot that falls away and the core stays, alive and incapacitated.
-//! Lost is derived from the healths alone, so the wire carries the healths only. Nothing comes
-//! back mid-life: health only goes down, and respawn restores the configured build
+//! it is destroyed for the rest of that life. Lost means not connected to the root chassis any
+//! more: the parts reachable from the root through the single-parent tree without crossing a
+//! destroyed part stay; the rest are lost, destroyed or not ([`PartDamage::lost`]). That is the
+//! subtree below the destroyed part; when the root chassis itself is destroyed, everything is
+//! lost and the robot is dead. Lost is derived from the healths alone, so the wire carries the
+//! healths only. Nothing comes back mid-life: health only goes down, and respawn restores the configured build
 //! ([`PartDamage::fresh`]).
 //!
 //! **Hitboxes** ([`Hitboxes`]). The match's fighters still move on the capsule controller
@@ -35,7 +33,7 @@
 //! - The blade and the flame strike the one connected part nearest the attacker's eye (the
 //!   part's nearest point; ties by part ID, [`Hitboxes::nearest`]).
 //!
-//! **Consequences** (applied by [`crate::session`]): the core at zero kills the robot (the only
+//! **Consequences** (applied by [`crate::session`]): the root chassis at zero kills the robot (the only
 //! kill; a fall out of the arena still ends a life); a lost weapon part no longer fires (weapons
 //! a build does not carry still fire as shipped: every fighter keeps the full arsenal); a lost
 //! battery takes its capacity and its share of the charge with it, once, and a destroyed one
@@ -70,7 +68,7 @@ fn part_type(part: &Part) -> &'static PartType {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct PartDamage {
     health: [u16; MAX_PARTS],
-    /// Bit `i`: part `i` (by index) is no longer connected to the core.
+    /// Bit `i`: part `i` (by index) is no longer connected to the root chassis.
     lost: u32,
     len: u8,
 }
@@ -134,7 +132,8 @@ impl PartDamage {
         &self.health[..usize::from(self.len)]
     }
 
-    /// The parts no longer connected to the core (bits by index), the destroyed ones included.
+    /// The parts no longer connected to the root chassis (bits by index), the destroyed ones
+    /// included.
     #[must_use]
     pub const fn lost(&self) -> u32 {
         self.lost
@@ -146,19 +145,16 @@ impl PartDamage {
         index < self.len as usize && self.lost & (1 << index) == 0
     }
 
-    /// The core's index in `build`.
+    /// The root chassis' index in `build`: the vital part (D2.i89.1).
     #[must_use]
-    pub fn core(build: &Assembly) -> Option<usize> {
-        build
-            .parts()
-            .iter()
-            .position(|part| part_type(part).kind == Kind::Core)
+    pub fn root(build: &Assembly) -> Option<usize> {
+        build.parts().iter().position(|part| part.mount.is_none())
     }
 
-    /// The core's health (0 without one).
+    /// The root chassis' health: the robot's life (0 without one).
     #[must_use]
-    pub fn core_health(&self, build: &Assembly) -> u16 {
-        Self::core(build).map_or(0, |index| self.health[index])
+    pub fn chassis_health(&self, build: &Assembly) -> u16 {
+        Self::root(build).map_or(0, |index| self.health[index])
     }
 
     /// `build` carries `weapon` as a part and has lost it: it cannot fire.
@@ -179,8 +175,8 @@ impl PartDamage {
         })
     }
 
-    /// The parts no longer reachable from the core without crossing a destroyed part (all of
-    /// them once the core is destroyed).
+    /// The parts no longer reachable from the root chassis without crossing a destroyed part
+    /// (all of them once the root is destroyed).
     fn connect(&self, build: &Assembly) -> u32 {
         let parts = build.parts();
         let everything = if parts.len() >= 32 {
@@ -188,20 +184,18 @@ impl PartDamage {
         } else {
             (1u32 << parts.len()) - 1
         };
-        let Some(core) = Self::core(build).filter(|&core| self.health[core] > 0) else {
+        let Some(root) = Self::root(build).filter(|&root| self.health[root] > 0) else {
             return everything;
         };
-        let index = |id: PartId| parts.iter().position(|part| part.id == id);
-        let mut reached = 1u32 << core;
-        let mut stack = vec![core];
+        let mut reached = 1u32 << root;
+        let mut stack = vec![root];
         while let Some(at) = stack.pop() {
-            let parent = parts[at].mount.and_then(|mount| index(mount.parent));
             let children = parts
                 .iter()
                 .enumerate()
                 .filter(|(_, part)| part.mount.is_some_and(|mount| mount.parent == parts[at].id))
                 .map(|(child, _)| child);
-            for next in parent.into_iter().chain(children) {
+            for next in children {
                 if reached & (1 << next) == 0 && self.health[next] > 0 {
                     reached |= 1 << next;
                     stack.push(next);

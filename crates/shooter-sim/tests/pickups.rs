@@ -11,7 +11,7 @@ use shooter_sim::pickups::{
     THRUSTER_JUMP_SUBUNITS_PER_TICK, THRUSTER_JUMPS,
 };
 use shooter_sim::player::{JUMP_VELOCITY_SUBUNITS_PER_TICK, Motion, PLAYER_HALF_EXTENTS};
-use shooter_sim::robot::parts::CORE;
+use shooter_sim::robot::parts::CHASSIS_S;
 use shooter_sim::robot::{BETA, HEAVY, MARKSMAN, SKIRMISHER, STANDARD};
 use shooter_sim::scenarios;
 use shooter_sim::tour::{end_of, run_legs};
@@ -235,11 +235,12 @@ fn a_module_ends_with_its_carrier() {
     session.step().unwrap();
     assert!(session.fighters[0].carried.is_some());
     let taken_at = session.ticks();
-    // A's core is down to its last point; B's rocket at A's feet finishes it.
+    // A's root chassis is down to its last point; B's rocket at A's feet finishes it.
     let a = &mut session.fighters[0];
-    let core = PartDamage::core(&a.build).unwrap();
+    let chassis = PartDamage::root(&a.build).unwrap();
     let build = a.build;
-    a.parts.hurt(&build, core, i32::from(CORE.health) - 1);
+    a.parts
+        .hurt(&build, chassis, i32::from(CHASSIS_S.health) - 1);
     let mut killed = false;
     for sequence in 1..120 {
         session.queue(
@@ -461,26 +462,26 @@ fn the_rail_capacitor_hits_harder_through_lag_compensation_on_any_build() {
     assert_eq!(shot(SKIRMISHER, true), (None, Some(boosted)));
 }
 
-/// The yaw and pitch from A's eye to the centre of B's core, where the host places it.
+/// The yaw and pitch from A's eye to the centre of B's root chassis, where the host places it.
 #[allow(clippy::cast_possible_truncation)]
-fn at_core(session: &Session) -> (u16, i16) {
+fn at_chassis(session: &Session) -> (u16, i16) {
     let eye = session.fighters[0].player.eye(&session.world);
     let b = &session.fighters[1];
     let parts = b.hitboxes(b.player.center(&session.world), b.intent.yaw);
-    let core = parts
-        .get(PartDamage::core(&b.build).unwrap())
+    let chassis = parts
+        .get(PartDamage::root(&b.build).unwrap())
         .unwrap()
         .center;
-    let d = [0, 1, 2].map(|axis| core[axis] - eye[axis]);
+    let d = [0, 1, 2].map(|axis| chassis[axis] - eye[axis]);
     let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
     let run = d[0].hypot(d[2]).round() as i32;
     let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
     (yaw, pitch)
 }
 
-/// With the capacitor two rail hits kill and score (one through B's chassis, which falls away
-/// with all but the core, one on the core), recharging in three quarters of the time; the
-/// carrier's frags count like any other.
+/// With the capacitor three rail hits (127 each) kill and score on B's root chassis (270; two
+/// did while the chassis and then the control core had to break, before shooter#89), recharging in
+/// three quarters of the time; the carrier's frags count like any other.
 #[test]
 fn rail_capacitor_kills_score() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::RailCapacitor)]);
@@ -488,8 +489,8 @@ fn rail_capacitor_kills_score() {
     let mut kills = 0;
     for sequence in 1..=200 {
         let now = session.ticks();
-        // The rail gun comes up while A takes the capacitor, then fires at B's core.
-        let (yaw, pitch) = at_core(&session);
+        // The rail gun comes up while A takes the capacitor, then fires at B's root chassis.
+        let (yaw, pitch) = at_chassis(&session);
         let intent = Intent {
             fire: sequence > 10,
             yaw,
@@ -526,14 +527,15 @@ fn rail_capacitor_kills_score() {
         }
     }
     assert_eq!(kills, 1);
-    assert_eq!(shots.len(), 2, "{shots:?}");
+    assert_eq!(shots.len(), 3, "{shots:?}");
     // 72 ticks shipped, 54 with the capacitor.
     assert_eq!(shots[1] - shots[0], 54);
+    assert_eq!(shots[2] - shots[1], 54);
     assert_eq!(session.fighters[0].frags, 1);
     assert_eq!(session.fighters[1].deaths, 1);
     assert_eq!(
         session.fighters[0].carried.map(|c| c.uses_left),
-        Some(RAIL_CAPACITOR_SHOTS - 2)
+        Some(RAIL_CAPACITOR_SHOTS - 3)
     );
 }
 
@@ -588,8 +590,8 @@ fn the_rail_capacitor_is_spent_by_its_rail_shots() {
     assert_eq!(session.fighters[0].carried, None);
     let gaps: Vec<u32> = shots.windows(2).map(|pair| pair[1] - pair[0]).collect();
     // The boosted shots recharge in 54 ticks, but each costs 45 energy (150 % of the rail
-    // shot's 30) from the core's 100, which regenerates 0.4 a tick: two go out at the boosted
-    // pace, then a shot waits for the pool to hold 45 again (92 ticks, then 112.5 rounded up).
+    // shot's 30) from the root chassis' 100, which regenerates 0.4 a tick: two go out at the
+    // boosted pace, then a shot waits for the pool to hold 45 again (92 ticks, then 112.5 rounded up).
     // Unboosted, a shot costs 30 and the pool pays it every 75 ticks, a little slower than the
     // rail gun's own 72.
     assert_eq!(gaps[..boosted - 1], [54, 54, 92, 113], "{gaps:?}");

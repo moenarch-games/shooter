@@ -62,8 +62,8 @@ implemented yet.
   robot's actual abilities and movement in physically believable, authored ways. Robots can be
   repaired during combat (how, Q2.i46.2); respawn restores the configured build. Fully emergent
   physics-based self-balancing is later, not beta.
-  Superseded in part by D2.i70.2 (the core is the only kill), D2.i70.8 (damage and permanent
-  destruction) and D2.i70.9 (repair).
+  Superseded in part by D2.i70.2 (the core is the only kill; itself superseded by D2.i89.1, the
+  root chassis is), D2.i70.8 (damage and permanent destruction) and D2.i70.9 (repair).
 - **D2.i46.7** (owner, 2026-11-13): After death and before respawning a player may substantially
   reconfigure the robot; while alive, only repairs, not rebuilds.
   Respawn flow refined by D2.i70.11.
@@ -101,12 +101,14 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   connectivity, physical occupancy, core count (D2.i70.2) and the budgets. Stationary,
   asymmetrical, sideways-driving, grappling-only or otherwise unconventional robots are valid; no
   build is rejected, warned about or corrected for lacking standard locomotion. Owner: shooter#71.
+  The core count is gone with the core (D2.i89.1).
 - **D2.i70.2** (owner, 2026-11-13; shooter#70): Every robot has exactly one control core, on an
   exterior socket of the player's choice. Armor may cover it (penetration exists, D2.i70.8); there
   is no exposed-face check. Destroying the core, and only that, eliminates the robot: losing
   weapons, wheels, legs or batteries can incapacitate it but not kill it, and an immobile robot
   whose core survives stays alive. Placement and validation: shooter#71; the kill condition:
   shooter#56.
+  Superseded by D2.i89.1: there is no control core; the root chassis is the vital part.
 - **D2.i70.3** (owner, 2026-11-13; shooter#70; supersedes D2.i46.5's power constraint): The core
   holds a baseline energy capacity and regenerates it continuously. Optional battery modules add
   stored energy only, and have mass, build-point cost and component health. Every connected part
@@ -128,6 +130,8 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   ordinary part damage (a battery it destroys blasts in turn, once each; no chain-reaction
   subsystem). Since shooter#73's first half, motors draw from the pool too: a flat cost each commanded tick, in part-ID order
   (provisional).
+  Superseded in part by D2.i89.1: the root chassis, not a core, holds the baseline capacity and
+  regenerates it; batteries are unchanged.
 - **D2.i70.4** (owner, 2026-11-13; shooter#70; supersedes D2.i46.5's cooling constraint): The beta
   has no heat or cooling mechanic: weapons and parts are limited by energy (D2.i70.3) and
   cooldowns, not heat accumulation or cooling modules. The heat and cooling that ship today stay
@@ -183,6 +187,8 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   mechanical robots in the match (shooter#73's second half). The core's destruction is the kill
   (D2.i70.2), replacing fighter health. Snapshots, prediction and replays carry the part
   healths. Field repair is shooter#61, collision damage and physical debris shooter#75.
+  Since shooter#89 (D2.i89.1) lost means no longer connected to the root chassis: a destroyed
+  part takes its subtree with it, and the root chassis' destruction is the kill.
 - **D2.i70.9** (owner, 2026-11-13 and 2026-11-14; shooter#61; answers Q2.i46.2): Repair is done by
   physically mounted repair modules (mass, health, build points) that the player activates
   manually. A module restores, over time and for energy from the shared pool (D2.i70.3), a
@@ -222,6 +228,25 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   Since shooter#72 the power, heat and cooling budgets are gone too, replaced by the shared energy
   pool (D2.i70.3, D2.i70.4); the heat sink became the efficiency coil and the heavy loadout carries
   a battery.
+  Since shooter#89 there is no core (D2.i89.1).
+
+The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
+
+- **D2.i89.1** (owner, 2026-11-14; shooter#89; supersedes D2.i70.2 and the core's role in
+  D2.i70.3): The chassis is the most important part of a robot; there is no separate control core.
+  The root chassis (the tree's root part, always a chassis) is the robot's vital part: its
+  destruction is the only kill (falling out of the arena still kills). Other chassis sections are
+  ordinary structure, and destroying any non-root part still disconnects its subtree. No mandatory
+  core, no exterior-socket rule and no core count; builds naming the retired core are rejected
+  (its code is retired, not reused). The shared pool's baseline capacity and regeneration come
+  from the root chassis; batteries still add storage. Armor may cover the root chassis;
+  penetration as before.
+  Ships since shooter#89: `robot.core` (code 30) is gone from the catalog; the root chassis holds
+  the core's former 100 energy and 24 a second; connectivity counts from the root chassis; bots
+  aim at it; the HUD shows its health. The chassis healths were raised so front kills take as
+  long as before (Q2.i70.1), and the build points fell by the core's 10 so every build keeps its
+  headroom. The pinned robot kit still ships a `robot.core` model, which the client skips by name
+  until a kit release drops it.
 
 ## 3. Platforms
 
@@ -271,7 +296,8 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   energy, batteries and the removal of heat shooter#72 (D2.i70.3, D2.i70.4); compound bodies,
   motors and self-contained legs shooter#73 (D2.i70.5); bindings and action groups shooter#74
   (D2.i70.7); collision damage and debris shooter#75 (D2.i70.10); per-part damage, armor,
-  penetration and the core kill shooter#56 (D2.i70.2, D2.i70.8); the builder and respawn flow
+  penetration and the core kill shooter#56 (D2.i70.2, D2.i70.8), the root chassis as the vital
+  part instead of a core shooter#89 (D2.i89.1); the builder and respawn flow
   shooter#57 (D2.i70.11); the locomotion set shooter#58 (D2.i70.6); field repair shooter#61
   (D2.i70.9); contested pickups shooter#62. shooter#63 is the integration gate that proves them
   together; it owns no capability itself.
@@ -359,6 +385,12 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   part behind it: rail gun 50 %, energy rifle and laser 20 %, every other weapon 0. The weapons'
   damage is unchanged (rifle 12, rail 85, rocket splash up to 100 within 3 m, pellets 9, laser
   2 and flame 3 a tick, blade 50); the old 200 fighter health is gone.
+  Since shooter#89 (D2.i89.1) there is no core: 110 build points (120 less the core's 10, so every
+  build keeps its headroom); the root chassis stores the core's 100 and regenerates its 24 a
+  second (other chassis sections nothing); chassis health 270, 290 and 310 by size (was 120, 160
+  and 200), within the (255, 318] that keeps a front rail kill at four unmodded hits (85) or three
+  overcharged ones (106), as when the chassis and then the core (100) had to break. A rail
+  capacitor kill (127 a hit) now takes three hits instead of two.
 - **Q2.i70.2**: The predetermined chassis sizes and their costs, and whether the 20 cm socket cell
   is final (D2.i70.1).
   Defaults in use until decided (shooter#71): a 20 cm cell; chassis sections of 20 × 40 × 80,

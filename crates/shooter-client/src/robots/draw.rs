@@ -15,7 +15,7 @@ use shooter_sim::robot::LOADOUTS;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// The kit's emissive factor 1 in render-engine's units (nits): its glows (the core, the lens,
+/// The kit's emissive factor 1 in render-engine's units (nits): its glows (the lens,
 /// the charge window) read under the arena's exposure (EV100 13).
 const KIT_EMISSIVE_NITS: f32 = 3_000.0;
 /// Where an unused instance is drawn: under the floor.

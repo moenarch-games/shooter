@@ -5,7 +5,7 @@
 //! It burns anyone within a few metres with the flamethrower, picks the rifle (even slots) or the
 //! shotgun (odd slots) up close, rockets (even) or the laser (odd) at mid range and the rail gun
 //! far off, and rushes in to swing the energy blade when someone comes within a few metres. It
-//! aims at its target's core (the one part whose loss kills, [`crate::damage`]), and once a
+//! aims at its target's root chassis (the one part whose loss kills, [`crate::damage`]), and once a
 //! weapon part of its own is lost it fires the first gun it still has instead. Every random
 //! choice comes from its own seeded stream (SplitMix64, `crate::rng`), so a match replays
 //! exactly.
@@ -51,13 +51,13 @@ pub const WAYPOINT_REACH_UNITS: i64 = 150;
 pub const STUCK_TICKS: u32 = 30;
 
 /// What a bot knows of one slot: where its fighter stands (units), if it is alive, where its
-/// core is (what a bot aims at: destroying it is the kill, [`crate::damage`]) and which of the
-/// weapons it can still fire (by [`Weapon::index`]: not a weapon part it has lost).
+/// root chassis is (what a bot aims at: destroying it is the kill, [`crate::damage`]) and which
+/// of the weapons it can still fire (by [`Weapon::index`]: not a weapon part it has lost).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Sight {
     pub center: Option<Vec3i>,
     pub eye: Option<Vec3i>,
-    pub core: Option<Vec3i>,
+    pub chassis: Option<Vec3i>,
     pub armed: [bool; 8],
 }
 
@@ -190,7 +190,7 @@ impl Bot {
         }
         let mut intent = match self
             .target
-            .and_then(|target| sights[target].core.or(sights[target].center))
+            .and_then(|target| sights[target].chassis.or(sights[target].center))
         {
             Some(target) => self.fight(me, eye, target, held, sights[me].armed, tick),
             None => self.wander(center, arena),

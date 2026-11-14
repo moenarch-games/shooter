@@ -1,7 +1,7 @@
 //! The heads-up display, a stopgap until render-engine draws screen overlays
 //! (moritzbrantner/render-engine#101): the text is built here once, then shown by the page's DOM
 //! in the browser and in the window title natively (the native health bar is drawn in the scene,
-//! see `scene::Actors`). The core's health (the bar), the parts damaged and lost, energy (charge and capacity), weapon (with its mod), frags and place, the equipped weapon mods, the module pickup carried (with
+//! see `scene::Actors`). The root chassis' health (the bar), the parts damaged and lost, energy (charge and capacity), weapon (with its mod), frags and place, the equipped weapon mods, the module pickup carried (with
 //! its uses left), the round clock, a feed of kills and module pickups, a respawn
 //! or connection banner, and the scoreboard (held Tab, or between rounds).
 
@@ -67,18 +67,19 @@ fn energy(me: &FighterState) -> String {
     format!("⚡ {}/{}", me.energy / MILLI, pool.capacity / MILLI)
 }
 
-/// The core's health against its whole: "⬢ core 62/100" (the core is the robot's life).
-fn core(me: &FighterState) -> String {
-    let whole = PartDamage::fresh(&me.build).core_health(&me.build);
-    format!("⬢ core {}/{}", me.core_health(), whole)
+/// The root chassis' health against its whole: "⬢ chassis 62/270" (the root chassis is the
+/// robot's life).
+fn chassis(me: &FighterState) -> String {
+    let whole = PartDamage::fresh(&me.build).chassis_health(&me.build);
+    format!("⬢ chassis {}/{}", me.chassis_health(), whole)
 }
 
-/// The core's share of its health (0..=1): the health bar.
+/// The root chassis' share of its health (0..=1): the health bar.
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
-pub fn core_share(me: &FighterState) -> f32 {
-    let whole = PartDamage::fresh(&me.build).core_health(&me.build);
-    f32::from(me.core_health()) / f32::from(whole.max(1))
+pub fn chassis_share(me: &FighterState) -> f32 {
+    let whole = PartDamage::fresh(&me.build).chassis_health(&me.build);
+    f32::from(me.chassis_health()) / f32::from(whole.max(1))
 }
 
 /// The robot's other parts: how many are damaged, and the ones it has lost this life, "   parts
@@ -256,7 +257,7 @@ impl Hud {
         let status_line = me.map_or_else(String::new, |me| {
             format!(
                 "{}   {}   {}   {} frags (to {})   #{} of {}   {}{}{}{}",
-                core(me),
+                chassis(me),
                 energy(me),
                 held(me.held, &me.build),
                 me.frags,
@@ -306,7 +307,7 @@ impl Hud {
                 .collect()
         });
         #[allow(clippy::cast_precision_loss)]
-        let health = me.filter(|me| me.alive).map(core_share);
+        let health = me.filter(|me| me.alive).map(chassis_share);
         HudText {
             health,
             status: status_line,

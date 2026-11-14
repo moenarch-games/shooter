@@ -5,7 +5,7 @@
 //!
 //! A deathmatch: every fighter is its robot build with per-part health ([`crate::damage`]);
 //! strikes land on the parts they meet, destroyed parts fall away with what hung from them, and
-//! destroying the core is the kill. A kill scores a frag for the killer and a death for the
+//! destroying the root chassis is the kill. A kill scores a frag for the killer and a death for the
 //! victim (a suicide, by a fall, one's own rocket or one's own battery's blast, costs a frag),
 //! the dead come back as their configured build, whole, at the spawn point farthest from
 //! everyone else after [`Rules::respawn_ticks`], and a round ends at the frag limit or the time
@@ -185,8 +185,8 @@ pub struct Fighter {
     /// The charge in its shared energy pool, milli-units ([`crate::energy`]; its build's
     /// [`Fighter::pool`] bounds it).
     pub energy: u32,
-    /// Its build's part healths and lost parts this life ([`crate::damage`]); the core's
-    /// health is its life.
+    /// Its build's part healths and lost parts this life ([`crate::damage`]); the root
+    /// chassis' health is its life.
     pub parts: PartDamage,
     /// While dead: the tick it comes back.
     pub respawn_at: Option<u32>,
@@ -303,10 +303,10 @@ impl Fighter {
         self.parts = PartDamage::fresh(&build);
     }
 
-    /// Its core's health: its life ([`crate::damage`]).
+    /// Its root chassis' health: its life ([`crate::damage`]).
     #[must_use]
-    pub fn core_health(&self) -> u16 {
-        self.parts.core_health(&self.build)
+    pub fn chassis_health(&self) -> u16 {
+        self.parts.chassis_health(&self.build)
     }
 
     /// Its connected parts as hitboxes on a capsule centred at `center` facing `yaw`.
@@ -1023,16 +1023,17 @@ impl Session {
                     .then(|| self.world.body(fighter.player.body))
                     .flatten()
                     .map(crate::physics::RigidBody::position);
-                // Where its core is now: what a bot aims at, the one part whose loss kills.
+                // Where its root chassis is now: what a bot aims at, the one part whose loss
+                // kills.
                 #[allow(clippy::cast_possible_truncation)]
-                let core = center.and_then(|_| {
+                let chassis = center.and_then(|_| {
                     let boxes =
                         fighter.hitboxes(fighter.player.center(&self.world), fighter.intent.yaw);
-                    let core = boxes.get(PartDamage::core(&fighter.build)?)?.center;
+                    let chassis = boxes.get(PartDamage::root(&fighter.build)?)?.center;
                     Some(Vec3i::new(
-                        core[0].round() as i32,
-                        core[1].round() as i32,
-                        core[2].round() as i32,
+                        chassis[0].round() as i32,
+                        chassis[1].round() as i32,
+                        chassis[2].round() as i32,
                     ))
                 });
                 Sight {
@@ -1044,7 +1045,7 @@ impl Session {
                             center.z,
                         )
                     }),
-                    core,
+                    chassis,
                     armed: Weapon::ALL
                         .map(|weapon| !fighter.parts.weapon_lost(&fighter.build, weapon)),
                 }
@@ -1277,7 +1278,8 @@ impl Session {
 
     /// One blow on one of `victim`'s parts ([`crate::damage`]): its health goes down; at zero
     /// it comes off with what hung from it, a lost battery takes its capacity and its share of
-    /// the charge, a destroyed one queues its blast, and a destroyed core kills.
+    /// the charge, a destroyed one queues its blast, and a destroyed root chassis
+    /// kills.
     #[allow(clippy::cast_possible_truncation)]
     fn hurt_part(&mut self, victim: usize, attacker: usize, blow: Blow, weapon: Weapon) {
         let center = {
@@ -1294,7 +1296,7 @@ impl Session {
             return;
         };
         fighter.energy = before.shrink(fighter.pool(), fighter.energy);
-        let core = fighter.core_health() == 0;
+        let vital = fighter.chassis_health() == 0;
         if attacker != victim {
             self.dealt[attacker] += blow.damage;
         }
@@ -1305,7 +1307,7 @@ impl Session {
             damage: blow.damage,
             at: blow.at,
         });
-        if core {
+        if vital {
             self.kill(victim, Some(attacker), Some(weapon));
             return;
         }

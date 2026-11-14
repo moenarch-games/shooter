@@ -9,14 +9,15 @@ use shooter_sim::damage::PartDamage;
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{
-    ARMOR_PLATE, BATTERY, BEAM_LONG, BEAM_SHORT, CHASSIS_L, CHASSIS_M, CHASSIS_S, CORE,
-    ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, HINGE, LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER, ROTOR,
-    SENSOR, SHOTGUN, TRACK, WHEEL,
+    ARMOR_PLATE, BATTERY, BEAM_LONG, BEAM_SHORT, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE,
+    ENERGY_RIFLE, GRAPPLE, HINGE, LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER, ROTOR, SENSOR, SHOTGUN,
+    TRACK, WHEEL,
 };
 use shooter_sim::robot::{
     AssemblyError, BETA, Candidate, Catalog, EFFICIENCY_COIL, Face, HEAVY, Kind, LOADOUTS,
     LONG_BARREL, MARKSMAN, MAX_PARTS, ModId, OVERCHARGER, Orientation, PartId, PartType,
-    RAPID_CYCLER, RawMount, RawPart, SKIRMISHER, STANDARD, SocketId, Tuning, loadout,
+    PartTypeId, RAPID_CYCLER, ROOT_CAPACITY, ROOT_REGEN, RawMount, RawPart, SKIRMISHER, STANDARD,
+    SocketId, Tuning, loadout,
 };
 
 use shooter_sim::trig;
@@ -131,17 +132,13 @@ fn the_catalog_is_consistent_and_its_sockets_number_each_cell_once() {
         ]
     );
     // Faces without sockets have none; a joint has one, on its moving side.
-    assert_eq!(CORE.socket_count(), 0);
+    assert_eq!(SENSOR.socket_count(), 0);
     assert_eq!(HINGE.socket_count(), 1);
     assert_eq!(HINGE.socket(Face::NegZ, 0, 0), None);
     assert_eq!(CHASSIS_S.socket(Face::PosZ, 1, 0), None, "off the grid");
-    assert_eq!(
-        BETA.parts
-            .iter()
-            .filter(|part| part.kind == Kind::Core)
-            .count(),
-        1
-    );
+    // The control core is gone (shooter#89): its key is no part's and its code 30 stays retired.
+    assert!(BETA.parts.iter().all(|part| part.key != "robot.core"));
+    assert_eq!(BETA.part_type(PartTypeId(30)), None);
 
     let mut mods: Vec<u8> = BETA.mods.iter().map(|m| m.id.0).collect();
     mods.sort_unstable();
@@ -220,7 +217,6 @@ fn orientations_fold_into_one_canonical_form_of_the_same_rotation() {
 fn mini_tank() -> Candidate {
     build(vec![
         root(0, &CHASSIS_L),
-        on(1, &CORE, 0, &CHASSIS_L, Face::PosZ, 0, 0),
         turned(
             on(2, &TRACK, 0, &CHASSIS_L, Face::PosY, 3, 0),
             QUARTER,
@@ -244,7 +240,6 @@ fn mini_tank() -> Candidate {
 fn robo_dog() -> Candidate {
     build(vec![
         root(0, &CHASSIS_M),
-        on(1, &CORE, 0, &CHASSIS_M, Face::PosZ, 0, 0),
         on(2, &LEG, 0, &CHASSIS_M, Face::NegZ, 0, 0),
         on(3, &LEG, 0, &CHASSIS_M, Face::NegZ, 1, 0),
         on(4, &LEG, 0, &CHASSIS_M, Face::NegZ, 0, 1),
@@ -260,7 +255,6 @@ fn robo_dog() -> Candidate {
 fn humanoid() -> Candidate {
     build(vec![
         root(0, &CHASSIS_S),
-        on(1, &CORE, 0, &CHASSIS_S, Face::NegX, 0, 0),
         on(2, &SENSOR, 0, &CHASSIS_S, Face::PosZ, 0, 0),
         on(3, &HINGE, 0, &CHASSIS_S, Face::PosY, 3, 0),
         on(4, &HINGE, 0, &CHASSIS_S, Face::NegY, 0, 3),
@@ -277,7 +271,6 @@ fn humanoid() -> Candidate {
 fn stationary() -> Candidate {
     build(vec![
         root(0, &CHASSIS_M),
-        on(1, &CORE, 0, &CHASSIS_M, Face::NegX, 0, 0),
         on(2, &ROTOR, 0, &CHASSIS_M, Face::PosZ, 0, 0),
         on(3, &LASER, 2, &ROTOR, Face::PosZ, 0, 0),
         on(4, &GRAPPLE, 0, &CHASSIS_M, Face::PosZ, 1, 1),
@@ -285,21 +278,20 @@ fn stationary() -> Candidate {
     ])
 }
 
-/// A grappling-only machine: a chassis, its core and a grapple hook.
+/// A grappling-only machine: a chassis and a grapple hook.
 fn grappler() -> Candidate {
     build(vec![
         root(0, &CHASSIS_S),
-        on(1, &CORE, 0, &CHASSIS_S, Face::PosZ, 0, 0),
         on(2, &GRAPPLE, 0, &CHASSIS_S, Face::PosX, 0, 0),
     ])
 }
 
-/// A lopsided wheeler: one wheel on its side, one underneath, its core sideways.
+/// A lopsided wheeler: one wheel on its side, one underneath, its sensor sideways.
 fn lopsided() -> Candidate {
     build(vec![
         root(0, &CHASSIS_S),
         turned(
-            on(1, &CORE, 0, &CHASSIS_S, Face::PosY, 2, 0),
+            on(1, &SENSOR, 0, &CHASSIS_S, Face::PosY, 2, 0),
             1_234,
             40_000,
             7,
@@ -346,14 +338,14 @@ fn every_form_is_valid_from_the_same_parts_and_rules() {
     assert_eq!(locomotion(&stationary()), 0);
     assert_eq!(locomotion(&grappler()), 0);
     assert_eq!(locomotion(&lopsided()), 2);
-    // Orientations are stored canonically: the rocket turret's pitch, the lopsided core's turn.
+    // Orientations are stored canonically: the rocket turret's pitch, the lopsided sensor's turn.
     let tank = BETA.validate(&mini_tank()).unwrap();
     let rockets = tank.part(PartId(5)).unwrap().mount.unwrap();
     assert_eq!(rockets.orientation.pitch, -i16::try_from(QUARTER).unwrap());
-    let core = BETA.validate(&lopsided()).unwrap();
-    let core = core.part(PartId(1)).unwrap().mount.unwrap();
-    assert_eq!(core.orientation, Orientation::canonical(1_234, 40_000, 7));
-    assert_ne!(core.orientation.raw(), (1_234, 40_000, 7));
+    let sensor = BETA.validate(&lopsided()).unwrap();
+    let sensor = sensor.part(PartId(1)).unwrap().mount.unwrap();
+    assert_eq!(sensor.orientation, Orientation::canonical(1_234, 40_000, 7));
+    assert_ne!(sensor.orientation.raw(), (1_234, 40_000, 7));
     // The tree: the turret hangs off the rotor, the rotor off the chassis.
     assert_eq!(
         tank.children(PartId(4))
@@ -367,7 +359,7 @@ fn every_form_is_valid_from_the_same_parts_and_rules() {
 fn larger_parts_reserve_their_footprint_and_turn_it_with_their_yaw() {
     // Unturned, the left track runs across the side face; turned a quarter it runs along it.
     let mut tank = mini_tank();
-    tank.parts[2] = on(2, &TRACK, 0, &CHASSIS_L, Face::PosY, 3, 0);
+    tank.parts[1] = on(2, &TRACK, 0, &CHASSIS_L, Face::PosY, 3, 0);
     tank.parts
         .push(on(8, &SENSOR, 0, &CHASSIS_L, Face::PosY, 3, 1));
     assert_eq!(
@@ -418,19 +410,17 @@ fn larger_parts_reserve_their_footprint_and_turn_it_with_their_yaw() {
 #[test]
 fn broken_structures_are_rejected() {
     let reject = |parts: Vec<RawPart>| BETA.validate(&build(parts)).unwrap_err();
-    // The core: missing, doubled, or on an interior socket (the mount face of the arm, which
-    // rests on the torso).
-    let mut coreless = standard();
-    coreless.retain(|part| part.id != 1);
-    assert_eq!(reject(coreless), AssemblyError::NoCore);
-    let mut two = standard();
-    two.push(on(11, &CORE, 0, &CHASSIS_S, Face::PosX, 0, 0));
-    assert_eq!(
-        reject(two),
-        AssemblyError::MultipleCores(PartId(1), PartId(11))
-    );
+    // No control core any more (shooter#89): a build without one is whole, and one naming the
+    // retired core's code 30 is an unknown part, wherever it sits.
+    assert!(STANDARD.parts().iter().all(|part| part.kind.0 != 30));
+    let mut cored = standard();
+    cored.push(on(1, &SENSOR, 0, &CHASSIS_S, Face::NegX, 2, 0));
+    assert!(BETA.validate(&build(cored.clone())).is_ok());
+    with(&mut cored, 1).kind = 30;
+    assert_eq!(reject(cored), AssemblyError::UnknownPart(30));
+    // A part on an interior socket (the mount face of the arm, which rests on the torso).
     let mut interior = standard();
-    *with(&mut interior, 1) = on(1, &CORE, 3, &BEAM_LONG, Face::NegZ, 0, 0);
+    interior.push(on(1, &SENSOR, 3, &BEAM_LONG, Face::NegZ, 0, 0));
     assert_eq!(reject(interior), AssemblyError::InteriorSocket(PartId(1)));
     // The root's own underside is exterior: the legs stand there.
     // A part twice (two parents), a second root, no root, a root that is no chassis.
@@ -447,7 +437,7 @@ fn broken_structures_are_rejected() {
     *with(&mut rootless, 0) = on(0, &CHASSIS_S, 3, &BEAM_LONG, Face::PosX, 0, 0);
     assert_eq!(reject(rootless), AssemblyError::NoRoot);
     assert_eq!(
-        reject(vec![root(0, &CORE)]),
+        reject(vec![root(0, &SENSOR)]),
         AssemblyError::RootNotChassis(PartId(0))
     );
     assert_eq!(reject(Vec::new()), AssemblyError::NoRoot);
@@ -484,12 +474,9 @@ fn broken_structures_are_rejected() {
 
 #[test]
 fn the_part_ceiling_holds_exactly() {
-    // The large chassis' 28 side and front cells hold 30 one-cell parts with the core: 32 parts.
-    let mut parts = vec![
-        root(0, &CHASSIS_L),
-        on(1, &CORE, 0, &CHASSIS_L, Face::PosZ, 0, 0),
-    ];
-    let mut id = 2;
+    // The large chassis' 40 side, front and back cells hold 31 one-cell parts: 32 parts.
+    let mut parts = vec![root(0, &CHASSIS_L)];
+    let mut id = 1;
     'faces: for face in [Face::PosX, Face::NegX, Face::PosY, Face::NegY] {
         let (columns, rows) = face.grid(CHASSIS_L.cells);
         for v in 0..rows {
@@ -518,9 +505,9 @@ fn mods_and_weapons_follow_their_rules() {
     let mut unknown = standard();
     with(&mut unknown, 7).modification = Some(99);
     assert_eq!(reject(unknown), AssemblyError::UnknownMod(99));
-    let mut cored = standard();
-    with(&mut cored, 1).modification = Some(EFFICIENCY_COIL.0);
-    assert_eq!(reject(cored), AssemblyError::NotAWeapon(PartId(1)));
+    let mut sensor = standard();
+    with(&mut sensor, 2).modification = Some(EFFICIENCY_COIL.0);
+    assert_eq!(reject(sensor), AssemblyError::NotAWeapon(PartId(2)));
     let mut grapple = standard();
     with(&mut grapple, 9).modification = Some(OVERCHARGER.0);
     assert_eq!(
@@ -583,12 +570,23 @@ fn every_mod_trades_something_away() {
 }
 
 #[test]
-fn the_core_and_batteries_make_the_energy_pool() {
-    // The core alone: 100 stored, 24 a second; a battery adds 60 stored and nothing else.
+fn the_root_chassis_and_batteries_make_the_energy_pool() {
+    // The root chassis alone: 100 stored, 24 a second, whatever its size; a battery adds 60
+    // stored and nothing else.
     let standard = BETA.budget(&STANDARD);
     assert_eq!((standard.capacity, standard.regen), (100, 24));
     let heavy = BETA.budget(&HEAVY);
     assert_eq!((heavy.capacity, heavy.regen), (160, 24));
+    assert_eq!((ROOT_CAPACITY, ROOT_REGEN), (100, 24));
+    // Another chassis section is ordinary structure: no baseline of its own.
+    let stacked = BETA
+        .validate(&build(vec![
+            root(0, &CHASSIS_L),
+            on(1, &CHASSIS_S, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+        ]))
+        .unwrap();
+    let budget = BETA.budget(&stacked);
+    assert_eq!((budget.capacity, budget.regen), (100, 24));
     assert_eq!(BATTERY.key, "robot.battery");
     assert_eq!(BATTERY.kind, Kind::Battery);
     assert_eq!(
@@ -609,7 +607,7 @@ fn the_core_and_batteries_make_the_energy_pool() {
         .push(on(11, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0));
     let charged = BETA.validate(&charged).unwrap();
     assert_eq!(BETA.budget(&charged).capacity, 160);
-    assert_eq!(BETA.budget(&charged).points, 120);
+    assert_eq!(BETA.budget(&charged).points, 110);
     let mut overlapping = charged.candidate();
     overlapping
         .parts
@@ -625,21 +623,20 @@ fn the_core_and_batteries_make_the_energy_pool() {
     assert_eq!(
         BETA.validate(&second),
         Err(AssemblyError::OverBudget {
-            points: 125,
-            build_points: 120
+            points: 115,
+            build_points: 110
         })
     );
     let roomy = Catalog {
-        build_points: 125,
+        build_points: 115,
         ..BETA
     };
     let second = roomy.validate(&second).unwrap();
     assert_eq!(roomy.budget(&second).capacity, 220);
-    // Every part type's capacity and regeneration: only the core regenerates, only it and the
-    // battery store.
+    // Every part type's own capacity and regeneration: none regenerates and only the battery
+    // stores (the root chassis' baseline is the root's, not its type's).
     for part in BETA.parts {
         match part.kind {
-            Kind::Core => assert_eq!((part.capacity, part.regen), (100, 24)),
             Kind::Battery => assert_eq!(part.regen, 0),
             _ => assert_eq!((part.capacity, part.regen), (0, 0), "{}", part.key),
         }
@@ -648,26 +645,26 @@ fn the_core_and_batteries_make_the_energy_pool() {
 
 #[test]
 fn budgets_hold_exactly_at_their_limits_and_fail_one_over() {
-    // Build points: the heavy build (with its battery) costs 115.
+    // Build points: the heavy build (with its battery) costs 105.
     let heavy = BETA.budget(&HEAVY);
-    assert_eq!(heavy.points, 115);
+    assert_eq!(heavy.points, 105);
     let exact = Catalog {
-        build_points: 115,
+        build_points: 105,
         ..BETA
     };
     assert_eq!(exact.validate(&HEAVY.candidate()), Ok(HEAVY));
     let short = Catalog {
-        build_points: 114,
+        build_points: 104,
         ..BETA
     };
     assert_eq!(
         short.validate(&HEAVY.candidate()),
         Err(AssemblyError::OverBudget {
-            points: 115,
-            build_points: 114
+            points: 105,
+            build_points: 104
         })
     );
-    // One plate fits the beta's 120 on the heavy build, a second passes it.
+    // One plate fits the beta's 110 on the heavy build, a second passes it.
     let mut plated = HEAVY.candidate();
     plated
         .parts
@@ -679,12 +676,12 @@ fn budgets_hold_exactly_at_their_limits_and_fail_one_over() {
     assert_eq!(
         BETA.validate(&plated),
         Err(AssemblyError::OverBudget {
-            points: 123,
-            build_points: 120
+            points: 113,
+            build_points: 110
         })
     );
     // No power or heat budget is left (D2.i70.3, D2.i70.4): the builds those once rejected (the
-    // marksman with a second sensor, which overdrew the core's 130 power, and the skirmisher's
+    // marksman with a second sensor, which overdrew the old core's 130 power, and the skirmisher's
     // cycler without a heat sink) are valid; energy limits them in play instead.
     let mut sensed = MARKSMAN.candidate();
     sensed
@@ -710,9 +707,9 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
     }
     assert_eq!(loadout(" Marksman "), Some(MARKSMAN));
     assert_eq!(loadout("sniper"), None);
-    assert_eq!(STANDARD.parts().len(), 11);
-    assert_eq!(BETA.budget(&STANDARD).points, 85);
-    assert_eq!(BETA.budget(&SKIRMISHER).points, 100);
+    assert_eq!(STANDARD.parts().len(), 10);
+    assert_eq!(BETA.budget(&STANDARD).points, 75);
+    assert_eq!(BETA.budget(&SKIRMISHER).points, 90);
     assert_eq!(
         BETA.mod_on(&SKIRMISHER, Weapon::EnergyRifle),
         Some(RAPID_CYCLER)
@@ -721,7 +718,7 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         BETA.mod_on(&SKIRMISHER, Weapon::Shotgun),
         Some(EFFICIENCY_COIL)
     );
-    assert_eq!(HEAVY.parts().len(), 12, "the heavy build carries a battery");
+    assert_eq!(HEAVY.parts().len(), 11, "the heavy build carries a battery");
     assert_eq!(BETA.mod_on(&MARKSMAN, Weapon::RailGun), Some(OVERCHARGER));
     assert_eq!(
         BETA.mod_on(&MARKSMAN, Weapon::EnergyRifle),
@@ -814,30 +811,29 @@ fn builds_from_untrusted_bytes_are_validated() {
     let standard = build_bytes(&STANDARD);
     assert_eq!(forged(&standard).unwrap().build, Some(STANDARD));
     // Count, then per part: ID, type, flags, [parent, socket], [angles], [mod].
-    assert_eq!(&standard[..4], &[11, 0, CHASSIS_S.id.0, 0]);
+    assert_eq!(&standard[..4], &[10, 0, CHASSIS_S.id.0, 0]);
     let mut unknown = standard.clone();
     unknown[2] = 99;
     assert_eq!(
         forged(&unknown),
         Err(WireError::Build(AssemblyError::UnknownPart(99)))
     );
-    // The core (the second part, 5 bytes from the 4th on) dropped from the count and the bytes.
-    let mut coreless = standard.clone();
-    coreless[0] -= 1;
-    coreless.drain(4..9);
+    // The second part (the sensor, 5 bytes from the 4th on) named as the retired control core.
+    let mut cored = standard.clone();
+    assert_eq!(&cored[4..7], &[2, SENSOR.id.0, 1]);
+    cored[5] = 30;
     assert_eq!(
-        forged(&coreless),
-        Err(WireError::Build(AssemblyError::NoCore))
+        forged(&cored),
+        Err(WireError::Build(AssemblyError::UnknownPart(30)))
     );
-    // The core moved onto the sensor's socket.
+    // The sensor moved onto the grapple's socket.
     let mut stacked = standard.clone();
-    assert_eq!(&stacked[4..7], &[1, CORE.id.0, 1]);
-    stacked[8] = CHASSIS_S.socket(Face::PosZ, 0, 0).unwrap().0;
+    stacked[8] = CHASSIS_S.socket(Face::PosZ, 0, 1).unwrap().0;
     assert_eq!(
         forged(&stacked),
         Err(WireError::Build(AssemblyError::Overlap(
-            PartId(1),
-            PartId(2)
+            PartId(2),
+            PartId(9)
         )))
     );
     // Unknown flags, a turned root, truncation: malformed.
@@ -901,32 +897,32 @@ fn duel() -> Session {
     session
 }
 
-/// The yaw and pitch from `from`'s eye to the centre of `to`'s core, where the host places it
-/// (straight ahead while `to` is dead).
+/// The yaw and pitch from `from`'s eye to the centre of `to`'s root chassis, where the host
+/// places it (straight ahead while `to` is dead).
 #[allow(clippy::cast_possible_truncation)]
-fn at_core(session: &Session, from: usize, to: usize) -> (u16, i16) {
+fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
     let target = &session.fighters[to];
     if !target.alive() {
         return (if from == 0 { 0 } else { 32_768 }, 0);
     }
     let eye = session.fighters[from].player.eye(&session.world);
     let parts = target.hitboxes(target.player.center(&session.world), target.intent.yaw);
-    let core = parts
-        .get(PartDamage::core(&target.build).unwrap())
+    let chassis = parts
+        .get(PartDamage::root(&target.build).unwrap())
         .unwrap()
         .center;
-    let d = [0, 1, 2].map(|axis| core[axis] - eye[axis]);
+    let d = [0, 1, 2].map(|axis| chassis[axis] - eye[axis]);
     let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
     let run = d[0].hypot(d[2]).round() as i32;
     let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
     (yaw, pitch)
 }
 
-/// Person 1 holds the rail gun's trigger for `ticks` ticks, aimed at person 2's core (through
-/// whatever is in front of it).
+/// Person 1 holds the rail gun's trigger for `ticks` ticks, aimed at person 2's root chassis
+/// (through whatever is in front of it).
 fn rail(session: &mut Session, ticks: u32) {
     for _ in 0..ticks {
-        let (yaw, pitch) = at_core(session, 0, 1);
+        let (yaw, pitch) = at_chassis(session, 0, 1);
         let intent = Intent {
             fire: true,
             yaw,
@@ -1054,12 +1050,13 @@ fn rail_record(build: Assembly, ticks: u32) -> (Vec<u32>, i32) {
 
 #[test]
 fn the_overcharged_rail_gun_kills_in_fewer_hits_and_fires_slower() {
-    // Shipped: 72 ticks apart, four hits a kill aimed at the core from the front: two break the
-    // chassis in front of it (120), which falls away with all but the core, two the core (100);
-    // the heavy build's rail gun has no mod.
+    // Shipped: 72 ticks apart, four hits a kill aimed at the root chassis from the front (270
+    // on the standard build: 85 a hit), as it took before the core went (shooter#89: two for the
+    // chassis, then two for the core); the heavy build's rail gun has no mod.
     assert_eq!(rail_record(STANDARD, 120), (vec![12, 84], 0));
     assert_eq!(rail_record(HEAVY, 300), (vec![12, 84, 156, 228], 1));
-    // Overcharged (106): 94 ticks apart, three hits a kill (two for the chassis, one the core).
+    // Overcharged (106): 94 ticks apart, three hits a kill, as before (two for the chassis, then
+    // one for the core).
     assert_eq!(rail_record(MARKSMAN, 220), (vec![12, 106, 200], 1));
 }
 
@@ -1070,7 +1067,7 @@ fn a_configured_modded_build_applies_at_the_next_spawn() {
     let rail_tuning = |session: &Session| BETA.tuning(&session.fighters[0].build, Weapon::RailGun);
     assert_eq!(rail_tuning(&session), Tuning::BASE);
     while session.fighters[0].deaths == 0 {
-        let (yaw, pitch) = at_core(&session, 1, 0);
+        let (yaw, pitch) = at_chassis(&session, 1, 0);
         let intent = Intent {
             yaw,
             pitch,

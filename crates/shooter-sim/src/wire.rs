@@ -29,7 +29,7 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 13;
+pub const WIRE_VERSION: u8 = 14;
 const NONE: u8 = u8::MAX;
 
 /// A build part's flags: it has a parent, it is turned, it carries a mod.
@@ -94,15 +94,15 @@ pub struct FighterState {
     /// build's connected parts ([`crate::energy::Pool::attached`]) has the capacity.
     pub energy: u32,
     /// Its part healths this life and, following from them, the parts it has lost
-    /// ([`crate::damage`]); the core's health is its life.
+    /// ([`crate::damage`]); the root chassis' health is its life.
     pub parts: PartDamage,
 }
 
 impl FighterState {
-    /// Its core's health.
+    /// Its root chassis' health: its life.
     #[must_use]
-    pub fn core_health(&self) -> u16 {
-        self.parts.core_health(&self.build)
+    pub fn chassis_health(&self) -> u16 {
+        self.parts.chassis_health(&self.build)
     }
 }
 

@@ -10,7 +10,7 @@
 use super::{Command, Controls};
 use crate::physics::{BodyId, RigidBody, Vec3i};
 use crate::robot::parts::{
-    BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_S, CORE, ENERGY_RIFLE, HINGE, LEG, ROTOR, WHEEL,
+    BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_S, ENERGY_RIFLE, HINGE, LEG, ROTOR, SENSOR, WHEEL,
 };
 use crate::robot::{
     Assembly, BETA, Candidate, Face, Orientation, PartId, PartType, RawMount, RawPart,
@@ -64,9 +64,10 @@ fn valid(parts: Vec<RawPart>) -> Assembly {
 }
 
 fn wheeled(sideways: bool) -> Vec<RawPart> {
+    // A sensor on the roof where the retired control core sat (shooter#89).
     let mut parts = vec![
         root(0, &CHASSIS_L),
-        on(1, &CORE, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+        on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
     ];
     let (left, right) = if sideways {
         (Face::PosX, Face::NegX)
@@ -145,7 +146,6 @@ pub fn paired_turret() -> Assembly {
 pub fn lopsided() -> Assembly {
     valid(vec![
         root(0, &CHASSIS_S),
-        on(1, &CORE, 0, &CHASSIS_S, Face::NegX, 0, 0),
         on(2, &BEAM_LONG, 0, &CHASSIS_S, Face::PosY, 3, 0),
         on(3, &BATTERY, 2, &BEAM_LONG, Face::PosZ, 0, 0),
     ])
@@ -156,7 +156,6 @@ pub fn lopsided() -> Assembly {
 pub fn balanced() -> Assembly {
     valid(vec![
         root(0, &CHASSIS_S),
-        on(1, &CORE, 0, &CHASSIS_S, Face::NegX, 0, 0),
         on(2, &BEAM_LONG, 0, &CHASSIS_S, Face::PosY, 3, 0),
         on(3, &BATTERY, 2, &BEAM_LONG, Face::PosZ, 0, 0),
         on(4, &BEAM_LONG, 0, &CHASSIS_S, Face::NegY, 0, 3),
@@ -164,12 +163,13 @@ pub fn balanced() -> Assembly {
     ])
 }
 
-/// The large chassis on two legs under its rear half, the core on its roof.
+/// The large chassis on two legs under its rear half, a sensor on its roof (where the retired
+/// control core sat, shooter#89).
 #[must_use]
 pub fn biped() -> Assembly {
     valid(vec![
         root(0, &CHASSIS_L),
-        on(1, &CORE, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+        on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
         on(2, &LEG, 0, &CHASSIS_L, Face::NegZ, 0, 0),
         on(3, &LEG, 0, &CHASSIS_L, Face::NegZ, 2, 0),
     ])
@@ -183,7 +183,6 @@ pub fn dog(turned: bool) -> Assembly {
     let leg = |part: RawPart| if turned { yawed(part, QUARTER) } else { part };
     valid(vec![
         root(0, &CHASSIS_L),
-        on(1, &CORE, 0, &CHASSIS_L, Face::PosZ, 0, 0),
         on(2, &BEAM_LONG, 0, &CHASSIS_L, Face::PosX, 0, 0),
         on(3, &BEAM_LONG, 0, &CHASSIS_L, Face::PosX, 2, 0),
         leg(on(4, &LEG, 0, &CHASSIS_L, Face::NegZ, 0, 0)),
@@ -198,7 +197,6 @@ pub fn dog(turned: bool) -> Assembly {
 pub fn upside_down_legs() -> Assembly {
     valid(vec![
         root(0, &CHASSIS_L),
-        on(1, &CORE, 0, &CHASSIS_L, Face::NegX, 0, 0),
         on(2, &LEG, 0, &CHASSIS_L, Face::PosZ, 0, 0),
         on(3, &LEG, 0, &CHASSIS_L, Face::PosZ, 1, 2),
     ])
