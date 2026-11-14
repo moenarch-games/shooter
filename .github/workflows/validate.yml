@@ -20,6 +20,7 @@ jobs:
       cache_cargo: true
       # Share one target directory between Clippy, tests and the native build.
       # Rust cache restores intermediate compilation outputs across runs.
+      concurrency_group: ${{ github.workflow }}-${{ github.ref }}-native
       cancel_in_progress: true
       # kira's cpal output (ALSA) and gilrs (udev) on Linux.
       apt_packages: libasound2-dev libudev-dev
@@ -43,6 +44,7 @@ jobs:
       install_command: ""
       cache_bun: false
       cache_cargo: true
+      concurrency_group: ${{ github.workflow }}-${{ github.ref }}-wasm
       cancel_in_progress: true
       # Independent target; run alongside native lint/tests/build instead of at their end.
       build_command: cargo check -p shooter-client --lib --target wasm32-unknown-unknown --locked
