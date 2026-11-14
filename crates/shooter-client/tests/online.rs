@@ -47,8 +47,9 @@ impl Host {
         let thread = std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async {
-                // A 5 s reconnect grace.
-                let host = shooter_server::build_host(&["dm".parse().unwrap()], 300).unwrap();
+                // A 5 s reconnect grace, on the greybox fixture: this checks networking, not a map.
+                let host =
+                    shooter_server::build_host(&["dm=greybox".parse().unwrap()], 300).unwrap();
                 serve_match_host_with_shutdown(host, config, requests)
                     .await
                     .unwrap();
@@ -117,8 +118,8 @@ fn two_clients_play_a_hosted_deathmatch() {
     }
     assert!(first.status().is_none(), "{:?}", first.status());
     // Both follow the host's map, which the snapshots name.
-    assert_eq!(first.map(), Some(MapId::DEFAULT));
-    assert_eq!(second.map(), Some(MapId::DEFAULT));
+    assert_eq!(first.map(), Some(MapId::Greybox));
+    assert_eq!(second.map(), Some(MapId::Greybox));
     let (a, b) = (first.local_slot().unwrap(), second.local_slot().unwrap());
     assert_ne!(a, b);
     assert!(moved > 300.0, "the first client walked {moved} units");
