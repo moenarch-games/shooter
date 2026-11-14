@@ -466,16 +466,15 @@ fn every_pose_is_named_and_missing_animation_is_explicit() {
 }
 
 #[test]
-fn a_detached_arm_falls_away_with_its_blade_while_the_legs_keep_walking() {
+fn a_detached_blade_falls_away_while_the_legs_keep_walking() {
     let kit = kit();
     let model = Model::of(&STANDARD, kit).unwrap();
-    // The authoritative state (`shooter_sim::damage`; a fixture here) has lost the right arm and
-    // the blade on it, both lying on the floor beside the robot.
-    let arm = PartId(4);
+    // The authoritative state (`shooter_sim::damage`; a fixture here) has lost the blade on the
+    // chest, lying on the floor beside the robot.
     let blade = PartId(8);
     let fallen = Mat4::from_translation(Vec3::new(3.0, 0.5, 3.0))
         * Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2);
-    let detached = [(arm, fallen), (blade, fallen)];
+    let detached = [(blade, fallen)];
     let running = RobotState {
         velocity: Vec3::new(0.0, 0.0, 6.0),
         ..standing()
@@ -487,7 +486,7 @@ fn a_detached_arm_falls_away_with_its_blade_while_the_legs_keep_walking() {
     let whole = posed(&model, &running, 0.3, &PartStates::default());
     let lost = posed(&model, &running, 0.3, &states);
     for (index, part) in model.parts.iter().enumerate() {
-        let off = part.id == arm || part.id == blade;
+        let off = part.id == blade;
         assert_eq!(lost.parts[index].detached, off, "{}", part.key);
         if off {
             let expected = fallen * part.robot_from_local;
@@ -669,13 +668,10 @@ fn shots_start_at_the_muzzles_and_mods_ride_their_weapons() {
     assert!((kicked - barrel).dot(out) < -0.01, "{barrel} {kicked}");
     // A lost weapon takes its mod along.
     let fallen = Mat4::from_translation(Vec3::new(5.0, 0.0, 5.0));
-    let detached = [
-        (PartId(3), fallen),
-        (
-            marksman.parts[part_of(&marksman, "weapon.energy-rifle")].id,
-            fallen,
-        ),
-    ];
+    let detached = [(
+        marksman.parts[part_of(&marksman, "weapon.energy-rifle")].id,
+        fallen,
+    )];
     let lost = posed(
         &marksman,
         &standing(),
@@ -687,6 +683,36 @@ fn shots_start_at_the_muzzles_and_mods_ride_their_weapons() {
     );
     assert!(lost.mods[0].w_axis.x > 4.0, "{}", lost.mods[0].w_axis);
     assert!(lost.muzzles.iter().all(|m| m.weapon != Weapon::EnergyRifle));
+}
+
+#[test]
+fn every_loadout_weapon_points_its_kit_muzzle_along_the_aim() {
+    // Mounted on the chassis' front (shooter#91), every weapon's kit muzzle (and the blade's
+    // tip) points within a degree of where the fighter faces, with no aim offset in the drawing.
+    let kit = kit();
+    let forward = standing().forward;
+    let within = 1.0_f32.to_radians().cos();
+    for (name, build) in LOADOUTS {
+        let model = Model::of(&build, kit).unwrap();
+        let idle = posed(&model, &standing(), 0.0, &PartStates::default());
+        assert_eq!(idle.muzzles.len(), 3, "{name}: every weapon but the blade");
+        for muzzle in &idle.muzzles {
+            let along = muzzle.direction.normalize().dot(forward);
+            assert!(along > within, "{name}: {:?} {along}", muzzle.weapon);
+        }
+        let blade = &model.parts[part_of(&model, "weapon.energy-blade")];
+        let Visual::Kit { entry, .. } = blade.visual else {
+            panic!("{name}: the blade is a kit part")
+        };
+        let gear = kit.entries[entry]
+            .gear
+            .as_ref()
+            .expect("the blade's descriptor");
+        let tip = gear.anchor("blade-tip").expect("the blade's tip");
+        let world = idle.parts[part_of(&model, "weapon.energy-blade")].world_from_local;
+        let along = world.transform_vector3(tip.normal).normalize().dot(forward);
+        assert!(along > within, "{name}: blade {along}");
+    }
 }
 
 #[test]

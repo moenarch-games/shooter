@@ -229,6 +229,10 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   pool (D2.i70.3, D2.i70.4); the heat sink became the efficiency coil and the heavy loadout carries
   a battery.
   Since shooter#89 there is no core (D2.i89.1).
+  Since shooter#91 (owner, 2026-11-14) the named loadouts carry no arm beams: a sensor on top,
+  two legs underneath and every weapon, with its mod, on the root chassis' front facing the aim.
+  Each costs the two long beams' 6 build points less (standard 69, skirmisher 84, heavy 99,
+  marksman 99; the 110 cap is unchanged); the beams stay in the catalog.
 
 The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
 

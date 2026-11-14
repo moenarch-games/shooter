@@ -209,8 +209,8 @@ provisional). A blast (a rocket's splash, a battery's) hurts every part within r
 falloff to that part; the blade and the flame strike the part nearest the attacker's eye.
 Lag-compensated shots and swings place the parts at the centre and facing the shooter saw. A part
 works fully until zero; then it is destroyed for the rest of that life and everything no longer
-connected to the root chassis through the part tree falls away with it (breaking an arm drops the
-arm and its weapon; another chassis section is ordinary structure). Destroying the root chassis
+connected to the root chassis through the part tree falls away with it (breaking a beam drops it
+and whatever hangs from it; another chassis section is ordinary structure). Destroying the root chassis
 is the only kill; respawn restores the configured build whole. A lost
 weapon part no longer fires or swings (a gun the build never carried still fires as shipped:
 every fighter keeps the full arsenal); a destroyed battery sets off a small blast (40 at its
@@ -270,12 +270,12 @@ states from the match (`robots::weapon`): a shot's recoil and muzzle flash, the 
 flamethrower's loops while firing, the rail gun's recharge and the rocket pod's alternating tubes
 and reload over their (mod-tuned) refire time, the grapple's launch (its hook flies to where the
 host set it, the cable runs from the launcher) and retract, and the blade extending when held or
-swung, retracting otherwise, and the kit's quick-melee swing about its wrist (the arm itself stays
-rigid); between shots each weapon's charge light shows the robot's energy pool. Shots, beams,
+swung, retracting otherwise, and the kit's quick-melee swing about its wrist (the part it is
+mounted on stays rigid); between shots each weapon's charge light shows the robot's energy pool. Shots, beams,
 flames and pellets are drawn from the weapon's muzzle frame (the long barrel's when it has one)
-rather than a guessed offset. The named loadouts mount most weapons pointing sideways or up (only
-chest weapons point forward), so most shots leave a muzzle that does not face the aim; the
-simulation decides where shots start and what they hit. A dead robot topples over until it
+rather than a guessed offset. The named loadouts mount every weapon on the root chassis' front with
+its muzzle along the aim (#91), so shots leave muzzles that face it; the simulation decides where
+shots start and what they hit. A dead robot topples over until it
 respawns. Strafing (no sideways clip) is a missing animation: a magenta marker floats over the
 robot and the HUD names it. Hinges and rotors would turn about the simulation's anchor (the centre
 of their top face, where the kit pivots at the cube's centre), but nothing in a match turns them
@@ -296,8 +296,10 @@ two-cell module) and the *efficiency coil* (rifle, rail gun, rockets, shotgun: 6
 mod. A mod that does not fit its weapon rejects the build. Pick a named loadout
 with `--loadout <name>` natively or `&loadout=<name>` in the browser (the join overlay's loadout
 field): `standard`, `heavy` (with a battery: 160 energy), `skirmisher` (rapid-cycler rifle,
-efficiency-coiled shotgun) or `marksman` (long-barrel rifle along an arm, overcharged rail gun:
-three hits a front kill instead of four, on the root chassis), each a humanoid component tree. Practice
+efficiency-coiled shotgun) or `marksman` (long-barrel rifle, overcharged rail gun: three hits a
+front kill instead of four, on the root chassis), each a two-legged component tree with a sensor
+on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
+shot at the upper half of the chassis meets a weapon first. Practice
 starts as it; online the host applies it at your next spawn. The HUD's status line shows the held
 weapon's mod and every equipped one.
 

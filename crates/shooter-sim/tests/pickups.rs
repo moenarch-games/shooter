@@ -462,16 +462,19 @@ fn the_rail_capacitor_hits_harder_through_lag_compensation_on_any_build() {
     assert_eq!(shot(SKIRMISHER, true), (None, Some(boosted)));
 }
 
-/// The yaw and pitch from A's eye to the centre of B's root chassis, where the host places it.
+/// The yaw and pitch from A's eye to B's root chassis below the weapons on its chest, where the
+/// host places it.
 #[allow(clippy::cast_possible_truncation)]
 fn at_chassis(session: &Session) -> (u16, i16) {
     let eye = session.fighters[0].player.eye(&session.world);
     let b = &session.fighters[1];
     let parts = b.hitboxes(b.player.center(&session.world), b.intent.yaw);
-    let chassis = parts
+    let mut chassis = parts
         .get(PartDamage::root(&b.build).unwrap())
         .unwrap()
         .center;
+    // Below the weapons on its chest.
+    chassis[1] -= 20.0;
     let d = [0, 1, 2].map(|axis| chassis[axis] - eye[axis]);
     let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
     let run = d[0].hypot(d[2]).round() as i32;
