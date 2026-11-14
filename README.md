@@ -142,8 +142,7 @@ is drawn and heard as soon as you press; the host decides what it strikes.
 sockets, one per 20 cm surface cell (a 20 × 40 × 80 cm chassis has 28). Each part has a stable ID,
 one parent socket and an exact orientation (binary angles, stored in one canonical form); a larger
 part reserves its footprint of neighbouring cells on its parent's face, and no two parts may
-claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints (rigid for
-now), the control core, a battery, a sensor, legs, wheels, tracks, an armor plate and the eight
+claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints, the control core, a battery, a sensor, legs, wheels, tracks, an armor plate and the eight
 shipped weapons. A build is valid with one chassis root, no cycles, exactly one control core on
 any free socket, each weapon at most once, at most 32 parts and at most 120 build points; there is
 no power, heat or cooling budget. Nothing requires locomotion: tanks, four-legged dogs,
@@ -168,7 +167,31 @@ served in a fixed order: a thruster jump, then the blade swing, then the gun (pr
 Q2.i70.4). There is no heat or cooling. The host owns the pool; snapshots carry each robot's
 charge, the client predicts its own, replays reproduce it, and the HUD's status line shows it
 (`⚡ 87/160`). Values are provisional (Atlas Q2.i70.1). A destroyed battery losing its charge and
-exploding waits on per-part damage (#56); continuous motor draw comes with #73.
+exploding waits on per-part damage (#56). Motors draw from the same pool (below).
+
+**Mechanics** (`shooter_sim::mechanics`, Atlas D2.i70.5, the first half of #73). The simulation
+can build any valid robot as a mechanical one in a dynamic world of its own
+(`shooter_sim::physics::articulated`, on physics-engine's compound bodies and revolute joints
+with motors): every part placed in space from its socket and exact orientation, rigidly joined
+parts one compound body with each part's mass where it is mounted, and a separate body on a
+motorised joint for what sits on a hinge (a servo within a quarter turn either way) or a rotor
+(a continuous motor), for each wheel (a sphere: physics-engine has no cylinders), each of a
+track's two road wheels and each leg (one self-contained module: a thigh on a hip servo and a
+shin with a flat foot on a knee servo). Each tick a robot's actuators take one command each (a
+rate, an angle, a leg's stride or idle) and ask the shared pool for their draw, first come,
+first served in part-ID order (a flat cost a commanded tick, provisional); a refused motor is off
+that tick. Mounting orientation is authoritative: a wheel turns about its own mount normal, so
+the same command spins a car in place, wheels on its front and back strafe it, and lopsided mass
+tips it over. Legs walk through a gait preset suggested from the attached legs (two: a biped
+that steps quickly, four: a crawl, one leg at a time) and can be overridden; the presets only
+command the hip and knee servos, so legs mounted wrong go nowhere and nothing teleports. Each
+actuator reports its angle, rate, torque and whether it stalled (at its torque, far from its
+command). Part poses and per-part ray hits follow the bodies, and the state encodes exactly
+(`wire::encode_mechanics`, `encode_controls`): a world restored from it continues bit for bit.
+The fighters in a match are still the box fighters on the capsule controller: putting mechanical
+robots into the match, its snapshots, prediction and replays, is #73's second half, with the
+bindings (#74). Masses, torques, rates, draws and gait timings are provisional; a 12-robot scene
+(66 joints) steps in about 0.16 ms a tick natively on physics-engine (0.20 ms on Rapier).
 
 **Weapon mods.** A weapon part may carry one mod, which costs build points and mass and changes
 how that weapon fires (on the host, in the client's prediction and in lag-compensated hits
@@ -213,7 +236,11 @@ and inside 3 m they rush in and swing the blade.
 The movement and the weapons are checked against Rapier on a scripted tour of the arena and on
 scripted moves (sprint, slide, double jump, a thruster-module jump, jump pad, ramp slides, a thin wall, a step, a rocket
 jump, a grapple onto a ledge, a shooting range, a close range for the shotgun, laser and flamethrower):
-`cargo test -p shooter-sim --features physics-ab --test physics_ab`.
+`cargo test -p shooter-sim --features physics-ab --test physics_ab`, which also runs the
+mechanics fixtures on both (rolling, strafing, the stall, both turrets, tipping, per-part hits,
+the robo-dog walking). `cargo test -p shooter-sim --test mechanics` checks those fixtures, the
+biped and quadruped presets, badly mounted legs, motor energy draw, and that a restored world
+and a replay continue bit for bit.
 `cargo test -p shooter-sim --test robot` checks the sockets and canonical orientations, valid
 builds of every form (the loadouts, a mini-tank, a robo-dog, a humanoid, stationary and
 grappling-only machines), every rejection (core, cycles, double parents, overlaps, the part

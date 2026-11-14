@@ -26,7 +26,7 @@ use super::{
     error, exact, from_subunits, slide_around,
 };
 
-const UNITS_PER_METRE: f32 = 100.0;
+pub(super) const UNITS_PER_METRE: f32 = 100.0;
 const CONTACT_OFFSET: f32 = CONTACT_OFFSET_UNITS / UNITS_PER_METRE;
 /// How far (metres) below a body the controller still finds ground: its contact offset plus
 /// the ground prediction. Support queries and snapping use the same reach.
@@ -35,9 +35,9 @@ const SUPPORT_REACH: f32 = CONTACT_OFFSET + GROUND_PREDICTION_UNITS / UNITS_PER_
 const TIE_UNITS: f32 = 1.0e-3;
 /// A ground gap (units) below this counts as standing on it.
 const GAP_TOLERANCE_UNITS: f32 = 1.0e-3;
-const TICK_SECONDS: f32 = 1.0 / crate::TICK_HZ as f32;
+pub(super) const TICK_SECONDS: f32 = 1.0 / crate::TICK_HZ as f32;
 
-fn metres(value: [f32; 3]) -> Vector {
+pub(super) fn metres(value: [f32; 3]) -> Vector {
     Vector::new(value[0], value[1], value[2]) / UNITS_PER_METRE
 }
 
@@ -45,7 +45,7 @@ fn lifted(value: [f32; 3]) -> Vector {
     metres(value) + Vector::new(0.0, CONTACT_OFFSET, 0.0)
 }
 
-fn units(value: Vector) -> [f32; 3] {
+pub(super) fn units(value: Vector) -> [f32; 3] {
     let value = value * UNITS_PER_METRE;
     [value.x, value.y, value.z]
 }
@@ -64,7 +64,7 @@ fn capsule(half_extents: Vec3i) -> Capsule {
 
 /// A ramp's wedge in metres around its box centre: the box's bottom rectangle and its top edge
 /// at the high end, as a convex hull.
-fn wedge(half_extents: Vec3i, rises: RampRise) -> SharedShape {
+pub(super) fn wedge(half_extents: Vec3i, rises: RampRise) -> SharedShape {
     let [hx, hy, hz] = exact(half_extents).map(|value| value / UNITS_PER_METRE);
     let [dx, dz] = rises.direction();
     let mut points = Vec::with_capacity(6);

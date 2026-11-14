@@ -338,7 +338,7 @@ fn every_form_is_valid_from_the_same_parts_and_rules() {
         assembly
             .parts()
             .iter()
-            .filter(|part| BETA.part_type(part.kind).unwrap().kind == Kind::Locomotion)
+            .filter(|part| matches!(BETA.part_type(part.kind).unwrap().kind, Kind::Locomotion(_)))
             .count()
     };
     assert_eq!(locomotion(&stationary()), 0);

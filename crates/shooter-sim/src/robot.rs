@@ -42,7 +42,8 @@
 //! weapons they fit, each weapon at most once (the arsenal looks a weapon's mod up by weapon), the
 //! technical part-count ceiling [`MAX_PARTS`], and the build points. Nothing requires
 //! locomotion: stationary, asymmetrical or grappling-only robots are valid. Every attachment is
-//! rigid; joints are part types (shooter#73 moves them).
+//! rigid; only joint and locomotion parts move ([`crate::mechanics`] places every part in space
+//! and builds the robot's bodies, joints and motors from the tree).
 //!
 //! **Energy** (D2.i70.3, D2.i70.4): the control core holds a baseline energy capacity and
 //! regenerates it; each optional battery ([`Kind::Battery`]) adds stored capacity only (no
@@ -65,8 +66,9 @@
 //! A build does not yet change how a fighter moves or which weapons it carries: every fighter
 //! still has the full arsenal, and a weapon without a mod in the build fires as shipped. A
 //! mounted weapon's mod applies whenever it fires, on the host and in a client's prediction
-//! alike. Per-part damage (shooter#56), mechanics (shooter#73), locomotion (shooter#58) and the
-//! builder (shooter#57) apply the rest.
+//! alike. [`crate::mechanics`] builds any valid build as a mechanical robot, but the match's
+//! fighters do not use it yet (shooter#73's second half); per-part damage (shooter#56),
+//! locomotion (shooter#58) and the builder (shooter#57) apply the rest.
 
 use crate::weapons::{Delivery, Weapon};
 use parts::{
@@ -146,19 +148,60 @@ pub enum Kind {
     Chassis,
     /// A structural beam extending the tree.
     Beam,
-    /// A movable joint (hinge or rotor): rigid until the mechanics (shooter#73).
-    Joint,
+    /// A movable joint: its base is rigid with its parent, its top face and what is mounted
+    /// there turn about one axis ([`crate::mechanics`]).
+    Joint(Joint),
     /// The control core: exactly one per build (D2.i70.2); the baseline energy capacity and its
     /// regeneration (D2.i70.3).
     Core,
     /// A battery: stored energy capacity only (D2.i70.3).
     Battery,
     Sensor,
-    /// Legs, wheels or tracks: optional (D2.i70.1).
-    Locomotion,
+    /// Legs, wheels or tracks: optional (D2.i70.1), driven as they are mounted
+    /// ([`crate::mechanics`]).
+    Locomotion(Locomotion),
     Armor,
     /// A weapon module: one of the shipped weapons as a mountable part (D2.i46.8).
     Weapon(Weapon),
+}
+
+/// A movable joint part.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Joint {
+    /// A servo about the part's own X axis (across its top face), within a quarter turn either
+    /// way.
+    Hinge,
+    /// A continuous rotary motor about the part's own Z axis (its mount normal): a turret ring.
+    Rotor,
+}
+
+/// A locomotion part.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Locomotion {
+    /// One self-contained leg module: a hip and a knee it drives itself.
+    Leg,
+    /// A wheel turning about its mount normal.
+    Wheel,
+    /// A track: road wheels along its length turning about its mount normal.
+    Track,
+}
+
+/// What a motorised part can do (zero for the rest): the most torque each of its motors gives
+/// (N·m), the fastest it turns (tenths of a radian a second) and the energy it draws a second
+/// while commanded ([`crate::energy`]). Provisional (Q2.i70.1).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct Drive {
+    pub torque: u16,
+    pub rate: u16,
+    pub draw: u16,
+}
+
+impl Drive {
+    pub const NONE: Self = Self {
+        torque: 0,
+        rate: 0,
+        draw: 0,
+    };
 }
 
 /// A part type's stable code in the catalog (on the wire).
@@ -166,7 +209,7 @@ pub enum Kind {
 pub struct PartTypeId(pub u8);
 
 /// A part's stable ID within its build.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct PartId(pub u8);
 
 /// A socket's stable index on its part ([`PartType::socket`]).
@@ -202,6 +245,8 @@ pub struct PartType {
     /// is shooter#56).
     pub health: u16,
     pub points: u16,
+    /// Its motors (joints and locomotion, [`crate::mechanics`]).
+    pub drive: Drive,
 }
 
 impl PartType {
@@ -367,7 +412,7 @@ pub struct Catalog {
 /// The beta's part types (every one available from the start, D2.i46.5), as constants so builds
 /// can name sockets on them ([`PartType::socket`]). Provisional values (Q2.i70.1, Q2.i70.2).
 pub mod parts {
-    use super::{Faces, Kind, PartType, PartTypeId};
+    use super::{Drive, Faces, Joint, Kind, Locomotion, PartType, PartTypeId};
     use crate::weapons::Weapon;
 
     const fn part(
@@ -389,6 +434,16 @@ pub mod parts {
             regen,
             health: 0,
             points,
+            drive: Drive::NONE,
+        }
+    }
+
+    /// `part` with motors of `torque` N·m turning at most `rate` tenths of a radian a second and
+    /// drawing `draw` energy a second while commanded.
+    const fn driven(part: PartType, [torque, rate, draw]: [u16; 3]) -> PartType {
+        PartType {
+            drive: Drive { torque, rate, draw },
+            ..part
         }
     }
 
@@ -428,12 +483,14 @@ pub mod parts {
     /// 20 × 20 × 80 cm.
     #[rustfmt::skip]
     pub const BEAM_LONG: PartType = part(11, "robot.beam.20x20x80", Kind::Beam, [1, 1, 4], Faces::ALL, [10, 0, 0, 3]);
+    // Motorised parts end with their drive: torque (N·m), top rate (tenths of a radian a
+    // second) and the energy drawn a second while commanded.
     /// A hinge servo: one socket, on its moving side.
     #[rustfmt::skip]
-    pub const HINGE: PartType = part(20, "robot.joint.hinge", Kind::Joint, [1, 1, 1], Faces::TOP, [8, 0, 0, 5]);
+    pub const HINGE: PartType = driven(part(20, "robot.joint.hinge", Kind::Joint(Joint::Hinge), [1, 1, 1], Faces::TOP, [8, 0, 0, 5]), [40, 30, 1]);
     /// A continuous rotor (a turret's base): one socket, on its moving side.
     #[rustfmt::skip]
-    pub const ROTOR: PartType = part(21, "robot.joint.rotor", Kind::Joint, [1, 1, 1], Faces::TOP, [10, 0, 0, 6]);
+    pub const ROTOR: PartType = driven(part(21, "robot.joint.rotor", Kind::Joint(Joint::Rotor), [1, 1, 1], Faces::TOP, [10, 0, 0, 6]), [60, 40, 2]);
     /// The control core: the baseline energy capacity (100) and the regeneration (24 a second).
     #[rustfmt::skip]
     pub const CORE: PartType = part(30, "robot.core", Kind::Core, [1, 1, 1], Faces::NONE, [15, 100, 24, 10]);
@@ -443,15 +500,15 @@ pub mod parts {
     pub const BATTERY: PartType = PartType { health: 60, ..part(32, "robot.battery", Kind::Battery, [1, 2, 1], Faces::NONE, [20, 60, 0, 5]) };
     #[rustfmt::skip]
     pub const SENSOR: PartType = part(31, "robot.sensor", Kind::Sensor, [1, 1, 1], Faces::NONE, [10, 0, 0, 5]);
-    /// One self-contained leg, 80 cm long.
+    /// One self-contained leg, 80 cm long: a hip and a knee servo, each with this drive.
     #[rustfmt::skip]
-    pub const LEG: PartType = part(40, "robot.leg", Kind::Locomotion, [1, 1, 4], Faces::NONE, [25, 0, 0, 7]);
+    pub const LEG: PartType = driven(part(40, "robot.leg", Kind::Locomotion(Locomotion::Leg), [1, 1, 4], Faces::NONE, [25, 0, 0, 7]), [300, 80, 4]);
     /// A 40 cm wheel.
     #[rustfmt::skip]
-    pub const WHEEL: PartType = part(41, "robot.wheel", Kind::Locomotion, [2, 2, 1], Faces::NONE, [20, 0, 0, 6]);
-    /// An 80 cm track.
+    pub const WHEEL: PartType = driven(part(41, "robot.wheel", Kind::Locomotion(Locomotion::Wheel), [2, 2, 1], Faces::NONE, [20, 0, 0, 6]), [30, 120, 2]);
+    /// An 80 cm track: two road wheels, each with this drive.
     #[rustfmt::skip]
-    pub const TRACK: PartType = part(42, "robot.track", Kind::Locomotion, [1, 4, 2], Faces::NONE, [45, 0, 0, 12]);
+    pub const TRACK: PartType = driven(part(42, "robot.track", Kind::Locomotion(Locomotion::Track), [1, 4, 2], Faces::NONE, [45, 0, 0, 12]), [40, 120, 3]);
     /// A 40 × 40 cm plate.
     #[rustfmt::skip]
     pub const ARMOR_PLATE: PartType = part(50, "robot.armor.plate", Kind::Armor, [2, 2, 1], Faces::NONE, [15, 0, 0, 4]);

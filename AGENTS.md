@@ -12,7 +12,7 @@ that materially changes the task.
 
 | Crate | Role |
 | --- | --- |
-| `shooter-sim` | Deterministic simulation the clients and the host share: the map catalog (`maps`: stable map IDs, each map's arena and recommended capacity; the greybox is the only map and the test and A/B fixture), movement, the energy weapons, the grapple hook and the energy blade (quick melee), health, deaths, respawns and deathmatch rounds, lag-compensated hitscan and swings, the shared aim (`aim`: where a shot from the eye lands, for the host's hitscan and the clients' reticle), the seeded bots, the robot build schema, catalog and validation (`robot`), the contested module pickups (`pickups`), and the wire format (`wire`). No rendering, input devices or I/O |
+| `shooter-sim` | Deterministic simulation the clients and the host share: the map catalog (`maps`: stable map IDs, each map's arena and recommended capacity; the greybox is the only map and the test and A/B fixture), movement, the energy weapons, the grapple hook and the energy blade (quick melee), health, deaths, respawns and deathmatch rounds, lag-compensated hitscan and swings, the shared aim (`aim`: where a shot from the eye lands, for the host's hitscan and the clients' reticle), the seeded bots, the robot build schema, catalog and validation (`robot`), mechanical robots (`mechanics`: compound bodies, motorised joints, wheels, tracks and legs with gait presets, motor energy, exact state, on `physics::articulated`), the contested module pickups (`pickups`), and the wire format (`wire`). No rendering, input devices or I/O |
 | `shooter-server` | The deathmatch as a game-server `GameSimulation`, the `shooter-server` WebTransport host binary, and `shooter-replay` (record, verify and promote scripted match replays into foundation fixtures, `docs/foundation-data.md`) |
 | `shooter-client` | One client crate for native and `wasm32`: winit window, render-engine frame and the third-person camera and reticle (`camera`), input-bindings controls, render-engine weapon lights and particles, game-audio cues, the HUD stopgap (page DOM / window title), offline practice in-process and online play with prediction (wtransport natively, game-server's `BrowserSession` in the browser) |
 | `web/` | The page around the `wasm32` build; `scripts/build-web.sh` writes `web/dist` |
@@ -22,8 +22,9 @@ that materially changes the task.
 ```sh
 cargo fmt --all -- --check
 cargo test -p shooter-sim --locked                                         # movement and weapons on physics-engine
-cargo test -p shooter-sim --features physics-ab --test physics_ab --locked # Rapier A/B of the tour, moves and weapons
+cargo test -p shooter-sim --features physics-ab --test physics_ab --locked # Rapier A/B of the tour, moves, weapons, mechanics
 cargo test -p shooter-sim --test deathmatch --locked                       # bots, scoring, rounds, lag compensation
+cargo test -p shooter-sim --test mechanics --locked                        # mechanical robots: fixtures, gaits, motor energy, exact restore
 cargo test -p shooter-client --test online --locked                        # two clients through a real host on loopback
 cargo run -p shooter-client --release                                      # native client, practice vs bots
 scripts/dev.sh [clients|web]                                               # local host + native clients (or the browser build) online

@@ -13,7 +13,7 @@ publish = false
 shooter-sim = { path = "crates/shooter-sim" }
 # Physics (`shooter_sim::physics` adapts it); Rapier is the A/B oracle under `physics-ab` only and
 # never ships in a client.
-physics-engine = { git = "https://github.com/moritzbrantner/physics-engine", rev = "a7e04ef68eb6116565ea2731e4df8a47875d5248" }
+physics-engine = { git = "https://github.com/moritzbrantner/physics-engine", rev = "034bccfcfdfefd2c37be415b52ee4fa7b433084a" }
 rapier3d = "=0.36.1"
 render-engine = { git = "https://github.com/moritzbrantner/render-engine.git", rev = "780e5d89d08de410a4d493204b5878a78293a006" }
 input-bindings-core = { git = "https://github.com/moritzbrantner/input-bindings.git", rev = "561002ee94ab062f59c0d72dbca35b58734524dd" }

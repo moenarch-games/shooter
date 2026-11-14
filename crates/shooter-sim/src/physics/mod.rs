@@ -1,5 +1,6 @@
 //! The shooter's physics world over `physics_engine::approximate::World`, with a Rapier oracle
 //! behind the same API under the `physics-ab` feature (never in a client).
+//! Mechanical robots have their own dynamic world, [`articulated`].
 //!
 //! Every moving body is an upright capsule character; everything else is static: the floor
 //! half-space, boxes and ramps. A step moves every character once: gravity unless it stands on
@@ -11,6 +12,7 @@
 //! Each step keeps the move it handed every character ([`World::moves`]), so a recorded match
 //! can replay the same requests on another engine.
 
+pub mod articulated;
 mod engine;
 #[cfg(feature = "physics-ab")]
 mod queries;
@@ -76,7 +78,7 @@ impl fmt::Display for PhysicsError {
 
 impl std::error::Error for PhysicsError {}
 
-fn error(message: impl Into<String>) -> PhysicsError {
+pub(crate) fn error(message: impl Into<String>) -> PhysicsError {
     PhysicsError(message.into())
 }
 
