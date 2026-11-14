@@ -76,6 +76,9 @@ implemented yet.
   fixed rotation order; the blade stays on its own key unless it is the last weapon. No named
   loadout mounts the laser or the flamethrower yet, so until the builder (shooter#57) only the
   tests' over-budget armory build fires them.
+  Since shooter#96 (owner, 2026-11-14) a fifth named loadout, `pyro`, mounts the laser (with a
+  long barrel) and the flamethrower beside the blade and the grapple, so every weapon stays
+  playable until the builder.
 - **D2.i46.9** (owner, 2026-11-13): Some powerful weapon and movement modules spawn as pickups at
   contested arena points. Any robot can use them, with no compatibility gate; a build may exploit
   one better (for example grapple plus a sniper position). Their lifetime is open (Q2.i46.3).
@@ -355,7 +358,7 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   weapon's damage, refire and range in percent: rapid cycler, overcharger, long barrel (makes its
   weapon heavy) and heat sink. Every mod that changes the fire gives up damage, refire or range.
   Until the builder (shooter#57), people pick a named loadout (`robot::LOADOUTS`: standard,
-  heavy, skirmisher, marksman), sent through the existing build request.
+  heavy, skirmisher, marksman; pyro since shooter#96), sent through the existing build request.
   Attachment rules answered by D2.i70.1 and D2.i70.2, cooling superseded by D2.i70.4; the numbers
   remain open as Q2.i70.1 and Q2.i70.2. The defaults above stay shipped until migrated
   (D2.i70.12). The sockets, hardpoints and load budget were migrated by shooter#71; the power and

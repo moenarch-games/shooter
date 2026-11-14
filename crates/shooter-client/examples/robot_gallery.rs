@@ -6,20 +6,20 @@
 //! cargo run -p shooter-client --release --example robot_gallery -- <directory>
 //! ```
 //!
-//! writes `loadouts.ppm` (the four named loadouts and the mechanics fixtures: the biped, the
+//! writes `loadouts.ppm` (the five named loadouts and the mechanics fixtures: the biped, the
 //! robo-dog and the paired turret with its rotor and hinge turned), `poses.ppm` (the standard
 //! build idle, running, strafing, airborne, grappling, sliding, firing, swinging the blade, dead,
 //! and with its blade shot off), `weapons.ppm` (the weapons' states and the mods: the rifle
 //! held with the blade away, the rifle firing, a blade swing, the rocket pod firing, the rail gun
 //! recharging, the skirmisher's grapple hooked with its mods, the marksman's long barrel and
-//! overcharger), `close.ppm` (the heavy build close up) and `mods.ppm` (the skirmisher and
+//! overcharger, the pyro's flamethrower firing beside its long-barrelled laser), `close.ppm` (the heavy build close up) and `mods.ppm` (the skirmisher and
 //! marksman close up).
 
 use render_engine::glam::{Mat4, Vec3};
 use shooter_client::gpu::Gpu;
 use shooter_client::robots::{self, PartStates, RobotState, RobotView, Robots};
 use shooter_sim::mechanics::fixtures;
-use shooter_sim::robot::{HEAVY, MARKSMAN, PartId, SKIRMISHER, STANDARD};
+use shooter_sim::robot::{HEAVY, MARKSMAN, PYRO, PartId, SKIRMISHER, STANDARD};
 use shooter_sim::{Assembly, MapId, Weapon};
 
 const SIZE: (u32, u32) = (1600, 900);
@@ -85,11 +85,12 @@ fn main() -> Result<(), String> {
     };
 
     let fixtures_turret = fixtures::paired_turret();
-    let lineup: [(Assembly, &[(PartId, f32)]); 7] = [
+    let lineup: [(Assembly, &[(PartId, f32)]); 8] = [
         (STANDARD, &[]),
         (HEAVY, &[]),
         (SKIRMISHER, &[]),
         (MARKSMAN, &[]),
+        (PYRO, &[]),
         (fixtures::biped(), &[]),
         (fixtures::dog(false), &[]),
         (
@@ -111,12 +112,12 @@ fn main() -> Result<(), String> {
             },
         })
         .collect();
-    let middle = at(3, 2.0) + Vec3::Y * 0.9;
+    let middle = at(3, 2.0) - Vec3::X + Vec3::Y * 0.9;
     shoot(
         &mut gpu,
         &mut robots,
         &views,
-        middle + Vec3::new(0.0, 0.9, -6.0),
+        middle + Vec3::new(0.0, 0.9, -6.6),
         middle,
         &out.join("loadouts.ppm"),
     )?;
@@ -289,6 +290,15 @@ fn main() -> Result<(), String> {
                     ..base(6)
                 },
             ),
+            (
+                PYRO,
+                RobotState {
+                    held: Weapon::Flamethrower,
+                    fired: Weapon::Flamethrower,
+                    since_fired: 0.05,
+                    ..base(7)
+                },
+            ),
         ]
     };
     let views: Vec<RobotView> = weapons
@@ -302,12 +312,12 @@ fn main() -> Result<(), String> {
             parts: PartStates::default(),
         })
         .collect();
-    let middle = at(3, 1.3) + Vec3::Y * 1.2;
+    let middle = at(3, 1.3) - Vec3::X * 0.65 + Vec3::Y * 1.2;
     shoot(
         &mut gpu,
         &mut robots,
         &views,
-        middle + Vec3::new(0.0, 0.6, -4.6),
+        middle + Vec3::new(0.0, 0.6, -5.0),
         middle,
         &out.join("weapons.ppm"),
     )?;
