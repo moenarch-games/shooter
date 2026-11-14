@@ -370,7 +370,8 @@ impl Controls {
     }
 }
 
-/// The first-person view direction, turned by mouse and right stick.
+/// The aim: where the fighter looks and the third-person camera with it, turned by mouse and
+/// right stick.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
     /// Radians; 0 faces +Z and growing yaw turns toward +X (as `shooter_sim::trig`).

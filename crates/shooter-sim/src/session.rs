@@ -14,6 +14,7 @@
 //! and shotgun pellets are projectiles: they fly through the world as it is each tick and meet
 //! fighters where they are then, like the flame.
 
+use crate::aim;
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
 use crate::bots::{Bot, Sight};
 use crate::dummies::Dummy;
@@ -1073,46 +1074,40 @@ impl Session {
         range_units: i32,
     ) -> Shot {
         let shooter = &self.fighters[slot];
-        let body = shooter.player.body;
-        #[allow(clippy::cast_precision_loss)]
-        let unit = direction.map(|axis| axis as f32 / crate::trig::TRIG_ONE as f32);
-        let scenery = weapons::trace(&self.world, eye, direction, range_units, body, |hit| {
-            slot_of(hit).is_none()
-        });
-        #[allow(clippy::cast_precision_loss)]
-        let translation = unit.map(|axis| axis * range_units as f32);
-        let reach = scenery.hit.map_or(1.0, |hit| hit.fraction);
         let rewind = self
             .tick
             .saturating_sub(shooter.view_tick)
             .min(MAX_REWIND_TICKS);
-        let mut target: Option<(usize, f32)> = None;
-        for (other, center) in self.centers_at(self.tick - rewind).iter().enumerate() {
-            let Some(center) = center else { continue };
-            if other == slot || !self.fighters.get(other).is_some_and(Fighter::alive) {
-                continue;
-            }
-            if let Some(fraction) = weapons::ray_box(eye, translation, *center, HALF)
-                && fraction < reach
-                && target.is_none_or(|(_, best)| fraction < best)
-            {
-                target = Some((other, fraction));
-            }
-        }
-        if let Some((victim, fraction)) = target {
-            let end = [0, 1, 2].map(|axis| eye[axis] + translation[axis] * fraction);
+        let seen = self.centers_at(self.tick - rewind);
+        let fighters = seen.iter().enumerate().filter_map(|(other, center)| {
+            let alive = self.fighters.get(other).is_some_and(Fighter::alive);
+            (other != slot && alive).then_some((other, (*center)?))
+        });
+        let sight = aim::sight(
+            &self.world,
+            eye,
+            direction,
+            range_units,
+            shooter.player.body,
+            |hit| slot_of(hit).is_none(),
+            fighters,
+        );
+        if let Some((victim, _)) = sight.fighter {
+            #[allow(clippy::cast_precision_loss)]
+            let unit = direction.map(|axis| axis as f32 / crate::trig::TRIG_ONE as f32);
             return Shot {
                 beam: Event::Beam {
                     weapon,
                     from: eye,
-                    end,
+                    end: sight.end,
                     normal: unit.map(|axis| -axis),
                     struck: true,
                 },
                 target: Target::Fighter(victim),
-                at: end,
+                at: sight.end,
             };
         }
+        let scenery = sight.scenery;
         Shot {
             beam: Event::Beam {
                 weapon,
