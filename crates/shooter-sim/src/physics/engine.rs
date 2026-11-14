@@ -19,13 +19,13 @@ use super::{
 };
 
 /// The game's centimetres per metre: the engine's length unit.
-const UNITS_PER_METRE: f32 = 100.0;
+pub(super) const UNITS_PER_METRE: f32 = 100.0;
 
-const fn vector(value: [f32; 3]) -> Vector {
+pub(super) const fn vector(value: [f32; 3]) -> Vector {
     Vector(value[0], value[1], value[2])
 }
 
-const fn array(value: Vector) -> [f32; 3] {
+pub(super) const fn array(value: Vector) -> [f32; 3] {
     [value.0, value.1, value.2]
 }
 
@@ -49,7 +49,7 @@ fn engine_error(what: &str, failure: impl fmt::Debug) -> PhysicsError {
 
 /// `body` as an engine body keyed by its game id: a character is an external capsule,
 /// everything else static.
-fn engine_body(body: &RigidBody) -> Body {
+pub(super) fn engine_body(body: &RigidBody) -> Body {
     let key = body.id.0;
     match body.kind {
         Kind::Moving => {

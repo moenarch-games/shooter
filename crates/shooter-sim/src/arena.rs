@@ -272,18 +272,27 @@ impl Arena {
     /// A physics world holding this arena's floor and pieces, under `gravity` (subunits per tick²).
     pub fn build_world(&self, gravity: Vec3i) -> Result<World, PhysicsError> {
         let mut world = World::new(gravity);
-        world.add_body(RigidBody::floor(FLOOR_BODY, 0))?;
-        for (index, piece) in self.pieces.iter().enumerate() {
-            let id = BodyId(FLOOR_BODY.0 + 1 + index as u64);
-            world.add_body(match *piece {
-                Piece::Block { center, half } => RigidBody::fixed(id, center, half),
-                Piece::Ramp {
-                    center,
-                    half,
-                    rises,
-                } => RigidBody::ramp(id, center, half, rises),
-            })?;
+        for body in self.statics() {
+            world.add_body(body)?;
         }
         Ok(world)
+    }
+
+    /// The floor and the pieces as static bodies, in body-id order.
+    #[must_use]
+    pub fn statics(&self) -> Vec<RigidBody> {
+        std::iter::once(RigidBody::floor(FLOOR_BODY, 0))
+            .chain(self.pieces.iter().enumerate().map(|(index, piece)| {
+                let id = BodyId(FLOOR_BODY.0 + 1 + index as u64);
+                match *piece {
+                    Piece::Block { center, half } => RigidBody::fixed(id, center, half),
+                    Piece::Ramp {
+                        center,
+                        half,
+                        rises,
+                    } => RigidBody::ramp(id, center, half, rises),
+                }
+            }))
+            .collect()
     }
 }

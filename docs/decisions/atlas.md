@@ -122,8 +122,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   (`shooter_sim::energy`): the core's capacity and regeneration, batteries adding stored capacity,
   weapon activations and the pickup boosts paying first come, first served (Q2.i70.4), host-owned,
   in snapshots, predicted and replayed. Still open on shooter#72: a destroyed battery losing its
-  charge and capacity and its local blast (needs per-part damage, shooter#56). Continuous motor
-  draw comes with shooter#73.
+  charge and capacity and its local blast (needs per-part damage, shooter#56). Since shooter#73's
+  first half, motors draw from the pool too: a flat cost each commanded tick, in part-ID order
+  (provisional).
 - **D2.i70.4** (owner, 2026-11-13; shooter#70; supersedes D2.i46.5's cooling constraint): The beta
   has no heat or cooling mechanic: weapons and parts are limited by energy (D2.i70.3) and
   cooldowns, not heat accumulation or cooling modules. The heat and cooling that ship today stay
@@ -143,6 +144,13 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   suggested from the attached legs and can be overridden, and they command physical movement
   without teleporting or guaranteeing stability. No structural stress or fatigue, full
   configurable joint solver or multipart leg construction in the beta. Owner: shooter#73.
+  Since shooter#73's first half the mechanics ship in `shooter_sim::mechanics` on
+  physics-engine's compound bodies and revolute motors (`shooter_sim::physics::articulated`,
+  mirrored on the Rapier oracle): every valid build becomes compound bodies on hinge, rotor,
+  wheel, track and leg joints (a leg is one module: hip and knee servos and a flat foot), driven
+  by per-actuator commands with stall detection, the biped and quadruped presets, per-part poses
+  and hits, and an exactly restorable state. The match's fighters still use the capsule
+  controller; moving them onto the mechanics (snapshots, prediction, replays) is its second half.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
   humanoids and other bipeds, four-leg robo-dogs on built-in quadruped walking presets, wheels and
   tracks, stationary platforms and grappling-only machines, all from the same part types and rules.

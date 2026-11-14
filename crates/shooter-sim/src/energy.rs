@@ -20,7 +20,8 @@
 //! during movement), then its blade swing, then its gun (one fires a tick; a refused swing
 //! leaves the gun its turn). Regeneration comes after every request of the tick. Robots resolve
 //! in slot order, but each has its own pool, so no robot's request ever waits on another's.
-//! Continuous motor draw (shooter#73) and repairs (shooter#61) will join this order.
+//! A mechanical robot's motors ([`crate::mechanics`]) ask for their draw each commanded tick, in
+//! part-ID order, before its pool regenerates; repairs (shooter#61) will join this order.
 //!
 //! The capacities, regeneration and costs are provisional defaults (Atlas Q2.i70.1), not
 //! owner-approved balance.

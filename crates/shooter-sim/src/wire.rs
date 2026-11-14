@@ -14,7 +14,11 @@
 use crate::energy::Pool;
 use crate::grapple::Hook;
 use crate::maps::MapId;
+use crate::mechanics::{
+    Command as MechCommand, Controls, Gait, GaitChoice, Layout, RobotState, State as MechState,
+};
 use crate::physics::Vec3i;
+use crate::physics::articulated::{Motion as BodyMotion, Pose};
 use crate::pickups::{ArenaModule, Carried};
 use crate::player::{Intent, Motion};
 use crate::robot::{Assembly, AssemblyError, BETA, Candidate, RawMount, RawPart};
@@ -916,4 +920,172 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
         events,
         names,
     })
+}
+
+const GAIT_SUGGESTED: u8 = 0;
+const GAIT_BIPED: u8 = 1;
+const GAIT_QUADRUPED: u8 = 2;
+const GAIT_UNISON: u8 = 3;
+const COMMAND_RATE: u8 = 1;
+const COMMAND_ANGLE: u8 = 2;
+const COMMAND_STRIDE: u8 = 3;
+
+/// A robot's mechanical controls for one tick ([`crate::mechanics::Controls`]): the gait
+/// choice, then the count of commanded parts (a `u16`) and, for each in part-ID order, its ID, the
+/// command's kind and its value (an `i16`).
+#[must_use]
+pub fn encode_controls(controls: &Controls) -> Vec<u8> {
+    let mut out = Out(Vec::new());
+    out.u8(match controls.gait {
+        GaitChoice::Suggested => GAIT_SUGGESTED,
+        GaitChoice::Preset(Gait::Biped) => GAIT_BIPED,
+        GaitChoice::Preset(Gait::Quadruped) => GAIT_QUADRUPED,
+        GaitChoice::Unison => GAIT_UNISON,
+    });
+    let commanded: Vec<(u8, u8, i16)> = (0..=u8::MAX)
+        .zip(&controls.commands)
+        .filter_map(|(part, command)| match *command {
+            MechCommand::Idle => None,
+            MechCommand::Rate(rate) => Some((part, COMMAND_RATE, rate)),
+            MechCommand::Angle(angle) => Some((part, COMMAND_ANGLE, angle)),
+            MechCommand::Stride(stride) => Some((part, COMMAND_STRIDE, i16::from(stride))),
+        })
+        .collect();
+    out.u16(u16::try_from(commanded.len()).expect("at most 256 parts"));
+    for (part, kind, value) in commanded {
+        out.u8(part);
+        out.u8(kind);
+        out.0.extend_from_slice(&value.to_le_bytes());
+    }
+    out.0
+}
+
+/// Inverse of [`encode_controls`].
+///
+/// # Errors
+///
+/// If the bytes are truncated, trail, name an unknown gait or command or one part
+/// twice, or a stride past ±100.
+pub fn decode_controls(bytes: &[u8]) -> Result<Controls, WireError> {
+    let mut input = In(bytes);
+    let mut controls = Controls::IDLE;
+    controls.gait = match input.u8()? {
+        GAIT_SUGGESTED => GaitChoice::Suggested,
+        GAIT_BIPED => GaitChoice::Preset(Gait::Biped),
+        GAIT_QUADRUPED => GaitChoice::Preset(Gait::Quadruped),
+        GAIT_UNISON => GaitChoice::Unison,
+        _ => return Err(WireError::Malformed("unknown gait")),
+    };
+    for _ in 0..input.u16()? {
+        let part = usize::from(input.u8()?);
+        let kind = input.u8()?;
+        let value = i16::from_le_bytes(input.take()?);
+        let slot = controls
+            .commands
+            .get_mut(part)
+            .ok_or(WireError::Malformed("no such part"))?;
+        if *slot != MechCommand::Idle {
+            return Err(WireError::Malformed("a part commanded twice"));
+        }
+        *slot = match kind {
+            COMMAND_RATE => MechCommand::Rate(value),
+            COMMAND_ANGLE => MechCommand::Angle(value),
+            COMMAND_STRIDE => MechCommand::Stride(
+                i8::try_from(value)
+                    .ok()
+                    .filter(|stride| (-100..=100).contains(stride))
+                    .ok_or(WireError::Malformed("stride out of range"))?,
+            ),
+            _ => return Err(WireError::Malformed("unknown command")),
+        };
+    }
+    input.finish()?;
+    Ok(controls)
+}
+
+/// The robots' exact mechanical state ([`crate::mechanics::State`]): a robot count, then per
+/// robot its build (as in a snapshot), its charge and gait clock, and each of its bodies'
+/// position, orientation, velocity and angular velocity as exact `f32` bits.
+#[must_use]
+pub fn encode_mechanics(state: &MechState) -> Vec<u8> {
+    let mut out = Out(Vec::new());
+    out.u8(count(state.robots.len()));
+    for robot in &state.robots {
+        out.build(&robot.build);
+        out.u32(robot.charge);
+        out.u32(robot.clock);
+        out.u8(count(robot.bodies.len()));
+        for body in &robot.bodies {
+            out.vec3(body.pose.position);
+            for value in body.pose.orientation {
+                out.u32(value.to_bits());
+            }
+            out.vec3(body.velocity);
+            out.vec3(body.angular_velocity);
+        }
+    }
+    out.0
+}
+
+/// Inverse of [`encode_mechanics`]; builds are validated, and each robot must have its build's
+/// bodies and a charge within its pool.
+///
+/// # Errors
+///
+/// If the bytes are malformed, a build is invalid or a robot's bodies or charge do not fit its
+/// build.
+pub fn decode_mechanics(bytes: &[u8]) -> Result<MechState, WireError> {
+    let mut input = In(bytes);
+    let mut robots = Vec::new();
+    for _ in 0..input.u8()? {
+        let build = input.build()?;
+        let charge = input.u32()?;
+        let clock = input.u32()?;
+        if charge > Pool::of(&build).capacity {
+            return Err(WireError::Malformed("charge above capacity"));
+        }
+        let count = input.u8()?;
+        if usize::from(count) != Layout::of(&build).bodies.len() {
+            return Err(WireError::Malformed("bodies do not match the build"));
+        }
+        let bodies = (0..count)
+            .map(|_| {
+                let position = input.vec3()?;
+                let orientation = [
+                    f32::from_bits(input.u32()?),
+                    f32::from_bits(input.u32()?),
+                    f32::from_bits(input.u32()?),
+                    f32::from_bits(input.u32()?),
+                ];
+                let velocity = input.vec3()?;
+                let angular_velocity = input.vec3()?;
+                let motion = BodyMotion {
+                    pose: Pose {
+                        position,
+                        orientation,
+                    },
+                    velocity,
+                    angular_velocity,
+                };
+                if [position, velocity, angular_velocity]
+                    .iter()
+                    .flatten()
+                    .chain(&orientation)
+                    .all(|value| value.is_finite())
+                {
+                    Ok(motion)
+                } else {
+                    Err(WireError::Malformed("body state not finite"))
+                }
+            })
+            .collect::<Result<Vec<_>, WireError>>()?;
+        robots.push(RobotState {
+            build,
+            charge,
+            clock,
+            bodies,
+        });
+    }
+    input.finish()?;
+    Ok(MechState { robots })
 }

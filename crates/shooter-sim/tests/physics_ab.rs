@@ -1,7 +1,8 @@
 //! Rapier A/B: the scripted tour through the greybox arena and every fast-move scenario
 //! (sprint, slide, double jump, a thruster-module jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
 //! a shooting range, a close range for the shotgun, laser and flamethrower) on physics-engine and on the Rapier oracle
-//! (`shooter_sim::physics::using_backend`).
+//! (`shooter_sim::physics::using_backend`), and the mechanics fixtures (shooter#73: rolling,
+//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog) on both.
 //! Both must follow the same path within a few centimetres, agree on support at the end of every
 //! leg, and fire, hit and explode on the same ticks for the same damage (rays and the rocket and
 //! pellet sweeps are the backends' `cast_ray`, the flame their `overlap_box`).
@@ -217,6 +218,242 @@ fn each_backend_replays_exactly() {
                 "{} on {backend:?}",
                 scenario.name
             );
+        }
+    }
+}
+
+mod mechanics {
+    //! The mechanics fixtures (shooter#73) on physics-engine and on the Rapier oracle (one
+    //! dynamic body with a collider a part, impulse revolute joints with motors): the same
+    //! rolling, strafing and stall speeds and stops, turret angles, tipping and per-part hits,
+    //! within the tolerances physics-engine's own `revolute-robots` oracle holds.
+
+    use shooter_sim::mechanics::fixtures::{
+        self, BARREL, HINGE_PART, ROTOR_PART, binary, floor, walled, wheels,
+    };
+    use shooter_sim::mechanics::{Command, Controls, Mechanics};
+    use shooter_sim::physics::articulated::{Motion, Pose};
+    use shooter_sim::physics::{Backend, RigidBody, using_backend};
+    use shooter_sim::robot::{Assembly, PartId};
+
+    struct Outcome {
+        root: Pose,
+        motion: Motion,
+        /// Each actuator's angle and rate.
+        actuators: Vec<(PartId, f32, f32)>,
+        mechanics: Mechanics,
+    }
+
+    fn run(
+        backend: Backend,
+        statics: &[RigidBody],
+        build: Assembly,
+        ticks: u32,
+        controls: impl Fn(&Mechanics) -> Controls,
+    ) -> Outcome {
+        using_backend(backend, || {
+            let mut mechanics = Mechanics::new(statics).unwrap();
+            assert_eq!(mechanics.world().backend(), backend);
+            mechanics.spawn(build, [0.0; 3], 0).unwrap();
+            for _ in 0..ticks {
+                let controls = controls(&mechanics);
+                mechanics.step(&[controls]).unwrap();
+            }
+            Outcome {
+                root: mechanics.root(0).unwrap(),
+                motion: mechanics.root_motion(0).unwrap(),
+                actuators: mechanics.robots()[0]
+                    .actuators
+                    .iter()
+                    .map(|actuator| (actuator.part, actuator.angle, actuator.rate))
+                    .collect(),
+                mechanics,
+            }
+        })
+    }
+
+    fn both(
+        statics: &[RigidBody],
+        build: Assembly,
+        ticks: u32,
+        controls: impl Fn(&Mechanics) -> Controls + Copy,
+    ) -> (Outcome, Outcome) {
+        (
+            run(Backend::Engine, statics, build, ticks, controls),
+            run(Backend::Rapier, statics, build, ticks, controls),
+        )
+    }
+
+    fn up(pose: Pose) -> [f32; 3] {
+        let [x, y, z, w] = pose.orientation;
+        [
+            2.0 * (x * y - z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z + x * w),
+        ]
+    }
+
+    fn gap(a: [f32; 3], b: [f32; 3]) -> f32 {
+        a.iter()
+            .zip(&b)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f32>()
+            .sqrt()
+    }
+
+    fn angle(outcome: &Outcome, part: PartId) -> (f32, f32) {
+        let &(_, angle, rate) = outcome
+            .actuators
+            .iter()
+            .find(|(id, ..)| *id == part)
+            .unwrap();
+        (angle, rate)
+    }
+
+    #[test]
+    fn rolling_and_strafing_match_the_rapier_oracle() {
+        for (build, along, across) in [(fixtures::car(), 0, 2), (fixtures::strafer(), 2, 0)] {
+            let (engine, rapier) = both(&floor(), build, 120, |_| wheels(6_000, -6_000));
+            let (ev, rv) = (engine.motion.velocity[along], rapier.motion.velocity[along]);
+            assert!(
+                ev * rv > 0.0 && (ev - rv).abs() < 0.1 * rv.abs(),
+                "{ev} {rv}"
+            );
+            assert!(rapier.motion.velocity[across].abs() < 5.0);
+            assert!(gap(engine.root.position, rapier.root.position) < 25.0);
+            assert!(up(engine.root)[1] > 0.99 && up(rapier.root)[1] > 0.99);
+        }
+    }
+
+    #[test]
+    fn the_stall_matches_the_rapier_oracle() {
+        let (engine, rapier) = both(&walled(80), fixtures::car(), 180, |_| wheels(6_000, -6_000));
+        for outcome in [&engine, &rapier] {
+            let speed = gap(outcome.motion.velocity, [0.0; 3]);
+            assert!(speed < 5.0, "{speed}");
+            for &(_, _, rate) in &outcome.actuators {
+                assert!(rate.abs() < 1.0, "{rate}");
+            }
+        }
+        assert!((engine.root.position[0] - rapier.root.position[0]).abs() < 5.0);
+    }
+
+    #[test]
+    fn the_turrets_match_the_rapier_oracle() {
+        for target in [1.0, -2.0] {
+            let (engine, rapier) = both(&floor(), fixtures::turret(), 120, |_| {
+                wheels(0, 0).with(ROTOR_PART, Command::Angle(binary(target)))
+            });
+            for outcome in [&engine, &rapier] {
+                let (angle, _) = angle(outcome, ROTOR_PART);
+                assert!((f64::from(angle) - target).abs() < 0.02, "{angle} {target}");
+            }
+        }
+        let (engine, rapier) = both(&floor(), fixtures::paired_turret(), 120, |_| {
+            wheels(0, 0)
+                .with(ROTOR_PART, Command::Rate(1_500))
+                .with(HINGE_PART, Command::Angle(binary(0.5)))
+        });
+        for outcome in [&engine, &rapier] {
+            let (_, rate) = angle(outcome, ROTOR_PART);
+            let (pitch, _) = angle(outcome, HINGE_PART);
+            assert!((rate - 1.5).abs() < 0.15, "{rate}");
+            assert!((pitch - 0.5).abs() < 0.02, "{pitch}");
+        }
+    }
+
+    #[test]
+    fn tipping_and_part_hits_match_the_rapier_oracle() {
+        let (engine, rapier) = both(&floor(), fixtures::lopsided(), 120, |_| Controls::IDLE);
+        for outcome in [&engine, &rapier] {
+            let up = up(outcome.root);
+            assert!(up[1] < 0.9 && up[2] < -0.4, "{up:?}");
+        }
+        let (engine, rapier) = both(&floor(), fixtures::balanced(), 120, |_| Controls::IDLE);
+        assert!(up(engine.root)[1] > 0.999 && up(rapier.root)[1] > 0.999);
+
+        let (engine, rapier) = both(&floor(), fixtures::turret(), 30, |_| wheels(0, 0));
+        for (from, along) in [
+            ([-300.0, 140.0, 10.0], [600.0, 0.0, 0.0]),
+            ([10.0, 400.0, 0.0], [0.0, -500.0, 0.0]),
+            ([-20.0, 18.0, -200.0], [0.0, 0.0, 400.0]),
+        ] {
+            let parts = [&engine, &rapier]
+                .map(|outcome| outcome.mechanics.cast_ray(from, along).map(|hit| hit.part));
+            assert_eq!(parts[0], parts[1], "{from:?}");
+            assert!(parts[0].is_some(), "{from:?}");
+        }
+        let barrel = engine
+            .mechanics
+            .cast_ray([10.0, 400.0, 0.0], [0.0, -500.0, 0.0])
+            .unwrap();
+        assert_eq!(barrel.part, BARREL);
+    }
+
+    /// Twelve robots (the match size) at once: three walking robo-dogs, three rolling paired
+    /// turrets aiming, three strafers and three bipeds, 600 ticks on each backend. Prints the
+    /// mean wall time a tick; no threshold (`--release -- --ignored --nocapture`).
+    #[test]
+    #[ignore = "a timing run, not a check"]
+    fn twelve_robots_a_tick() {
+        let builds = [
+            fixtures::dog(false),
+            fixtures::paired_turret(),
+            fixtures::strafer(),
+            fixtures::biped(),
+        ];
+        for backend in [Backend::Engine, Backend::Rapier] {
+            using_backend(backend, || {
+                let mut mechanics = Mechanics::new(&floor()).unwrap();
+                for index in 0..12u8 {
+                    let at = [
+                        f32::from(index % 4) * 400.0,
+                        0.0,
+                        f32::from(index / 4) * 400.0,
+                    ];
+                    mechanics
+                        .spawn(builds[usize::from(index % 4)], at, 0)
+                        .unwrap();
+                }
+                let started = std::time::Instant::now();
+                for tick in 0..600u32 {
+                    let rate = i16::try_from((tick % 120) * 50).unwrap();
+                    let controls: Vec<Controls> = mechanics
+                        .robots()
+                        .iter()
+                        .map(|robot| {
+                            if robot.layout.suggested_gait().is_some() {
+                                Controls::IDLE.walk(&robot.layout, 100, 0)
+                            } else {
+                                wheels(rate, -rate)
+                                    .with(ROTOR_PART, Command::Rate(1_000))
+                                    .with(HINGE_PART, Command::Angle(binary(0.4)))
+                            }
+                        })
+                        .collect();
+                    mechanics.step(&controls).unwrap();
+                }
+                let joints: usize = mechanics
+                    .robots()
+                    .iter()
+                    .map(|robot| robot.layout.hinges.len())
+                    .sum();
+                println!(
+                    "{backend:?}: 12 robots, {joints} joints: {:.1} µs a tick",
+                    started.elapsed().as_secs_f64() * 1e6 / 600.0
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_quadruped_walks_forward_on_both() {
+        let (engine, rapier) = both(&floor(), fixtures::dog(false), 270, |mechanics| {
+            Controls::IDLE.walk(&mechanics.robots()[0].layout, 100, 0)
+        });
+        for outcome in [&engine, &rapier] {
+            assert!(outcome.root.position[0] > 100.0, "{:?}", outcome.root);
+            assert!(up(outcome.root)[1] > 0.8, "{:?}", outcome.root);
         }
     }
 }
