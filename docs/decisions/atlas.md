@@ -332,11 +332,13 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   shotgun carries the efficiency coil instead of the heat sink, standard and marksman unchanged.
 - **Q2.i46.5**: Layout details of the three arenas: topology, destructible pieces, pickup points
   and each map's player capacity (D2.i46.11, D2.i46.12).
-  Defaults in use until decided (shooter#48): the map catalog (`shooter_sim::maps`) holds only
-  the greybox, a test and A/B fixture recommending 2 to 12 players; a map's recommended capacity
-  does not change the slot count. Since shooter#50 a deathmatch has 12 slots unless the host sets
-  another count per match (`SHOOTER_MATCH_IDS=<id>=<map>:<slots>`), bounded by one slot per
-  spawn point of the map (the greybox has 13); no global maximum (D2.i46.12).
+  Defaults in use until decided (shooter#48, #82): the map catalog (`shooter_sim::maps`) holds
+  two interim greybox maps, the default `greybox-yard` (76 m, a raised walkway, recommending 6 to
+  12 players, 14 spawn points; owner request #82) and the 40 m `greybox`, the test and A/B
+  fixture (2 to 12 players, 13 spawn points); a map's recommended capacity does not change the
+  slot count. Since shooter#50 a deathmatch has 12 slots unless the host sets another count per
+  match (`SHOOTER_MATCH_IDS=<id>=<map>:<slots>`), bounded by one slot per spawn point of the map;
+  no global maximum (D2.i46.12).
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration

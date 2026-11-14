@@ -281,10 +281,13 @@ mod tests {
         assert_eq!(host.len(), 2);
         assert!(build_host(&specs(&["bad id!"]), 120).is_err());
         assert_ne!(seed_of("dm"), seed_of("dm-2"));
-        let max = MapId::Greybox.max_slots();
+        let max = MapId::DEFAULT.max_slots();
         assert!(build_host(&specs(&["duel:2", &format!("big:{max}")]), 120).is_ok());
         assert!(build_host(&specs(&["none:0"]), 120).is_err());
         assert!(build_host(&specs(&[&format!("crowd:{}", max + 1)]), 120).is_err());
+        let max = MapId::Greybox.max_slots();
+        assert!(build_host(&specs(&[&format!("small=greybox:{max}")]), 120).is_ok());
+        assert!(build_host(&specs(&[&format!("crowd=greybox:{}", max + 1)]), 120).is_err());
     }
 
     #[test]

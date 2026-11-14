@@ -2,13 +2,15 @@
 //! and spawning on it through respawns and round restarts, and the slot count left to the
 //! rules.
 
+use shooter_sim::physics::Vec3i;
+use shooter_sim::player::{EYE_HEIGHT_UNITS, GRAVITY};
 use shooter_sim::session::DEATHMATCH_SLOTS;
 use shooter_sim::wire::{WireError, decode_snapshot, encode_snapshot};
-use shooter_sim::{Arena, Event, MapId, Phase, Rules, Session, UnknownMap};
+use shooter_sim::{Arena, Event, MapId, Phase, Piece, Rules, Session, Spawn, UnknownMap};
 
 #[test]
 fn ids_and_tags_are_stable_and_unique() {
-    assert_eq!(MapId::DEFAULT, MapId::Greybox);
+    assert_eq!(MapId::DEFAULT, MapId::GreyboxYard);
     assert_eq!(MapId::Greybox.as_str(), "greybox");
     assert_eq!(MapId::Greybox.tag(), 1);
     for (index, map) in MapId::ALL.iter().enumerate() {
@@ -160,4 +162,84 @@ fn a_snapshot_with_an_unknown_map_is_rejected() {
         decode_snapshot(&bytes),
         Err(WireError::Malformed("unknown map"))
     );
+}
+
+/// Pairs of spawn points (indices) from whose eyes each other's eyes are in plain sight.
+fn spawns_in_sight(arena: &Arena) -> Vec<(usize, usize)> {
+    let world = arena.build_world(GRAVITY).unwrap();
+    let eye = |spawn: &Spawn| {
+        #[allow(clippy::cast_precision_loss)]
+        [spawn.feet.x, spawn.feet.y + EYE_HEIGHT_UNITS, spawn.feet.z].map(|axis| axis as f32)
+    };
+    let points = arena.spawn_points();
+    let mut pairs = Vec::new();
+    for (a, from) in points.iter().enumerate() {
+        for (b, to) in points.iter().enumerate().skip(a + 1) {
+            let (from, to) = (eye(from), eye(to));
+            let along = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+            if world.cast_ray(from, along, |_| true).is_none() {
+                pairs.push((a, b));
+            }
+        }
+    }
+    pairs
+}
+
+#[test]
+fn the_yard_is_the_bigger_default_and_the_greybox_stays_the_fixture() {
+    assert_eq!(MapId::DEFAULT, MapId::GreyboxYard);
+    assert_eq!(MapId::GreyboxYard.as_str(), "greybox-yard");
+    assert_eq!(MapId::GreyboxYard.tag(), 2);
+    assert_eq!(MapId::GreyboxYard.arena(), Arena::greybox_yard());
+    let (yard, greybox) = (Arena::greybox_yard(), Arena::greybox());
+    assert!((3_500..=4_000).contains(&yard.half_size), "70-80 m across");
+    let ramps = |arena: &Arena| {
+        arena
+            .pieces
+            .iter()
+            .filter(|piece| matches!(piece, Piece::Ramp { .. }))
+            .count()
+    };
+    assert!(ramps(&yard) > ramps(&greybox));
+    assert!(yard.pieces.len() > 2 * greybox.pieces.len());
+    assert!(yard.spawn_points().len() >= 12);
+    assert!(MapId::GreyboxYard.capacity().fits(DEATHMATCH_SLOTS));
+}
+
+/// No two of the yard's spawn points see each other, and every place a bot walks to (its spawn
+/// points and waypoints) links to the rest by straight walks it can take both ways, every spawn
+/// point to at least two of them: no bot is left without somewhere to go.
+#[test]
+fn yard_spawns_are_out_of_sight_and_linked_by_walks() {
+    let arena = Arena::greybox_yard();
+    assert_eq!(spawns_in_sight(&arena), Vec::new());
+    let points = arena.bot_points();
+    let walks = |from: usize| -> Vec<usize> {
+        (0..points.len())
+            .filter(|to| {
+                *to != from
+                    && arena.clear_walk(points[from], points[*to])
+                    && arena.clear_walk(points[*to], points[from])
+            })
+            .collect()
+    };
+    for spawn in 0..arena.spawn_points().len() {
+        assert!(walks(spawn).len() >= 2, "spawn {spawn}: {:?}", walks(spawn));
+    }
+    let mut linked = vec![false; points.len()];
+    let mut queue = vec![0];
+    linked[0] = true;
+    while let Some(from) = queue.pop() {
+        for to in walks(from) {
+            if !linked[to] {
+                linked[to] = true;
+                queue.push(to);
+            }
+        }
+    }
+    let cut_off: Vec<Vec3i> = (0..points.len())
+        .filter(|point| !linked[*point])
+        .map(|point| points[point])
+        .collect();
+    assert!(cut_off.is_empty(), "no walk reaches {cut_off:?}");
 }

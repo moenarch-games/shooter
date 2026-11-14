@@ -117,8 +117,8 @@ fn two_clients_play_a_hosted_deathmatch() {
     }
     assert!(first.status().is_none(), "{:?}", first.status());
     // Both follow the host's map, which the snapshots name.
-    assert_eq!(first.map(), Some(MapId::Greybox));
-    assert_eq!(second.map(), Some(MapId::Greybox));
+    assert_eq!(first.map(), Some(MapId::DEFAULT));
+    assert_eq!(second.map(), Some(MapId::DEFAULT));
     let (a, b) = (first.local_slot().unwrap(), second.local_slot().unwrap());
     assert_ne!(a, b);
     assert!(moved > 300.0, "the first client walked {moved} units");

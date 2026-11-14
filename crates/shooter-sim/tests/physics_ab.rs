@@ -1,4 +1,5 @@
-//! Rapier A/B: the scripted tour through the greybox arena and every fast-move scenario
+//! Rapier A/B: the scripted tour through the greybox arena, the greybox yard's walkway (its ramp and
+//! pad) and every fast-move scenario
 //! (sprint, slide, double jump, a thruster-module jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
 //! a shooting range, a close range for the shotgun, laser and flamethrower) on physics-engine and on the Rapier oracle
 //! (`shooter_sim::physics::using_backend`), and the mechanics fixtures (shooter#73: rolling,
@@ -174,6 +175,14 @@ fn the_grapple_matches_the_rapier_oracle() {
 #[test]
 fn the_close_range_matches_the_rapier_oracle() {
     compare(scenarios::CLOSE_RANGE);
+}
+
+/// The greybox yard: up its west ramp, along the walkway and off its edge, and its pad throwing
+/// a fighter onto the walkway.
+#[test]
+fn the_yards_walkway_matches_the_rapier_oracle() {
+    compare(scenarios::YARD_WALKWAY);
+    compare(scenarios::YARD_JUMP_PAD);
 }
 
 /// The shots and hits of `scenario` on physics-engine as `build`.

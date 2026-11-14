@@ -1,6 +1,7 @@
-//! Bots: simple, beatable and deterministic. A bot walks from spawn point to spawn point, looks
-//! for the nearest fighter it can see, turns toward it at a limited rate, waits a reaction delay,
-//! then fires with an aim error it re-rolls every few hundred milliseconds, strafing as it does.
+//! Bots: simple, beatable and deterministic. A bot walks between its arena's spawn points and
+//! waypoints ([`Arena::bot_points`]), looks for the nearest fighter it can see, turns toward it
+//! at a limited rate, waits a reaction delay, then fires with an aim error it re-rolls every few
+//! hundred milliseconds, strafing as it does.
 //! It burns anyone within a few metres with the flamethrower, picks the rifle (even slots) or the
 //! shotgun (odd slots) up close, rockets (even) or the laser (odd) at mid range and the rail gun
 //! far off, and rushes in to swing the energy blade when someone comes within a few metres. It
@@ -303,21 +304,21 @@ impl Bot {
     }
 
     fn wander(&mut self, center: Vec3i, arena: &Arena) -> Intent {
-        let points = arena.spawn_points();
+        let points = arena.bot_points();
         let feet = Vec3i::new(
             center.x,
             center.y - crate::player::PLAYER_HALF_EXTENTS.y,
             center.z,
         );
         let reached = self.waypoint.is_some_and(|index| {
-            let point = points[index].feet;
+            let point = points[index];
             i64::try_from(trig::xz_length(point.x - feet.x, point.z - feet.z)).unwrap_or(0)
                 < WAYPOINT_REACH_UNITS
         });
         if reached || self.waypoint.is_none_or(|index| index >= points.len()) {
             let open: Vec<usize> = (0..points.len())
                 .filter(|index| Some(*index) != self.waypoint)
-                .filter(|index| arena.clear_walk(feet, points[*index].feet))
+                .filter(|index| arena.clear_walk(feet, points[*index]))
                 .collect();
             let choices = if open.is_empty() {
                 (0..points.len()).collect()
@@ -327,7 +328,7 @@ impl Bot {
             let pick = self.rng.below(u32::try_from(choices.len()).unwrap_or(1)) as usize;
             self.waypoint = choices.get(pick).copied();
         }
-        let point = points[self.waypoint.unwrap_or(0)].feet;
+        let point = points[self.waypoint.unwrap_or(0)];
         let yaw = trig::yaw_from_vector(point.x - feet.x, point.z - feet.z).unwrap_or(self.yaw);
         self.face(yaw, 0);
         Intent {

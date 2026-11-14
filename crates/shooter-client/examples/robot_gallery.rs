@@ -62,7 +62,8 @@ fn main() -> Result<(), String> {
     );
     std::fs::create_dir_all(&out).map_err(|error| error.to_string())?;
     let mut gpu = Gpu::offscreen(SIZE.0, SIZE.1)?;
-    let arena = MapId::DEFAULT.arena();
+    // The greybox: the gallery's line stands on its open floor.
+    let arena = MapId::Greybox.arena();
     shooter_client::scene::build(&mut gpu.world, &arena);
     let kit = robots::load::read(&robots::load::directory())?;
     let mut robots = Robots::new(&mut gpu.world, kit)?;
