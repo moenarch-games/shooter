@@ -3,11 +3,12 @@
 
 use crate::audio::Sounds;
 use crate::camera::{self, Follow};
-use crate::controls::{Controls, Look, PRIMARY_BUTTON, PadState, standard};
+use crate::controls::{Controls, Look, PRIMARY_BUTTON, PadState, Selection, WheelDelta, standard};
 use crate::effects::Effects;
 use crate::game::Game;
 use crate::gpu::Gpu;
 use crate::hud::{Hud, HudText};
+use crate::overlay::{Overlay, Vitals};
 use crate::robots::{self, RobotState, RobotView, Robots, track::Tracker};
 use crate::scene::{self, Actors, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT, SWING_SECONDS};
 use render_engine::glam::{Mat4, Vec3};
@@ -23,7 +24,9 @@ use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, TICK_HZ, Weap
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{
+    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -99,6 +102,10 @@ pub struct App {
     pads: Option<gilrs::Gilrs>,
     sounds: Sounds,
     hud: Hud,
+    /// The drawn HUD: the weapon panel and the chassis and energy bars.
+    overlay: Overlay,
+    /// The weapon the controls ask for (a select key, or the next and previous steps).
+    selection: Selection,
     shown: HudText,
     /// Tab held: the scoreboard shows.
     board: bool,
@@ -160,6 +167,8 @@ impl App {
                 .ok(),
             sounds: Sounds::new(),
             hud: Hud::default(),
+            overlay: Overlay::default(),
+            selection: Selection::default(),
             shown: HudText::default(),
             board: false,
             effects: None,
@@ -243,6 +252,8 @@ impl App {
             pads: None,
             sounds: Sounds::new(),
             hud: Hud::default(),
+            overlay: Overlay::default(),
+            selection: Selection::default(),
             shown: HudText::default(),
             board: false,
             effects: None,
@@ -425,6 +436,21 @@ impl App {
             self.look = Look::new(radians(intent.yaw));
             intent
         } else {
+            // The wheel and Q/E step through the weapons the robot still has, from the one it
+            // holds as predicted; the host decides.
+            let steps = self.controls.take_steps();
+            let select = match self.game.local_fighter() {
+                Some((me, _)) => self.selection.intent(
+                    self.controls.selected(),
+                    steps,
+                    me.arsenal.held,
+                    |weapon| me.parts.armed(&me.build, weapon),
+                ),
+                None => {
+                    self.selection = Selection::default();
+                    self.controls.selected()
+                }
+            };
             Intent {
                 forward,
                 strafe,
@@ -436,7 +462,7 @@ impl App {
                 // Only a captured mouse shoots: the click that captures it does not.
                 fire: self.captured && self.controls.fire_held(),
                 melee: self.captured && self.controls.melee_held(),
-                select: self.controls.selected(),
+                select,
             }
         };
         let tick = match self.game.tick(intent) {
@@ -830,21 +856,19 @@ impl App {
             .as_mut()
             .map(|effects| effects.lights(seconds, &rockets))
             .unwrap_or_default();
-        let scene = scene::frame(camera, forward, point_lights);
+        let mut scene = scene::frame(camera, forward, point_lights);
+        // The drawn HUD: the held weapon (as predicted), the carried ones, chassis and energy.
+        let vitals = self
+            .game
+            .local_fighter()
+            .map(|(me, tick)| Vitals::of(me, tick));
         let Some(gpu) = &mut self.gpu else {
             return true;
         };
+        let (width, height) = gpu.size();
+        scene.overlay = self.overlay.draw(vitals.as_ref(), width, height, seconds);
         if let Some(actors) = &mut self.actors {
-            actors.update(
-                &mut gpu.world,
-                &fighters,
-                &rockets,
-                text.health,
-                camera,
-                forward,
-                &modules,
-                reticle,
-            );
+            actors.update(&mut gpu.world, &fighters, &rockets, &modules, reticle);
         }
         if let Err(error) = gpu.render(&scene, ticks) {
             crate::log(&error);
@@ -983,6 +1007,16 @@ impl ApplicationHandler<GpuReady> for App {
                 } else {
                     self.controls.mouse_up(button);
                 }
+            }
+            // The wheel cycles weapons while the game has the mouse (winit reports the browser's
+            // wheel events here too, in lines or pixels as the page got them).
+            WindowEvent::MouseWheel { delta, .. } if self.captured => {
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => WheelDelta::Lines(lines),
+                    MouseScrollDelta::PixelDelta(pixels) => WheelDelta::Pixels(pixels.y),
+                };
+                let now_ms = (Instant::now() - self.started).as_secs_f64() * 1_000.0;
+                self.controls.wheel(delta, now_ms);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {

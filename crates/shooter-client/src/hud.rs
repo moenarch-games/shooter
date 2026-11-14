@@ -1,16 +1,15 @@
-//! The heads-up display, a stopgap until render-engine draws screen overlays
-//! (moritzbrantner/render-engine#101): the text is built here once, then shown by the page's DOM
-//! in the browser and in the window title natively (the native health bar is drawn in the scene,
-//! see `scene::Actors`). The root chassis' health (the bar), the parts damaged and lost, energy (charge and capacity), weapon (with its mod), frags and place, the equipped weapon mods, the module pickup carried (with
+//! The heads-up display's text: what the drawn HUD ([`crate::overlay`]: the held weapon, the
+//! carried weapons, the root chassis' health and the energy) does not draw yet. It is built here
+//! once, then shown by the page's DOM in the browser and in the window title natively: the parts
+//! damaged and lost, frags and place, the equipped weapon mods, the module pickup carried (with
 //! its uses left), the round clock, a feed of kills and module pickups, a respawn
 //! or connection banner, and the scoreboard (held Tab, or between rounds).
 
+use crate::overlay::{mod_name, weapon_name};
 use shooter_sim::damage::PartDamage;
-use shooter_sim::energy::{MILLI, Pool};
-use shooter_sim::robot::{BETA, ModId};
+use shooter_sim::robot::BETA;
 use shooter_sim::{
     ArenaModule, Assembly, Carried, Controller, Event, FighterState, Phase, Snapshot, TICK_HZ,
-    Weapon,
 };
 
 /// Kill feed lines stay this long (seconds).
@@ -20,8 +19,6 @@ const FEED_LINES: usize = 4;
 /// What the HUD shows this frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HudText {
-    /// Health (0..=1) for the bar, when the local fighter is alive.
-    pub health: Option<f32>,
     pub status: String,
     pub banner: String,
     pub feed: Vec<String>,
@@ -37,44 +34,7 @@ pub struct Hud {
     feed: Vec<(String, f32)>,
 }
 
-const fn weapon_name(weapon: Weapon) -> &'static str {
-    match weapon {
-        Weapon::EnergyRifle => "Energy rifle",
-        Weapon::RailGun => "Rail gun",
-        Weapon::RocketLauncher => "Rockets",
-        Weapon::Grapple => "Grapple",
-        Weapon::EnergyBlade => "Energy blade",
-        Weapon::Shotgun => "Shotgun",
-        Weapon::Laser => "Laser",
-        Weapon::Flamethrower => "Flamethrower",
-    }
-}
-
-/// A weapon mod's name, from its catalog key.
-fn mod_name(id: ModId) -> &'static str {
-    match BETA.modification(id).map(|modification| modification.key) {
-        Some("mod.rapid-cycler") => "rapid cycler",
-        Some("mod.overcharger") => "overcharger",
-        Some("mod.long-barrel") => "long barrel",
-        Some("mod.efficiency-coil") => "efficiency coil",
-        _ => "mod",
-    }
-}
-
-/// The charge in the shared energy pool against its capacity, in whole units: "⚡ 87/160".
-fn energy(me: &FighterState) -> String {
-    let pool = Pool::attached(&me.build, &me.parts);
-    format!("⚡ {}/{}", me.energy / MILLI, pool.capacity / MILLI)
-}
-
-/// The root chassis' health against its whole: "⬢ chassis 62/270" (the root chassis is the
-/// robot's life).
-fn chassis(me: &FighterState) -> String {
-    let whole = PartDamage::fresh(&me.build).chassis_health(&me.build);
-    format!("⬢ chassis {}/{}", me.chassis_health(), whole)
-}
-
-/// The root chassis' share of its health (0..=1): the health bar.
+/// The root chassis' share of its health (0..=1): a fighter's colour.
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn chassis_share(me: &FighterState) -> f32 {
@@ -115,14 +75,6 @@ fn parts(me: &FighterState) -> String {
         line.push_str(&format!(", lost: {}", lost.join(", ")));
     }
     line
-}
-
-/// The held weapon with its mod in `build`, if any: "Rail gun + overcharger".
-fn held(weapon: Weapon, build: &Assembly) -> String {
-    BETA.mod_on(build, weapon).map_or_else(
-        || weapon_name(weapon).to_owned(),
-        |id| format!("{} + {}", weapon_name(weapon), mod_name(id)),
-    )
 }
 
 /// The equipped mods, "mods: Energy rifle + rapid cycler, Shotgun + efficiency coil", or nothing.
@@ -256,10 +208,7 @@ impl Hud {
         };
         let status_line = me.map_or_else(String::new, |me| {
             format!(
-                "{}   {}   {}   {} frags (to {})   #{} of {}   {}{}{}{}",
-                chassis(me),
-                energy(me),
-                held(me.held, &me.build),
+                "{} frags (to {})   #{} of {}   {}{}{}{}",
                 me.frags,
                 snapshot.frag_limit,
                 place.map_or(0, |place| place + 1),
@@ -306,10 +255,7 @@ impl Hud {
                 })
                 .collect()
         });
-        #[allow(clippy::cast_precision_loss)]
-        let health = me.filter(|me| me.alive).map(chassis_share);
         HudText {
-            health,
             status: status_line,
             banner,
             feed,
@@ -341,14 +287,10 @@ pub fn show(text: &HudText, last: &mut HudText) {
         "hud-board",
         &text.board.as_deref().unwrap_or_default().join("\n"),
     );
-    if let Some(element) = document.get_element_by_id("hud-health") {
-        let width = format!("width: {:.1}%", text.health.unwrap_or(0.0) * 100.0);
-        let _ = element.set_attribute("style", &width);
-    }
     *last = text.clone();
 }
 
-/// Shows the HUD natively: the window title (the health bar is in the scene).
+/// Shows the HUD text natively: the window title.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn show(text: &HudText, last: &mut HudText, window: &winit::window::Window) {
     if text == last {

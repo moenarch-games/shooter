@@ -7,7 +7,7 @@
 use shooter_sim::energy::{MILLI, Pool, spend};
 use shooter_sim::physics::Vec3i;
 use shooter_sim::pickups::{THRUSTER_JUMP_ENERGY, THRUSTER_JUMPS};
-use shooter_sim::robot::{AssemblyError, HEAVY, MARKSMAN, SKIRMISHER, STANDARD};
+use shooter_sim::robot::{ARMORY, AssemblyError, HEAVY, MARKSMAN, SKIRMISHER, STANDARD};
 use shooter_sim::wire::{WireError, decode_input, decode_snapshot, encode_input, encode_snapshot};
 use shooter_sim::{
     Arena, ArenaModule, Carried, Event, Input, Intent, MapId, Rules, Session, Spawn, Weapon,
@@ -51,6 +51,14 @@ fn duel() -> Session {
     }
     assert!(session.fighters[0].grounded());
     session
+}
+
+/// Person A is built as the [`ARMORY`] (it fires only what it carries), whole and full.
+fn armory(session: &mut Session) {
+    let fighter = &mut session.fighters[0];
+    fighter.configured = ARMORY;
+    fighter.rebuild(ARMORY);
+    fighter.energy = fighter.pool().capacity;
 }
 
 /// Person A's `intent` for one tick; the weapons slot 0 fired that tick.
@@ -193,6 +201,7 @@ fn simultaneous_requests_exhaust_the_pool_in_a_fixed_order() {
 #[test]
 fn regeneration_restarts_a_starved_weapon() {
     let mut session = duel();
+    armory(&mut session);
     let mut sequence = 0;
     let rail = Intent {
         yaw: 32_768,
@@ -232,6 +241,7 @@ fn regeneration_restarts_a_starved_weapon() {
     // The laser drains the pool (0.6 a tick against 0.4) and, once it is dry, sputters at what
     // regeneration pays: it never fires on a charge it cannot pay.
     let mut session = duel();
+    armory(&mut session);
     let mut sequence = 0;
     let laser = Intent {
         yaw: 32_768,
@@ -284,7 +294,7 @@ fn regeneration_restarts_a_starved_weapon() {
 #[test]
 fn tuned_weapons_pay_their_tuned_cost() {
     for (build, weapon, cost) in [
-        (STANDARD, Weapon::RailGun, 30_000),
+        (ARMORY, Weapon::RailGun, 30_000),
         (MARKSMAN, Weapon::RailGun, 45_000),
         (SKIRMISHER, Weapon::Shotgun, 7_200),
     ] {

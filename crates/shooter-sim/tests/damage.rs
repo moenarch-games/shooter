@@ -9,7 +9,7 @@ use shooter_sim::damage::{BATTERY_BLAST_DAMAGE, PartDamage};
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{ARMOR_PLATE, BEAM_LONG, CHASSIS_L, CHASSIS_S, SENSOR};
-use shooter_sim::robot::{BETA, Face, HEAVY, PartId, RawMount, RawPart, STANDARD};
+use shooter_sim::robot::{ARMORY, BETA, Face, HEAVY, PartId, RawMount, RawPart, STANDARD};
 use shooter_sim::trig;
 use shooter_sim::weapons::{SPLASH_DAMAGE, Weapon};
 use shooter_sim::wire::{decode_snapshot, encode_snapshot};
@@ -18,7 +18,8 @@ use shooter_sim::{Arena, Assembly, Event, Input, Intent, Rules, Session, Spawn};
 const A: u32 = 1;
 const B: u32 = 2;
 
-/// A (slot 0) faces B (slot 1) 12 m apart on an open floor; B respawns after half a second.
+/// A (slot 0, the [`ARMORY`]) faces B (slot 1) 12 m apart on an open floor; B respawns after half
+/// a second.
 fn duel() -> Session {
     let arena = Arena {
         half_size: 2_000,
@@ -47,6 +48,8 @@ fn duel() -> Session {
     let mut session = Session::with_rules(arena, rules).unwrap();
     assert_eq!(session.join(A).unwrap(), Some(0));
     assert_eq!(session.join(B).unwrap(), Some(1));
+    // A fires only what it carries: every weapon.
+    rebuild(&mut session, 0, ARMORY);
     session
 }
 
@@ -342,8 +345,8 @@ fn several_parts_come_off_at_once_and_lost_weapons_cannot_fire() {
     assert!(b.parts.weapon_lost(&b.build, Weapon::EnergyRifle));
     assert!(b.parts.weapon_lost(&b.build, Weapon::EnergyBlade));
     assert!(!b.parts.weapon_lost(&b.build, Weapon::Shotgun));
-    // B can no longer fire the rifle or swing the blade, but its shotgun still fires, and a gun
-    // its build never carried fires as shipped.
+    // B can no longer fire the rifle or swing the blade, but its shotgun still fires; a gun its
+    // build never carried (the laser) does not fire either (shooter#92).
     let mut fired = Vec::new();
     for weapon in [
         Weapon::EnergyRifle,
@@ -369,7 +372,7 @@ fn several_parts_come_off_at_once_and_lost_weapons_cannot_fire() {
         }
     }
     fired.dedup();
-    assert_eq!(fired, [Weapon::Shotgun, Weapon::Laser]);
+    assert_eq!(fired, [Weapon::Shotgun]);
 }
 
 #[test]
@@ -530,6 +533,8 @@ fn a_destroyed_battery_takes_its_energy_once_and_blasts_its_neighbours() {
 #[test]
 fn part_damage_travels_in_snapshots_and_a_predictor_follows_it() {
     let mut host = duel();
+    // Snapshots carry valid builds only: A takes up the heavy build's rail gun.
+    rebuild(&mut host, 0, HEAVY);
     // A rail beam destroys B's rifle on the left of its chest.
     shoot(&mut host, Weapon::RailGun, 32_768, |session| {
         part_center(session, 1, PartId(7))
@@ -598,4 +603,85 @@ fn bot_matches_lose_parts_and_replay_exactly() {
     let (lost, kills, bytes) = play();
     assert!(lost > 0 && kills > 0, "{lost} parts lost, {kills} kills");
     assert!(play().2 == bytes, "the match replays bit for bit");
+}
+
+/// One tick of B (the standard build) holding `intent`: the weapons it fired.
+fn b_takes(session: &mut Session, intent: Intent) -> Vec<Weapon> {
+    step(session, Intent::IDLE, intent);
+    session
+        .events
+        .iter()
+        .filter_map(|event| match *event {
+            Event::Fired {
+                slot: 1, weapon, ..
+            } => Some(weapon),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The host takes a weapon switch only to a weapon the build carries and still has
+/// (shooter#92): an uncarried or lost one is refused, the held weapon stays. A fighter spawns
+/// holding its build's first weapon, and with only the blade left it holds the blade and the
+/// trigger swings it.
+#[test]
+fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
+    let mut session = duel();
+    let select = |weapon| Intent {
+        yaw: 32_768,
+        select: Some(weapon),
+        ..Intent::IDLE
+    };
+    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+    // Not carried: refused, whatever the client asks.
+    for weapon in [Weapon::RailGun, Weapon::Laser, Weapon::Flamethrower] {
+        b_takes(&mut session, select(weapon));
+        assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+    }
+    // The blade is not held while a gun is left.
+    b_takes(&mut session, select(Weapon::EnergyBlade));
+    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+    b_takes(&mut session, select(Weapon::Shotgun));
+    assert_eq!(session.fighters[1].arsenal.held, Weapon::Shotgun);
+    // The grapple lost: refused; back to the rifle is fine.
+    let b = &mut session.fighters[1];
+    let build = b.build;
+    let index = |weapon| {
+        build
+            .parts()
+            .iter()
+            .position(|part| BETA.weapon(part) == Some(weapon))
+            .unwrap()
+    };
+    let grapple = index(Weapon::Grapple);
+    b.parts.hurt(&build, grapple, 1_000);
+    assert!(!b.parts.armed(&build, Weapon::Grapple));
+    b_takes(&mut session, select(Weapon::Grapple));
+    assert_eq!(session.fighters[1].arsenal.held, Weapon::Shotgun);
+    b_takes(&mut session, select(Weapon::EnergyRifle));
+    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+    // The rifle and the shotgun lost too: the blade is the last weapon, held and swung by the
+    // trigger.
+    let b = &mut session.fighters[1];
+    for weapon in [Weapon::EnergyRifle, Weapon::Shotgun] {
+        b.parts.hurt(&build, index(weapon), 1_000);
+    }
+    b_takes(&mut session, select(Weapon::EnergyBlade));
+    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyBlade);
+    let mut fired = Vec::new();
+    for _ in 0..40 {
+        fired.extend(b_takes(
+            &mut session,
+            Intent {
+                yaw: 32_768,
+                fire: true,
+                ..Intent::IDLE
+            },
+        ));
+    }
+    assert!(fired.iter().all(|weapon| *weapon == Weapon::EnergyBlade));
+    assert!(!fired.is_empty());
+    // Rebuilt (as at a spawn), it takes up its build's first weapon.
+    session.fighters[1].rebuild(HEAVY);
+    assert_eq!(session.fighters[1].arsenal.held, Weapon::RailGun);
 }

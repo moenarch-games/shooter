@@ -114,9 +114,23 @@ the host's reconnect grace. A public host is described in [docs/hosting.md](docs
 
 Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
-mouse. Steer in the air with WASD. The HUD (the root chassis' health and the parts damaged and lost, energy, weapon, frags and place, the round clock, the
-carried module and its uses left, the kill and pickup feed) is the page's overlay in the browser and the window title plus a chassis health bar natively,
-until render-engine draws screen overlays.
+mouse. Steer in the air with WASD.
+
+**HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser:
+render-engine's screen-overlay quads in the robot kits' palette (pale grey on graphite, olive, an
+orange accent), in the bottom corners clear of the reticle, laid out for 720 lines and scaled with
+the window. Bottom right, the held weapon: its silhouette, name and mod, the energy a shot costs
+(a second, for the laser and the flamethrower), whether it is ready, recharging (a bar filling to
+its next shot), short of energy or lost, and above it a slot for every weapon the build carries
+with its key (lost ones red and struck out); a switch flashes the panel and sweeps a highlight
+across it. Bottom left, the root chassis' health and the energy pool, with the share one shot of
+the held weapon takes marked in orange. render-engine's overlay draws solid rectangles only, so
+the text is a 5×7 bitmap font and the weapons are pixel silhouettes, both drawn as quads in the
+client. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
+the carried module and its uses left, the kill and pickup feed, banners and the scoreboard) is
+still text: the page's overlay in the browser and the window title natively.
+
+Screenshots: [docs/captures/92](docs/captures/92).
 
 **Camera and aim.** Native and browser clients share one third-person follow camera
 (`shooter-client`'s `camera`): 3.5 m behind the eye along the aim, 0.6 m right of it and 0.3 m
@@ -129,7 +143,13 @@ meets the arena or another fighter as you see them, the same function the host r
 hitscan with, so it sits slightly off the screen's centre (more for close targets) and lands on
 cover in front of your fighter even where the camera sees past it.
 
-The left mouse button fires; 1 to 7 pick the weapon:
+The left mouse button fires. The mouse wheel steps through the weapons your robot carries and
+still has (down or E for the next, up or Q for the previous), in the order below, wrapping round
+and skipping the ones it does not carry or has lost; the blade stays on V, unless it is the last
+weapon left, when it is held and the trigger swings it. One wheel notch is one step, whether the
+wheel reports lines or pixels: a burst of events within 60 ms is one notch. 1 to 7 pick a weapon
+directly. A fighter holds and fires only the weapons its build mounts (#92): the host refuses a
+switch to any other, and the prediction follows the host.
 
 | Key | Weapon | Shot |
 | --- | --- | --- |
@@ -173,8 +193,10 @@ the standard build; a person's command may ask for another, which the host valid
 one rejects the command) and applies at that fighter's next spawn, never while it is alive.
 Snapshots carry each fighter's build and the one it comes back as. The cell size, chassis sizes,
 part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part keys await the
-asset kits, and a build does not yet change movement or the arsenal: every fighter still carries
-every weapon, and there is no builder screen yet.
+asset kits, and a build does not yet change movement, but it is the arsenal: a fighter spawns
+holding its build's first weapon and fires only what the build mounts (#92). No named loadout
+mounts the laser or the flamethrower yet; the tests' over-budget `ARMORY` build carries every
+weapon. There is no builder screen yet.
 
 **Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
 D2.i70.4, D2.i89.1): the root chassis stores 100 and regenerates 24 a second (other chassis
@@ -188,8 +210,7 @@ hook simply does not happen (no cooldown is spent) and works again once regenera
 it; the charge never goes below zero. Within a tick a robot's requests go first come, first
 served in a fixed order: a thruster jump, then the blade swing, then the gun (provisional, Atlas
 Q2.i70.4). There is no heat or cooling. The host owns the pool; snapshots carry each robot's
-charge, the client predicts its own, replays reproduce it, and the HUD's status line shows it
-(`⚡ 87/160`). Values are provisional (Atlas Q2.i70.1). A lost battery (destroyed, or carried off
+charge, the client predicts its own, replays reproduce it, and the HUD's energy bar shows it. Values are provisional (Atlas Q2.i70.1). A lost battery (destroyed, or carried off
 with a part it hung from) takes its capacity and its share of the charge with it, once; a
 destroyed one also blasts its neighbours (below, **Part damage**). Motors draw from the same
 pool (below).
@@ -212,8 +233,8 @@ works fully until zero; then it is destroyed for the rest of that life and every
 connected to the root chassis through the part tree falls away with it (breaking a beam drops it
 and whatever hangs from it; another chassis section is ordinary structure). Destroying the root chassis
 is the only kill; respawn restores the configured build whole. A lost
-weapon part no longer fires or swings (a gun the build never carried still fires as shipped:
-every fighter keeps the full arsenal); a destroyed battery sets off a small blast (40 at its
+weapon part no longer fires or swings and cannot be selected (nor can a gun the build never
+carried, #92); a destroyed battery sets off a small blast (40 at its
 centre, 0.8 m; provisional, Atlas Q2.i70.5) through the same damage, and a battery it destroys
 blasts in turn, once each; a robot with no connected leg, wheel or track cannot walk, jump or
 slide but stays alive while its root chassis does. Losing some of its legs changes nothing yet: how the
@@ -298,8 +319,8 @@ efficiency-coiled shotgun) or `marksman` (long-barrel rifle, overcharged rail gu
 front kill instead of four, on the root chassis), each a two-legged component tree with a sensor
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. Practice
-starts as it; online the host applies it at your next spawn. The HUD's status line shows the held
-weapon's mod and every equipped one.
+starts as it; online the host applies it at your next spawn. The weapon panel shows the held
+weapon's mod and the status line every equipped one.
 
 **Module pickups.** A few powerful modules lie on pads at contested points of a map, placed in
 the map's data (`shooter_sim::pickups`, `Arena::module_pads`). Any robot that walks (or jumps

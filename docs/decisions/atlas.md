@@ -70,6 +70,12 @@ implemented yet.
 - **D2.i46.8** (owner, 2026-11-13): Weapons build on the shipped rifle, rail gun, rockets, shotgun,
   laser, flamethrower, grapple hook and blade, and allow weapon modifications. Full
   weapon-from-parts engineering is later, not beta.
+  Since shooter#92 (owner request, 2026-11-14) a build is its arsenal: a fighter spawns holding
+  its build's first weapon and holds, fires and swings only the weapons the build mounts and still
+  has; the host refuses a switch to any other. The mouse wheel and Q/E cycle those weapons in the
+  fixed rotation order; the blade stays on its own key unless it is the last weapon. No named
+  loadout mounts the laser or the flamethrower yet, so until the builder (shooter#57) only the
+  tests' over-budget armory build fires them.
 - **D2.i46.9** (owner, 2026-11-13): Some powerful weapon and movement modules spawn as pickups at
   contested arena points. Any robot can use them, with no compatibility gate; a build may exploit
   one better (for example grapple plus a sniper position). Their lifetime is open (Q2.i46.3).

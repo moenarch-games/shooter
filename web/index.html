@@ -89,7 +89,7 @@
       #error[data-shown] {
         display: block;
       }
-      /* The HUD: a stopgap until render-engine draws screen overlays (render-engine#101). */
+      /* The HUD text the drawn HUD (weapon panel, chassis and energy bars) does not draw yet. */
       #hud {
         position: fixed;
         inset: 0;
@@ -98,22 +98,14 @@
         font: 600 15px/1.4 ui-monospace, monospace;
         text-shadow: 0 1px 2px rgb(0 0 0 / 80%);
       }
+      /* Between the drawn panels in the bottom corners. */
       #hud-bottom {
         position: absolute;
-        left: 20px;
+        left: 50%;
         bottom: 18px;
-      }
-      #hud-bar {
-        width: 220px;
-        height: 8px;
-        margin-bottom: 6px;
-        background: rgb(255 255 255 / 15%);
-        border-radius: 4px;
-        overflow: hidden;
-      }
-      #hud-health {
-        height: 100%;
-        background: #5fe39a;
+        max-width: 36%;
+        transform: translateX(-50%);
+        text-align: center;
       }
       #hud-feed {
         position: absolute;
@@ -156,7 +148,6 @@
   <body>
     <div id="hud">
       <div id="hud-bottom">
-        <div id="hud-bar"><div id="hud-health"></div></div>
         <div id="hud-status"></div>
       </div>
       <div id="hud-feed"></div>
@@ -168,8 +159,9 @@
       <div>
         <strong id="mode">Click to play: practice deathmatch against bots</strong><br />
         WASD to move · mouse to look · Space to jump, again in the air to double jump · Shift to
-        sprint · C while sprinting to slide · left mouse to fire · 1 to 7 for rifle, rail gun,
-        rockets, grapple (hold to reel in), shotgun, laser, flamethrower · V (or the mouse's back button) to swing the energy blade
+        sprint · C while sprinting to slide · left mouse to fire · mouse wheel or Q / E to cycle the
+        weapons your robot carries, or 1 to 7 for rifle, rail gun, rockets, grapple (hold to reel
+        in), shotgun, laser, flamethrower · V (or the mouse's back button) to swing the energy blade
         · Tab for the scores · Esc to release the mouse
         <form id="join" method="get">
           <input

@@ -301,6 +301,17 @@ impl Fighter {
     pub fn rebuild(&mut self, build: Assembly) {
         self.build = build;
         self.parts = PartDamage::fresh(&build);
+        if !self.parts.holdable(&build, self.arsenal.held) {
+            self.arsenal = Arsenal::holding(self.first_weapon());
+        }
+    }
+
+    /// The weapon it takes up at spawn: the first its build lets it hold
+    /// ([`weapons::holdable`]), the energy rifle when it has none.
+    fn first_weapon(&self) -> Weapon {
+        weapons::holdable(|weapon| self.parts.armed(&self.build, weapon))
+            .next()
+            .unwrap_or_default()
     }
 
     /// Its root chassis' health: its life ([`crate::damage`]).
@@ -639,12 +650,12 @@ impl Session {
     fn spawn(&mut self, slot: usize, at: Spawn) -> Result<(), PhysicsError> {
         let fighter = &mut self.fighters[slot];
         fighter.player = Player::spawn(&mut self.world, fighter.player.body, at.feet)?;
-        fighter.arsenal = Arsenal::default();
         fighter.build = fighter.configured;
         fighter.hook = None;
         fighter.carried = None;
         // Respawn restores the configured build whole (D2.i70.8).
         fighter.parts = PartDamage::fresh(&fighter.build);
+        fighter.arsenal = Arsenal::holding(fighter.first_weapon());
         fighter.energy = fighter.pool().capacity;
         fighter.respawn_at = None;
         fighter.intent = Intent {
@@ -903,16 +914,20 @@ impl Session {
             let (build, carried, parts) = (fighter.build, fighter.carried, fighter.parts);
             // The swing, then the gun, ask the shared pool for their energy, first come, first
             // served ([`crate::energy`]); a weapon part the robot has lost cannot ask
-            // ([`crate::damage`]), so it neither fires nor spends a cooldown.
+            // ([`crate::damage`]), so it neither fires nor spends a cooldown; nor can a weapon
+            // the build does not carry. A switch to a weapon it may not hold is refused
+            // ([`weapons::holdable`]): the host decides, the prediction and replays alike.
             let charge = &mut fighter.energy;
             let fired = fighter.arsenal.trigger_tuned(
-                intent.select,
+                intent
+                    .select
+                    .filter(|weapon| parts.holdable(&build, *weapon)),
                 intent.melee && playing,
                 intent.fire && playing && !hooked,
                 self.tick,
                 |weapon| tuning_of(&build, carried, weapon).refire_ticks(weapon),
                 |weapon| {
-                    !parts.weapon_lost(&build, weapon)
+                    parts.armed(&build, weapon)
                         && energy::spend(charge, tuning_of(&build, carried, weapon).energy(weapon))
                 },
             );
@@ -920,7 +935,7 @@ impl Session {
                 && !(intent.fire
                     && playing
                     && fighter.arsenal.held == Weapon::Grapple
-                    && !parts.weapon_lost(&build, Weapon::Grapple))
+                    && parts.armed(&build, Weapon::Grapple))
             {
                 fighter.hook = None;
             }
@@ -1046,8 +1061,7 @@ impl Session {
                         )
                     }),
                     chassis,
-                    armed: Weapon::ALL
-                        .map(|weapon| !fighter.parts.weapon_lost(&fighter.build, weapon)),
+                    armed: Weapon::ALL.map(|weapon| fighter.parts.armed(&fighter.build, weapon)),
                 }
             })
             .collect();

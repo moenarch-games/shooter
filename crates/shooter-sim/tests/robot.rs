@@ -14,7 +14,7 @@ use shooter_sim::robot::parts::{
     TRACK, WHEEL,
 };
 use shooter_sim::robot::{
-    AssemblyError, BETA, Candidate, Catalog, EFFICIENCY_COIL, Face, HEAVY, Kind, LOADOUTS,
+    ARMORY, AssemblyError, BETA, Candidate, Catalog, EFFICIENCY_COIL, Face, HEAVY, Kind, LOADOUTS,
     LONG_BARREL, MARKSMAN, MAX_PARTS, ModId, OVERCHARGER, Orientation, PartId, PartType,
     PartTypeId, RAPID_CYCLER, ROOT_CAPACITY, ROOT_REGEN, RawMount, RawPart, SKIRMISHER, STANDARD,
     SocketId, Tuning, loadout,
@@ -1124,9 +1124,11 @@ fn rail_record(build: Assembly, ticks: u32) -> (Vec<u32>, i32) {
 fn the_overcharged_rail_gun_kills_in_fewer_hits_and_fires_slower() {
     // Shipped: 72 ticks apart, four hits a kill aimed at the root chassis from the front (270
     // on the standard build: 85 a hit), as it took before the core went (shooter#89: two for the
-    // chassis, then two for the core); the heavy build's rail gun has no mod.
-    assert_eq!(rail_record(STANDARD, 120), (vec![12, 84], 0));
-    assert_eq!(rail_record(HEAVY, 300), (vec![12, 84, 156, 228], 1));
+    // chassis, then two for the core); the heavy build's rail gun has no mod. The standard build
+    // carries none, so it never fires one (shooter#92). The heavy build holds its rail gun from
+    // the start (its first weapon), the marksman switches to it from its rifle.
+    assert_eq!(rail_record(STANDARD, 120), (vec![], 0));
+    assert_eq!(rail_record(HEAVY, 300), (vec![0, 72, 144, 216, 288], 1));
     // Overcharged (106): 94 ticks apart, three hits a kill, as before (two for the chassis, then
     // one for the core).
     assert_eq!(rail_record(MARKSMAN, 220), (vec![12, 106, 200], 1));
@@ -1165,4 +1167,15 @@ fn a_configured_modded_build_applies_at_the_next_spawn() {
     }
     assert_eq!(session.fighters[0].build, MARKSMAN);
     assert_eq!(rail_tuning(&session).damage_percent, 125);
+}
+
+#[test]
+fn the_armory_mounts_every_weapon_and_is_over_budget_only() {
+    let mut weapons: Vec<Weapon> = BETA.weapons(&ARMORY).map(|(_, weapon)| weapon).collect();
+    weapons.sort();
+    assert_eq!(weapons, Weapon::ALL.to_vec());
+    assert!(matches!(
+        BETA.validate(&ARMORY.candidate()),
+        Err(AssemblyError::OverBudget { .. })
+    ));
 }

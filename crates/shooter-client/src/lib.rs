@@ -13,6 +13,7 @@ pub mod gpu;
 pub mod hud;
 pub mod interpolation;
 pub mod net;
+pub mod overlay;
 pub mod robots;
 pub mod scene;
 
@@ -610,13 +611,12 @@ mod tests {
         };
         let marksman = status(MARKSMAN);
         assert!(
-            marksman.contains("Energy rifle + long barrel")
-                && marksman.contains("mods: Energy rifle + long barrel, Rail gun + overcharger"),
+            marksman.contains("mods: Energy rifle + long barrel, Rail gun + overcharger"),
             "{marksman}"
         );
         let standard = status(STANDARD);
         assert!(
-            standard.contains("Energy rifle") && !standard.contains("mods"),
+            !standard.contains("mods") && !standard.contains("Energy rifle"),
             "{standard}"
         );
     }

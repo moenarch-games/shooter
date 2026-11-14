@@ -260,7 +260,8 @@ pub struct Arsenal {
 
 impl Arsenal {
     /// Applies a switch request, the melee key and the trigger at `tick`: the weapon that fires,
-    /// if any. A swing goes first and keeps the gun down for [`crate::melee::GUN_LOCKOUT_TICKS`].
+    /// if any, with every rotation weapon to hold (the blade is never held). A swing goes first and
+    /// keeps the gun down for [`crate::melee::GUN_LOCKOUT_TICKS`].
     pub fn trigger(
         &mut self,
         select: Option<Weapon>,
@@ -268,6 +269,7 @@ impl Arsenal {
         fire: bool,
         tick: u32,
     ) -> Option<Weapon> {
+        let select = select.filter(|weapon| Weapon::ROTATION.contains(weapon));
         self.trigger_tuned(select, melee, fire, tick, Weapon::refire_ticks, |_| true)
     }
 
@@ -284,9 +286,9 @@ impl Arsenal {
         refire: impl Fn(Weapon) -> u32,
         mut spend: impl FnMut(Weapon) -> bool,
     ) -> Option<Weapon> {
-        if let Some(weapon) =
-            select.filter(|weapon| *weapon != self.held && Weapon::ROTATION.contains(weapon))
-        {
+        // Which weapons this fighter may hold is the caller's to check ([`holdable`]); the blade
+        // is held only when it is the last weapon.
+        if let Some(weapon) = select.filter(|weapon| *weapon != self.held) {
             self.held = weapon;
             self.ready_at = self.ready_at.max(tick + SWITCH_TICKS);
         }
@@ -308,12 +310,73 @@ impl Arsenal {
         fired
     }
 
+    /// An arsenal holding `held`, ready at once (a fighter's at spawn).
+    #[must_use]
+    pub fn holding(held: Weapon) -> Self {
+        Self {
+            held,
+            ..Self::default()
+        }
+    }
+
+    /// Ticks from `tick` until the held weapon may fire again (its refire or a switch): 0 when
+    /// it is ready.
+    #[must_use]
+    pub const fn cooldown(&self, tick: u32) -> u32 {
+        self.ready_at.saturating_sub(tick)
+    }
+
     /// Whether the flame burns this tick: it has fired for more than [`FLAME_IGNITION_TICKS`]
     /// ticks in a row. Before that it is still igniting.
     #[must_use]
     pub const fn ignited(&self) -> bool {
         self.flaming > FLAME_IGNITION_TICKS
     }
+}
+
+/// The weapons a fighter may hold, in [`Weapon::ROTATION`] order: those `armed` says its build
+/// mounts and still has ([`crate::damage::PartDamage::armed`]). The blade is swung on its own key
+/// and is not among them, unless it is the only weapon left: then it is held and the trigger
+/// swings it.
+pub fn holdable(armed: impl Fn(Weapon) -> bool) -> impl Iterator<Item = Weapon> + Clone {
+    let guns = Weapon::ROTATION.map(&armed);
+    let blade_only = !guns.contains(&true) && armed(Weapon::EnergyBlade);
+    Weapon::ROTATION
+        .into_iter()
+        .zip(guns)
+        .filter_map(|(weapon, armed)| armed.then_some(weapon))
+        .chain(blade_only.then_some(Weapon::EnergyBlade))
+}
+
+/// The weapon `steps` places on from `from` among the [`holdable`] ones (next for positive
+/// steps, previous for negative), wrapping round. A `from` no longer holdable (lost, say) counts
+/// from where it stands in [`Weapon::ROTATION`], so one step goes to its nearest holdable
+/// neighbour that way. `None` if nothing is holdable or `steps` is 0.
+pub fn cycled(from: Weapon, steps: i32, armed: impl Fn(Weapon) -> bool) -> Option<Weapon> {
+    let cycle: Vec<Weapon> = holdable(armed).collect();
+    let len = i32::try_from(cycle.len()).ok().filter(|len| *len > 0)?;
+    if steps == 0 {
+        return None;
+    }
+    // Rotation places, the blade first (it is never among the rotation's).
+    let place = |weapon: Weapon| {
+        Weapon::ROTATION
+            .iter()
+            .position(|held| *held == weapon)
+            .map_or(-1, |index| i32::try_from(index).unwrap_or(0))
+    };
+    let start = if let Some(index) = cycle.iter().position(|weapon| *weapon == from) {
+        i32::try_from(index).unwrap_or(0)
+    } else {
+        // Between two holdable weapons: the first step lands on the neighbour that way.
+        let after = cycle
+            .iter()
+            .position(|weapon| place(*weapon) > place(from))
+            .map_or(len, |index| i32::try_from(index).unwrap_or(0));
+        if steps > 0 { after - 1 } else { after }
+    };
+    let index = usize::try_from((start + steps).rem_euclid(len)).unwrap_or(0);
+    cycle.get(index).copied()
 }
 
 /// The Q16 directions of a shotgun blast's [`PELLETS`] aimed at `yaw` and `pitch`.
@@ -674,6 +737,41 @@ pub fn falloff(blast: [f32; 3], point: [f32; 3], radius_units: i32, damage: i32)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cycle_runs_through_the_armed_guns_in_rotation_order_and_wraps() {
+        use Weapon::{EnergyBlade, EnergyRifle, Grapple, Laser, RailGun, RocketLauncher, Shotgun};
+        // The standard build's guns; the blade stays on its own key.
+        let standard = |weapon| matches!(weapon, EnergyRifle | Grapple | Shotgun | EnergyBlade);
+        let cycle: Vec<Weapon> = holdable(standard).collect();
+        assert_eq!(cycle, [EnergyRifle, Grapple, Shotgun]);
+        assert_eq!(cycled(EnergyRifle, 1, standard), Some(Grapple));
+        assert_eq!(cycled(Grapple, 1, standard), Some(Shotgun));
+        assert_eq!(cycled(Shotgun, 1, standard), Some(EnergyRifle));
+        assert_eq!(cycled(EnergyRifle, -1, standard), Some(Shotgun));
+        assert_eq!(cycled(Shotgun, -1, standard), Some(Grapple));
+        // Several notches at once, either way.
+        assert_eq!(cycled(EnergyRifle, 2, standard), Some(Shotgun));
+        assert_eq!(cycled(EnergyRifle, -4, standard), Some(Shotgun));
+        assert_eq!(cycled(EnergyRifle, 0, standard), None);
+        // The grapple lost: skipped, and from it (still held) one step reaches a neighbour.
+        let lost = |weapon| standard(weapon) && weapon != Grapple;
+        assert_eq!(cycled(EnergyRifle, 1, lost), Some(Shotgun));
+        assert_eq!(cycled(Grapple, 1, lost), Some(Shotgun));
+        assert_eq!(cycled(Grapple, -1, lost), Some(EnergyRifle));
+        // A held weapon past the last armed one wraps to the first.
+        assert_eq!(cycled(Laser, 1, lost), Some(EnergyRifle));
+        assert_eq!(
+            cycled(RailGun, -1, |w| w == RocketLauncher),
+            Some(RocketLauncher)
+        );
+        // Only the blade left: it is the cycle; nothing at all: no cycle.
+        let blade = |weapon| weapon == EnergyBlade;
+        assert_eq!(holdable(blade).collect::<Vec<_>>(), [EnergyBlade]);
+        assert_eq!(cycled(EnergyRifle, 1, blade), Some(EnergyBlade));
+        assert_eq!(cycled(EnergyBlade, -1, blade), Some(EnergyBlade));
+        assert_eq!(cycled(EnergyRifle, 1, |_| false), None);
+    }
 
     #[test]
     fn aim_points_where_the_yaw_and_pitch_say() {
