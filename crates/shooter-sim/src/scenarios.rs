@@ -1,7 +1,8 @@
-//! Scripted fast moves, each in a small arena of its own (or the greybox): sprint and slide,
+//! Scripted fast moves, each in a small arena of its own (or a greybox map): sprint and slide,
 //! double jump onto a ledge, a thruster-module jump onto a higher one, a jump pad onto the platform, slides up and down a ramp, a slide
 //! into a thin wall, a sprint up a step, a rocket jump, a grapple onto a ledge, a shooting range
-//! and a close range for the shotgun, laser and flamethrower. The movement and weapon tests check
+//! and a close range for the shotgun, laser and flamethrower, and the greybox yard's walkway
+//! (up its ramp, along and off it) and its jump pad onto it. The movement and weapon tests check
 //! what each one does and the Rapier A/B test runs each on both backends.
 
 use crate::arena::{Arena, Piece, Post};
@@ -10,7 +11,7 @@ use crate::physics::Vec3i;
 use crate::pickups::{ArenaModule, ModulePad};
 use crate::player::Intent;
 use crate::robot::{Assembly, HEAVY, SKIRMISHER};
-use crate::tour::{Leg, NORTH, SOUTH, hold, stand, walk};
+use crate::tour::{EAST, Leg, NORTH, SOUTH, hold, stand, walk};
 use crate::weapons::{MAX_PITCH, Weapon};
 
 /// One scripted scenario.
@@ -73,6 +74,7 @@ fn open(spawn: [i32; 3], pieces: Vec<Piece>) -> Arena {
         spawn_yaw: SOUTH,
         spawns: Vec::new(),
         module_pads: Vec::new(),
+        waypoints: Vec::new(),
     }
 }
 
@@ -396,6 +398,42 @@ pub const CLOSE_RANGE: Scenario = Scenario {
     ],
 };
 
+/// The greybox yard's walkway from its west wing: up the west ramp, east along the deck past the
+/// rail capacitor, then south off its edge to the ground 3 m below.
+pub const YARD_WALKWAY: Scenario = Scenario {
+    name: "the yard's walkway",
+    arena: || Arena {
+        spawn: Vec3i::new(-3_200, 0, 0),
+        spawn_yaw: EAST,
+        ..Arena::greybox_yard()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the west ramp", EAST, 140),
+        walk("along the walkway", EAST, 160),
+        stand("on the walkway", 10),
+        walk("off the edge", SOUTH, 40),
+        stand("below", 40),
+    ],
+};
+
+/// The greybox yard from south of its south-east pad: onto the pad, thrown north onto the
+/// walkway.
+pub const YARD_JUMP_PAD: Scenario = Scenario {
+    name: "the yard's pad onto the walkway",
+    arena: || Arena {
+        spawn: Vec3i::new(1_200, 0, 900),
+        spawn_yaw: NORTH,
+        ..Arena::greybox_yard()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("onto the pad", NORTH, 34),
+        stand("thrown", 90),
+        stand("on the walkway", 20),
+    ],
+};
+
 pub const ALL: &[Scenario] = &[
     SPRINT_AND_SLIDE,
     DOUBLE_JUMP,
@@ -408,6 +446,8 @@ pub const ALL: &[Scenario] = &[
     SHOOTING_RANGE,
     GRAPPLE,
     CLOSE_RANGE,
+    YARD_WALKWAY,
+    YARD_JUMP_PAD,
 ];
 
 /// This tick's controls for scripted person `index`: run and strafe in turns, sweep the view

@@ -47,8 +47,9 @@ impl Host {
         let thread = std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async {
-                // A 5 s reconnect grace.
-                let host = shooter_server::build_host(&["dm".parse().unwrap()], 300).unwrap();
+                // A 5 s reconnect grace, on the greybox fixture: this checks networking, not a map.
+                let host =
+                    shooter_server::build_host(&["dm=greybox".parse().unwrap()], 300).unwrap();
                 serve_match_host_with_shutdown(host, config, requests)
                     .await
                     .unwrap();

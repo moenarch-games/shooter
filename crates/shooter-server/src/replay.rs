@@ -323,7 +323,7 @@ mod tests {
     fn a_replay_restores_its_map_and_rejects_unknown_ones() {
         let replay = record(short()).unwrap();
         let bytes = replay.encode().unwrap();
-        assert_eq!(Replay::decode(&bytes).unwrap().map, MapId::Greybox);
+        assert_eq!(Replay::decode(&bytes).unwrap().map, MapId::DEFAULT);
         let mut maps = Vec::new();
         replay
             .play(10, |session| {
@@ -331,7 +331,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        assert_eq!(maps, vec![Some(MapId::Greybox); 10]);
+        assert_eq!(maps, vec![Some(MapId::DEFAULT); 10]);
         let named = b"greybox";
         let at = bytes
             .windows(named.len())

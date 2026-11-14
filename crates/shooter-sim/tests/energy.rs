@@ -30,6 +30,7 @@ fn duel() -> Session {
             yaw: 32_768,
         }],
         module_pads: Vec::new(),
+        waypoints: Vec::new(),
     };
     let rules = Rules {
         slots: 2,
@@ -381,7 +382,7 @@ fn a_build_with_the_retired_heat_sink_is_rejected() {
 #[test]
 fn a_bot_match_keeps_every_pool_in_bounds_and_deterministic() {
     let run = || {
-        let mut session = Session::on_map(MapId::DEFAULT, Rules::deathmatch(7)).unwrap();
+        let mut session = Session::on_map(MapId::Greybox, Rules::deathmatch(7)).unwrap();
         let mut trace = Vec::new();
         let mut spent = false;
         for _ in 0..1_800 {

@@ -21,6 +21,9 @@ use std::str::FromStr;
 pub enum MapId {
     /// The first greybox hall ([`Arena::greybox`]), kept as the test and A/B fixture.
     Greybox,
+    /// The greybox yard ([`Arena::greybox_yard`]), a 76 m interim playtest map with a raised
+    /// walkway, wall lines and grapple towers (shooter#82): the default until the beta arenas.
+    GreyboxYard,
 }
 
 /// The players a map is laid out for, inclusive. A recommendation for whoever sets up a
@@ -65,15 +68,16 @@ impl std::error::Error for UnknownMap {}
 
 impl MapId {
     /// Every catalogued map.
-    pub const ALL: [Self; 1] = [Self::Greybox];
+    pub const ALL: [Self; 2] = [Self::Greybox, Self::GreyboxYard];
     /// The map a match is played on when none is chosen.
-    pub const DEFAULT: Self = Self::Greybox;
+    pub const DEFAULT: Self = Self::GreyboxYard;
 
     /// The stable ID: command lines, the host's configuration, page queries and replays.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Greybox => "greybox",
+            Self::GreyboxYard => "greybox-yard",
         }
     }
 
@@ -82,6 +86,7 @@ impl MapId {
     pub const fn tag(self) -> u8 {
         match self {
             Self::Greybox => 1,
+            Self::GreyboxYard => 2,
         }
     }
 
@@ -98,6 +103,8 @@ impl MapId {
         match self {
             // The default 12 slots, one spawn point to spare.
             Self::Greybox => Capacity { min: 2, max: 12 },
+            // Too big for a duel: 6 to the default 12, two spawn points to spare.
+            Self::GreyboxYard => Capacity { min: 6, max: 12 },
         }
     }
 
@@ -113,6 +120,7 @@ impl MapId {
     pub fn arena(self) -> Arena {
         match self {
             Self::Greybox => Arena::greybox(),
+            Self::GreyboxYard => Arena::greybox_yard(),
         }
     }
 }
