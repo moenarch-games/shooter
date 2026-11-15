@@ -95,7 +95,7 @@ fn glowing(rgba: Vec4, nits: f32) -> StandardMaterial {
 }
 
 /// The kit's material with `textures` (by kit index).
-fn material(kit: &KitMaterial, textures: &[TextureId]) -> StandardMaterial {
+pub(crate) fn material(kit: &KitMaterial, textures: &[TextureId]) -> StandardMaterial {
     let texture = |index: Option<usize>| index.and_then(|index| textures.get(index).copied());
     StandardMaterial {
         base_color: kit.base_color,

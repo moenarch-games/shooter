@@ -47,6 +47,8 @@ fn duel(pads: Vec<ModulePad>) -> Session {
         }],
         module_pads: pads,
         waypoints: Vec::new(),
+        placements: Vec::new(),
+        repair_anchors: Vec::new(),
     };
     let rules = Rules {
         slots: 2,
@@ -694,6 +696,8 @@ fn thrusters_climb_a_ledge_a_plain_jump_cannot() {
     let plain = run(Arena {
         module_pads: Vec::new(),
         waypoints: Vec::new(),
+        placements: Vec::new(),
+        repair_anchors: Vec::new(),
         ..(scenario.arena)()
     });
     let bottom = end_of(&plain, "on the ledge").unwrap();

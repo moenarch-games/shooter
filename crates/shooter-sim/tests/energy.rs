@@ -31,6 +31,8 @@ fn duel() -> Session {
         }],
         module_pads: Vec::new(),
         waypoints: Vec::new(),
+        placements: Vec::new(),
+        repair_anchors: Vec::new(),
     };
     let rules = Rules {
         slots: 2,

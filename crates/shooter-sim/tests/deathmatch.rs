@@ -110,6 +110,8 @@ fn duel_arena() -> Arena {
         }],
         module_pads: Vec::new(),
         waypoints: Vec::new(),
+        placements: Vec::new(),
+        repair_anchors: Vec::new(),
     }
 }
 
@@ -948,11 +950,25 @@ fn the_pyro_fires_its_laser_and_its_flamethrower() {
 /// never stays within 1 m of one spot for long.
 #[test]
 fn bots_keep_moving_and_scoring_on_the_yard() {
+    bots_keep_moving_and_scoring_on(MapId::GreyboxYard, 2_000.0);
+}
+
+/// The same on the assembly works (shooter#52), a smaller map of three levels: no bot is
+/// stranded on its decks, in its bays or behind its cover.
+#[test]
+fn bots_keep_moving_and_scoring_on_the_assembly_works() {
+    bots_keep_moving_and_scoring_on(MapId::AssemblyWorks, 1_500.0);
+}
+
+/// Twelve bots for 90 s on `map`: plenty of shots, at least ten kills, every bot at least
+/// `roams` units from where it started and none idle (alive, mobile, not firing, within 1 m of
+/// one spot) for 5 s.
+fn bots_keep_moving_and_scoring_on(map: MapId, roams: f32) {
     let rules = Rules {
         frag_limit: 0,
         ..Rules::deathmatch(7)
     };
-    let mut session = Session::on_map(MapId::GreyboxYard, rules).unwrap();
+    let mut session = Session::on_map(map, rules).unwrap();
     let slots = session.fighters.len();
     let (mut kills, mut shots) = (0, 0);
     // Per slot: where it last moved 1 m from (or last fired) and when, its longest idle stay
@@ -991,13 +1007,13 @@ fn bots_keep_moving_and_scoring_on_the_yard() {
             }
         }
     }
-    println!("{shots} shots, {kills} kills; longest idle {idle:?}; farthest {farthest:?}");
+    println!("{map}: {shots} shots, {kills} kills; longest idle {idle:?}; farthest {farthest:?}");
     assert!(shots > 100, "{shots} shots");
     assert!(kills >= 10, "{kills} kills in 90 s");
     for slot in 0..slots {
         assert!(
-            farthest[slot] > 2_000.0,
-            "slot {slot} got {} units",
+            farthest[slot] > roams,
+            "{map}: slot {slot} got {} units",
             farthest[slot]
         );
         assert!(
@@ -1012,6 +1028,21 @@ fn bots_keep_moving_and_scoring_on_the_yard() {
 fn a_bot_match_on_the_yard_replays_exactly() {
     let play = |seed| {
         let mut session = Session::on_map(MapId::GreyboxYard, Rules::deathmatch(seed)).unwrap();
+        for _ in 0..1_200 {
+            session.step().unwrap();
+        }
+        encode_snapshot(&session.snapshot())
+    };
+    assert_eq!(play(3), play(3));
+    assert_ne!(play(3), play(4));
+}
+
+/// A bot match on the assembly works replays exactly from its seed, and another seed plays out
+/// differently.
+#[test]
+fn a_bot_match_on_the_assembly_works_replays_exactly() {
+    let play = |seed| {
+        let mut session = Session::on_map(MapId::AssemblyWorks, Rules::deathmatch(seed)).unwrap();
         for _ in 0..1_200 {
             session.step().unwrap();
         }

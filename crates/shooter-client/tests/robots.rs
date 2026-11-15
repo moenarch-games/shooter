@@ -59,7 +59,7 @@ fn posed(model: &Model, state: &RobotState, phase: f32, parts: &PartStates) -> P
 fn plans_and_files() -> (Vec<Plan>, load::Files) {
     let mut plans = Vec::new();
     let mut files = load::Files::new();
-    for bundle in Bundle::ALL {
+    for bundle in Bundle::FIGHTERS {
         let directory = load::directory(bundle);
         let plan = Plan::of(
             bundle,
@@ -917,7 +917,7 @@ fn the_browser_reads_each_kit_from_its_pinned_tar() {
     let mut total = 0;
     let mut files = load::Files::new();
     let mut plans = Vec::new();
-    for bundle in Bundle::ALL {
+    for bundle in Bundle::FIGHTERS {
         let directory = load::directory(bundle);
         let tar = std::fs::read(directory.join("kit.tar")).expect("fetched with its tar");
         assert!(tar.len() < load::MAX_TAR_BYTES);

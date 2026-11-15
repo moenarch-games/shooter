@@ -6,7 +6,9 @@
 //! the socket-grid descriptors (the weapons' anchors, glow channels and states; the wheels' and
 //! tracks' axles and roll clip) into render-engine data. Both clients read the same files through
 //! [`Plan`] and [`decode`]: natively from a directory, in the browser over HTTP
-//! (`crate::robots::load`).
+//! (`crate::robots::load`). The arena kit (release `shooter-arena`, [`Bundle::Arena`]) is read the
+//! same way in a load of its own, for the kit-built maps (`crate::arena_art`): its modules' intact
+//! and broken looks, a module's static mesh nodes baked into one mesh.
 //!
 //! **Pins.** The releases are rolling, so the shooter pins each ([`Bundle::pin_json`],
 //! `assets/*-kit.pin.json`): the tar's SHA-256 (checked by `scripts/fetch-robot-kit.sh`) and the
@@ -16,7 +18,8 @@
 //!
 //! **IDs.** Kit entries are keyed by the simulation's part and mod keys
 //! (`shooter_sim::robot::parts`, `BETA.mods`). Every kit key must be a catalog part or mod of
-//! that kit, and every catalog part and mod must be in a kit; anything else fails the load
+//! that kit, and every catalog part and mod must be in a kit (the arena kit's keys are the
+//! simulation's arena modules, `shooter_sim::arena_kit::Module`); anything else fails the load
 //! loudly ([`complete`]).
 
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
@@ -25,6 +28,7 @@ use render_engine::mesh::MeshData;
 use render_engine::wgpu;
 use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
+use shooter_sim::arena_kit::Module;
 use shooter_sim::robot::{BETA, Kind, Locomotion};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -38,6 +42,9 @@ pub const MAX_TOTAL_BYTES: usize = 8 << 20;
 /// one (the armor plate, the wheel and the track). (The `lod1` and `lod2` levels are not read: at
 /// the arena's distances a weapon is a few hundred triangles and a wheel about a thousand.)
 pub const VARIANTS: [&str; 2] = ["default", "damaged"];
+/// The arena kit's drawn variants: every module intact, and broken where the kit has a broken
+/// look (`shooter_sim::arena_kit::Variant`). Its `lod1` levels are not read.
+pub const ARENA_VARIANTS: [&str; 2] = ["default", "broken"];
 /// The atlases' top mip level is skipped: at third-person distances a 1024 px atlas is plenty,
 /// and it keeps the transcoded RGBA8 textures at a quarter of their full size (about 22 MB for
 /// the robot kit, 6 MB for the weapons and 6 MB for the wheels and tracks).
@@ -58,10 +65,15 @@ pub enum Bundle {
     Weapons,
     /// `shooter-robot-locomotion`: the wheel and the track.
     Locomotion,
+    /// `shooter-arena`: the arena modules the kit-built maps are drawn from (`crate::arena_art`).
+    Arena,
 }
 
 impl Bundle {
-    pub const ALL: [Self; 3] = [Self::Robot, Self::Weapons, Self::Locomotion];
+    /// Every pinned kit.
+    pub const ALL: [Self; 4] = [Self::Robot, Self::Weapons, Self::Locomotion, Self::Arena];
+    /// The kits the fighters are drawn from: one load, [`crate::robots::Robots`].
+    pub const FIGHTERS: [Self; 3] = [Self::Robot, Self::Weapons, Self::Locomotion];
 
     /// Its pin (`assets/robot-kit.pin.json`, `assets/weapon-kit.pin.json`,
     /// `assets/locomotion-kit.pin.json`).
@@ -71,6 +83,7 @@ impl Bundle {
             Self::Robot => include_str!("../../../../assets/robot-kit.pin.json"),
             Self::Weapons => include_str!("../../../../assets/weapon-kit.pin.json"),
             Self::Locomotion => include_str!("../../../../assets/locomotion-kit.pin.json"),
+            Self::Arena => include_str!("../../../../assets/arena-kit.pin.json"),
         }
     }
 
@@ -81,11 +94,22 @@ impl Bundle {
             Self::Robot => "robot-kit",
             Self::Weapons => "weapon-kit",
             Self::Locomotion => "locomotion-kit",
+            Self::Arena => "arena-kit",
+        }
+    }
+
+    /// The bundle variants the clients draw from it ([`VARIANTS`], or the arena modules' intact
+    /// and broken looks): no `lod1` levels.
+    #[must_use]
+    pub const fn variants(self) -> [&'static str; 2] {
+        match self {
+            Self::Robot | Self::Weapons | Self::Locomotion => VARIANTS,
+            Self::Arena => ARENA_VARIANTS,
         }
     }
 
     /// Whether `key` may be an entry of this kit: a robot part, a weapon or mod, a wheel or
-    /// track.
+    /// track, an arena module of the simulation's table (`shooter_sim::arena_kit`).
     fn holds(self, key: &str) -> bool {
         let part = BETA.parts.iter().find(|part| part.key == key);
         let rolls = |kind: Kind| {
@@ -103,6 +127,7 @@ impl Bundle {
                     || BETA.mods.iter().any(|modification| modification.key == key)
             }
             Self::Locomotion => part.is_some_and(|part| rolls(part.kind)),
+            Self::Arena => Module::ALL.iter().any(|module| module.key() == key),
         }
     }
 }
@@ -251,7 +276,7 @@ impl Plan {
                     "{name}: entry {key} is no part or mod of the simulation's catalog this kit draws"
                 ));
             }
-            if !VARIANTS.contains(&variant) {
+            if !bundle.variants().contains(&variant) {
                 continue;
             }
             for attachment in asset["attachments"].as_array().into_iter().flatten() {
@@ -297,6 +322,25 @@ impl Plan {
                         .any(|entry| entry.key == key && entry.variant == "damaged")
                     {
                         return Err(format!("{name}: {key} has no damaged variant"));
+                    }
+                }
+            }
+            Bundle::Arena => {
+                // Every module of the simulation's table is drawn, intact and (where the table
+                // has broken proxies) broken.
+                for module in Module::ALL {
+                    let looks =
+                        std::iter::once("default").chain(module.broken_proxies().map(|_| "broken"));
+                    for variant in looks {
+                        if !entries
+                            .iter()
+                            .any(|entry| entry.key == module.key() && entry.variant == variant)
+                        {
+                            return Err(format!(
+                                "{name}: {} has no {variant} variant",
+                                module.key()
+                            ));
+                        }
                     }
                 }
             }
@@ -926,7 +970,9 @@ fn checked<'a>(
 /// not its pinned content, a scene is not the one-mesh part the kit standard describes, or a
 /// weapon or mod is not in the weapons kit's descriptor or lacks a state's clip.
 pub fn decode(plans: &[Plan], files: &HashMap<String, Vec<u8>>) -> Result<KitData, String> {
-    complete(plans)?;
+    if plans.iter().any(|plan| plan.bundle != Bundle::Arena) {
+        complete(plans)?;
+    }
     let files = checked(plans, files)?;
     let mut textures: Vec<TextureData> = Vec::new();
     let mut texture_ids: HashMap<(String, bool), usize> = HashMap::new();
@@ -947,6 +993,7 @@ pub fn decode(plans: &[Plan], files: &HashMap<String, Vec<u8>>) -> Result<KitDat
                 &mut textures,
                 &mut texture_ids,
                 &mut materials,
+                plan.bundle == Bundle::Arena,
             )?;
             if let Some(gear) = &gear {
                 let found = gear
@@ -994,13 +1041,94 @@ pub fn decode(plans: &[Plan], files: &HashMap<String, Vec<u8>>) -> Result<KitDat
     })
 }
 
-/// One entry's scene, its textures and material added to the load's.
+/// The one primitive of `node`'s mesh, if it has exactly one.
+fn only_primitive<'a>(node: &gltf::Node<'a>) -> Option<gltf::Primitive<'a>> {
+    let mut primitives = node.mesh()?.primitives();
+    let first = primitives.next()?;
+    primitives.next().is_none().then_some(first)
+}
+
+/// One primitive's vertices placed by `placed`: positions, normals, UVs, tangents, colours and
+/// indices (no skin). None without positions.
+fn static_mesh<'a, 's, F>(
+    primitive: &'a gltf::Primitive<'a>,
+    placed: Mat4,
+    get: F,
+) -> Option<MeshData>
+where
+    F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>,
+{
+    let normal_matrix = placed.inverse().transpose();
+    let reader = primitive.reader(get);
+    let positions: Vec<Vec3> = reader
+        .read_positions()?
+        .map(|p| placed.transform_point3(Vec3::from(p)))
+        .collect();
+    Some(MeshData {
+        normals: reader.read_normals().map_or_else(
+            || vec![Vec3::Y; positions.len()],
+            |normals| {
+                normals
+                    .map(|n| {
+                        normal_matrix
+                            .transform_vector3(Vec3::from(n))
+                            .normalize_or(Vec3::Y)
+                    })
+                    .collect()
+            },
+        ),
+        uvs: reader
+            .read_tex_coords(0)
+            .map(|uvs| uvs.into_f32().map(Vec2::from).collect())
+            .unwrap_or_default(),
+        tangents: reader
+            .read_tangents()
+            .map(|tangents| tangents.map(Vec4::from).collect())
+            .unwrap_or_default(),
+        colors: reader
+            .read_colors(0)
+            .map(|colors| colors.into_rgba_f32().map(Vec4::from).collect())
+            .unwrap_or_default(),
+        indices: reader.read_indices().map_or_else(
+            || (0..u32::try_from(positions.len()).unwrap_or(u32::MAX)).collect(),
+            |indices| indices.into_u32().collect(),
+        ),
+        positions,
+        ..MeshData::default()
+    })
+}
+
+/// `theirs` appended to `ours` where both have the attribute for every vertex, else none.
+fn join<T>(ours: &mut Vec<T>, theirs: Vec<T>, counts: (usize, usize)) {
+    if ours.len() == counts.0 && theirs.len() == counts.1 {
+        ours.extend(theirs);
+    } else {
+        ours.clear();
+    }
+}
+
+/// `more` appended to `data` (static meshes; an attribute one of them lacks is dropped).
+fn append(data: &mut MeshData, more: MeshData) {
+    let base = u32::try_from(data.positions.len()).unwrap_or(u32::MAX);
+    let counts = (data.positions.len(), more.positions.len());
+    join(&mut data.uvs, more.uvs, counts);
+    join(&mut data.tangents, more.tangents, counts);
+    join(&mut data.colors, more.colors, counts);
+    data.normals.extend(more.normals);
+    data.indices
+        .extend(more.indices.into_iter().map(|index| index + base));
+    data.positions.extend(more.positions);
+}
+
+/// One entry's scene, its textures and material added to the load's. With `parts` (the arena
+/// kit) its static mesh nodes are baked into one mesh.
 fn scene(
     entry: &EntryRef,
     files: &HashMap<String, &[u8]>,
     textures: &mut Vec<TextureData>,
     texture_ids: &mut HashMap<(String, bool), usize>,
     materials: &mut Vec<KitMaterial>,
+    parts: bool,
 ) -> Result<KitEntry, String> {
     let path = &entry.scene.path;
     let bytes = files[path];
@@ -1079,14 +1207,18 @@ fn scene(
             meshes.push(node);
         }
     }
-    let [node] = meshes.as_slice() else {
-        return Err(fail("a kit part is exactly one mesh"));
+    // A kit part is one mesh node; an arena module (the door: its two leaves) may be several
+    // static ones, baked into one mesh.
+    let (node, others) = match meshes.as_slice() {
+        [node] => (node, &[][..]),
+        [node, others @ ..] if parts && meshes.iter().all(|node| node.skin().is_none()) => {
+            (node, others)
+        }
+        _ => return Err(fail("a kit part is exactly one mesh")),
     };
-    let mesh = node.mesh().ok_or_else(|| fail("no mesh"))?;
-    let primitives: Vec<gltf::Primitive> = mesh.primitives().collect();
-    let [primitive] = primitives.as_slice() else {
-        return Err(fail("a kit part is exactly one primitive"));
-    };
+    let one_primitive = "a kit part is exactly one primitive";
+    let primitive = only_primitive(node).ok_or_else(|| fail(one_primitive))?;
+    let primitive = &primitive;
     let skin = node.skin();
     // A static mesh is baked into its node's place; a skinned one keeps its bind pose (glTF
     // skins ignore the mesh node's transform).
@@ -1095,45 +1227,17 @@ fn scene(
     } else {
         global(node.index())
     };
-    let normal_matrix = placed.inverse().transpose();
     let reader = primitive.reader(get);
-    let positions: Vec<Vec3> = reader
-        .read_positions()
-        .ok_or_else(|| fail("no positions"))?
-        .map(|p| placed.transform_point3(Vec3::from(p)))
-        .collect();
-    let mut data = MeshData {
-        normals: reader.read_normals().map_or_else(
-            || vec![Vec3::Y; positions.len()],
-            |normals| {
-                normals
-                    .map(|n| {
-                        normal_matrix
-                            .transform_vector3(Vec3::from(n))
-                            .normalize_or(Vec3::Y)
-                    })
-                    .collect()
-            },
-        ),
-        uvs: reader
-            .read_tex_coords(0)
-            .map(|uvs| uvs.into_f32().map(Vec2::from).collect())
-            .unwrap_or_default(),
-        tangents: reader
-            .read_tangents()
-            .map(|tangents| tangents.map(Vec4::from).collect())
-            .unwrap_or_default(),
-        colors: reader
-            .read_colors(0)
-            .map(|colors| colors.into_rgba_f32().map(Vec4::from).collect())
-            .unwrap_or_default(),
-        indices: reader.read_indices().map_or_else(
-            || (0..u32::try_from(positions.len()).unwrap_or(u32::MAX)).collect(),
-            |indices| indices.into_u32().collect(),
-        ),
-        positions,
-        ..MeshData::default()
-    };
+    let mut data = static_mesh(primitive, placed, get).ok_or_else(|| fail("no positions"))?;
+    for other in others {
+        let part = only_primitive(other).ok_or_else(|| fail(one_primitive))?;
+        if part.material().index() != primitive.material().index() {
+            return Err(fail("a module's meshes share one material"));
+        }
+        let more =
+            static_mesh(&part, global(other.index()), get).ok_or_else(|| fail("no positions"))?;
+        append(&mut data, more);
+    }
     let rig = match skin {
         None => None,
         Some(skin) => {

@@ -1,7 +1,9 @@
-//! The arena as render-engine content: one mesh per piece at its true size (so normals stay
+//! The arena as render-engine content: a kit-built map's modules (`crate::arena_art`), or a
+//! greybox map's one mesh per piece at its true size (so normals stay
 //! exact), a checkered floor for a sense of speed, glowing jump pads, the module pickups' pads, and the hall's lighting;
 //! and the [`Actors`] that move over it.
 
+use crate::arena_art::ArenaArt;
 use crate::camera::{self, basis};
 use crate::effects::tint;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
@@ -127,8 +129,25 @@ const fn swapped(half: Vec3) -> Vec3 {
     Vec3::new(half.z, half.y, half.x)
 }
 
-/// Uploads the arena and retains its instances in `world`: they are drawn every frame.
-pub fn build(world: &mut World, arena: &Arena) {
+/// The greybox jump pads' and module pads' plates (metres).
+const PAD_THICKNESS: f32 = 0.02;
+
+/// Uploads the arena and retains its instances in `world`: they are drawn every frame. A
+/// kit-built map (one with placements) is drawn from the arena kit when `art` is there, else
+/// (the kit unavailable) and on the greybox maps as boxes; the module pads on every map.
+pub fn build(world: &mut World, arena: &Arena, art: Option<&ArenaArt>) {
+    match art.filter(|_| !arena.placements.is_empty()) {
+        Some(art) => {
+            art.draw(world, arena);
+        }
+        None => greybox(world, arena),
+    }
+    module_pads(world, arena);
+}
+
+/// The arena's pieces as boxes and wedges on a checkered floor, and its jump pads as glowing
+/// plates.
+fn greybox(world: &mut World, arena: &Arena) {
     let floor_material = material(world, [0.20, 0.22, 0.26], 0.8);
     let wall = material(world, [0.55, 0.57, 0.62], 0.7);
     let accent = material(world, [0.85, 0.42, 0.12], 0.5);
@@ -192,7 +211,6 @@ pub fn build(world: &mut World, arena: &Arena) {
         perceptual_roughness: 0.3,
         ..StandardMaterial::default()
     });
-    const PAD_THICKNESS: f32 = 0.02;
     for pad in &arena.pads {
         #[allow(clippy::cast_precision_loss)]
         let half = Vec3::new(pad.half[0] as f32, 0.0, pad.half[1] as f32) * METRES_PER_UNIT;
@@ -206,7 +224,10 @@ pub fn build(world: &mut World, arena: &Arena) {
             skin: None,
         });
     }
+}
 
+/// Module pickup pads, on every map.
+fn module_pads(world: &mut World, arena: &Arena) {
     // Module pickup pads: dark plates as wide as their reach, tinted by the module they hold;
     // the module itself floats over the plate while it is there ([`Actors`]).
     #[allow(clippy::cast_precision_loss)]

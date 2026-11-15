@@ -1,6 +1,7 @@
 //! The window, the fixed-tick loop and the frame: input in, the match ticks (in-process practice
 //! or a hosted match), render out.
 
+use crate::arena_art::ArenaArt;
 use crate::audio::Sounds;
 use crate::camera::{self, Follow};
 use crate::controls::{Controls, Look, PRIMARY_BUTTON, PadState, Selection, WheelDelta, standard};
@@ -40,21 +41,21 @@ type KitInbox = std::rc::Rc<
     std::cell::RefCell<Option<Result<(Vec<robots::kit::Plan>, robots::load::Files), String>>>,
 >;
 
-/// Where the browser fetches the kits: `robot-kit/` and `weapon-kit/` beside the page
-/// (`scripts/build-web.sh`).
+/// Where the browser fetches the kits: `robot-kit/`, `weapon-kit/`, `locomotion-kit/` and
+/// `arena-kit/` beside the page (`scripts/build-web.sh`).
 #[cfg(target_arch = "wasm32")]
 const KIT_URL: &str = "";
 
 /// The HUD's note while the kit is not drawn yet.
 const KIT_LOADING: &str = "robot kit loading: box placeholders stand in";
 
-/// Starts the browser's robot kit fetch.
+/// Starts the browser's fetch of `bundles` (one load).
 #[cfg(target_arch = "wasm32")]
-fn fetch_kit() -> KitInbox {
+fn fetch_kit(bundles: &'static [robots::kit::Bundle]) -> KitInbox {
     let inbox = KitInbox::default();
     let filled = inbox.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        let fetched = robots::load::fetch(KIT_URL).await;
+        let fetched = robots::load::fetch(KIT_URL, bundles).await;
         *filled.borrow_mut() = Some(fetched);
     });
     inbox
@@ -119,6 +120,12 @@ pub struct App {
     /// The browser's kit fetch, once it is done.
     #[cfg(target_arch = "wasm32")]
     kit_inbox: KitInbox,
+    /// The arena kit in the GPU's world (a kit-built map waits for it), or why not; None while
+    /// it loads.
+    arena_art: Option<Result<ArenaArt, String>>,
+    /// The browser's arena kit fetch, once it is done.
+    #[cfg(target_arch = "wasm32")]
+    arena_inbox: KitInbox,
     /// Shots and deaths per slot, for the robots' poses.
     tracker: Tracker,
     /// This frame's ticks' events, rockets and pellets, whose effects start once the robots are
@@ -176,7 +183,10 @@ impl App {
             robots: None,
             kit_status: Some(KIT_LOADING.to_owned()),
             #[cfg(target_arch = "wasm32")]
-            kit_inbox: fetch_kit(),
+            kit_inbox: fetch_kit(&robots::kit::Bundle::FIGHTERS),
+            arena_art: None,
+            #[cfg(target_arch = "wasm32")]
+            arena_inbox: fetch_kit(&[robots::kit::Bundle::Arena]),
             tracker: Tracker::default(),
             pending: Vec::new(),
             glows: vec![0.0; usize::from(u8::MAX)],
@@ -260,6 +270,7 @@ impl App {
             actors: None,
             robots: None,
             kit_status: Some(KIT_LOADING.to_owned()),
+            arena_art: None,
             tracker: Tracker::default(),
             pending: Vec::new(),
             glows: vec![0.0; usize::from(u8::MAX)],
@@ -307,6 +318,8 @@ impl App {
         self.actors = Some(Actors::new(&mut gpu.world));
         #[cfg(not(target_arch = "wasm32"))]
         self.robots_ready(&mut gpu, robots::load::read());
+        #[cfg(not(target_arch = "wasm32"))]
+        self.arena_ready(&mut gpu, robots::load::read_arena());
         if let Some(window) = &self.window {
             let size = window.inner_size();
             gpu.resize(size.width, size.height);
@@ -348,13 +361,55 @@ impl App {
         }
     }
 
-    /// Puts the match's arena into the GPU's world the first time both are there. A host keeps
-    /// a match on one map, so it is drawn once.
+    /// In the browser: the arena kit fetch is done and the GPU is up.
+    #[cfg(target_arch = "wasm32")]
+    fn poll_arena(&mut self) {
+        if self.gpu.is_none() {
+            return;
+        }
+        let Some(fetched) = self.arena_inbox.borrow_mut().take() else {
+            return;
+        };
+        let kit = fetched.and_then(|(plans, files)| robots::load::finish(&plans, &files));
+        if let Some(mut gpu) = self.gpu.take() {
+            self.arena_ready(&mut gpu, kit);
+            self.gpu = Some(gpu);
+        }
+    }
+
+    /// The arena kit is read (or failed): its modules go into `gpu`'s world, or a kit-built map
+    /// is drawn as boxes and the HUD says why.
+    fn arena_ready(&mut self, gpu: &mut Gpu, kit: Result<robots::kit::KitData, String>) {
+        let art = kit.and_then(|kit| ArenaArt::new(&mut gpu.world, kit));
+        if let Err(error) = &art {
+            crate::log(error);
+        }
+        self.arena_art = Some(art);
+    }
+
+    /// Why a kit-built map is drawn as boxes, if it is: for the HUD.
+    fn arena_status(&self) -> Option<String> {
+        let map = self.drawn?;
+        let Some(Err(error)) = &self.arena_art else {
+            return None;
+        };
+        (!map.arena().placements.is_empty())
+            .then(|| format!("{error}: the arena is drawn as boxes"))
+    }
+
+    /// Puts the match's arena into the GPU's world the first time both are there (and, for a
+    /// kit-built map, once the arena kit is read or has failed). A host keeps a match on one
+    /// map, so it is drawn once.
     fn draw_map(&mut self) {
         let (Some(gpu), Some(map), None) = (&mut self.gpu, self.game.map(), self.drawn) else {
             return;
         };
-        scene::build(&mut gpu.world, &map.arena());
+        let arena = map.arena();
+        if !arena.placements.is_empty() && self.arena_art.is_none() {
+            return;
+        }
+        let art = self.arena_art.as_ref().and_then(|art| art.as_ref().ok());
+        scene::build(&mut gpu.world, &arena, art);
         self.drawn = Some(map);
     }
 
@@ -551,6 +606,8 @@ impl App {
     fn advance(&mut self, now: Instant, seconds: f32) -> bool {
         #[cfg(target_arch = "wasm32")]
         self.poll_kit();
+        #[cfg(target_arch = "wasm32")]
+        self.poll_arena();
         #[cfg(target_arch = "wasm32")]
         if self.captured && !crate::web::pointer_locked() {
             // The browser let go of the pointer (Escape): stop playing until the next click.
@@ -837,13 +894,17 @@ impl App {
         let mut text = self
             .hud
             .text(snapshot, local, self.game.status(), self.board, seconds);
-        text.robot = self.kit_status.clone().unwrap_or_else(|| {
-            drawn
-                .iter()
-                .find(|robot| Some(robot.slot) == local)
-                .map(robot_line)
-                .unwrap_or_default()
-        });
+        text.robot = self
+            .kit_status
+            .clone()
+            .or_else(|| self.arena_status())
+            .unwrap_or_else(|| {
+                drawn
+                    .iter()
+                    .find(|robot| Some(robot.slot) == local)
+                    .map(robot_line)
+                    .unwrap_or_default()
+            });
         #[cfg(target_arch = "wasm32")]
         crate::hud::show(&text, &mut self.shown);
         #[cfg(not(target_arch = "wasm32"))]

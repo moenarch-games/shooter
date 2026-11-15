@@ -1,0 +1,7 @@
+{
+  "release": "shooter-arena",
+  "tar": "https://github.com/moritzbrantner/asset-tooling/releases/download/shooter-arena/shooter-arena.kit.tar",
+  "sha256": "5c32c82ad5da67527602f5a6ac1a7dfd390a6fb2dc935815b08065bb1ad1bb69",
+  "manifestSha256": "4661685762b526e488786f1a4a7b13eb0c9be3bee412b1f2dfdd7958889bc10a",
+  "assetTooling": "c9030e009221123f5ce0ba71b7a01f55f30a089e"
+}
