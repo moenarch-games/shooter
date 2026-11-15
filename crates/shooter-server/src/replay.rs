@@ -320,6 +320,29 @@ mod tests {
         assert_eq!(verified.final_snapshot.tick, 600);
     }
 
+    /// A scripted match on the kit-built assembly works (shooter#52) records, round-trips,
+    /// replays tick for tick and restores its map.
+    #[test]
+    fn a_replay_on_the_assembly_works_reproduces_every_tick() {
+        let script = Script {
+            map: MapId::AssemblyWorks,
+            ..short()
+        };
+        let replay = record(script).unwrap();
+        let bytes = replay.encode().unwrap();
+        assert_eq!(Replay::decode(&bytes).unwrap().map, MapId::AssemblyWorks);
+        assert_eq!(record(script).unwrap().encode().unwrap(), bytes);
+        let verified = verify(&replay).unwrap();
+        assert_eq!(verified.checkpoints_verified, 600);
+        assert_eq!(verified.final_snapshot.tick, 600);
+        replay
+            .play(600, |session| {
+                assert_eq!(session.map, Some(MapId::AssemblyWorks));
+                Ok(())
+            })
+            .unwrap();
+    }
+
     #[test]
     fn a_replay_restores_its_map_and_rejects_unknown_ones() {
         let replay = record(short()).unwrap();

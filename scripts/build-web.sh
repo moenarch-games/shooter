@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the browser client into web/dist: the client crate for wasm32 (WebGPU), bound with the
 # wasm-bindgen CLI, and the pinned kits' release tars beside it in web/dist/robot-kit/kit.tar,
-# web/dist/weapon-kit/kit.tar and web/dist/locomotion-kit/kit.tar (scripts/fetch-robot-kit.sh).
+# web/dist/weapon-kit/kit.tar, web/dist/locomotion-kit/kit.tar and web/dist/arena-kit/kit.tar
+# (scripts/fetch-robot-kit.sh).
 # The CLI must match the wasm-bindgen
 # version in Cargo.lock.
 set -euo pipefail
@@ -26,10 +27,10 @@ rm -rf web/dist
   target/wasm32-unknown-unknown/release/shooter_client.wasm
 cp web/index.html web/dist/
 # The pinned kits' tars beside the page: the client fetches robot-kit/kit.tar,
-# weapon-kit/kit.tar and locomotion-kit/kit.tar (one request a kit, shooter#85) and checks them
-# against their pins.
+# weapon-kit/kit.tar, locomotion-kit/kit.tar and arena-kit/kit.tar (one request a kit,
+# shooter#85) and checks them against their pins.
 scripts/fetch-robot-kit.sh
-for kit in robot-kit weapon-kit locomotion-kit; do
+for kit in robot-kit weapon-kit locomotion-kit arena-kit; do
   mkdir -p "web/dist/$kit"
   cp "target/$kit/kit.tar" "web/dist/$kit/kit.tar"
 done

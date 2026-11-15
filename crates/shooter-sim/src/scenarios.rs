@@ -2,7 +2,9 @@
 //! double jump onto a ledge, a thruster-module jump onto a higher one, a jump pad onto the platform, slides up and down a ramp, a slide
 //! into a thin wall, a sprint up a step, a rocket jump, a grapple onto a ledge, a shooting range
 //! and a close range for the shotgun, laser and flamethrower, and the greybox yard's walkway
-//! (up its ramp, along and off it) and its jump pad onto it. The movement and weapon tests check
+//! (up its ramp, along and off it) and its jump pad onto it, and the assembly works' routes (its
+//! ramp, mezzanine and bridge, its cover, and its pad, work platforms and crane mast onto the
+//! crane tower). The movement and weapon tests check
 //! what each one does and the Rapier A/B test runs each on both backends.
 
 use crate::arena::{Arena, Piece, Post};
@@ -75,6 +77,8 @@ fn open(spawn: [i32; 3], pieces: Vec<Piece>) -> Arena {
         spawns: Vec::new(),
         module_pads: Vec::new(),
         waypoints: Vec::new(),
+        placements: Vec::new(),
+        repair_anchors: Vec::new(),
     }
 }
 
@@ -434,6 +438,131 @@ pub const YARD_JUMP_PAD: Scenario = Scenario {
     ],
 };
 
+/// The assembly works from the foot of its west mezzanine ramp: north up the 12 m ramp onto the
+/// mezzanine, east along its deck to the gantry bridge, south along the bridge past its low
+/// cover to the rail capacitor in the middle, then east off the bridge's edge to the floor 3 m
+/// below.
+pub const WORKS_RAMP_AND_BRIDGE: Scenario = Scenario {
+    name: "the works' ramp, mezzanine and bridge",
+    arena: || Arena {
+        spawn: Vec3i::new(-1_700, 0, 100),
+        spawn_yaw: NORTH,
+        ..Arena::assembly_works()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the ramp", NORTH, 145),
+        walk("along the mezzanine", EAST, 150),
+        walk("along the bridge", SOUTH, 130),
+        stand("on the bridge", 10),
+        walk("off the edge", EAST, 40),
+        stand("below", 40),
+    ],
+};
+
+/// The assembly works' floor north-west of the bridge: south into a 1.2 m low cover module, a
+/// double jump over it, and east into the 2 m barrier no jump clears.
+pub const WORKS_COVER: Scenario = Scenario {
+    name: "the works' cover",
+    arena: || Arena {
+        spawn: Vec3i::new(-1_100, 0, -1_500),
+        spawn_yaw: SOUTH,
+        ..Arena::assembly_works()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("into the cover", SOUTH, 40),
+        jump_toward("jump", SOUTH),
+        walk("rise", SOUTH, 16),
+        jump_toward("air jump", SOUTH),
+        walk("over", SOUTH, 40),
+        stand("land", 10),
+        walk("into the barrier", EAST, 30),
+        stand("against the barrier", 10),
+    ],
+};
+
+/// The assembly works' crane tower from the south: onto the jump pad at its foot, thrown up onto
+/// its 5 m top.
+pub const WORKS_TOWER_PAD: Scenario = Scenario {
+    name: "the works' pad onto the crane tower",
+    arena: || Arena {
+        spawn: Vec3i::new(2_200, 0, -1_250),
+        spawn_yaw: NORTH,
+        ..Arena::assembly_works()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("onto the pad", NORTH, 24),
+        stand("thrown", 90),
+        stand("on the tower", 20),
+    ],
+};
+
+/// The assembly works' work platforms: east from the bay floor, a double jump onto the 2 m
+/// step, another onto the 4 m one and a plain jump onto the crane tower's 5 m top.
+pub const WORKS_STEPS: Scenario = Scenario {
+    name: "the works' steps to the crane tower",
+    arena: || Arena {
+        spawn: Vec3i::new(1_000, 0, -2_200),
+        spawn_yaw: EAST,
+        ..Arena::assembly_works()
+    },
+    legs: &[
+        stand("settle", 10),
+        jump_toward("jump", EAST),
+        walk("rise", EAST, 14),
+        jump_toward("air jump", EAST),
+        walk("onto the 2 m step", EAST, 30),
+        jump_toward("jump again", EAST),
+        walk("rise again", EAST, 14),
+        jump_toward("air jump again", EAST),
+        walk("onto the 4 m step", EAST, 30),
+        jump_toward("jump onto the tower", EAST),
+        walk("climb", EAST, 16),
+        walk("onto the tower", EAST, 12),
+        stand("on the tower", 20),
+    ],
+};
+
+/// Pitch steps from the tower grapple's eye (2350, 165, -1450) up to the crane mast's ring.
+const MAST_PITCH: i16 = 6_200;
+
+/// The assembly works' crane mast from the floor south of the tower: hook its ring, reel up the
+/// tower's face and over its edge, and let go onto the top.
+pub const WORKS_GRAPPLE: Scenario = Scenario {
+    name: "the works' grapple onto the crane tower",
+    arena: || Arena {
+        spawn: Vec3i::new(2_350, 0, -1_450),
+        spawn_yaw: NORTH,
+        ..Arena::assembly_works()
+    },
+    legs: &[
+        hold(
+            "take the grapple",
+            Intent {
+                yaw: NORTH,
+                pitch: MAST_PITCH,
+                select: Some(Weapon::Grapple),
+                ..Intent::IDLE
+            },
+            15,
+        ),
+        hold(
+            "hook and reel in",
+            Intent {
+                yaw: NORTH,
+                pitch: MAST_PITCH,
+                fire: true,
+                ..Intent::IDLE
+            },
+            90,
+        ),
+        walk("let go onto the tower", NORTH, 30),
+        stand("on the tower", 30),
+    ],
+};
+
 pub const ALL: &[Scenario] = &[
     SPRINT_AND_SLIDE,
     DOUBLE_JUMP,
@@ -448,6 +577,11 @@ pub const ALL: &[Scenario] = &[
     CLOSE_RANGE,
     YARD_WALKWAY,
     YARD_JUMP_PAD,
+    WORKS_RAMP_AND_BRIDGE,
+    WORKS_COVER,
+    WORKS_TOWER_PAD,
+    WORKS_STEPS,
+    WORKS_GRAPPLE,
 ];
 
 /// This tick's controls for scripted person `index`: run and strafe in turns, sweep the view

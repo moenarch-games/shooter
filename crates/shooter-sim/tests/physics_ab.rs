@@ -1,5 +1,6 @@
 //! Rapier A/B: the scripted tour through the greybox arena, the greybox yard's walkway (its ramp and
-//! pad) and every fast-move scenario
+//! pad), the assembly works' ramp, bridge, cover, crane tower pad, work platforms and grapple
+//! and every fast-move scenario
 //! (sprint, slide, double jump, a thruster-module jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
 //! a shooting range, a close range for the shotgun, laser and flamethrower) on physics-engine and on the Rapier oracle
 //! (`shooter_sim::physics::using_backend`), and the mechanics fixtures (shooter#73: rolling,
@@ -183,6 +184,18 @@ fn the_close_range_matches_the_rapier_oracle() {
 fn the_yards_walkway_matches_the_rapier_oracle() {
     compare(scenarios::YARD_WALKWAY);
     compare(scenarios::YARD_JUMP_PAD);
+}
+
+/// The assembly works (shooter#52): its ramp, mezzanine deck, bridge and the drop off the
+/// bridge's edge; low cover, a double jump over it and a barrier; the jump pad and the steps onto
+/// the crane tower; and the grapple up its face by the crane mast.
+#[test]
+fn the_assembly_works_matches_the_rapier_oracle() {
+    compare(scenarios::WORKS_RAMP_AND_BRIDGE);
+    compare(scenarios::WORKS_COVER);
+    compare(scenarios::WORKS_TOWER_PAD);
+    compare(scenarios::WORKS_STEPS);
+    compare(scenarios::WORKS_GRAPPLE);
 }
 
 /// The shots and hits of `scenario` on physics-engine as `build`.

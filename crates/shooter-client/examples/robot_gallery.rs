@@ -75,7 +75,7 @@ fn main() -> Result<(), String> {
     let mut gpu = Gpu::offscreen(SIZE.0, SIZE.1)?;
     // The greybox: the gallery's line stands on its open floor.
     let arena = MapId::Greybox.arena();
-    shooter_client::scene::build(&mut gpu.world, &arena);
+    shooter_client::scene::build(&mut gpu.world, &arena, None);
     let kit = robots::load::read()?;
     let mut robots = Robots::new(&mut gpu.world, kit)?;
 

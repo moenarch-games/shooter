@@ -378,7 +378,12 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   fixture (2 to 12 players, 13 spawn points); a map's recommended capacity does not change the
   slot count. Since shooter#50 a deathmatch has 12 slots unless the host sets another count per
   match (`SHOOTER_MATCH_IDS=<id>=<map>:<slots>`), bounded by one slot per spawn point of the map;
-  no global maximum (D2.i46.12).
+  no global maximum (D2.i46.12). Since shooter#52 the medium arena is in: `assembly-works`, a
+  56 m multilevel robotic assembly factory (owner decisions on #52) built from the arena kit
+  (4 to 12 players, 14 spawn points), point-symmetric with mezzanines and a gantry bridge at 3 m
+  and crane towers at 5 m; its name, size, layout, pickup and repair anchors and destruction
+  candidates (its low cover, barriers and crates) are provisional choices, to be tuned in
+  playtests. The yard stays the default.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration

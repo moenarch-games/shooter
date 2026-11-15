@@ -7,14 +7,16 @@ demanding consumer: every gap or regression it finds is filed on the crate that 
 Product intent lives in the [Decision Atlas](docs/decisions/atlas.md). The owner has set a beta
 direction (Atlas D1.i46.1, D2.i46.\*, tracker #45): a third-person arena shooter with modular
 robots, about 12 slots and three arenas. The third-person camera, the robot build schema and
-the 12 slots are in, and the fighters are drawn as their robot builds from asset-tooling's robot,
-weapons and locomotion kits; the rest is not implemented yet. Everything below describes what
-works today: a third-person, 12-slot deathmatch on greybox arenas (the 76 m greybox yard by
-default, the 40 m greybox hall as the test fixture), the fighters still moving as capsules.
+the 12 slots are in, the fighters are drawn as their robot builds from asset-tooling's robot,
+weapons and locomotion kits, and the medium arena is built from its arena kit; the rest is not
+implemented yet. Everything below describes what works today: a third-person, 12-slot
+deathmatch on the 76 m greybox yard by default, the kit-built 56 m assembly works (the medium
+arena) on request, and the 40 m greybox hall as the test fixture, the fighters still moving as
+capsules.
 
 ## What a player does
 
-Open the native client or the browser build on Pages and join a hosted deathmatch on a greybox arena.
+Open the native client or the browser build on Pages and join a hosted deathmatch.
 Bots fill the empty slots. Move fast: sprint, slide, step up low ledges, double jump, jump pads,
 rocket jumps, the grapple hook and air control. Fight with energy guns, a grapple hook and melee
 weapons.
@@ -34,7 +36,7 @@ weapons.
 
 ## Play
 
-The current slice is a deathmatch in a greybox arena (by default the greybox yard, below) with ramps,
+The current slice is a deathmatch in an arena (by default the greybox yard, below) with ramps,
 a raised level and jump pads onto it,
 six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower), the grapple hook and an energy blade. Twelve slots by default; bots fill every slot no
 person holds. A kill scores a frag; dying by your own rocket, your own battery's blast or a fall costs one. The dead respawn after 2 s at the spawn point
@@ -50,9 +52,27 @@ same simulation in-process: you in slot 0 against eleven bots, no server needed.
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID, its arena
 (geometry, collision, spawn points, jump pads, module pickup pads, bot waypoints) and the player
-count it is laid out for. Two interim greybox maps, until the beta's three arenas arrive with
-asset-tooling's arena kit:
+count it is laid out for. The first of the beta's three arenas, the medium one, is in, built from
+asset-tooling's arena kit; two interim greybox maps stay:
 
+- `assembly-works`, the medium arena (shooter#52; 4 to 12 players, 14 spawn points): a multilevel
+  robotic assembly factory repurposed for combat (the owner's choice of setting), a 56 m hall
+  inside 10 m walls, point-symmetric. Its ground is the central assembly floor, broken up by 2 m
+  barriers, 1.2 m low cover, a parts container, 4 m pillars and generators, with a 2 m assembly
+  cradle under the middle; behind a 4 m bay wall at either end lies a work bay, entered through a
+  doorway or round the wall's open end, with containers, a blast screen and crates. At 3 m a
+  mezzanine runs along each bay wall (the wall stands 1 m over its deck as a parapet), joined
+  across the middle by a gantry bridge with staggered low cover and the rail capacitor at its
+  centre, the contested high ground: a 4 m wide, 12 m ramp climbs each mezzanine, a jump pad
+  beside the bridge throws a fighter onto it, and the grapple reaches it from under it. At 5 m a
+  crane tower stands in the corner of each bay with thrusters on top, reached by four 1 m work
+  platforms (a double jump onto the 2 m one, another onto the 4 m one, a jump onto the tower),
+  by a jump pad at its foot that throws 15 m/s up, or by the grapple on its 3 m mast. 4 m deep
+  charging bays in the side walls, the bay walls, the tower and the floor's 4 m pillars break
+  the long lines; no spawn point is in sight of another, and none is a dead end. Its low cover,
+  barriers and crates are marked as destruction candidates for shooter#60 (nothing breaks yet)
+  and four repair anchors (under the mezzanines and in the bays) are data for shooter#61. Plan,
+  views and frames: [docs/captures/52](docs/captures/52).
 - `greybox-yard`, the default for hosted matches and practice (6 to 12 players, 14 spawn points):
   a 76 m square with 5 m walls, point-symmetric (the north half turned half a turn is the south
   half). A raised walkway crosses the middle, a 3 m deck on two pillars that you can walk under,
@@ -66,6 +86,24 @@ asset-tooling's arena kit:
 - `greybox`, the first 40 m hall (2 to 12 players, 13 spawn points), kept unchanged as the test
   and Rapier A/B fixture.
 
+**Arena kit.** A kit-built map lists the arena kit's module placements (a module, where its
+origin sits on whole centimetres, a quarter-turn yaw, intact or broken; `shooter_sim::arena_kit`),
+and the simulation derives the map's collision pieces from the modules' collision proxies:
+blocks for walkable and blocked boxes, ramps turned with their yaw, nothing for the floor plates
+and the jump pad's footprint, neighbouring boxes that meet over a whole face fused into one piece
+(a wall of fifteen modules is one box, with no seams to snag on), destruction candidates kept as
+pieces of their own. The proxies come from the pinned kit's descriptor through a checked-in table
+(`scripts/gen-arena-kit.py` writes it, a client test checks it against the pinned kit), so the
+simulation reads no files. Both clients draw each placement's kit mesh where the simulation puts
+it and lay the floor with the kit's 2 m plates; until the kit is read a kit-built map waits, and
+if it cannot be read the map is drawn as boxes with a note in the HUD. The greybox maps are
+unchanged. The small and large arenas (#53, #55) use the same path.
+`cargo test -p shooter-client --test arena` checks the table against the pinned kit, the kit's
+decoding and that every placed module is drawn inside the box its collision comes from;
+`scripts/gen-arena-kit.py` rewrites the table after a pin bump; `cargo run -p shooter-client
+--release --example arena_views -- assembly-works DIR` renders a map's overview and route views
+offscreen.
+
 The recommended capacity never changes the slot count (12 unless the host sets another per
 match, at most one per spawn point). The host picks each match's map
 (`SHOOTER_MATCH_IDS=dm=greybox-yard`, [docs/hosting.md](docs/hosting.md)) and its snapshots name it,
@@ -74,7 +112,7 @@ so a joining client builds and predicts on that map; practice takes `--map <id>`
 refused everywhere.
 
 ```sh
-scripts/fetch-robot-kit.sh                 # the pinned robot, weapons and locomotion kits into target/*-kit
+scripts/fetch-robot-kit.sh                 # the pinned robot, weapons, locomotion and arena kits into target/*-kit
 cargo run -p shooter-client --release      # native window, practice
 scripts/build-web.sh                       # browser build (and the kit) into web/dist (needs a WebGPU browser)
 python3 -m http.server -d web/dist
@@ -347,7 +385,9 @@ and *thrusters* (every jump, the air jump too, leaves at 9 m/s instead of 6: a 2
 the platform; 6 boosted jumps, each costing 15 energy; without the energy a jump is a plain one
 and keeps its use). On the greybox the capacitor lies on the platform's south-east corner, the perch
 that sees the whole hall, and the thrusters in the open south-west quarter under its sightline;
-on the greybox yard the capacitor lies on the walkway's middle and thrusters on each platform.
+on the greybox yard the capacitor lies on the walkway's middle and thrusters on each platform;
+on the assembly works the capacitor lies on the gantry bridge's middle and thrusters on each crane
+tower.
 A module lasts until its uses are spent, its holder dies or the round ends (owner decision on
 #62); nothing drops. A robot carries one module, and taking another replaces it. A pad is back
 30 s after it was taken; every pad is ready at the start of a round. When several robots reach a
@@ -358,7 +398,7 @@ as tinted plates with the module floating over them while it is there. Values ar
 (Atlas Q2.i46.3); the boosts are paid from the robot's shared energy pool (owner option B on #62).
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points
-and the map's waypoints (wall gaps, ramp ends, the walkway, the platforms), taking only straight
+and the map's waypoints (wall gaps, doorways, ramp ends, the decks, the platforms), taking only straight
 walks no wall or ramp side blocks,
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
 degrees of wandering error, strafing as they fire; the flamethrower inside 5 m, the rifle (even
@@ -366,7 +406,10 @@ slots) or the shotgun (odd slots) up close, rockets or the laser at mid range, t
 and inside 3 m they rush in and swing the blade.
 
 The movement and the weapons are checked against Rapier on a scripted tour of the greybox, the
-greybox yard's walkway (up its ramp, along the deck, off its edge, and its jump pad onto it) and on
+greybox yard's walkway (up its ramp, along the deck, off its edge, and its jump pad onto it), the
+assembly works' routes (up its ramp, along the mezzanine and the bridge and off its edge; into its
+low cover, over it and into a barrier; its pad, its work platforms and the grapple on the crane
+mast onto the crane tower) and on
 scripted moves (sprint, slide, double jump, a thruster-module jump, jump pad, ramp slides, a thin wall, a step, a rocket
 jump, a grapple onto a ledge, a shooting range, a close range for the shotgun, laser and flamethrower):
 `cargo test -p shooter-sim --features physics-ab --test physics_ab`, which also runs the

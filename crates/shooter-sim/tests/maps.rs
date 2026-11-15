@@ -213,6 +213,11 @@ fn the_yard_is_the_bigger_default_and_the_greybox_stays_the_fixture() {
 fn yard_spawns_are_out_of_sight_and_linked_by_walks() {
     let arena = Arena::greybox_yard();
     assert_eq!(spawns_in_sight(&arena), Vec::new());
+    assert_walks_link_up(&arena);
+}
+
+/// Every bot point of `arena` links to the rest by walks both ways, every spawn point to two.
+fn assert_walks_link_up(arena: &Arena) {
     let points = arena.bot_points();
     let walks = |from: usize| -> Vec<usize> {
         (0..points.len())
@@ -242,4 +247,99 @@ fn yard_spawns_are_out_of_sight_and_linked_by_walks() {
         .map(|point| points[point])
         .collect();
     assert!(cut_off.is_empty(), "no walk reaches {cut_off:?}");
+}
+
+/// The assembly works (shooter#52) is a distinct, kit-built medium map: a stable ID and tag,
+/// between the greybox hall and the yard in size, every piece derived from its kit placements,
+/// inside the body IDs arena geometry may take, and the yard stays the default.
+#[test]
+fn the_assembly_works_is_the_kit_built_medium_map() {
+    use shooter_sim::arena::{FIRST_PLAYER_BODY, FLOOR_BODY};
+    use shooter_sim::arena_kit;
+    assert_eq!(MapId::AssemblyWorks.as_str(), "assembly-works");
+    assert_eq!(MapId::AssemblyWorks.tag(), 3);
+    assert_eq!(MapId::DEFAULT, MapId::GreyboxYard);
+    let works = Arena::assembly_works();
+    assert_eq!(MapId::AssemblyWorks.arena(), works);
+    let (greybox, yard) = (Arena::greybox(), Arena::greybox_yard());
+    assert!(greybox.half_size < works.half_size && works.half_size < yard.half_size);
+    assert!(MapId::AssemblyWorks.capacity().fits(DEATHMATCH_SLOTS));
+    assert!(works.spawn_points().len() >= 14);
+    assert_eq!(works.pieces, arena_kit::pieces(&works.placements));
+    assert!(FLOOR_BODY.0 + works.pieces.len() as u64 + 1 < FIRST_PLAYER_BODY);
+    // Every module the clients draw stays inside the floor and the walls round it.
+    let reach = works.half_size + 60;
+    for placement in &works.placements {
+        let [min, max] = placement.bounds();
+        assert!(
+            min.x >= -reach && max.x <= reach && min.z >= -reach && max.z <= reach,
+            "{placement:?}"
+        );
+        assert!(min.y >= -10, "{placement:?}");
+    }
+    // A jump pad module lies at each jump pad.
+    for pad in &works.pads {
+        assert!(works.placements.iter().any(|placement| {
+            placement.module == arena_kit::Module::JumpPad && placement.at == pad.center
+        }));
+    }
+    // Destruction candidates (shooter#60) are cover with a broken variant, and some of each.
+    let destructible: Vec<_> = works.placements.iter().filter(|p| p.destructible).collect();
+    assert!(destructible.len() >= 10);
+    assert!(
+        destructible
+            .iter()
+            .all(|p| p.module.broken_proxies().is_some())
+    );
+    assert!(!works.repair_anchors.is_empty());
+    assert!(greybox.placements.is_empty() && yard.placements.is_empty());
+}
+
+/// No two of the assembly works' spawn points see each other, and its bot points link up by
+/// walks, every spawn point to at least two: as on the yard.
+#[test]
+fn works_spawns_are_out_of_sight_and_linked_by_walks() {
+    let arena = Arena::assembly_works();
+    assert_eq!(spawns_in_sight(&arena), Vec::new());
+    assert_walks_link_up(&arena);
+}
+
+/// The assembly works' high ground: the bridge's middle (the rail capacitor) and the mezzanines
+/// are bot points a walk reaches up the ramps, the two crane towers carry the thrusters and
+/// each has a jump pad at its foot; every fighter on the floor is under 35 m (well inside the
+/// grapple's 30 m reach of some high point) from the bridge.
+#[test]
+fn works_high_ground_has_routes_up() {
+    use shooter_sim::assembly_works::{DECK_TOP, TOWER_TOP};
+    use shooter_sim::pickups::Class;
+    let arena = Arena::assembly_works();
+    let high: Vec<Vec3i> = arena
+        .bot_points()
+        .into_iter()
+        .filter(|point| point.y == DECK_TOP)
+        .collect();
+    assert!(high.len() >= 4, "{high:?}");
+    let capacitor = arena
+        .module_pads
+        .iter()
+        .find(|pad| pad.module.class() == Class::Weapon)
+        .unwrap();
+    assert_eq!(capacitor.center, Vec3i::new(0, DECK_TOP, 0));
+    let towers: Vec<_> = arena
+        .module_pads
+        .iter()
+        .filter(|pad| pad.module.class() == Class::Movement)
+        .collect();
+    assert_eq!(towers.len(), 2);
+    for tower in towers {
+        assert_eq!(tower.center.y, TOWER_TOP);
+        assert!(
+            arena.pads.iter().any(|pad| {
+                (pad.center.x - tower.center.x).abs() + (pad.center.z - tower.center.z).abs()
+                    < 1_000
+                    && pad.launch.y >= 1_500
+            }),
+            "{tower:?}"
+        );
+    }
 }

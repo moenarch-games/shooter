@@ -105,6 +105,80 @@ fn the_yards_walkway_is_reached_by_ramp_and_pad() {
     assert!(landed.center[2].abs() < 200.0, "{landed:?}");
 }
 
+/// The assembly works' vertical routes: its ramp climbs onto the mezzanine and the deck carries a
+/// fighter along it and the bridge to the middle, and its edge drops them to the floor; the pad,
+/// the steps and the grapple each put a fighter on the crane tower's 5 m top.
+#[test]
+fn the_assembly_works_routes_reach_its_high_ground() {
+    use shooter_sim::assembly_works::{DECK_TOP, TOWER_TOP};
+    let deck = DECK_TOP as f32 + HALF;
+    let samples = run(scenarios::WORKS_RAMP_AND_BRIDGE);
+    let mezzanine = end_of(&samples, "along the mezzanine").unwrap();
+    assert!(
+        mezzanine.grounded && (mezzanine.center[1] - deck).abs() < 2.0,
+        "{mezzanine:?}"
+    );
+    let bridge = end_of(&samples, "on the bridge").unwrap();
+    assert!(
+        bridge.grounded
+            && (bridge.center[1] - deck).abs() < 2.0
+            && bridge.center[2].abs() < 100.0
+            && bridge.center[0].abs() < 200.0,
+        "{bridge:?}"
+    );
+    let below = end_of(&samples, "below").unwrap();
+    assert!(
+        below.grounded && (below.center[1] - HALF).abs() < 2.0 && below.center[0] > 230.0,
+        "{below:?}"
+    );
+
+    let on_tower = |sample: &Sample| {
+        sample.grounded
+            && sample.center[1] - HALF >= TOWER_TOP as f32 - 1.0
+            && (2_000.0..=2_400.0).contains(&sample.center[0])
+            && (-2_400.0..=-2_000.0).contains(&sample.center[2])
+    };
+    let samples = run(scenarios::WORKS_TOWER_PAD);
+    assert_eq!(samples.iter().filter(|s| s.launched).count(), 1);
+    let landed = end_of(&samples, "on the tower").unwrap();
+    assert!(on_tower(landed), "{landed:?}");
+
+    let samples = run(scenarios::WORKS_STEPS);
+    for (leg, top) in [("onto the 2 m step", 200.0), ("onto the 4 m step", 400.0)] {
+        let step = end_of(&samples, leg).unwrap();
+        assert!(
+            step.grounded && (step.center[1] - HALF - top).abs() < 2.0,
+            "{leg}: {step:?}"
+        );
+    }
+    let top = end_of(&samples, "on the tower").unwrap();
+    assert!(on_tower(top), "{top:?}");
+
+    let samples = run(scenarios::WORKS_GRAPPLE);
+    assert!(samples.iter().any(|s| s.hooked));
+    let hung = end_of(&samples, "on the tower").unwrap();
+    assert!(on_tower(hung), "{hung:?}");
+}
+
+/// The assembly works' cover collides as the kit's proxies say: the 1.2 m low cover stops a walk
+/// and a double jump clears it; the 2 m barrier stops a walk at its face.
+#[test]
+fn the_assembly_works_cover_blocks_and_is_jumped() {
+    let samples = run(scenarios::WORKS_COVER);
+    let stopped = end_of(&samples, "into the cover").unwrap();
+    // The cover's north face is at z -1130; a fighter is 30 units deep.
+    assert!((stopped.center[2] - (-1_160.0)).abs() < 1.0, "{stopped:?}");
+    assert!(samples.iter().any(|s| s.air_jumped));
+    let over = end_of(&samples, "land").unwrap();
+    assert!(over.center[2] > -1_070.0, "{over:?}");
+    let against = end_of(&samples, "against the barrier").unwrap();
+    // The barrier's west face is at x -1030.
+    assert!(
+        against.grounded && (against.center[0] - (-1_060.0)).abs() < 1.0,
+        "{against:?}"
+    );
+}
+
 #[test]
 fn a_slide_climbs_the_ramp_and_runs_down_it() {
     let samples = run(scenarios::RAMP_SLIDE);

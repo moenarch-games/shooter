@@ -4,6 +4,7 @@
 //! `shooter-sim` simulation.
 
 pub mod app;
+pub mod arena_art;
 pub mod audio;
 pub mod camera;
 pub mod controls;
