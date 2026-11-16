@@ -316,6 +316,23 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   repositories (D5.i46.1). Existing blade reach, damage, timing and shove
   values remain provisional balancing, not separately approved numeric policy.
 
+- **D2.i55.1** (owner, 2026-11-16; shooter#55, option B): The
+  first large **spaceship shipyard/drydock arena has two docked spacecraft**
+  flanking a **central industrial corridor**, rather than one central ship
+  or many scattered hull islands. Their contrasting exterior structures and
+  surrounding dock machinery form distinct long-range and close-range routes.
+  Selected exterior hull sections on the ships are physically walkable and
+  grappleable, with credible access from ground lanes and dock gantries;
+  ramps/flanks, intermittent cover and counter-sightlines must prevent either
+  elevated hull from becoming an uncontestable sniper perch. Preserve viable
+  routes for different robot locomotion builds, safe spawns and meaningful
+  multi-robot combat across the dock. **No ship interiors** in this beta;
+  author both ships through the already approved reusable arena kit and any
+  minimal reusable hull surfaces it needs (D2.i46.11, D5.i46.1), with no
+  separate spaceship asset pipeline. Exact dimensions, named landmarks,
+  spawn count, arena capacity, hull surface extent and route geometry remain
+  layout and balance work for #55, validated in native and browser playtests.
+
 ## 3. Platforms
 
 - **D3.1** (owner, 2026-11-11): Native wgpu client on render-engine plus a browser client on Pages.
