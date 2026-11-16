@@ -9,7 +9,10 @@
 //! victim (a suicide, by a fall, one's own rocket or one's own battery's blast, costs a frag),
 //! the dead come back as their configured build, whole, at the spawn point farthest from
 //! everyone else after [`Rules::respawn_ticks`], and a round ends at the frag limit or the time
-//! limit, followed by an intermission and a fresh round.
+//! limit, followed by an intermission and a fresh round. A dead fighter whose person holds Edit
+//! Robot ([`Intent::edit`]) is in the builder: it does not come back, at a respawn or a round's
+//! start, until the person releases it (Ready, Atlas D2.i70.11). A person who stops sending
+//! inputs (a lost connection) lets go of it after [`HOLD_INPUT_TICKS`].
 //!
 //! Hitscan shots and blade swings are lag-compensated: a person's shot is checked against the
 //! fighters' parts where that person saw them (their centre and yaw at the snapshot tick its
@@ -635,13 +638,20 @@ impl Session {
             .map(|fighter| fighter.slot)
     }
 
-    /// Every fighter at a spawn point of its own (slot order), at the start of a round.
+    /// Every fighter at a spawn point of its own (slot order), at the start of a round; one whose
+    /// person is in the builder waits until Ready (D2.i70.11).
     fn spawn_everyone(&mut self) -> Result<(), PhysicsError> {
         let points = self.arena.spawn_points();
         for slot in 0..self.fighters.len() {
-            if self.fighters[slot].pilot != Pilot::Open {
-                self.spawn(slot, points[slot % points.len()])?;
+            let fighter = &mut self.fighters[slot];
+            if fighter.pilot == Pilot::Open {
+                continue;
             }
+            if fighter.intent.edit {
+                fighter.respawn_at = Some(self.tick);
+                continue;
+            }
+            self.spawn(slot, points[slot % points.len()])?;
         }
         Ok(())
     }
@@ -815,13 +825,21 @@ impl Session {
     }
 
     /// Person `id`'s robot comes back as `build` at its next spawn; the robot alive now keeps
-    /// its build (D2.i46.7). `build` is validated ([`crate::robot::Catalog::validate`]).
-    /// Whether `id` holds a slot.
+    /// its build (D2.i46.7), unless it has not played yet: a robot that has applied no input
+    /// since its person joined is still being set up (the builder before the match,
+    /// D2.i70.11) and is `build` at once, whole. `build` is validated
+    /// ([`crate::robot::Catalog::validate`]). Whether `id` holds a slot.
     pub fn configure(&mut self, id: u32, build: Assembly) -> bool {
         let Some(slot) = self.slot_of_player(id) else {
             return false;
         };
-        self.fighters[usize::from(slot)].configured = build;
+        let fighter = &mut self.fighters[usize::from(slot)];
+        fighter.configured = build;
+        if fighter.alive() && fighter.ack == 0 && fighter.build != build {
+            fighter.rebuild(build);
+            fighter.arsenal = Arsenal::holding(fighter.first_weapon());
+            fighter.energy = fighter.pool().capacity;
+        }
         true
     }
 
@@ -852,9 +870,11 @@ impl Session {
         self.decide();
         for slot in 0..self.fighters.len() {
             let fighter = &self.fighters[slot];
+            // In the builder (Edit Robot held), it waits until Ready, however long (D2.i70.11).
             if let Some(at) = fighter.respawn_at
                 && playing
                 && self.tick >= at
+                && !fighter.intent.edit
             {
                 let point = self.spawn_point_for(slot);
                 self.spawn(slot, point)?;

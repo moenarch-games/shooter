@@ -7,7 +7,8 @@ demanding consumer: every gap or regression it finds is filed on the crate that 
 Product intent lives in the [Decision Atlas](docs/decisions/atlas.md). The owner has set a beta
 direction (Atlas D1.i46.1, D2.i46.\*, tracker #45): a third-person arena shooter with modular
 robots, about 12 slots and three arenas. The third-person camera, the robot build schema and
-the 12 slots are in, the fighters are drawn as their robot builds from asset-tooling's robot,
+the 12 slots are in, the robot builder opens before the match and between lives, the fighters
+are drawn as their robot builds from asset-tooling's robot,
 weapons and locomotion kits, and the medium arena is built from its arena kit; the rest is not
 implemented yet. Everything below describes what works today: a third-person, 12-slot
 deathmatch on the 76 m greybox yard by default, the kit-built 56 m assembly works (the medium
@@ -39,7 +40,7 @@ weapons.
 The current slice is a deathmatch in an arena (by default the greybox yard, below) with ramps,
 a raised level and jump pads onto it,
 six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower), the grapple hook and an energy blade. Twelve slots by default; bots fill every slot no
-person holds. A kill scores a frag; dying by your own rocket, your own battery's blast or a fall costs one. The dead respawn after 2 s at the spawn point
+person holds. A kill scores a frag; dying by your own rocket, your own battery's blast or a fall costs one. The dead respawn after 2 s (unless they press B, Edit Robot, below) at the spawn point
 farthest from everyone else. A round ends at 15 frags or after 5 minutes, the scores show for 8 s
 and a fresh round starts. A fighter is its robot build with per-part health (below, **Part
 damage**): destroying its root chassis is the kill. Each fighter is drawn as its robot build (below, **Robot
@@ -228,7 +229,9 @@ chassis is the robot's vital part (Atlas D2.i89.1, #89): there is no separate co
 build naming the retired core (part code 30) is rejected as an unknown part. Nothing requires locomotion: tanks, four-legged dogs,
 humanoids, stationary turrets and grappling-only machines are all valid. Every fighter starts as
 the standard build; a person's command may ask for another, which the host validates (an invalid
-one rejects the command) and applies at that fighter's next spawn, never while it is alive.
+one rejects the command) and applies at that fighter's next spawn, never while it is alive, unless
+the robot has not played yet (no input applied since its person joined: the builder before the
+match), when it is that build at once.
 Snapshots carry each fighter's build and the one it comes back as. The cell size, chassis sizes,
 part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part keys await the
 asset kits, and a build does not yet change movement, but it is the arsenal: a fighter spawns
@@ -236,7 +239,38 @@ holding its build's first weapon in the rotation that is not the grapple (the gr
 blade, only when it carries nothing else; #96) and fires only what the build mounts (#92). The
 `pyro` loadout
 carries the laser and the flamethrower (#96); the tests' over-budget `ARMORY` build carries every
-weapon. There is no builder screen yet.
+weapon. You build your robot in the builder (below, **Robot builder**).
+
+**Robot builder** (`shooter_client::builder`, Atlas D2.i70.11, #57). Both clients open on a
+blueprint workbench before the match: nothing plays (and online nothing connects) until you press
+Ready. The robot stands in the middle, drawn from the kits as in the match, with its sockets
+marked; the part catalogue (every part and weapon with its build points) and the five named
+loadouts to start from are on the left, the component inspector on the right (the selected part,
+or the part in hand: cells, mass, health, points, energy, motor, the energy a shot costs, its
+turn in degrees and its mod), and the budget along the bottom: build points and parts against
+their limits, mass, energy and regeneration, and whether the build is valid (or the rule it
+breaks). Drag a part from the catalogue onto a socket, or click it and click sockets to place
+copies; the sockets it fits light up, and hovering one previews the part there with its real
+geometry, its box and the cells its footprint takes. Click a part to select it. R, T and F turn
+the selected part (or the one in hand) an eighth of a turn about its socket's normal, pitch and
+roll axes (Shift back, Ctrl a degree instead, exact either way); M cycles a weapon's mods, X or
+Delete removes a part and what hangs from it (never the root chassis: "new frame" starts over
+from a chassis in hand), Escape drops or deselects, right drag or the arrow keys turn the view,
+the wheel zooms. A further chassis mounts on a socket like any part, so frames of several
+cuboids build up. Every edit goes through the simulation's one validation path: an edit that
+breaks a structural rule (a taken cell, a mod that does not fit, a weapon twice, the part
+ceiling) is refused with the reason, and only the build points may run over while you work;
+Ready takes only a valid build, which the host validates again. Nothing warns about odd builds.
+When your robot is destroyed, the respawn counts down as before, with "[B] Edit Robot" on
+screen: B opens the builder on the build you come back as and holds the respawn, at no time
+limit, even across a round's start, until you press Ready and the host shows the build
+configured (an input flag, `Intent::edit`; a lost connection lets go of it). While alive there
+is no rebuilding. In the browser the page hides its own overlays while the builder is open. Not
+in the builder yet: actuator bindings and action groups (#74, Atlas D2.i70.7), typed exact angles
+and a testing chamber (post-beta).
+`cargo run -p shooter-client --release --example builder_views -- <dir>` renders the bench
+(before the match, a part being placed, a selected weapon, an over-budget build, a build between
+lives) offscreen; [captures](docs/captures/57-builder/).
 
 **Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
 D2.i70.4, D2.i89.1): the root chassis stores 100 and regenerates 24 a second (other chassis
@@ -363,7 +397,7 @@ energy), the *overcharger* (same guns: 125% damage, 130% refire time, 150% energ
 *long barrel* (rifle, rail gun, laser: 150% range, 110% refire time, and its weapon becomes a
 two-cell module) and the *efficiency coil* (rifle, rail gun, rockets, shotgun: 60% energy a shot,
 125% refire time). The heat sink is gone with heat; a build naming it is rejected as an unknown
-mod. A mod that does not fit its weapon rejects the build. Pick a named loadout
+mod. A mod that does not fit its weapon rejects the build. Start the builder from a named loadout
 with `--loadout <name>` natively or `&loadout=<name>` in the browser (the join overlay's loadout
 field): `standard`, `heavy` (with a battery: 160 energy), `skirmisher` (rapid-cycler rifle,
 efficiency-coiled shotgun), `marksman` (long-barrel rifle, overcharged rail gun: three hits a
@@ -372,8 +406,8 @@ flamethrower, blade and grapple on the small chassis: 180 kg, 79 of 110 points, 
 chassis' 100 energy; it spawns holding the laser),
 each a two-legged component tree with a sensor
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
-shot at the upper half of the chassis meets a weapon first. Practice
-starts as it; online the host applies it at your next spawn. The weapon panel shows the held
+shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads
+them too. The weapon panel shows the held
 weapon's mod and the status line every equipped one.
 
 **Module pickups.** A few powerful modules lie on pads at contested points of a map, placed in
@@ -427,7 +461,10 @@ life until spent or death, round and map starts, the rail capacitor's lag-compen
 frags, thrusters, robots of different builds and the wire.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
 lag compensation of shots and swings, that the reticle's aim ends where the hosted beam does, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
-clients through a real game-server host on loopback and resumes a severed connection in its slot.
+clients through a real game-server host on loopback, resumes a severed connection in its slot and
+takes the builder's builds to the host before the match and between lives; the Edit Robot hold
+(after a death, at a round's start, after a lost connection) and the build readied before playing
+are checked in `deathmatch` too.
 
 When a crate can't do something yet, the shooter files an issue on that crate and uses Rapier
 (or the off-the-shelf equivalent) for that piece only, until the crate catches up.

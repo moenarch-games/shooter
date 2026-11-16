@@ -22,7 +22,7 @@ use shooter_sim::session::Fighter;
 use shooter_sim::{TICK_HZ, Weapon};
 
 /// An sRGB colour (0-255) with alpha as the overlay's linear colour.
-fn srgb(hex: u32, alpha: f32) -> Vec4 {
+pub(crate) fn srgb(hex: u32, alpha: f32) -> Vec4 {
     let channel = |shift: u32| {
         #[allow(clippy::cast_precision_loss)]
         let value = ((hex >> shift) & 0xff) as f32 / 255.0;
@@ -36,7 +36,7 @@ fn srgb(hex: u32, alpha: f32) -> Vec4 {
 }
 
 /// The palette: the robot kits' pale grey, graphite and olive, and the orange accent.
-mod palette {
+pub(crate) mod palette {
     pub const PALE: u32 = 0xE4_E6_E1;
     pub const MUTED: u32 = 0x9A_A0_A3;
     pub const GRAPHITE: u32 = 0x1F_22_25;
@@ -94,6 +94,15 @@ fn glyph(character: char) -> [u8; 7] {
         '%' => [24, 25, 2, 4, 8, 19, 3],
         '(' => [2, 4, 8, 8, 8, 4, 2],
         ')' => [8, 4, 2, 2, 2, 4, 8],
+        '[' => [14, 8, 8, 8, 8, 8, 14],
+        ']' => [14, 2, 2, 2, 2, 2, 14],
+        ',' => [0, 0, 0, 0, 12, 4, 8],
+        '<' => [2, 4, 8, 16, 8, 4, 2],
+        '>' => [8, 4, 2, 1, 2, 4, 8],
+        '=' => [0, 0, 31, 0, 31, 0, 0],
+        '!' => [4, 4, 4, 4, 4, 0, 4],
+        '?' => [14, 17, 1, 2, 4, 0, 4],
+        '\'' => [4, 4, 8, 0, 0, 0, 0],
         _ => [0; 7],
     }
 }
@@ -223,13 +232,13 @@ fn key_label(weapon: Weapon) -> String {
 }
 
 /// Quads in layout units (720 lines high), scaled to the frame and snapped to whole pixels.
-struct Painter {
-    quads: Vec<OverlayQuad>,
-    scale: f32,
+pub(crate) struct Painter {
+    pub(crate) quads: Vec<OverlayQuad>,
+    pub(crate) scale: f32,
 }
 
 impl Painter {
-    fn rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: Vec4) {
+    pub(crate) fn rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: Vec4) {
         if width <= 0.0 || height <= 0.0 || color.w <= 0.0 {
             return;
         }
@@ -247,7 +256,15 @@ impl Painter {
     }
 
     /// A rectangle's outline, `line` thick.
-    fn frame(&mut self, x: f32, y: f32, width: f32, height: f32, line: f32, color: Vec4) {
+    pub(crate) fn frame(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        line: f32,
+        color: Vec4,
+    ) {
         self.rect(x, y, width, line, color);
         self.rect(x, y + height - line, width, line, color);
         self.rect(x, y + line, line, height - 2.0 * line, color);
@@ -289,7 +306,7 @@ impl Painter {
     }
 
     /// `text` in capitals at `cell` units a font cell, left-aligned at `x`; its width.
-    fn text(&mut self, x: f32, y: f32, cell: f32, text: &str, color: Vec4) -> f32 {
+    pub(crate) fn text(&mut self, x: f32, y: f32, cell: f32, text: &str, color: Vec4) -> f32 {
         let snapped = self.snap_cell(cell);
         let mut at = x;
         for character in text.chars() {
@@ -303,17 +320,17 @@ impl Painter {
     }
 
     /// `text` right-aligned to `right`.
-    fn text_right(&mut self, right: f32, y: f32, cell: f32, text: &str, color: Vec4) {
+    pub(crate) fn text_right(&mut self, right: f32, y: f32, cell: f32, text: &str, color: Vec4) {
         let width = text_width(text, self.snap_cell(cell));
         self.text(right - width, y, cell, text, color);
     }
 
     /// A font cell as a whole number of pixels (crisp glyphs at any height), back in units.
-    fn snap_cell(&self, cell: f32) -> f32 {
+    pub(crate) fn snap_cell(&self, cell: f32) -> f32 {
         (cell * self.scale).round().max(1.0) / self.scale
     }
 
-    fn icon(&mut self, x: f32, y: f32, cell: f32, weapon: Weapon, color: Vec4) {
+    pub(crate) fn icon(&mut self, x: f32, y: f32, cell: f32, weapon: Weapon, color: Vec4) {
         let rows = silhouette(weapon)
             .into_iter()
             .map(|row| row.bytes().map(|byte| byte == b'#').collect());
@@ -322,7 +339,7 @@ impl Painter {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn text_width(text: &str, cell: f32) -> f32 {
+pub(crate) fn text_width(text: &str, cell: f32) -> f32 {
     let count = text.chars().count() as f32;
     if count == 0.0 {
         0.0

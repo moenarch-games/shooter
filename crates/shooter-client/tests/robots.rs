@@ -96,8 +96,10 @@ fn the_pinned_kits_decode_within_their_bounds() {
     assert!(!manifest.contains("\"robot.core\""));
     assert_eq!(kit.materials.len(), 3);
     assert_eq!(kit.textures.len(), 12);
-    assert!(kit.textures[..4].iter().all(|t| t.width == 1024));
-    assert!(kit.textures[4..].iter().all(|t| t.width == 512));
+    // The robot kit's four textures (one republished at half size), then the others' at 512.
+    let widths: Vec<u32> = kit.textures.iter().map(|t| t.width).collect();
+    assert_eq!(widths[..4], [1024, 512, 1024, 1024]);
+    assert!(widths[4..].iter().all(|width| *width == 512));
     let leg = &kit.entries[kit.entry("robot.leg", "default").unwrap()];
     let rig = leg.rig.as_ref().expect("the leg is rigged");
     for joint in ["base", "hip", "knee", "ankle"] {

@@ -269,3 +269,60 @@ fn the_weapon_cycle_goes_through_the_host() {
     }
     assert!(checked, "no life lasted the check");
 }
+
+/// The builder through a real host (shooter#57): a build readied before the match (before the
+/// first tick connects) is the robot's first life; after a death, Edit Robot holds the respawn
+/// however long it takes, a new build readied meanwhile is accepted by the host, and letting go
+/// brings the robot back as it.
+#[test]
+fn the_builder_s_builds_reach_the_host_before_the_match_and_between_lives() {
+    use shooter_sim::robot::{HEAVY, PYRO};
+    let host = Host::start(3);
+    let mut game = host.connect(None);
+    game.configure(PYRO);
+    let me = |game: &Game| {
+        let slot = game.local_slot()?;
+        game.snapshot()?.slot(slot).copied()
+    };
+    let play = |game: &mut Game, intent: Intent, seconds: u64, until: &dyn Fn(&Game) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        while Instant::now() < deadline && !until(game) {
+            game.tick(intent).unwrap();
+            std::thread::sleep(Duration::from_millis(16));
+        }
+    };
+    play(&mut game, Intent::IDLE, 20, &|game| {
+        me(game).is_some_and(|me| me.configured == PYRO)
+    });
+    let first = me(&game).expect("admitted");
+    // Configured before it played: the robot is that build at once, not after a death.
+    assert_eq!(
+        (first.build, first.configured),
+        (PYRO, PYRO),
+        "the first life"
+    );
+    assert_eq!(first.deaths, 0);
+
+    // Eleven bots end an idle robot's life soon enough.
+    play(&mut game, Intent::IDLE, 120, &|game| {
+        me(game).is_some_and(|me| !me.alive)
+    });
+    assert!(!me(&game).unwrap().alive, "never killed");
+    let editing = Intent {
+        edit: true,
+        ..Intent::IDLE
+    };
+    game.configure(HEAVY);
+    play(&mut game, editing, 20, &|game| {
+        me(game).is_some_and(|me| me.configured == HEAVY)
+    });
+    // Past the 2 s countdown, still in the builder.
+    play(&mut game, editing, 3, &|_| false);
+    let waiting = me(&game).unwrap();
+    assert!(!waiting.alive, "the respawn waits for Ready");
+    assert_eq!(waiting.configured, HEAVY);
+    play(&mut game, Intent::IDLE, 20, &|game| {
+        me(game).is_some_and(|me| me.alive)
+    });
+    assert_eq!(me(&game).unwrap().build, HEAVY);
+}

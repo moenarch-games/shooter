@@ -78,6 +78,10 @@ pub struct Intent {
     pub melee: bool,
     /// Switch to this weapon (it stays held until another is selected).
     pub select: Option<Weapon>,
+    /// Edit Robot held (Atlas D2.i70.11): while its robot is dead, the person is in the builder
+    /// and it does not come back until this is released (Ready). It does nothing while the
+    /// robot is alive: a living robot is never rebuilt (D2.i46.7).
+    pub edit: bool,
 }
 
 impl Intent {
@@ -93,6 +97,7 @@ impl Intent {
         fire: false,
         melee: false,
         select: None,
+        edit: false,
     };
 }
 

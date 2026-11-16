@@ -1004,6 +1004,24 @@ fn duel() -> Session {
     session
 }
 
+/// [`duel`] once both people have played a tick (standing still): their robots are in the
+/// match, so a build they configure waits for the next spawn.
+fn played_duel() -> Session {
+    let mut session = duel();
+    for id in [1, 2] {
+        session.queue(
+            id,
+            Input {
+                sequence: 1,
+                intent: Intent::IDLE,
+                view_tick: 0,
+            },
+        );
+    }
+    session.step().unwrap();
+    session
+}
+
 /// The yaw and pitch from `from`'s eye to `to`'s root chassis a cell below its middle, where the
 /// host places it (straight ahead while `to` is dead).
 #[allow(clippy::cast_possible_truncation)]
@@ -1056,7 +1074,7 @@ fn rail(session: &mut Session, ticks: u32) {
 #[test]
 fn a_configured_build_applies_at_the_next_spawn_and_travels_in_snapshots() {
     let tank = BETA.validate(&mini_tank()).unwrap();
-    let mut session = duel();
+    let mut session = played_duel();
     assert_eq!(session.fighters[1].build, STANDARD);
     assert!(session.configure(2, tank));
     assert!(!session.configure(3, tank));
@@ -1227,7 +1245,7 @@ fn a_robot_spawns_holding_its_first_weapon_that_is_not_the_grapple() {
 
 #[test]
 fn a_configured_modded_build_applies_at_the_next_spawn() {
-    let mut session = duel();
+    let mut session = played_duel();
     assert!(session.configure(1, MARKSMAN));
     let rail_tuning = |session: &Session| BETA.tuning(&session.fighters[0].build, Weapon::RailGun);
     assert_eq!(rail_tuning(&session), Tuning::BASE);
