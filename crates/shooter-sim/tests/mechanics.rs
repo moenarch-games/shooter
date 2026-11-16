@@ -495,3 +495,64 @@ fn mechanics_on_the_wire_are_validated() {
     assert!(decode_controls(&[0, 2, 0, 2, 1, 0, 0, 2, 1, 0, 0]).is_err());
     assert!(decode_controls(&[4, 0, 0]).is_err());
 }
+
+/// The builder's sockets: every socket of every part where the part places it, a mounted part's
+/// own mount face left out (it rests on its parent).
+#[test]
+fn sockets_sit_on_their_faces_in_the_robot_frame() {
+    use shooter_sim::mechanics::sockets;
+    use shooter_sim::robot::parts::{BEAM_SHORT, CHASSIS_S};
+    use shooter_sim::robot::{BETA, Candidate, Face, RawMount, RawPart, STANDARD};
+    // The standard build: only its small chassis has sockets (28), its front's 8 face +X, a
+    // cell's half (10 units) ahead of its centre.
+    let spots = sockets(&STANDARD);
+    assert_eq!(spots.len(), usize::from(CHASSIS_S.socket_count()));
+    let front: Vec<_> = spots.iter().filter(|spot| spot.normal[0] > 0.99).collect();
+    assert_eq!(front.len(), 8);
+    assert!(
+        front
+            .iter()
+            .all(|spot| (spot.centre[0] - 10.0).abs() < 1e-3)
+    );
+    let top = CHASSIS_S.socket(Face::PosZ, 0, 0).unwrap();
+    let up = spots.iter().find(|spot| spot.socket == top).unwrap();
+    assert!(
+        up.normal[1] > 0.99 && (up.centre[1] - 40.0).abs() < 1e-3,
+        "{up:?}"
+    );
+    // A short beam on the chassis' top: its 6 non-mount faces' sockets (10), not its mount
+    // face's, its far end 40 units above the chassis' top.
+    let socket = |face, u, v| CHASSIS_S.socket(face, u, v).unwrap().0;
+    let build = BETA
+        .validate(&Candidate {
+            parts: vec![
+                RawPart {
+                    id: 0,
+                    kind: CHASSIS_S.id.0,
+                    ..RawPart::default()
+                },
+                RawPart {
+                    id: 1,
+                    kind: BEAM_SHORT.id.0,
+                    mount: Some(RawMount {
+                        parent: 0,
+                        socket: socket(Face::PosZ, 0, 0),
+                        ..RawMount::default()
+                    }),
+                    modification: None,
+                },
+            ],
+        })
+        .unwrap();
+    let spots = sockets(&build);
+    let beam: Vec<_> = spots.iter().filter(|spot| spot.part == PartId(1)).collect();
+    assert_eq!(
+        beam.len(),
+        usize::from(BEAM_SHORT.socket_count()) - 1,
+        "every face but the mount face's one cell"
+    );
+    assert!(
+        beam.iter()
+            .any(|spot| spot.normal[1] > 0.99 && (spot.centre[1] - 80.0).abs() < 1e-3)
+    );
+}

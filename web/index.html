@@ -89,6 +89,11 @@
       #error[data-shown] {
         display: block;
       }
+      /* The robot builder (drawn in the canvas) has the page while it is open. */
+      body[data-builder] #overlay,
+      body[data-builder] #hud {
+        display: none;
+      }
       /* The HUD text the drawn HUD (weapon panel, chassis and energy bars) does not draw yet. */
       #hud {
         position: fixed;
@@ -162,7 +167,8 @@
         sprint · C while sprinting to slide · left mouse to fire · mouse wheel or Q / E to cycle the
         weapons your robot carries, or 1 to 7 for rifle, rail gun, rockets, grapple (hold to reel
         in), shotgun, laser, flamethrower · V (or the mouse's back button) to swing the energy blade
-        · Tab for the scores · Esc to release the mouse
+        · Tab for the scores · Esc to release the mouse · when destroyed, B to edit the robot
+        (the respawn waits until Ready)
         <form id="join" method="get">
           <input
             name="name"
@@ -185,7 +191,7 @@
             aria-label="Certificate SHA-256, for a development host"
           />
           <select name="loadout" aria-label="Robot loadout">
-            <option value="">Standard loadout</option>
+            <option value="">Build from the standard loadout</option>
             <option value="heavy">Heavy (with a battery)</option>
             <option value="skirmisher">Skirmisher (rapid-cycler rifle, efficiency coil)</option>
             <option value="marksman">Marksman (long-barrel rifle, overcharged rail gun)</option>
@@ -204,7 +210,7 @@
       const join = document.getElementById("join");
       join.connect.value = query.get("connect") ?? "";
       join.certHash.value = query.get("certHash") ?? "";
-      // &loadout=<name> picks the robot build, online and in practice (the wasm reads it).
+      // &loadout=<name> is the build the robot builder starts from (the wasm reads it).
       join.loadout.value = query.get("loadout") ?? "";
       // The player name (&name=…, the host sanitizes it) is remembered on this device only.
       const NAME_KEY = "shooter.name";
@@ -238,6 +244,10 @@
       if (query.get("frames")) overlay.hidden = true;
       document.addEventListener("pointerlockchange", () => {
         overlay.hidden = document.pointerLockElement !== null;
+      });
+      // The builder turns the view on a right drag: no context menu over it.
+      document.addEventListener("contextmenu", (event) => {
+        if (document.body.hasAttribute("data-builder")) event.preventDefault();
       });
       // Tab shows the scores; keep it from moving the focus off the game.
       document.addEventListener("keydown", (event) => {

@@ -6,6 +6,7 @@
 pub mod app;
 pub mod arena_art;
 pub mod audio;
+pub mod builder;
 pub mod camera;
 pub mod controls;
 pub mod effects;
@@ -25,8 +26,12 @@ use shooter_sim::MapId;
 /// in the config directory for later runs, [`remembered_name`]); in the browser the page's
 /// `?connect=<url>[&certHash=<sha-256 hex>][&name=<name>]` does (the page remembers the name).
 /// Anything else is offline practice against bots on `map`. Online, the host picks the map.
-/// Either way `--loadout <name>` (`?loadout=<name>`) picks the robot build ([`loadout`]).
-fn game(#[cfg(not(target_arch = "wasm32"))] args: Args, map: MapId) -> game::Game {
+/// Either way `--loadout <name>` (`?loadout=<name>`) is the build the builder before the match
+/// starts from ([`loadout`]), returned beside the game.
+fn game(
+    #[cfg(not(target_arch = "wasm32"))] args: Args,
+    map: MapId,
+) -> (game::Game, Option<shooter_sim::Assembly>) {
     #[cfg(not(target_arch = "wasm32"))]
     let (url, trust, name) = (args.connect, args.cert, remembered_name(args.name));
     #[cfg(target_arch = "wasm32")]
@@ -55,11 +60,10 @@ fn game(#[cfg(not(target_arch = "wasm32"))] args: Args, map: MapId) -> game::Gam
         None => game::Game::practice(map),
     };
     match loadout(requested.as_deref()) {
-        Ok(Some(build)) => game.with_loadout(build),
-        Ok(None) => game,
+        Ok(build) => (game, build),
         Err(error) => {
             fail(&error);
-            game
+            (game, None)
         }
     }
 }
@@ -354,18 +358,21 @@ pub fn run() {
     #[cfg(target_arch = "wasm32")]
     let profile = web::query("frames").and_then(|n| n.parse::<u32>().ok());
     #[cfg(target_arch = "wasm32")]
-    let game = match profile {
-        Some(_) => game::Game::practice(map),
+    let (game, build) = match profile {
+        Some(_) => (game::Game::practice(map), None),
         None => game(map),
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let game = game(args, map);
+    let (game, build) = game(args, map);
     let app = app::App::new(event_loop.create_proxy(), game);
+    // The match starts at the builder (shooter#57), on the requested loadout.
     #[cfg(target_arch = "wasm32")]
     let app = match profile {
         Some(frames) => app.profiled(frames),
-        None => app,
+        None => app.with_builder(build.unwrap_or_default()),
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    let app = app.with_builder(build.unwrap_or_default());
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut app = app;
@@ -415,6 +422,19 @@ pub(crate) mod web {
     /// Whether the page holds Pointer Lock (the browser releases it on Escape).
     pub fn pointer_locked() -> bool {
         document().is_some_and(|document| document.pointer_lock_element().is_some())
+    }
+
+    /// Marks the page's body while the builder is open (`data-builder`): the page hides its own
+    /// overlays and keeps the canvas' right click (shooter#57).
+    pub fn show_builder(open: bool) {
+        let Some(body) = document().and_then(|document| document.body()) else {
+            return;
+        };
+        let _ = if open {
+            body.set_attribute("data-builder", "")
+        } else {
+            body.remove_attribute("data-builder")
+        };
     }
 
     /// A parameter of the page's query string, if it is set and not empty.

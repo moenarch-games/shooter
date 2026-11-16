@@ -673,6 +673,7 @@ fn inputs_and_snapshots_round_trip() {
         fire: true,
         melee: true,
         select: Some(Weapon::RocketLauncher),
+        edit: true,
     };
     let command = decode_input(&encode_input(intent, 77, None, None)).unwrap();
     assert_eq!((command.intent, command.view_tick), (intent, 77));
@@ -1050,4 +1051,146 @@ fn a_bot_match_on_the_assembly_works_replays_exactly() {
     };
     assert_eq!(play(3), play(3));
     assert_ne!(play(3), play(4));
+}
+
+/// One tick: A (person 1) rails B's root chassis while B lives, and B (person 2) holds `b`,
+/// unless `b` is `None` (B sends nothing, a lost connection).
+fn rail_tick(session: &mut Session, b: Option<Intent>) {
+    let now = session.ticks();
+    let (yaw, pitch) = if session.fighters[1].alive() {
+        at_chassis(session, 0, 1)
+    } else {
+        (0, 0)
+    };
+    let rail = Intent {
+        fire: session.fighters[1].alive(),
+        yaw,
+        pitch,
+        select: Some(Weapon::RailGun),
+        ..Intent::IDLE
+    };
+    for (id, intent) in [(1, Some(rail)), (2, b)] {
+        let Some(intent) = intent else {
+            continue;
+        };
+        let slot = id as usize - 1;
+        let sequence = session.fighters[slot].ack + 1;
+        session.queue(
+            id,
+            Input {
+                sequence,
+                intent,
+                view_tick: now,
+            },
+        );
+    }
+    session.step().unwrap();
+}
+
+const EDITING: Intent = Intent {
+    edit: true,
+    ..Intent::IDLE
+};
+
+/// A duel in which A (heavy) has railed B dead, B holding Edit Robot all along (alive, it does
+/// nothing).
+fn edited_duel(rules: Rules) -> Session {
+    let mut session = Session::with_rules(duel_arena(), rules).unwrap();
+    session.join(1).unwrap();
+    session.join(2).unwrap();
+    equip(&mut session, 0, HEAVY);
+    for _ in 0..2_000 {
+        rail_tick(&mut session, Some(EDITING));
+        if !session.fighters[1].alive() {
+            return session;
+        }
+        assert_eq!(session.fighters[1].build, STANDARD, "alive: never rebuilt");
+    }
+    panic!("B never died");
+}
+
+/// Edit Robot after death suspends the respawn with no time limit (Atlas D2.i70.11); Ready (the
+/// flag released) brings the robot back as the build configured meanwhile, at once.
+#[test]
+fn edit_robot_holds_the_respawn_until_ready() {
+    let mut session = edited_duel(duel_rules());
+    assert!(session.configure(2, MARKSMAN));
+    // Ten times the respawn countdown: still in the builder.
+    for _ in 0..10 * duel_rules().respawn_ticks {
+        rail_tick(&mut session, Some(EDITING));
+        assert!(!session.fighters[1].alive());
+    }
+    rail_tick(&mut session, Some(Intent::IDLE));
+    let b = &session.fighters[1];
+    assert!(b.alive());
+    assert_eq!((b.build, b.configured), (MARKSMAN, MARKSMAN));
+    assert!(
+        session
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::Spawned { slot: 1, .. }))
+    );
+}
+
+/// Without Edit Robot the dead come back after the normal countdown, as their last build.
+#[test]
+fn without_edit_robot_the_respawn_is_automatic() {
+    let mut session = edited_duel(duel_rules());
+    for _ in 0..duel_rules().respawn_ticks + 1 {
+        rail_tick(&mut session, Some(Intent::IDLE));
+    }
+    let b = &session.fighters[1];
+    assert!(b.alive());
+    assert_eq!(b.build, STANDARD);
+}
+
+/// A person in the builder whose inputs stop (a lost connection) lets go of it: the robot comes
+/// back after the countdown and the input hold.
+#[test]
+fn a_silent_editor_comes_back() {
+    use shooter_sim::session::HOLD_INPUT_TICKS;
+    let mut session = edited_duel(duel_rules());
+    for _ in 0..duel_rules().respawn_ticks.max(HOLD_INPUT_TICKS) + 1 {
+        rail_tick(&mut session, None);
+    }
+    assert!(session.fighters[1].alive());
+}
+
+/// A round's start does not pull a person out of the builder: the robot waits until Ready.
+#[test]
+fn a_new_round_waits_for_ready() {
+    let rules = Rules {
+        frag_limit: 1,
+        ..duel_rules()
+    };
+    let mut session = edited_duel(rules);
+    let Phase::Intermission { restarts_at, .. } = session.phase else {
+        panic!("{:?}", session.phase);
+    };
+    while session.ticks() <= restarts_at + 30 {
+        rail_tick(&mut session, Some(EDITING));
+    }
+    assert!(matches!(session.phase, Phase::Playing { .. }));
+    assert!(session.fighters[0].alive());
+    assert!(!session.fighters[1].alive());
+    rail_tick(&mut session, Some(Intent::IDLE));
+    assert!(session.fighters[1].alive());
+}
+
+/// A person who has not played yet is still at the builder before the match: a build it
+/// configures applies at once. From its first input on, the robot alive keeps its build.
+#[test]
+fn a_build_configured_before_playing_applies_at_once() {
+    let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
+    session.join(1).unwrap();
+    session.join(2).unwrap();
+    assert!(session.configure(2, PYRO));
+    let b = &session.fighters[1];
+    assert_eq!((b.build, b.configured), (PYRO, PYRO));
+    assert_eq!(b.arsenal.held, Weapon::Laser);
+    assert_eq!(b.energy, b.pool().capacity);
+    rail_tick(&mut session, Some(Intent::IDLE));
+    assert!(session.configure(2, HEAVY));
+    let b = &session.fighters[1];
+    assert_eq!((b.build, b.configured), (PYRO, HEAVY));
 }

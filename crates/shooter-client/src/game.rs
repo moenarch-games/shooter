@@ -47,25 +47,35 @@ impl Game {
         }
     }
 
-    /// Plays as `build` (a named loadout, `shooter_sim::robot::LOADOUTS`): in practice from the
-    /// start (called before the first tick), online it is asked of the host, which applies it at
-    /// the next spawn.
+    /// Plays as `build` (a named loadout, `shooter_sim::robot::LOADOUTS`) from the start, called
+    /// before the first tick ([`Game::configure`] before the robot has played).
     #[must_use]
     pub fn with_loadout(mut self, build: Assembly) -> Self {
-        match &mut self {
+        self.configure(build);
+        self
+    }
+
+    /// Asks for the local robot to be `build` (a validated build, the builder's Ready): in
+    /// practice the in-process session applies it, online it rides along with the inputs to the
+    /// host. Either way the session's one rule decides when ([`Session::configure`]): at the
+    /// next spawn, or at once before the robot has played.
+    pub fn configure(&mut self, build: Assembly) {
+        match self {
             Self::Practice {
                 session, snapshot, ..
             } => {
-                if let Some(slot) = session.slot_of_player(LOCAL_PLAYER) {
-                    let local = &mut session.fighters[usize::from(slot)];
-                    local.rebuild(build);
-                    local.configured = build;
-                    **snapshot = session.snapshot();
-                }
+                session.configure(LOCAL_PLAYER, build);
+                **snapshot = session.snapshot();
             }
             Self::Online(online) => online.request_build(build),
         }
-        self
+    }
+
+    /// The build the local robot comes back as, as the match (the host, online) last said.
+    #[must_use]
+    pub fn configured(&self) -> Option<Assembly> {
+        let slot = self.local_slot()?;
+        Some(self.snapshot()?.slot(slot)?.configured)
     }
 
     /// One local tick holding `intent`.
@@ -228,7 +238,10 @@ pub mod online {
     }
 
     pub struct Online {
-        connection: Connection,
+        /// The host, until the first tick opens the connection to it (nobody joins while the
+        /// person is still at the builder before the match, shooter#57).
+        host: Option<(String, Trust)>,
+        connection: Option<Connection>,
         /// The name picked for this match (sanitized as the host does).
         name: Option<String>,
         /// The loadout asked of the host, if any.
@@ -276,7 +289,8 @@ pub mod online {
         pub fn connect(url: String, certificate: Trust, name: Option<&str>) -> Self {
             let status = format!("connecting to {url}");
             Self {
-                connection: Connection::open(url, certificate),
+                host: Some((url, certificate)),
+                connection: None,
                 name: name.and_then(names::sanitize),
                 build: None,
                 parts: PartDamage::default(),
@@ -340,7 +354,9 @@ pub mod online {
         #[cfg(not(target_arch = "wasm32"))]
         #[doc(hidden)]
         pub fn sever(&self) {
-            self.connection.sever();
+            if let Some(connection) = &self.connection {
+                connection.sever();
+            }
         }
 
         pub fn other_center(&self, slot: u8, blend: f32) -> Option<[f32; 3]> {
@@ -573,7 +589,15 @@ pub mod online {
         }
 
         pub fn tick(&mut self, intent: Intent) -> Result<Tick, String> {
-            for event in self.connection.poll() {
+            if let Some((url, certificate)) = self.host.take() {
+                self.connection = Some(Connection::open(url, certificate));
+            }
+            let events = self
+                .connection
+                .as_ref()
+                .map(Connection::poll)
+                .unwrap_or_default();
+            for event in events {
                 match event {
                     NetEvent::Welcome { player_id } => {
                         if self.player_id.is_some() {
@@ -632,10 +656,12 @@ pub mod online {
                     .as_ref()
                     .and_then(|latest| latest.of_player(self.player_id?).map(|me| me.configured));
                 let build = self.build.filter(|build| configured != Some(*build));
-                self.connection.send(
-                    self.sequence,
-                    &encode_input(intent, view_tick, name, build.as_ref()),
-                );
+                if let Some(connection) = &self.connection {
+                    connection.send(
+                        self.sequence,
+                        &encode_input(intent, view_tick, name, build.as_ref()),
+                    );
+                }
                 if self.predicting {
                     report = self.predict(intent)?;
                     let shots = self.predicted_shots();
