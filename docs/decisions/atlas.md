@@ -304,6 +304,18 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   The legacy gun remains current shipped behavior until #104 migrates both
   clients and the host, with replay, prediction and live visual acceptance.
 
+- **D2.i45.1** (owner, 2026-11-16; shooter#45; answers Q3, option A):
+  The **energy blade is the only quick-melee weapon for the first modular-robot
+  beta**. It remains a mounted, functional part of the robot's build, available
+  by its own quick-melee binding (V or mouse back by default) while a gun is
+  selected, rather than joining the ordinary gun rotation; retain the shipped
+  last-weapon selection fallback where it applies (D2.i46.8). No separate
+  heavy hammer or additional melee roster is a beta prerequisite. Reconsider
+  meaningfully distinct melee modules after actual native/browser match
+  playtesting, with any new part and art owned by their existing respective
+  repositories (D5.i46.1). Existing blade reach, damage, timing and shove
+  values remain provisional balancing, not separately approved numeric policy.
+
 ## 3. Platforms
 
 - **D3.1** (owner, 2026-11-11): Native wgpu client on render-engine plus a browser client on Pages.
