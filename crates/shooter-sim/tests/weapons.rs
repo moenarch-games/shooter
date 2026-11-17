@@ -233,8 +233,13 @@ fn a_shotgun_blast_is_a_fixed_pattern_of_pellets() {
         select: Some(Weapon::Shotgun.into()),
         ..Intent::IDLE
     };
+    // The shotgun taken up, the robot settling a moment before the first blast.
+    let take = Intent {
+        fire: false,
+        ..blast
+    };
     for _ in 0..12 {
-        session.tick(blast).unwrap();
+        session.tick(take).unwrap();
         assert!(session.pellets.is_empty());
     }
     let refire = Weapon::Shotgun.refire_ticks();

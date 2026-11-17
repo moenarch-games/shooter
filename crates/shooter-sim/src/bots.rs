@@ -6,9 +6,10 @@
 //! shotgun (odd slots) up close, rockets (even) or the laser (odd) at mid range and the rail gun
 //! far off, and rushes in to swing the energy blade when someone comes within a few metres. It
 //! aims at its target's root chassis (the one part whose loss kills, [`crate::damage`]), and once a
-//! weapon part of its own is lost it fires the first gun it still has instead. Every random
-//! choice comes from its own seeded stream (SplitMix64, `crate::rng`), so a match replays
-//! exactly.
+//! weapon part of its own is lost it fires the first gun it still has instead. It fires every copy
+//! of the gun it picks together, through the per-copy triggers a person's weapon group sends
+//! (shooter#127). Every random choice comes from its own seeded stream (SplitMix64,
+//! `crate::rng`), so a match replays exactly.
 
 use crate::aim;
 use crate::arena::Arena;
@@ -17,7 +18,7 @@ use crate::player::Intent;
 use crate::rng::Rng;
 use crate::session::slot_of;
 use crate::trig;
-use crate::weapons::{Instance, MAX_PITCH, Select, Weapon};
+use crate::weapons::{Instance, MAX_PITCH, Select, Triggers, Weapon};
 
 /// A bot looks for targets every 6 ticks (0.1 s).
 pub const SCAN_TICKS: u32 = 6;
@@ -166,7 +167,7 @@ impl Bot {
         sights: &[Sight],
         world: &World,
         arena: &Arena,
-        held: Instance,
+        copies: &[Instance],
         tick: u32,
     ) -> Intent {
         let (Some(center), Some(eye)) = (sights[me].center, sights[me].eye) else {
@@ -189,7 +190,7 @@ impl Bot {
             .target
             .and_then(|target| sights[target].chassis.or(sights[target].center))
         {
-            Some(target) => self.fight(me, (eye, target), world, held, sights[me].armed, tick),
+            Some(target) => self.fight(me, (eye, target), world, copies, sights[me].armed, tick),
             None => self.wander(center, arena),
         };
         // Stuck against something while walking (within a few centimetres of where it last got
@@ -227,7 +228,7 @@ impl Bot {
         me: usize,
         (eye, target): (Vec3i, Vec3i),
         world: &World,
-        held: Instance,
+        copies: &[Instance],
         armed: [bool; 8],
         tick: u32,
     ) -> Intent {
@@ -297,7 +298,19 @@ impl Bot {
             jump: self.rng.below(90) == 0,
             sprint: false,
             crouch: false,
-            fire: weapon == held.weapon && ready,
+            // Every copy of the gun it picks, as one request through the same per-copy triggers a
+            // person's weapon group sends (shooter#127): the host grants each copy its own refire
+            // and energy and staggers the rocket launchers ([`Weapon::salvo`]).
+            fire: false,
+            triggers: if ready {
+                copies
+                    .iter()
+                    .filter(|copy| copy.weapon == weapon)
+                    .map(|copy| copy.part)
+                    .collect()
+            } else {
+                Triggers::NONE
+            },
             melee: ready
                 && armed(Weapon::EnergyBlade)
                 && run < MELEE_UNITS

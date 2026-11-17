@@ -86,7 +86,8 @@ implemented yet.
   that is not the grapple; the grapple, then the blade, only when it carries nothing else.
   Since shooter#57 the builder mounts any weapon on any build (D2.i70.11).
   The cycle-only arsenal is superseded in intent by D2.i123.5 (owner, 2026-11-17): direct and
-  grouped concurrent fire, the cycle an optional convenience; it ships until shooter#127.
+  grouped concurrent fire, the cycle an optional convenience; shipped with shooter#127 (see
+  D2.i123.5): the cycle picks only what the primary trigger fires.
 - **D2.i46.9** (owner, 2026-11-13): Some powerful weapon and movement modules spawn as pickups at
   contested arena points. Any robot can use them, with no compatibility gate; a build may exploit
   one better (for example grapple plus a sniper position). Their lifetime is open (Q2.i46.3).
@@ -428,10 +429,10 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   values remain provisional balancing, not separately approved numeric policy.
 
 The D2.i123 entries record the owner's steering of 2026-11-17 (decisions 1–11; shooter#123,
-tracker shooter#45). They are intent, not shipped behaviour: none of their mechanics ships yet,
-each names the issue that implements it, and the entries they supersede stay as written with a
-pointer here. What ships today is still described in the older entries' shipped notes and the
-README. Numeric balance and the builder's rotation UI stay open (Q2.i123.1, Q2.i123.2), as does
+tracker shooter#45). They are intent, not shipped behaviour: none of their mechanics ships unless
+its entry has a shipped note, each names the issue that implements it, and the entries they
+supersede stay as written with a pointer here. What ships today is otherwise still described in
+the older entries' shipped notes and the README. Numeric balance and the builder's rotation UI stay open (Q2.i123.1, Q2.i123.2), as does
 whether resupply locks movement or firing (Q2.i123.3).
 
 - **D2.i123.1** (owner, 2026-11-17; shooter#123, decision 1, C; supersedes the passive
@@ -462,12 +463,21 @@ whether resupply locks movement or firing (Q2.i123.3).
   concurrently. No mandatory single active weapon and no timed or conditional attack macros
   (D2.i70.7). The wheel and Q/E cycle (shooter#92) may stay as an optional convenience, not an
   exclusive firing gate. A build may mount several copies of one weapon type within its objective
-  constraints, each an instance with its own mount, mod, health and muzzle (shooter#125; today
-  the validator still refuses a weapon mounted twice). Several launchers of one family must not
-  fire in the same instant: a tunable shared weapon-family salvo or rate limit (four rocket
+  constraints, each an instance with its own mount, mod, health and muzzle (shooter#125,
+  shipped). Several launchers of one family must not fire in the same instant: a tunable shared weapon-family salvo or rate limit (four rocket
   launchers do not launch four rockets at once) bounds them without forbidding the mounts; its
   cap and interval are open (Q2.i123.2). Owners: shooter#127 (direct and grouped concurrent fire,
   salvo limit), shooter#125 (multiple copies), with the bindings in shooter#74.
+  Shipped with shooter#127: a control layout's fire binding names guns by part, one (a direct
+  weapon button) or several (a weapon group), keys and mouse buttons held or toggled; groups
+  overlap and fire together, and every preset fires all guns on the middle mouse button. The
+  left button fires the held copy, the wheel and Q/E stay a convenience, and a switch delays
+  nothing. An input carries the guns asked to fire (`shooter_sim::weapons::Triggers`); the host
+  grants them first come, first served by part after the hook and the swing, each on its own
+  refire, its family's salvo limit and the energy pool, a refusal refusing only that copy. The
+  rocket launchers' salvo limit is one launch a tick and 6 ticks between launches (provisional,
+  Q2.i123.2); no other family has one. Bots fire every copy of the gun they pick through the
+  same requests.
 - **D2.i123.6** (owner, 2026-11-17; shooter#123, decision 6, B; supersedes D2.i70.3's arena
   charging stations being later): Arenas carry distinct energy, ammunition and fuel resupply
   stations. Refilling is a deliberate hold-to-interact action that takes time and leaves the robot
@@ -773,6 +783,8 @@ whether resupply locks movement or firing (Q2.i123.3).
   rates, the weapon-family salvo cap and interval (rockets), refill durations, self-destruct blast
   damage, the pacing reductions and their balance (D2.i123.1–D2.i123.10). Measured baselines and
   playtests set them (shooter#128 to shooter#133); implementations record provisional defaults
-  here, none owner-approved.
+  here, none owner-approved. Provisional (shooter#127): the rocket launchers' family salvo limit
+  is at most 1 launch per tick per robot and 6 ticks (0.1 s) between launches, so a pod of four
+  staggers over 18 ticks (`Weapon::salvo`); every other family has none.
 - **Q2.i123.3**: Whether holding a resupply interaction locks the robot's ordinary movement or
   firing (D2.i123.6). Not prescribed until assessed in shooter#129.

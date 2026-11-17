@@ -10,11 +10,13 @@
 //!
 //! The bottom right shows the held weapon (its silhouette, name and mod, the energy one shot
 //! costs, and whether it is ready, recharging, short of energy or lost) over a row of slots for
-//! every weapon the build carries (its select key, the blade's V; lost ones struck out red); a
-//! switch flashes the panel and sweeps a highlight across it. The bottom left shows the root
-//! chassis' health and the energy pool, the share one shot of the held weapon takes marked on it,
-//! and above them, in teal, field repair ([`repair_panel`], [`crate::repair_menu`]): the quick
-//! repair menu while it is open, else the repair under way, else how many parts may be repaired.
+//! every weapon copy the build carries (its select key, the blade's V; lost ones struck out red),
+//! each with its own readiness bar (ready, recharging, short of energy: every copy may fire,
+//! shooter#127); a switch flashes the panel and sweeps a highlight across it. The bottom left
+//! shows the root chassis' health and the energy pool, the share one shot of the held weapon
+//! takes marked on it, and above them, in teal, field repair ([`repair_panel`],
+//! [`crate::repair_menu`]): the quick repair menu while it is open, else the repair under way,
+//! else how many parts may be repaired.
 
 use render_engine::glam::{Vec2, Vec4};
 use render_engine::scene::OverlayQuad;
@@ -370,7 +372,8 @@ pub(crate) fn text_width(text: &str, cell: f32) -> f32 {
     }
 }
 
-/// One weapon copy the build mounts, as the HUD lists it (shooter#125).
+/// One weapon copy the build mounts, as the HUD lists it (shooter#125), with its own readiness
+/// (shooter#127: every copy may fire, not only the held one).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mounted {
     pub instance: Instance,
@@ -379,6 +382,13 @@ pub struct Mounted {
     /// Which copy of its weapon it is and how many the build mounts (`(1, 1)` for a weapon
     /// mounted once).
     pub copy: (u8, u8),
+    /// Ticks until it may fire again: its own refire, its family's salvo spacing, a swing's
+    /// lockout ([`shooter_sim::weapons::Arsenal::cooldown_of`]).
+    pub cooldown: u32,
+    /// Ticks between its shots in this build (its mod's).
+    pub refire: u32,
+    /// Milli-units one activation costs (a tick, for the continuous ones).
+    pub cost: u32,
 }
 
 impl Mounted {
@@ -388,6 +398,33 @@ impl Mounted {
         let (number, of) = self.copy;
         (of > 1).then(|| format!("{number}/{of}"))
     }
+
+    /// How ready it is to fire with `energy` in the pool: lost, short of energy, recovering
+    /// (with the share of its refire already over) or ready.
+    #[must_use]
+    pub fn readiness(&self, energy: u32) -> Readiness {
+        if !self.armed {
+            Readiness::Lost
+        } else if energy < self.cost {
+            Readiness::LowEnergy
+        } else if self.cooldown > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            let over = 1.0 - self.cooldown as f32 / self.refire.max(self.cooldown).max(1) as f32;
+            Readiness::Recharging(over)
+        } else {
+            Readiness::Ready
+        }
+    }
+}
+
+/// A weapon copy's readiness ([`Mounted::readiness`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Readiness {
+    Lost,
+    LowEnergy,
+    /// The share of its refire already over (0..1).
+    Recharging(f32),
+    Ready,
 }
 
 /// What the drawn HUD shows of the local fighter this frame.
@@ -420,10 +457,21 @@ impl Vitals {
         let armed = fighter.instances();
         let carried = BETA
             .weapons(build)
-            .map(|instance| Mounted {
-                instance,
-                armed: armed.contains(&instance),
-                copy: BETA.copy(build, instance).unwrap_or((1, 1)),
+            .map(|instance| {
+                let tuning = fighter.tuning(instance);
+                let arsenal = &fighter.arsenal;
+                Mounted {
+                    instance,
+                    armed: armed.contains(&instance),
+                    copy: BETA.copy(build, instance).unwrap_or((1, 1)),
+                    cooldown: match instance.weapon {
+                        Weapon::Grapple => arsenal.grapple_cooldown(tick),
+                        Weapon::EnergyBlade => arsenal.blade_cooldown(tick),
+                        _ => arsenal.cooldown_of(instance, tick),
+                    },
+                    refire: tuning.refire_ticks(instance.weapon),
+                    cost: tuning.energy(instance.weapon),
+                }
             })
             .collect();
         Self {
@@ -692,6 +740,20 @@ fn slots(painter: &mut Painter, vitals: &Vitals, right: f32, y: f32, flash: f32)
         } else if let Some(number) = mounted.number() {
             painter.text_right(x + SLOT_WIDTH - 5.0, y + 27.0, 1.0, &number, tone);
         }
+        // Its own readiness along its foot (shooter#127: every copy may fire, held or not):
+        // olive when ready, the refire filling orange, red when the pool cannot pay it.
+        let (bar_x, bar_y, bar_width) = (x + 4.0, y + SLOT_HEIGHT - 5.0, SLOT_WIDTH - 8.0);
+        match mounted.readiness(vitals.energy) {
+            Readiness::Lost => {}
+            Readiness::LowEnergy => {
+                painter.rect(bar_x, bar_y, bar_width, 3.0, srgb(RED, 0.9));
+            }
+            Readiness::Recharging(over) => {
+                painter.rect(bar_x, bar_y, bar_width, 3.0, srgb(STEEL, 1.0));
+                painter.rect(bar_x, bar_y, bar_width * over, 3.0, srgb(ORANGE, 1.0));
+            }
+            Readiness::Ready => painter.rect(bar_x, bar_y, bar_width, 3.0, srgb(OLIVE, 1.0)),
+        }
         x += SLOT_WIDTH + SLOT_GAP;
     }
 }
@@ -918,6 +980,74 @@ mod tests {
         let armed: Vec<bool> = vitals.carried.iter().map(|mounted| mounted.armed).collect();
         assert_eq!(armed, [true, false, true, true]);
         assert!(vitals.armed(), "the held launcher is still on");
+        let quads = Overlay::default().draw(Some(&vitals), 1280, 720, 0.016);
+        assert!(!quads.is_empty());
+    }
+
+    /// Every mounted copy shows its own readiness (shooter#127): the two rail guns fired
+    /// together both recharge, a launcher waits out its family's salvo spacing, and a copy the
+    /// pool cannot pay shows short of energy, whichever is held.
+    #[test]
+    fn every_copy_shows_its_own_readiness() {
+        use shooter_sim::robot::{PartId, ROCKET_POD, TWIN_RAIL};
+        use shooter_sim::weapons::Triggers;
+        let fire = |session: &mut Session, parts: &[u8]| {
+            let triggers: Triggers = parts.iter().copied().map(PartId).collect();
+            session
+                .tick(shooter_sim::Intent {
+                    triggers,
+                    ..shooter_sim::Intent::IDLE
+                })
+                .unwrap();
+        };
+        let mut session = Session::new(shooter_sim::Arena::greybox()).unwrap();
+        session.rebuild(0, TWIN_RAIL).unwrap();
+        let fighter = &mut session.fighters[0];
+        fighter.energy = fighter.pool().capacity;
+        fire(&mut session, &[7, 9]);
+        let vitals = Vitals::of(session.local(), session.ticks());
+        let rails: Vec<Readiness> = vitals
+            .carried
+            .iter()
+            .filter(|mounted| mounted.instance.weapon == Weapon::RailGun)
+            .map(|mounted| mounted.readiness(vitals.energy))
+            .collect();
+        assert!(
+            rails
+                .iter()
+                .all(|ready| matches!(ready, Readiness::Recharging(over) if *over < 0.1)),
+            "{rails:?}"
+        );
+        // The pool drained: both short of energy.
+        session.fighters[0].energy = 1_000;
+        let vitals = Vitals::of(session.local(), session.ticks());
+        assert!(
+            vitals
+                .carried
+                .iter()
+                .filter(|mounted| mounted.instance.weapon == Weapon::RailGun)
+                .all(|mounted| mounted.readiness(vitals.energy) == Readiness::LowEnergy)
+        );
+
+        let mut session = Session::new(shooter_sim::Arena::greybox()).unwrap();
+        session.rebuild(0, ROCKET_POD).unwrap();
+        let fighter = &mut session.fighters[0];
+        fighter.energy = fighter.pool().capacity;
+        fire(&mut session, &[7, 8, 9, 10]);
+        let vitals = Vitals::of(session.local(), session.ticks());
+        let pods: Vec<(u32, Readiness)> = vitals
+            .carried
+            .iter()
+            .map(|mounted| (mounted.cooldown, mounted.readiness(vitals.energy)))
+            .collect();
+        let spacing = Weapon::RocketLauncher.salvo().unwrap().spacing;
+        // The first launched; the others wait for the family, not their own refire.
+        assert_eq!(pods[0].0, 47);
+        assert!(
+            pods[1..]
+                .iter()
+                .all(|(cooldown, _)| *cooldown == spacing - 1)
+        );
         let quads = Overlay::default().draw(Some(&vitals), 1280, 720, 0.016);
         assert!(!quads.is_empty());
     }

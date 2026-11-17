@@ -226,9 +226,11 @@ render-engine's screen-overlay quads in the robot kits' palette (pale grey on gr
 orange accent), in the bottom corners clear of the reticle, laid out for 720 lines and scaled with
 the window. Bottom right, the held weapon: its silhouette, name and mod, the energy a shot costs
 (a second, for the laser and the flamethrower), whether it is ready, recharging (a bar filling to
-its next shot), short of energy or lost, and above it a slot for every weapon the build carries
-with its key (lost ones red and struck out); a switch flashes the panel and sweeps a highlight
-across it. Bottom left, the root chassis' health and the energy pool, with the share one shot of
+its next shot), short of energy or lost, and above it a slot for every weapon copy the build
+carries with its key (lost ones red and struck out), each with its own readiness bar along its
+foot whether held or not (olive ready, filling orange while it recharges or waits out its
+family's salvo spacing, red when the pool cannot pay it, #127); a switch flashes the panel and
+sweeps a highlight across it. Bottom left, the root chassis' health and the energy pool, with the share one shot of
 the held weapon takes marked in orange, and above them, in teal, the field repair panel (the
 quick repair menu while it is open, else the repair under way, else how many parts may be
 repaired). render-engine's overlay draws solid rectangles only, so
@@ -265,8 +267,23 @@ only the weapons its build mounts (#92): the host refuses a switch to any other,
 prediction follows the host. A build may mount one weapon several times (#125): every copy is
 its own weapon, addressed by its part, with its own mount, mod, health, refire and muzzle, its own
 step on the wheel and its own numbered slot on the HUD ("Rail gun 1/2"); losing one copy leaves
-the others. One weapon is held and fires at a time, as before: switching to another copy does not
-skip the last shot's refire (firing several at once is #127).
+the others.
+
+**Firing several weapons at once** (#127, Atlas D2.i123.5). Holding a weapon is a convenience,
+not a gate: the left button fires the held copy, and any gun may also be bound to its own key or
+mouse button, alone (a direct weapon button) or in a weapon group of several, in the builder's
+controls panel (below, **Control layouts**). Groups may overlap and be held together; every
+preset fires all the robot's guns together on the middle mouse button. Each tick the input names
+the copies asked to fire (wire 24; replay format 17), and the host fires each one that is ready
+by its own refire and its family's salvo limit and that the energy pool can pay, first come,
+first served by part: the grapple's hook, the swing, then the guns in part order. A refusal
+refuses only that copy, and a copy asked twice fires once. So two rail guns fire in the same
+tick, a rifle beside a rocket launcher, the shotgun with the laser, with no switch. Every gun is
+always out: a switch delays nothing (the 0.2 s draw is gone). Rocket launchers share one salvo
+limit per robot: at most one rocket a tick and 0.1 s (6 ticks) between launches, so four
+launchers stagger over 0.3 s rather than launching four rockets at once (provisional numbers,
+Atlas Q2.i123.2); no other family has one. Bots fire every copy of the gun they pick through the
+same per-copy requests.
 
 | Key | Weapon | Shot |
 | --- | --- | --- |
@@ -507,15 +524,21 @@ ordinary layout suggested from what is mounted where and correcting nothing: W s
 forward and S back, D and A turn the legs differentially; W rolls each wheel and track the way its
 axle rolls it ahead (a wheel on the front or back rolls the robot sideways: its mounting says
 so), A and D differentially; the mouse's horizontal offset turns every rotor and its vertical
-offset every hinge, so two joint axes aim a turret. In the builder K (or Controls) opens the
+offset every hinge, so two joint axes aim a turret. A binding may instead fire guns (#127): one
+gun is a direct weapon button, several a weapon group (keys and mouse buttons only, held or
+toggled; the blade and the grapple stay on their own keys); the preset's is every gun on the
+middle mouse button. In the builder K (or Controls) opens the
 controls panel in the inspector's place: pick a binding, press Key... and a key (or Mouse to cycle
 the mouse inputs), change its mode, command, inversion and strength, click a part on the robot
-and Part +/- or Flip Part, New for a new binding on the selected part, Preset to go back; every
-edit is checked against the build's actuators by the simulation and refused with its reason.
+and Part +/- or Flip Part, New for a new binding on the selected part (on a gun: a fire binding),
+Preset to go back; every edit is checked against the build's actuators and guns by the
+simulation and refused with its reason.
 Ready takes the layout with the build; while you have not edited it, it follows your build's
 preset. The client resolves the layout every tick and its input carries the resulting
-per-actuator commands (wire 22 and on; wire 23 and replay format 16 address weapons by copy, #125); the host takes only commands the robot's
-connected actuators can take and rests every other actuator, so a tampered input moves nothing
+per-actuator commands and the guns asked to fire (wire 22 and on; wire 23 and replay format 16
+address weapons by copy, #125; wire 24 and replay format 17 carry the fire requests, #127); the
+host takes only commands the robot's connected actuators can take and rests every other
+actuator, and fires only guns the robot still has, so a tampered input moves or fires nothing
 a layout could not. Bots press their build's preset from their movement. The layout lives for
 the session (not saved yet).
 What it does not do yet: **the bindings do not carry a robot.** The movement drive below still

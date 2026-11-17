@@ -1304,6 +1304,7 @@ impl Builder {
                     since_fired: f32::INFINITY,
                     fired: shooter_sim::Instance::default(),
                     shots: 0,
+                    recent: crate::robots::pose::Recent::NONE,
                     held: BETA.weapons(&shown).next().unwrap_or_default(),
                     energy: 1.0,
                     swing: None,

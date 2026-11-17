@@ -25,6 +25,9 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
+/// 17: the logged commands are wire-24 inputs (per-copy fire requests, shooter#127: every
+/// scripted person asks the parts 7 to 12 to fire as a weapon group now and then) and the
+/// digests cover wire-24 snapshots.
 /// 16: the logged commands are wire-23 inputs (a weapon switch names a weapon or an exact
 /// mounted copy, shooter#125; the third and fourth scripted people play the twin rail and the
 /// rocket pod) and the digests cover wire-23 snapshots (the copy held, the copy that fired).
@@ -44,7 +47,7 @@ const MAGIC: &[u8; 4] = b"SHRP";
 /// robot's part healths, part hits and detachments); 7 carried wire 12 (shared energy charge,
 /// batteries, no heat), 6 wire 11 (robot builds as socket-grid component trees), 5 wire 10
 /// (module pickups), 4 wire 9 (robot builds with weapon mods).
-const FORMAT: u8 = 16;
+const FORMAT: u8 = 17;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 
@@ -483,11 +486,12 @@ mod tests {
 
     /// Four scripted people, the third on the twin rail and the fourth on the rocket pod
     /// (shooter#125): the match replays tick for tick, and both fire more than one copy of their
-    /// weapon.
+    /// weapon: the twin rail both at once, the pod never two rockets in one tick (shooter#127).
     #[test]
     fn a_replay_with_weapon_copies_reproduces_every_tick() {
         use shooter_sim::Assembly;
         use shooter_sim::robot::{BETA, PartId, ROCKET_POD, TWIN_RAIL};
+        use shooter_sim::weapons::Weapon;
         let script = Script {
             ticks: 900,
             people: 4,
@@ -498,13 +502,17 @@ mod tests {
         assert_eq!(Replay::decode(&bytes).unwrap(), replay);
         assert_eq!(verify(&replay).unwrap().checkpoints_verified, 900);
         let mut copies: Vec<(Assembly, PartId)> = Vec::new();
+        // Both rail guns in one tick (shooter#127, the scripted weapon group).
+        let mut together = false;
         replay
             .play(u64::MAX, |session| {
+                let mut this_tick: Vec<(u8, Weapon)> = Vec::new();
                 for event in &session.events {
                     if let Event::Fired {
                         slot, weapon, part, ..
                     } = *event
                     {
+                        this_tick.push((slot, weapon));
                         let fighter = &session.fighters[usize::from(slot)];
                         let build = fighter.build;
                         if fighter.human().is_some()
@@ -516,9 +524,23 @@ mod tests {
                         }
                     }
                 }
+                for (slot, fighter) in session.fighters.iter().enumerate() {
+                    let fired = |of: Weapon| {
+                        this_tick
+                            .iter()
+                            .filter(|(shooter, weapon)| {
+                                usize::from(*shooter) == slot && *weapon == of
+                            })
+                            .count()
+                    };
+                    // Never two rockets from one robot in one tick: the salvo limit.
+                    assert!(fired(Weapon::RocketLauncher) <= 1);
+                    together |= fighter.build == TWIN_RAIL && fired(Weapon::RailGun) == 2;
+                }
                 Ok(())
             })
             .unwrap();
+        assert!(together, "the twin rail fires both rail guns in one tick");
         for build in [TWIN_RAIL, ROCKET_POD] {
             let fired: Vec<PartId> = copies
                 .iter()

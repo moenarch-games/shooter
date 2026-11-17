@@ -33,20 +33,24 @@ use crate::physics::articulated::{Child, Motion as BodyMotion, Pose, Shape};
 use crate::pickups::{ArenaModule, Carried, DROP_LIFETIME_TICKS, Drop};
 use crate::player::{Intent, Motion};
 use crate::repair::{self, Order, Repair};
-use crate::robot::{Assembly, AssemblyError, BETA, Candidate, PartId, RawMount, RawPart};
+use crate::robot::{
+    Assembly, AssemblyError, BETA, Candidate, MAX_PARTS, PartId, RawMount, RawPart,
+};
 use crate::scenery::PlaceableState;
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
-use crate::weapons::{Instance, Select, Weapon};
+use crate::weapons::{Instance, Select, Triggers, Weapon};
 use std::fmt;
 
-/// 23: weapons are addressed by mounted copy (shooter#125): an input's switch names a weapon or
+/// 24: inputs carry per-copy fire requests (shooter#127, [`Triggers`]: the guns the person's
+/// direct weapon bindings and groups ask to fire) and a layout's binding may fire guns; 23:
+/// weapons are addressed by mounted copy (shooter#125): an input's switch names a weapon or
 /// an exact weapon part, a fighter's held weapon and a shot's `Fired` event carry the part;
 /// 22: inputs carry the actuator commands the person's control layout resolved
 /// ([`crate::bindings::Motors`], shooter#74); 21: inputs carry the grapple module's own key
 /// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
 /// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
 /// the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 23;
+pub const WIRE_VERSION: u8 = 24;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -431,6 +435,14 @@ impl Out {
             self.command(command);
         }
     }
+    /// An input's per-copy fire requests ([`Triggers`], shooter#127): a count (at most
+    /// [`MAX_PARTS`]), then each part's ID, ascending.
+    fn triggers(&mut self, triggers: &Triggers) {
+        self.u8(count(triggers.parts().len()));
+        for part in triggers.parts() {
+            self.u8(part.0);
+        }
+    }
     /// A length byte, then up to 255 bytes of UTF-8 (cut at a character boundary).
     fn text(&mut self, text: &str) {
         let mut end = text.len().min(usize::from(u8::MAX));
@@ -603,6 +615,25 @@ impl In<'_> {
         }
         Ok(motors)
     }
+    /// Inverse of `Out::triggers`: more than [`MAX_PARTS`] parts, or parts not strictly
+    /// ascending (one asked twice), is malformed.
+    fn triggers(&mut self) -> Result<Triggers, WireError> {
+        let asked = usize::from(self.u8()?);
+        if asked > MAX_PARTS {
+            return Err(WireError::Malformed("too many fire requests"));
+        }
+        let mut triggers = Triggers::NONE;
+        let mut last: Option<PartId> = None;
+        for _ in 0..asked {
+            let part = PartId(self.u8()?);
+            if last.is_some_and(|last| last >= part) {
+                return Err(WireError::Malformed("fire requests out of order or twice"));
+            }
+            last = Some(part);
+            triggers.press(part);
+        }
+        Ok(triggers)
+    }
     fn finish(self) -> Result<(), WireError> {
         if self.0.is_empty() {
             Ok(())
@@ -668,6 +699,7 @@ pub fn encode_input(
         Some(Order::Start(part)) => part.0.min(REPAIR_STOP - 1),
     });
     out.motors(&intent.motors);
+    out.triggers(&intent.triggers);
     out.u32(view_tick);
     out.text(name.unwrap_or_default());
     match build {
@@ -704,6 +736,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
         part => Some(Order::Start(PartId(part))),
     };
     let motors = input.motors()?;
+    let triggers = input.triggers()?;
     let view_tick = input.u32()?;
     let name = Some(input.text()?).filter(|name| !name.is_empty());
     let build = match input.u8()? {
@@ -727,6 +760,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
         select,
         repair,
         motors,
+        triggers,
     };
     Ok(Command {
         intent,
@@ -1347,7 +1381,7 @@ const SOURCE_BUTTON: u8 = 1;
 const SOURCE_MOUSE_X: u8 = 2;
 const SOURCE_MOUSE_Y: u8 = 3;
 const MODES: [Mode; 4] = [Mode::Hold, Mode::Toggle, Mode::Relative, Mode::Offset];
-const OUTPUTS: [Output; 3] = [Output::Stride, Output::Rate, Output::Angle];
+const OUTPUTS: [Output; 4] = [Output::Stride, Output::Rate, Output::Angle, Output::Fire];
 /// A binding's flag: inverted.
 const INVERTED: u8 = 1;
 

@@ -823,6 +823,14 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
         },
         edit: false,
         repair: None,
+        // A weapon group: the parts 7 to 12 asked to fire together for 0.75 s every 4 s
+        // (shooter#127; the twin rail's two rail guns at once, the rocket pod staggered by its
+        // salvo limit, refused where a part is no gun).
+        triggers: if (tick + 35 * person) % 240 < 45 {
+            (7..=12).map(crate::robot::PartId).collect()
+        } else {
+            crate::weapons::Triggers::NONE
+        },
         motors: {
             let layout = crate::mechanics::Layout::of(&crate::robot::STANDARD);
             crate::bindings::Bindings::preset(&layout).resolve(

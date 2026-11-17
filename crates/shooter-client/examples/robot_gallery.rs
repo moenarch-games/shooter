@@ -113,6 +113,7 @@ fn standing(at: Vec3, forward: Vec3) -> RobotState {
         since_fired: f32::INFINITY,
         fired: Instance::new(7, Weapon::EnergyRifle),
         shots: 0,
+        recent: robots::pose::Recent::NONE,
         held: Instance::new(7, Weapon::EnergyRifle),
         energy: 1.0,
         swing: None,

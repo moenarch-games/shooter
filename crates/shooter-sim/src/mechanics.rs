@@ -506,6 +506,9 @@ pub struct Layout {
     pub actuators: Vec<ActuatorPlan>,
     /// Every piece of every part, in part-ID order.
     pub segments: Vec<Segment>,
+    /// The guns among its parts (not the blade or the grapple module), in part-ID order: what
+    /// a fire binding may name (shooter#127).
+    pub guns: Vec<PartId>,
 }
 
 /// The quaternion that turns a capsule's local Y onto a part's local Z.
@@ -584,6 +587,7 @@ impl Layout {
             hinges: Vec::new(),
             actuators: Vec::new(),
             segments: Vec::new(),
+            guns: Vec::new(),
         };
         let body_of = |part: &Part| {
             groups
@@ -775,6 +779,12 @@ impl Layout {
         }
         layout.actuators.sort_by_key(|actuator| actuator.part);
         layout.segments.sort_by_key(|segment| segment.part);
+        // The guns a fire binding may name (shooter#127, [`crate::bindings::Output::Fire`]).
+        layout.guns = parts
+            .iter()
+            .filter(|part| matches!(part_type(part).kind, Kind::Weapon(weapon) if weapon.gun()))
+            .map(|part| part.id)
+            .collect();
         layout
     }
 
