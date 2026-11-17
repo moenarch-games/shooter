@@ -2,8 +2,8 @@
 //! with the pinned kits (`scripts/fetch-robot-kit.sh`): the bench before the match, a part in
 //! hand previewed on a socket it fits, snapping on a crowded face, a part in hand turned about
 //! each axis, a placement the rules refuse for a taken cell, a placement on a turned parent, a
-//! part selected again after placing, a selected weapon, an over-budget build and a build
-//! between lives. Writes PPM images to the directory given (default `target/builder-views`).
+//! part selected again after placing, a selected weapon, the controls panel, an over-budget build
+//! and a build between lives. Writes PPM images to the directory given (default `target/builder-views`).
 
 use shooter_client::builder::view::{Builder, Stage};
 use shooter_client::gpu::Gpu;
@@ -139,6 +139,12 @@ fn main() -> Result<(), String> {
     let mut builder = Builder::new(HEAVY, Stage::Setup);
     builder.bench.selected = Some(PartId(7));
     shoot(&mut builder, "selected.ppm")?;
+
+    // The controls panel (shooter#74) on the standard build's preset, its W binding selected.
+    let mut builder = Builder::new(STANDARD, Stage::Setup);
+    builder.controls_open = true;
+    builder.controls.selected = Some(0);
+    shoot(&mut builder, "controls.ppm")?;
 
     // Over the build points: invalid, Ready off.
     let mut builder = Builder::new(ARMORY, Stage::Setup);

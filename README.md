@@ -217,7 +217,9 @@ the host's reconnect grace. A public host is described in [docs/hosting.md](docs
 
 Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
-mouse. Steer in the air with WASD. R opens the quick repair menu (below, **Field repair**).
+mouse. Steer in the air with WASD. R opens the quick repair menu (below, **Field repair**). The
+same keys and the mouse drive the robot's actuators through its control layout (below,
+**Control layouts**), edited in the builder's controls panel (K).
 
 **HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser:
 render-engine's screen-overlay quads in the robot kits' palette (pale grey on graphite, olive, an
@@ -358,13 +360,13 @@ screen: B opens the builder on the build you come back as and holds the respawn,
 limit, even across a round's start, until you press Ready and the host shows the build
 configured (an input flag, `Intent::edit`; a lost connection lets go of it). While alive there
 is no rebuilding. In the browser the page hides its own overlays while the builder is open. Not
-in the builder yet: actuator bindings and action groups (#74, Atlas D2.i70.7), typed exact angles
+in the builder yet: typed exact angles
 and a testing chamber (post-beta).
 `cargo run -p shooter-client --release --example builder_views -- <dir>` renders the bench
 (before the match, a part being placed, snapping on a crowded face, a part turned about each
-axis, a refused placement, a turned parent, a part selected again, a selected weapon, an
-over-budget build, a build between lives) offscreen; [captures](docs/captures/57-builder/),
-[snapping and turning](docs/captures/124/).
+axis, a refused placement, a turned parent, a part selected again, a selected weapon, the
+controls panel, an over-budget build, a build between lives) offscreen;
+[captures](docs/captures/57-builder/), [snapping and turning](docs/captures/124/).
 
 **Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
 D2.i70.4, D2.i89.1): the root chassis stores 100 and regenerates 24 a second (other chassis
@@ -454,6 +456,41 @@ has no repair module model yet (moritzbrantner/asset-tooling#742): it is drawn a
 Views (the menu with the leg lit, repairing, paused; `--example repair_views`):
 [docs/captures/61](docs/captures/61).
 
+**Control layouts** (`shooter_sim::bindings`, Atlas D2.i70.7, #74). A robot's actuators (its
+legs, wheels, tracks, hinges and rotors) follow one control layout: up to 24 bindings, each from
+a key, a mouse button or a mouse axis to one actuator or an action group of up to 8, with its own
+inversion (and per part, so one side of a differential drive runs backward), strength (or mouse
+sensitivity), hold or toggle for a key or button, and relative steering (stops when the mouse
+stops) or cursor-offset steering (stays where the mouse left it) for a mouse axis; the legs' gait
+(suggested, biped, quadruped, all at once) is part of it. Each binding gives a stride (legs
+only), a rate or an angle; a part takes the kind of the first binding naming it and the sum of
+that kind. Nothing is timed, sequenced or conditional. Every build starts on its preset, an
+ordinary layout suggested from what is mounted where and correcting nothing: W strides every leg
+forward and S back, D and A turn the legs differentially; W rolls each wheel and track the way its
+axle rolls it ahead (a wheel on the front or back rolls the robot sideways: its mounting says
+so), A and D differentially; the mouse's horizontal offset turns every rotor and its vertical
+offset every hinge, so two joint axes aim a turret. In the builder K (or Controls) opens the
+controls panel in the inspector's place: pick a binding, press Key... and a key (or Mouse to cycle
+the mouse inputs), change its mode, command, inversion and strength, click a part on the robot
+and Part +/- or Flip Part, New for a new binding on the selected part, Preset to go back; every
+edit is checked against the build's actuators by the simulation and refused with its reason.
+Ready takes the layout with the build; while you have not edited it, it follows your build's
+preset. The client resolves the layout every tick and its input carries the resulting
+per-actuator commands (wire 22, replay format 15); the host takes only commands the robot's
+connected actuators can take and rests every other actuator, so a tampered input moves nothing
+a layout could not. Bots press their build's preset from their movement. The layout lives for
+the session (not saved yet).
+What it does not do yet: **the bindings do not carry a robot.** The movement drive below still
+moves every robot by the fast-movement rules (WASD, Space, Shift, C), and the same keys stride
+its legs and roll its wheels through the preset, which with the drive is mostly seen, not felt;
+the joints (turrets) are moved by the layout alone. Driving robots by their actuators only
+waits on an owner decision (Atlas Q2.i74.1): measured on physics-engine without the drive, five
+of the six named loadouts fall over within two seconds standing on their own legs, every biped falls when it
+walks or turns at the match's 18 m/s², the robo-dog crawls at a few centimetres a second, the
+car rolls at 2 m/s and the tank fixture's tracks spin free under a hull resting on the floor
+(#58). `cargo test -p shooter-sim --test bindings` covers the layouts, the presets driving
+wheels, legs and turrets in the mechanics world (no drive), the codecs and the host's check.
+
 **Mechanics** (`shooter_sim::mechanics`, Atlas D2.i70.5, #73). The simulation
 builds any valid robot as a mechanical one in a dynamic world of its own
 (`shooter_sim::physics::articulated`, on physics-engine's compound bodies and revolute joints
@@ -484,10 +521,10 @@ motion); each change rebuilds the world from its exact state, so the host, a pre
 a replay hold the same world. The fast-movement rules (sprint, slide, double jump, jump pads, air
 control, the grapple's rope) give the velocity a movement drive sets on the whole robot's centre
 of mass, which also keeps it upright and turns it to face the aim (at most 16 rad/s); its legs
-stride on the suggested gait and its wheels and tracks roll at the rate its speed gives them, and
+stride and its wheels and tracks roll as its control layout tells them (above, **Control layouts**; until #74 at the rate its speed gave them), and
 every motor draws from the pool after the tick's jumps, swings and shots (two legs: 8 a second
 against the chassis' 24, so weapons recharge a third slower; provisional). The simplest mapping
-until the bindings (#74), with what it costs: the robot's bodies slide frictionless where the
+while the bindings do not carry a robot, with what it costs: the robot's bodies slide frictionless where the
 drive takes them (its feet do not drag it), its legs bend only within the gaits' range (±0.4 rad
 at the hip, 0.8 at the knee) so bumps cannot fold them, it walks only with a leg, wheel or track
 on the ground, it hops onto ledges up to 35 cm its feet catch (the capsule's step-up), and a

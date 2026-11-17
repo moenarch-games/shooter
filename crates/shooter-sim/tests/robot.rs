@@ -4,6 +4,8 @@
 //! rejection, the budgets at their limits, builds from untrusted bytes, and builds through a
 //! match (configured while alive, applied at the next spawn, carried in snapshots, replayed
 //! exactly, firing with their weapon mods).
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::damage::PartDamage;
 use shooter_sim::energy::Pool;

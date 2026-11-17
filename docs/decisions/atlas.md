@@ -174,7 +174,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   keeps it upright facing the aim, its legs stride and wheels roll along, its bodies slide
   frictionless (the drive carries them) and its legs bend within the gaits' range; a lost part
   leaves the bodies; snapshots, prediction and replays carry the exact state. The drive is a
-  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it. Both
+  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it (since
+  shooter#74 the actuators take the person's control layout instead of the drive's fixed
+  mapping, and the drive stands pending Q2.i74.1). Both
   clients draw every part where those bodies are (the legs' hip and knee, the wheels' and tracks'
   roll and the joints' turn included; shooter#54), not from the kit's leg clips.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
@@ -190,6 +192,30 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   the same commands, and inputs never apply fake chassis forces. No programmable or timed
   automation, conditional scripts, automatic attacks, combo planners or automatic correction of
   unusual builds; manually switchable control modes are later. Owner: shooter#74.
+  Since shooter#74 the layouts ship (`shooter_sim::bindings`), with the simplest options for
+  what was open: at most 24 bindings and 8 parts a group; keys by their W3C codes (48 of them),
+  mouse buttons 0 to 4, the mouse's horizontal and vertical movement; a binding gives a stride
+  (legs only), a rate (full scale the motor's top rate) or an angle (full scale a quarter turn);
+  a part takes the kind of the first binding naming it and the clamped sum of that kind; a key's
+  strength is percent of full scale, a mouse axis's its sensitivity (relative: thousandths a
+  count; offset: a tenth of that, the offset clamped to full scale); the layout includes the
+  legs' gait choice. Presets are suggested from the build (W/S stride the legs or roll each
+  wheel and track the way its axle rolls it ahead, A/D differentially; mouse offset to every
+  rotor and hinge) and edited like any layout in the builder's controls panel (K); a layout the
+  person has not edited follows the build's preset, an edited one keeps its bindings and loses
+  only targets the build no longer has. The client resolves its layout each tick and sends the
+  per-actuator commands in its input (wire 22, replay format 15), not the layout: the host
+  keeps only the commands the robot's connected actuators take (`Motors::controls`; a stride
+  for a wheel, or a command for a part that is no actuator, is ignored, and an input past the
+  bounds is malformed) and rests every other actuator (a leg standing, a wheel braked, a joint
+  centred), so a tampered input moves nothing some layout could not; the layout itself is
+  checked against the build (`Bindings::check`) where it is edited and bounded where it is
+  decoded (`wire::decode_bindings`). Bots resolve their build's preset from their movement
+  keys. The layout lives for the session. **Not yet**: the bindings do not carry the robot. The
+  interim movement drive (D2.i70.5) still moves every robot by the D2.3 rules from the
+  movement keys; the same keys stride its legs and roll its wheels through the preset, which
+  under the drive (frictionless bodies) shows rather than moves, while the joints answer the
+  layout alone. Removing the drive is Q2.i74.1.
 - **D2.i70.8** (owner, 2026-11-13; shooter#70; refines D2.i46.6): Armor is individual plates with
   real hitboxes, and penetration is weapon-specific, so a hit may reach components behind a plate.
   A part works fully until its health reaches zero (no gradual degradation); at zero it is
@@ -278,7 +304,8 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   Robot is B while dead, carried as an input flag (`Intent::edit`, wire 15) that holds the dead
   robot out of its respawn and out of a round's start; the builder closes when a snapshot shows
   the readied build configured, and a person whose inputs stop (a lost connection) lets go of it
-  after the input hold. Not yet: action-group bindings (shooter#74) and typed exact angles.
+  after the input hold. Not yet: typed exact angles. Since shooter#74 the builder's controls
+  panel edits the control layout (D2.i70.7) and Ready sends it with the build.
   Since shooter#124 (reliable snapping and turning; the rotation's presentation stays the owner's
   open question, so no gizmo, only keys, buttons and a key hint): the socket under the pointer is
   the cell a ray from the camera meets on the first part box (hidden sockets are neither lit nor
@@ -288,7 +315,7 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   build. The keys turn the part in hand first, else the selected part, by a quarter turn by
   default (G steps to an eighth and about a degree; Shift back, Ctrl a degree), Z / Y undo and
   redo every edit to the exact build, Escape cancels a drag and a refused drop keeps the part in
-  hand.
+  hand; none of these keys fires while the controls panel waits for a binding's key.
 - **D2.i70.12** (owner, 2026-11-13; shooter#70): What ships today is the baseline, not the beta
   contract: `shooter_sim::robot` (shooter#47) with its anatomical torso, head, arm and locomotion
   sockets, hand and shoulder hardpoints, named loadouts and its mass, power, heat and cooling
@@ -606,6 +633,20 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   standard robots shedding their weapons once a second each (native, release, `collisions --
   --ignored`): about 0.46 ms a tick with them shattered and about 0.61 ms with them as debris,
   the budget full throughout.
+- **Q2.i74.1**: How robots move once the interim movement drive goes (D2.i70.5, D2.i70.7): what
+  keeps a legged robot standing and walking on its actuators alone, given that nothing may
+  auto-correct a build and sophisticated self-balancing is later. Measured on physics-engine
+  without the drive (shooter#74, the match's 18 m/s², feet on the floor with the gaits'
+  friction): five of the six named loadouts (two legs under a 20 cm deep chassis, the guns on
+  its front) tip onto their faces within two seconds standing still, and all six, and the
+  biped fixture, fall when they walk; the bipeds also fall turning on the spot; the robo-dog
+  walks about 0.35 m/s at Earth's gravity but a few centimetres a second at 18 m/s²; the car
+  rolls about 2 m/s; the tank fixture's tracks spin free under a hull resting on the floor
+  (shooter#58's ground-clearance note). Longer feet (60 cm) let four of the six loadouts stand
+  but not walk. Options include: a leg module with an ankle and a simple stance controller of
+  its own; named loadouts on four legs, wheels or tracks; the drive kept for legs only; or
+  movement stats derived from the actuators' commands. Until decided the drive stands and the
+  layouts drive the actuators under it.
 - **Q2.i60.1**: Arena destruction balance: which placeables of each map break, their health, what
   damages them and how much, and whether a broken one ever comes back within a round (D2.i46.11;
   shooter#60 leaves pieces and thresholds to map and content balance).

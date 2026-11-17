@@ -70,7 +70,7 @@ pub(super) fn engine_body(body: &RigidBody) -> Body {
                 RampRise::NegZ => (Vector(hz, hy, hx), -std::f32::consts::FRAC_PI_2),
             };
             let mut wedge = Body::keyed(key, Shape::Wedge(half), vector(body.position), 0.0);
-            let (sin, cos) = (turn / 2.0).sin_cos();
+            let (sin, cos) = libm::sincosf(turn / 2.0);
             wedge.orientation = Quaternion(0.0, sin, 0.0, cos);
             wedge
         }
@@ -205,7 +205,7 @@ impl World {
     /// Whether a support-cast hit is walkable static ground (a too-steep face met first, a
     /// ramp's chute end, is passed over as the engine's own support test does).
     fn supports(&self, hit: &QueryHit) -> bool {
-        let min_up = self.settings.max_slope.cos();
+        let min_up = libm::cosf(self.settings.max_slope);
         (hit.starts_overlapping || hit.normal.1 > 0.0)
             && hit.normal.1 >= min_up
             && self

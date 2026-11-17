@@ -29,6 +29,7 @@
 //! loadout) can be undone and redone: the bench keeps the builds before and after, so undo and
 //! redo restore the exact build that was there.
 
+pub mod controls;
 pub mod view;
 
 use shooter_sim::Weapon;
@@ -139,6 +140,10 @@ pub enum Refusal {
     NoUndo,
     /// No undone edit to redo.
     NoRedo,
+    /// The control layout edit breaks a binding rule ([`controls`]).
+    Binding(shooter_sim::bindings::BindingError),
+    /// A key no binding may name.
+    UnboundKey,
 }
 
 impl fmt::Display for Refusal {
@@ -150,6 +155,8 @@ impl fmt::Display for Refusal {
             Self::NoMods => formatter.write_str("no mod fits this part"),
             Self::NoUndo => formatter.write_str("nothing to undo"),
             Self::NoRedo => formatter.write_str("nothing to redo"),
+            Self::Binding(error) => error.fmt(formatter),
+            Self::UnboundKey => formatter.write_str("that key cannot be bound"),
         }
     }
 }

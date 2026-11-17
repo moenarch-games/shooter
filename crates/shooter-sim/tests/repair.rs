@@ -4,6 +4,8 @@
 //! itself), hits elsewhere do not; refused orders (whole, unknown, out-of-reach or destroyed
 //! parts), a destroyed module, the shared pool shared with shots and motion, an empty pool,
 //! respawn, the wire, a predicting client and a replay.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::aim;
 use shooter_sim::physics::Vec3i;
