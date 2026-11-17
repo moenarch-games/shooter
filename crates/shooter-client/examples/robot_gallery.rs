@@ -17,6 +17,7 @@
 //! heavy build close up), `mods.ppm` (the skirmisher and marksman close up), `locomotion.ppm`
 //! (the wheeled fixtures and the mini-tank as the simulation drove them, a car a second into its
 //! drive, a damaged wheel and a lost one, a damaged track),
+//! `rails.ppm` (the mount-rail fixtures, and the rail rack with its long rail shot off),
 //! `locomotion-close.ppm` (the car and the mini-tank close up) and `locomotion-damage.ppm` (the
 //! damaged and lost wheel and the damaged track close up).
 
@@ -458,7 +459,79 @@ fn main() -> Result<(), String> {
         &out.join("close.ppm"),
     )?;
 
+    rails(&mut gpu, &mut robots, origin, &out)?;
     locomotion(&mut gpu, &mut robots, origin, &out)
+}
+
+/// `rails.ppm`: the mount-rail fixtures (shooter#126) as the simulation stands them, turned a
+/// little toward the camera: the rail rack, the cross rail, the adapter mast, and the rail rack
+/// with its long rail shot off (the rail and its four weapons lying beside it).
+fn rails(
+    gpu: &mut Gpu,
+    robots: &mut Robots,
+    origin: Vec3,
+    out: &std::path::Path,
+) -> Result<(), String> {
+    use shooter_sim::robot::{ADAPTER_MAST, CROSS_RAIL, RAIL_RACK};
+    let facing = Vec3::new(-0.5, 0.0, -1.0);
+    let at = |index: usize| {
+        #[allow(clippy::cast_precision_loss)]
+        let x = index as f32 * 1.5;
+        origin - Vec3::X * x
+    };
+    let index = |id: u8| {
+        RAIL_RACK
+            .parts()
+            .iter()
+            .position(|part| part.id == PartId(id))
+            .unwrap_or(0)
+    };
+    let shot_off: Vec<u8> = vec![3, 4, 5, 6, 7];
+    let lost: u32 = shot_off.iter().map(|&id| 1 << index(id)).sum();
+    let lineup = [
+        (RAIL_RACK, 0),
+        (CROSS_RAIL, 0),
+        (ADAPTER_MAST, 0),
+        (RAIL_RACK, lost),
+    ];
+    let frames: Vec<Frames> = lineup
+        .iter()
+        .enumerate()
+        .map(|(slot, (build, lost))| {
+            simulated(*build, *lost, 0, stand, &standing(at(slot), facing))
+        })
+        .collect::<Result<_, _>>()?;
+    let lying = |slot: usize| {
+        let ground = at(slot) + Vec3::new(0.0, 0.0, -0.7);
+        Mat4::from_rotation_translation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), ground)
+    };
+    let detached: Detached = shot_off.iter().map(|&id| (PartId(id), lying(3))).collect();
+    let views: Vec<RobotView> = lineup
+        .iter()
+        .zip(&frames)
+        .enumerate()
+        .map(|(slot, ((build, lost), frames))| RobotView {
+            slot: u8::try_from(slot).unwrap_or(0),
+            build: *build,
+            state: standing(at(slot), facing),
+            glow: 0.0,
+            highlight: None,
+            parts: PartStates {
+                frames: Some(frames),
+                detached: if *lost == 0 { &[] } else { &detached },
+                ..PartStates::default()
+            },
+        })
+        .collect();
+    let middle = at(1) - Vec3::X * 0.75 + Vec3::Y * 1.0;
+    shoot(
+        gpu,
+        robots,
+        &views,
+        middle + Vec3::new(-0.8, 0.8, -4.6),
+        middle,
+        &out.join("rails.ppm"),
+    )
 }
 
 /// A tracked build (not a simulation fixture: where tracks should sit is shooter#58): the large

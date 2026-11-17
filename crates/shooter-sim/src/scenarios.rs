@@ -17,7 +17,7 @@ use crate::physics::Vec3i;
 use crate::pickups::{ArenaModule, ModulePad};
 use crate::player::Intent;
 use crate::proving_cell::STAGE_TOP;
-use crate::robot::{Assembly, HEAVY, ROCKET_POD, SKIRMISHER, TWIN_RAIL};
+use crate::robot::{Assembly, HEAVY, RAIL_RACK, ROCKET_POD, SKIRMISHER, TWIN_RAIL};
 use crate::tour::{EAST, Leg, NORTH, SOUTH, WEST, hold, stand, walk};
 use crate::weapons::{MAX_PITCH, Select, Weapon};
 
@@ -837,7 +837,8 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
 /// The robot build scripted person `index` asks for when it joins: the first person comes back
 /// as the [`HEAVY`] build after its first death, the second as the modded [`SKIRMISHER`]
 /// (rapid-cycler rifle, efficiency-coiled shotgun), the third as the [`TWIN_RAIL`] and the fourth
-/// as the [`ROCKET_POD`] (one weapon mounted several times, shooter#125); the others keep the
+/// as the [`ROCKET_POD`] (one weapon mounted several times, shooter#125) and the fifth as the
+/// [`RAIL_RACK`] (six weapons on two mount rails, shooter#126); the others keep the
 /// standard build.
 #[must_use]
 pub const fn scripted_build(index: u8) -> Option<Assembly> {
@@ -846,6 +847,7 @@ pub const fn scripted_build(index: u8) -> Option<Assembly> {
         1 => Some(SKIRMISHER),
         2 => Some(TWIN_RAIL),
         3 => Some(ROCKET_POD),
+        4 => Some(RAIL_RACK),
         _ => None,
     }
 }
