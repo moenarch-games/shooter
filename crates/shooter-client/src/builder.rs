@@ -30,6 +30,7 @@
 //! redo restore the exact build that was there.
 
 pub mod controls;
+pub mod saved;
 pub mod view;
 
 use shooter_sim::Weapon;
