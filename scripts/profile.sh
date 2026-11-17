@@ -2,7 +2,7 @@
 # Profiles the shooter with runtime-profiler. Usage: scripts/profile.sh [OUT] [native|web|all]
 # (default target/profile, all). Writes into OUT:
 #   bot-match/      native: the scripted bot match without a window (profiles/bot-match.yaml):
-#                   bundle/ (with native-perf hotspots), hotspots.md, summary.txt and the same
+#                   bundle/, summary.txt and the same
 #                   match as a replay, bot-match.shrp
 #   native-client/  native: the native client drawing a scripted practice match offscreen
 #                   (profiles/native-client.yaml): bundle/ and summary.txt with frame times
@@ -45,8 +45,6 @@ if [[ "$lane" != web ]]; then
 
   "$profiler" capture --scenario profiles/bot-match.yaml --output "$out/bot-match/bundle" > /dev/null
   "$profiler" summarize --bundle "$out/bot-match/bundle" | tee "$out/bot-match/summary.txt"
-  # native-perf's top hotspots (bundle/hotspots.json has all of them) as Markdown.
-  "$profiler" render-agent-guidance --bundle "$out/bot-match/bundle" --output "$out/bot-match/hotspots.md"
   target/release/shooter-replay record --ticks 20000 -o "$out/bot-match/bot-match.shrp" |
     tee -a "$out/bot-match/summary.txt"
 
