@@ -379,7 +379,7 @@ as its bodies (its guns reach over a 1.2 m cover and stop it a little further fr
 the capsule did; two of the capsule-tuned routes, the works' 4 m step from the 2 m one and the
 thruster jump onto a 2 m ledge, no longer land for the standard robot). Snapshots carry each
 living robot's exact state (every body's motion, its lost parts, its gait clock; wire version
-16), from which a client resumes its prediction: bit for bit like the host, whole or one-legged
+17), from which a client resumes its prediction: bit for bit like the host, whole or one-legged
 (`cargo test -p shooter-sim --test match_robots`). The clients still draw the robots at their
 centres and facing (the legs' kit clips, not the bodies' poses).
 
@@ -466,13 +466,19 @@ on the assembly works the capacitor lies on the gantry bridge's middle and thrus
 tower; on the proving cell the capacitor lies on the test stage's middle and thrusters on each
 gallery.
 A module lasts until its uses are spent, its holder dies or the round ends (owner decision on
-#62); nothing drops. A robot carries one module, and taking another replaces it. A pad is back
-30 s after it was taken; every pad is ready at the start of a round. When several robots reach a
-ready pad in the same tick the nearest (feet to pad centre) takes it, then the lowest slot. The
-host owns all of it; snapshots carry the pads and each fighter's module, the HUD's status line
-shows the carried module and its uses left, the feed announces pickups, and the pads are drawn
-as tinted plates with the module floating over them while it is there. Values are provisional
-(Atlas Q2.i46.3); the boosts are paid from the robot's shared energy pool (owner option B on #62).
+#62). A robot that dies carrying one drops it where it fell, with the uses it had left (a robot
+falling out of the arena takes it along); any living robot, whatever its build, takes the drop
+by walking onto it, the dead holder's effect is gone, and an untaken drop is gone after 30 s or
+at the round's end. A robot carries one module, and taking another replaces it. A pad is back
+30 s after it was taken, whatever happens to its module; every pad is ready at the start of a
+round. When several robots reach a ready pad or a drop in the same tick the nearest (feet to its
+centre) takes it, then the lowest slot (pads first, then drops, oldest first). The host owns all
+of it; snapshots carry the pads, the drops and each fighter's module (wire version 17), clients
+predict taking a drop, the HUD's status line shows the carried module and its uses left, the
+feed announces pickups, drops and who took a drop with how many uses, and the pads are drawn as
+tinted plates with the module floating over them while it is there, a drop as the same module
+floating where it lies. Values are provisional (Atlas Q2.i46.3); the boosts are paid from the
+robot's shared energy pool (owner option B on #62).
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points
 and the map's waypoints (wall gaps, doorways, ramp ends, the decks, the platforms), taking only straight
@@ -505,9 +511,10 @@ builds of every form (the loadouts, a mini-tank, a robo-dog, a humanoid, station
 grappling-only machines), every rejection (the retired core code, cycles, double parents, overlaps, the part
 ceiling, mods), the budgets at their limits, tampered builds on the wire, modded fire and builds
 through a replayed match; the A/B also runs the shooting and close ranges as the modded loadouts.
-`cargo test -p shooter-sim --test pickups` checks contested pads, pad respawn, modules lasting a
-life until spent or death, round and map starts, the rail capacitor's lag-compensated hits and
-frags, thrusters, robots of different builds and the wire.
+`cargo test -p shooter-sim --test pickups` checks contested pads and drops, pad respawn, modules lasting a
+life until spent or death, the drop at death with its uses left and its pickup by another build,
+the drops' lifetime, round ends and map starts, the rail capacitor's lag-compensated hits and
+frags, thrusters, robots of different builds, a client predicting a drop's pickup and the wire.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
 lag compensation of shots and swings, that the reticle's aim ends where the hosted beam does, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
 clients through a real game-server host on loopback, resumes a severed connection in its slot and

@@ -16,6 +16,7 @@ use crate::scene::{self, Actors, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT,
 use render_engine::glam::{Mat4, Vec3};
 use shooter_sim::aim::{self, RETICLE_RANGE_UNITS};
 use shooter_sim::damage::{Hitboxes, PartDamage};
+use shooter_sim::physics::Vec3i;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
 use shooter_sim::robot::PartId;
 use shooter_sim::scenarios::scripted_intent;
@@ -773,18 +774,24 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        // The modules lying on their pads (ready to take).
+        // The modules lying on their pads (ready to take), and where dead carriers dropped them.
         #[allow(clippy::cast_precision_loss)]
+        let ground = |center: Vec3i| {
+            Vec3::from([center.x, center.y, center.z].map(|axis| axis as f32)) * METRES_PER_UNIT
+        };
         let modules: Vec<(Vec3, ArenaModule)> = snapshot
             .iter()
-            .flat_map(|snapshot| &snapshot.pickups)
-            .filter(|pickup| pickup.ready_in == 0)
-            .map(|pickup| {
-                let center = [pickup.center.x, pickup.center.y, pickup.center.z];
-                (
-                    Vec3::from(center.map(|axis| axis as f32)) * METRES_PER_UNIT,
-                    pickup.module,
-                )
+            .flat_map(|snapshot| {
+                let pads = snapshot
+                    .pickups
+                    .iter()
+                    .filter(|pickup| pickup.ready_in == 0)
+                    .map(|pickup| (ground(pickup.center), pickup.module));
+                let drops = snapshot
+                    .drops
+                    .iter()
+                    .map(|drop| (ground(drop.center), drop.carried.module));
+                pads.chain(drops)
             })
             .collect();
         let me = local.and_then(|slot| snapshot.and_then(|snapshot| snapshot.slot(slot)));

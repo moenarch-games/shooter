@@ -2,7 +2,7 @@
 //! carried weapons, the root chassis' health and the energy) does not draw yet. It is built here
 //! once, then shown by the page's DOM in the browser and in the window title natively: the parts
 //! damaged and lost, frags and place, the equipped weapon mods, the module pickup carried (with
-//! its uses left), the round clock, a feed of kills and module pickups, a respawn
+//! its uses left), the round clock, a feed of kills, module pickups and drops, a respawn
 //! or connection banner, and the scoreboard (held Tab, or between rounds).
 
 use crate::overlay::{mod_name, weapon_name};
@@ -97,17 +97,22 @@ const fn module_name(module: ArenaModule) -> &'static str {
     }
 }
 
+/// A module's uses left, "4 jumps".
+fn uses(carried: Carried) -> String {
+    let uses = match carried.module {
+        ArenaModule::RailCapacitor => "rail shots",
+        ArenaModule::Thrusters => "jumps",
+    };
+    format!("{} {uses}", carried.uses_left)
+}
+
 /// The carried module and its uses left, "   module: Thrusters (4 jumps)", or nothing.
 fn carrying(carried: Option<Carried>) -> String {
     carried.map_or_else(String::new, |carried| {
-        let uses = match carried.module {
-            ArenaModule::RailCapacitor => "rail shots",
-            ArenaModule::Thrusters => "jumps",
-        };
         format!(
-            "   module: {} ({} {uses})",
+            "   module: {} ({})",
             module_name(carried.module),
-            carried.uses_left
+            uses(carried)
         )
     })
 }
@@ -166,6 +171,29 @@ impl Hud {
                 Event::ModuleSpent { slot, module } if Some(slot) == local => {
                     format!("{} spent", module_name(module))
                 }
+                Event::ModuleDropped { slot, carried } => format!(
+                    "{} dropped the {} ({})",
+                    name(snapshot, slot, local),
+                    module_name(carried.module).to_lowercase(),
+                    uses(carried)
+                ),
+                Event::DropTaken {
+                    slot,
+                    from,
+                    carried,
+                } => format!(
+                    "{} took {} {} ({})",
+                    name(snapshot, slot, local),
+                    if Some(from) == local {
+                        "your".to_owned()
+                    } else if from == slot {
+                        "back the".to_owned()
+                    } else {
+                        format!("{}'s", name(snapshot, from, local))
+                    },
+                    module_name(carried.module).to_lowercase(),
+                    uses(carried)
+                ),
                 _ => continue,
             };
             self.feed.push((line, 0.0));
@@ -311,4 +339,57 @@ pub fn show(text: &HudText, last: &mut HudText, window: &winit::window::Window) 
     }
     window.set_title(&format!("shooter — {}", parts.join("   ·   ")));
     *last = text.clone();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_feed_announces_a_dropped_module_and_who_took_it() {
+        let snapshot = Snapshot {
+            tick: 0,
+            map: None,
+            phase: Phase::Playing { ends_at: None },
+            frag_limit: 0,
+            fighters: Vec::new(),
+            rockets: Vec::new(),
+            pellets: Vec::new(),
+            pickups: Vec::new(),
+            drops: Vec::new(),
+            events: Vec::new(),
+            names: Vec::new(),
+        };
+        let carried = Carried {
+            module: ArenaModule::Thrusters,
+            uses_left: 4,
+        };
+        let mut hud = Hud::default();
+        hud.events(
+            &snapshot,
+            &[
+                Event::ModuleDropped { slot: 2, carried },
+                Event::DropTaken {
+                    slot: 0,
+                    from: 2,
+                    carried,
+                },
+                Event::DropTaken {
+                    slot: 3,
+                    from: 0,
+                    carried,
+                },
+            ],
+            Some(0),
+        );
+        let text = hud.text(Some(&snapshot), Some(0), None, false, 0.0);
+        assert_eq!(
+            text.feed,
+            [
+                "Bot 3 dropped the thrusters (4 jumps)",
+                "You took Bot 3's thrusters (4 jumps)",
+                "Bot 4 took your thrusters (4 jumps)",
+            ]
+        );
+    }
 }

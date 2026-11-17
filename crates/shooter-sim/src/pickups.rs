@@ -24,12 +24,19 @@
 //!   [`THRUSTER_JUMPS`] jumps for [`THRUSTER_JUMP_ENERGY`] each (a jump the pool cannot pay is a
 //!   plain jump and spends no use). Each boosted shot or jump spends one use, and the last one
 //!   spends the module ([`crate::Event::ModuleSpent`]).
-//! - **Death and round end.** Death removes the module at once and drops nothing; a fresh round
-//!   (or a match on another map) clears every module and readies every pad.
+//! - **Death drops.** A fighter that dies carrying a module loses its effect at once and leaves it
+//!   where its feet were, with the uses it had left (owner decision on #62, 14 Nov 2026), as a
+//!   [`Drop`]; a fighter that falls out of the arena takes its module with it. Any living fighter
+//!   collects a drop as it would a pad, whatever its build: within [`REACH_UNITS`] of where it
+//!   lies, the nearest, then the lowest slot. Drops resolve after the pads, oldest first, and a
+//!   collected one carries the uses it had, not a fresh module's. A drop lies for at most
+//!   [`DROP_LIFETIME_TICKS`] (30 s) and is gone after that; dropping never touches a pad's clock.
+//! - **Round end.** The end of a round removes every drop; the fresh round (or a match on another
+//!   map) clears every carried module and readies every pad.
 //! - **Pad respawn.** A pad comes back [`PAD_RESPAWN_TICKS`] (30 s) after it was taken.
 //!
-//! The module list, the uses and the respawn time are the shooter's provisional defaults
-//! (Atlas Q2.i46.3), chosen to be simple, not owner-approved balance.
+//! The module list, the uses, the respawn time and the drops' lifetime are the shooter's
+//! provisional defaults (Atlas Q2.i46.3), chosen to be simple, not owner-approved balance.
 
 use crate::fixed::subunits_per_tick;
 use crate::physics::Vec3i;
@@ -43,6 +50,8 @@ pub const RAIL_CAPACITOR_SHOTS: u8 = 5;
 pub const THRUSTER_JUMPS: u8 = 6;
 /// How long a pad stays empty after its module was taken: 30 s.
 pub const PAD_RESPAWN_TICKS: u32 = 30 * 60;
+/// How long a dropped module lies before it is gone: 30 s.
+pub const DROP_LIFETIME_TICKS: u32 = 30 * 60;
 /// How far (units, on X and on Z) a fighter's feet may be from a pad's centre and take it.
 pub const REACH_UNITS: i32 = 60;
 /// How far above (or below) a pad's centre the feet may be and take it: a fighter jumping low
@@ -222,17 +231,42 @@ impl ModulePad {
     /// within its reach.
     #[must_use]
     pub fn reach(&self, feet: Vec3i) -> Option<i64> {
-        let d = [
-            feet.x - self.center.x,
-            feet.y - self.center.y,
-            feet.z - self.center.z,
-        ];
-        (d[0].abs() <= REACH_UNITS && d[2].abs() <= REACH_UNITS && d[1].abs() <= REACH_HEIGHT_UNITS)
-            .then(|| {
-                d.iter()
-                    .map(|axis| i64::from(*axis) * i64::from(*axis))
-                    .sum()
-            })
+        reach(self.center, feet)
+    }
+}
+
+/// The squared distance (whole units) from `center` to feet at `feet`, when they are within a
+/// pickup's reach of it ([`REACH_UNITS`], [`REACH_HEIGHT_UNITS`]).
+#[must_use]
+pub fn reach(center: Vec3i, feet: Vec3i) -> Option<i64> {
+    let d = [feet.x - center.x, feet.y - center.y, feet.z - center.z];
+    (d[0].abs() <= REACH_UNITS && d[2].abs() <= REACH_UNITS && d[1].abs() <= REACH_HEIGHT_UNITS)
+        .then(|| {
+            d.iter()
+                .map(|axis| i64::from(*axis) * i64::from(*axis))
+                .sum()
+        })
+}
+
+/// A module a fighter dropped at its death, lying where its feet were with the uses it had left
+/// ([`crate::pickups`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Drop {
+    /// Where it lies (whole units): the dead fighter's feet.
+    pub center: Vec3i,
+    pub carried: Carried,
+    /// The slot that dropped it.
+    pub from: u8,
+    /// The ticks it still lies (at most [`DROP_LIFETIME_TICKS`]).
+    pub expires_in: u32,
+}
+
+impl Drop {
+    /// The squared distance (whole units) from where it lies to feet at `feet`, when they are
+    /// within its reach.
+    #[must_use]
+    pub fn reach(&self, feet: Vec3i) -> Option<i64> {
+        reach(self.center, feet)
     }
 }
 
