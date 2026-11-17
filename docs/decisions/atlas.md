@@ -333,6 +333,23 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   spawn count, arena capacity, hull surface extent and route geometry remain
   layout and balance work for #55, validated in native and browser playtests.
 
+
+- **D2.i55.2** (owner, 2026-11-17; shooter#55, option C): The two-ship
+  drydock arena uses **hybrid symmetry**. Keep the competitive skeleton
+  broadly balanced: comparable safe-spawn protection, access to contested
+  pickups and repair anchors, ground-to-hull routes, flanking opportunities
+  and ways to challenge elevated firing positions from either side. Give
+  the **two spacecraft distinct silhouettes, industrial details, gantries,
+  cover shapes and local route geometry**, rather than mirroring one ship
+  exactly onto the other. Balance tactical opportunities and counterplay,
+  not individual polygons or identical paths. Verify the result with
+  traversal/spawn and bot tests, plus native/browser matches using
+  different locomotion, close-range and long-range robot builds. This
+  refines D2.i55.1; exact footprints, distances, spawns, slot capacity
+  and local landmarks remain design/playtest tuning in #55. Keep the
+  existing no-interiors rule, shared arena-kit pipeline and Shooter-owned
+  gameplay/collision authority.
+
 ## 3. Platforms
 
 - **D3.1** (owner, 2026-11-11): Native wgpu client on render-engine plus a browser client on Pages.
