@@ -241,6 +241,7 @@ pub mod online {
     use shooter_sim::grapple::Hook;
     use shooter_sim::names;
     use shooter_sim::player::Motion;
+    use shooter_sim::scenery::PlaceableState;
     use shooter_sim::weapons::Delivery;
     use shooter_sim::wire::encode_input;
     use shooter_sim::{
@@ -274,6 +275,9 @@ pub mod online {
         name: Option<String>,
         /// The loadout asked of the host, if any.
         build: Option<Assembly>,
+        /// The arena's damaged placeables as the host last said (the predictor stands its arena
+        /// so before every predicted tick).
+        scenery: Vec<PlaceableState>,
         /// The local fighter's part damage as the host last said (the predictor keeps it).
         parts: PartDamage,
         player_id: Option<u32>,
@@ -322,6 +326,7 @@ pub mod online {
                 name: name.and_then(names::sanitize),
                 build: None,
                 parts: PartDamage::default(),
+                scenery: Vec::new(),
                 player_id: None,
                 predictor: None,
                 predicting: false,
@@ -518,9 +523,14 @@ pub mod online {
 
         fn predict(&mut self, intent: Intent) -> Result<StepReport, String> {
             let parts = self.parts;
+            let scenery = self.scenery.clone();
             let predictor = self.predictor_mut()?;
             // Part damage is the host's alone: the predicted fighter keeps the host's last word.
             predictor.fighters[0].parts = parts;
+            // So is the arena's destruction: what the prediction's shots did to it is dropped.
+            predictor
+                .adopt_scenery(&scenery)
+                .map_err(|error| error.to_string())?;
             predictor.tick(intent).map_err(|error| error.to_string())
         }
 
@@ -544,6 +554,13 @@ pub mod online {
         }
 
         fn reconcile(&mut self, snapshot: &Snapshot) -> Result<(), String> {
+            // The arena's placeables stand as the host has them, whatever the prediction did.
+            self.scenery.clone_from(&snapshot.scenery);
+            if let Some(predictor) = self.predictor.as_mut() {
+                predictor
+                    .adopt_scenery(&self.scenery)
+                    .map_err(|error| error.to_string())?;
+            }
             let Some(me) = self.player_id.and_then(|id| snapshot.of_player(id)) else {
                 return Ok(());
             };

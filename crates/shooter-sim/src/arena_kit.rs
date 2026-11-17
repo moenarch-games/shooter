@@ -17,7 +17,8 @@
 //! Neighbouring solid pieces that meet face to face over a whole face become one piece
 //! ([`fuse`]): a wall of fifteen modules is one box to collide with, with no seams for a sliding
 //! fighter to catch on, and a map stays inside the body IDs arena geometry may take. Placements
-//! marked [`Placement::destructible`] keep pieces of their own (shooter#60 swaps them).
+//! marked [`Placement::destructible`] keep pieces of their own (the host breaks them,
+//! [`crate::scenery`], swapping in their broken variant's).
 
 pub mod modules;
 
@@ -159,7 +160,7 @@ pub struct Placement {
     pub turn: Turn,
     pub variant: Variant,
     /// A candidate for shooter#60's destruction (a module with a broken variant): its pieces are
-    /// its own, never fused with a neighbour's. Nothing breaks it yet.
+    /// its own, never fused with a neighbour's. The host breaks it ([`crate::scenery`]).
     pub destructible: bool,
 }
 

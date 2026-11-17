@@ -27,6 +27,7 @@ pub mod proving_cell;
 pub mod rng;
 pub mod robot;
 pub mod scenarios;
+pub mod scenery;
 pub mod session;
 pub mod tour;
 pub mod trig;
