@@ -24,6 +24,12 @@
 //! Delete removes the selected part and what hangs from it, Z undoes and Shift+Z or Y redoes,
 //! Escape cancels a drag, drops what is in hand or deselects, Enter is Ready.
 //!
+//! **Saved builds** (shooter#140). B (or BUILDS) opens the builds panel in the inspector's place
+//! ([`super::saved`]): letters, digits, `-` and Space type the name, Backspace erases, Enter or
+//! SAVE saves the build and its control layout (a name already saved waits for a second press
+//! to overwrite), a click on a listed save picks it, LOAD puts it on the bench (one edit undo
+//! takes back) and DELETE removes it on a second press. Escape or BACK closes the panel.
+//!
 //! **Pointer geometry.** The pointer arrives in the window's pixels and the frame is drawn in
 //! the surface's ([`Builder::resize`] tells the builder the window's size): in the browser both
 //! are device pixels (CSS pixels times the device pixel ratio), and a surface the GPU limits to a
@@ -33,6 +39,7 @@
 //! chassis' centre there, so the match goes on unseen while the person builds.
 
 use super::controls::{ControlsBench, gait_name, mode_name, output_name, source_name};
+use super::saved::{self, Confirm, SavedBuilds, Shelf};
 use super::{
     Axis, BENCH, FINE, Proposal, Refusal, Step, Workbench, degrees, describe, part_name, weapon_of,
 };
@@ -95,6 +102,30 @@ pub enum Target {
     Binding(usize),
     /// The controls panel's buttons.
     Edit(ControlEdit),
+    /// Opens or closes the builds panel in the inspector's place.
+    Builds,
+    /// A saved build's row in the builds panel.
+    Saved(usize),
+    /// The builds panel's buttons.
+    Shelf(ShelfEdit),
+}
+
+/// What a builds panel button does ([`super::saved::Shelf`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShelfEdit {
+    Save,
+    Load,
+    Delete,
+}
+
+/// What the inspector's place shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Side {
+    Parts,
+    /// The controls panel, with this many bindings.
+    Controls(usize),
+    /// The builds panel, with this many saves.
+    Builds(usize),
 }
 
 /// What a controls panel button does to the layout ([`super::controls::ControlsBench`]).
@@ -175,6 +206,9 @@ const HELP: [&str; 7] = [
 const HELP_HEIGHT: f32 = HELP.len() as f32 * LINE + 8.0;
 /// The binding rows the controls panel shows.
 const CONTROL_ROWS: usize = 14;
+/// The saves the builds panel lists, from this far down it.
+const SHELF_ROWS: usize = 20;
+const SHELF_TOP: f32 = 146.0;
 
 /// The panels for a frame `width` units wide.
 struct Layout {
@@ -259,11 +293,54 @@ impl Layout {
             buttons.push((Rect::new(x + half + 6.0, y, half, 24.0), right));
             y += 28.0;
         }
-        buttons.push((
-            Rect::new(x, y, self.inspector.width - 20.0, 24.0),
-            Target::Controls,
-        ));
+        buttons.push((Rect::new(x, y, half, 24.0), Target::Controls));
+        buttons.push((Rect::new(x + half + 6.0, y, half, 24.0), Target::Builds));
         buttons
+    }
+
+    /// The builds panel's name field.
+    fn name_field(&self) -> Rect {
+        Rect::new(
+            self.inspector.x + 10.0,
+            self.inspector.y + 30.0,
+            self.inspector.width - 20.0,
+            24.0,
+        )
+    }
+
+    /// The builds panel's buttons, in pairs under the name field.
+    fn builds_buttons(&self) -> Vec<(Rect, Target)> {
+        let x = self.inspector.x + 10.0;
+        let half = (self.inspector.width - 26.0) / 2.0;
+        let y = self.inspector.y + 62.0;
+        vec![
+            (Rect::new(x, y, half, 24.0), Target::Shelf(ShelfEdit::Save)),
+            (
+                Rect::new(x + half + 6.0, y, half, 24.0),
+                Target::Shelf(ShelfEdit::Load),
+            ),
+            (
+                Rect::new(x, y + 28.0, half, 24.0),
+                Target::Shelf(ShelfEdit::Delete),
+            ),
+            (
+                Rect::new(x + half + 6.0, y + 28.0, half, 24.0),
+                Target::Builds,
+            ),
+        ]
+    }
+
+    /// The builds panel's rows (the first [`SHELF_ROWS`] of `count` saves).
+    fn builds_rows(&self, count: usize) -> Vec<(Rect, Target)> {
+        let x = self.inspector.x + 6.0;
+        let width = self.inspector.width - 12.0;
+        (0..count.min(SHELF_ROWS))
+            .map(|index| {
+                #[allow(clippy::cast_precision_loss)]
+                let y = self.inspector.y + SHELF_TOP + ROW * index as f32;
+                (Rect::new(x, y, width, ROW), Target::Saved(index))
+            })
+            .collect()
     }
 
     /// The controls panel's binding rows (the first [`CONTROL_ROWS`] of `count`).
@@ -318,16 +395,19 @@ impl Layout {
         )
     }
 
-    /// Every clickable item: the inspector's, or with the controls panel open (`bindings` of
-    /// them) the panel's.
-    fn targets(&self, controls: Option<usize>) -> Vec<(Rect, Target)> {
+    /// Every clickable item: the catalogue's, what the inspector's place shows, and Ready.
+    fn targets(&self, side: Side) -> Vec<(Rect, Target)> {
         let mut targets = self.catalogue_rows();
-        match controls {
-            Some(bindings) => {
+        match side {
+            Side::Controls(bindings) => {
                 targets.extend(self.control_rows(bindings));
                 targets.extend(self.control_buttons());
             }
-            None => targets.extend(self.buttons()),
+            Side::Builds(saves) => {
+                targets.extend(self.builds_rows(saves));
+                targets.extend(self.builds_buttons());
+            }
+            Side::Parts => targets.extend(self.buttons()),
         }
         targets.push((self.ready(), Target::Ready));
         targets
@@ -504,6 +584,10 @@ pub struct Builder {
     pub controls: ControlsBench,
     /// The controls panel is open in the inspector's place.
     pub controls_open: bool,
+    /// The saved builds ([`super::saved`]) and whether their panel is open in the inspector's
+    /// place.
+    pub shelf: Shelf,
+    pub builds_open: bool,
     pub stage: Stage,
     /// The build Ready sent, until the match shows it configured (the host accepted it).
     pub ready: Option<Assembly>,
@@ -545,6 +629,8 @@ impl Builder {
             bench: Workbench::new(build),
             controls: ControlsBench::new(build, None),
             controls_open: false,
+            shelf: Shelf::new(saved::platform()),
+            builds_open: false,
             stage,
             ready: None,
             notice: None,
@@ -575,6 +661,25 @@ impl Builder {
     pub fn with_controls(mut self, layout: Option<&Bindings>) -> Self {
         self.controls = ControlsBench::new(*self.bench.draft(), layout);
         self
+    }
+
+    /// The builder keeping its saved builds in `store` (by default this client's,
+    /// [`saved::platform`]).
+    #[must_use]
+    pub fn with_store(mut self, store: std::rc::Rc<dyn SavedBuilds>) -> Self {
+        self.shelf = Shelf::new(store);
+        self
+    }
+
+    /// What the inspector's place shows.
+    fn side(&self) -> Side {
+        if self.builds_open {
+            Side::Builds(self.shelf.names.len())
+        } else if self.controls_open {
+            Side::Controls(self.controls.layout().bindings.len())
+        } else {
+            Side::Parts
+        }
     }
 
     fn scale(&self) -> f32 {
@@ -636,10 +741,7 @@ impl Builder {
     pub fn target(&self) -> Option<Target> {
         let at = self.pointer();
         self.layout()
-            .targets(
-                self.controls_open
-                    .then(|| self.controls.layout().bindings.len()),
-            )
+            .targets(self.side())
             .into_iter()
             .find(|(rect, _)| rect.contains(at))
             .map(|(_, target)| target)
@@ -913,9 +1015,25 @@ impl Builder {
             }
             Target::Controls => {
                 self.controls_open = !self.controls_open;
+                self.builds_open = false;
                 self.controls.capturing = false;
                 self.notice = None;
             }
+            Target::Builds => {
+                self.builds_open = !self.builds_open;
+                self.controls.capturing = false;
+                self.shelf.confirm = None;
+                self.notice = None;
+                if self.builds_open {
+                    self.controls_open = false;
+                    self.notice = self.shelf.refresh().err();
+                }
+            }
+            Target::Saved(index) => {
+                self.shelf.select(index);
+                self.notice = None;
+            }
+            Target::Shelf(edit) => self.edit_shelf(edit),
             Target::Binding(index) => {
                 self.controls.selected = Some(index);
                 self.controls.capturing = false;
@@ -925,6 +1043,67 @@ impl Builder {
                 let edited = self.edit_controls(edit);
                 self.refused(edited);
             }
+        }
+        None
+    }
+
+    /// A builds panel button: saves the bench's build with its layout (none while it is the
+    /// build's preset), loads a save onto the bench as one edit (the bench keeps its build if
+    /// the save is refused) or deletes one; the notice says what happened, or why not.
+    fn edit_shelf(&mut self, edit: ShelfEdit) {
+        self.notice = Some(match edit {
+            ShelfEdit::Save => {
+                let draft = *self.bench.draft();
+                self.controls.follow(&draft);
+                let layout = self
+                    .controls
+                    .custom()
+                    .then(|| self.controls.layout().clone());
+                self.shelf
+                    .save(draft, layout)
+                    .unwrap_or_else(|error| format!("can't save: {error}"))
+            }
+            ShelfEdit::Load => match self.shelf.load() {
+                Ok(saved) => {
+                    self.bench.hand = None;
+                    self.bench.load(saved.build);
+                    self.controls = ControlsBench::new(saved.build, saved.layout.as_ref());
+                    format!("loaded {}", saved.name)
+                }
+                Err(error) => format!("can't load: {error}"),
+            },
+            ShelfEdit::Delete => self
+                .shelf
+                .delete()
+                .unwrap_or_else(|error| format!("can't delete: {error}")),
+        });
+    }
+
+    /// A key while the builds panel is open: the name's letters, Backspace, Enter saves,
+    /// Escape closes the panel.
+    fn shelf_key(&mut self, code: KeyCode) -> Option<Action> {
+        let typed = match code {
+            KeyCode::Escape => return self.act(Target::Builds),
+            KeyCode::Enter | KeyCode::NumpadEnter => {
+                return self.act(Target::Shelf(ShelfEdit::Save));
+            }
+            KeyCode::Backspace => {
+                self.shelf.erase();
+                return None;
+            }
+            KeyCode::Space => Some('_'),
+            KeyCode::Minus | KeyCode::NumpadSubtract => Some('-'),
+            code => {
+                let name = format!("{code:?}");
+                name.strip_prefix("Key")
+                    .or_else(|| name.strip_prefix("Digit"))
+                    .or_else(|| name.strip_prefix("Numpad"))
+                    .filter(|rest| rest.len() == 1)
+                    .and_then(|rest| rest.chars().next())
+            }
+        };
+        if let Some(c) = typed {
+            self.shelf.type_char(c);
         }
         None
     }
@@ -973,9 +1152,14 @@ impl Builder {
             }
             return None;
         }
+        // The builds panel takes the keys for the name.
+        if self.builds_open {
+            return self.shelf_key(code);
+        }
         let sign = if self.shift { -1 } else { 1 };
         match code {
             KeyCode::KeyK => self.act(Target::Controls),
+            KeyCode::KeyB => self.act(Target::Builds),
             KeyCode::KeyR => self.act(Target::Rotate(Axis::Yaw, sign)),
             KeyCode::KeyT => self.act(Target::Rotate(Axis::Pitch, sign)),
             KeyCode::KeyF => self.act(Target::Rotate(Axis::Roll, sign)),
@@ -1323,6 +1507,10 @@ impl Builder {
     }
 
     fn inspector(&self, painter: &mut Painter, layout: &Layout) {
+        if self.builds_open {
+            self.builds_panel(painter, layout);
+            return;
+        }
         if self.controls_open {
             self.controls_panel(painter, layout);
             return;
@@ -1439,6 +1627,7 @@ impl Builder {
                 Target::Undo => "NO UNDO",
                 Target::Redo => "NO REDO",
                 Target::Controls => "CONTROLS (K)",
+                Target::Builds => "BUILDS (B)",
                 _ => continue,
             };
             button(painter, rect, label, hovered == Some(target), false);
@@ -1558,6 +1747,100 @@ impl Builder {
                 _ => continue,
             };
             button(painter, rect, label, hovered == Some(target), false);
+        }
+    }
+
+    /// The builds panel in the inspector's place: the name being typed, the buttons, and a row
+    /// per save (the picked one marked).
+    fn builds_panel(&self, painter: &mut Painter, layout: &Layout) {
+        let panel = layout.inspector;
+        panel_back(painter, panel);
+        let x = panel.x + 10.0;
+        painter.text(x, panel.y + 10.0, CELL, "SAVED BUILDS", srgb(MUTED, 1.0));
+        let field = layout.name_field();
+        painter.rect(
+            field.x,
+            field.y,
+            field.width,
+            field.height,
+            srgb(GRAPHITE, 1.0),
+        );
+        painter.frame(
+            field.x,
+            field.y,
+            field.width,
+            field.height,
+            1.0,
+            srgb(ORANGE, 1.0),
+        );
+        let (name, tone) = if self.shelf.name.is_empty() {
+            ("TYPE A NAME".to_owned(), MUTED)
+        } else {
+            (format!("{}_", self.shelf.name), PALE)
+        };
+        painter.text(field.x + 6.0, field.y + 6.0, SMALL, &name, srgb(tone, 1.0));
+        let hovered = self.target();
+        for (rect, target) in layout.builds_buttons() {
+            let confirm = self.shelf.confirm.as_ref();
+            let (label, strong) = match target {
+                Target::Shelf(ShelfEdit::Save) => match confirm {
+                    Some(Confirm::Overwrite(_)) => ("OVERWRITE?", true),
+                    _ => ("SAVE", false),
+                },
+                Target::Shelf(ShelfEdit::Load) => ("LOAD", false),
+                Target::Shelf(ShelfEdit::Delete) => match confirm {
+                    Some(Confirm::Delete(_)) => ("DELETE?", true),
+                    _ => ("DELETE", false),
+                },
+                Target::Builds => ("BACK (ESC)", false),
+                _ => continue,
+            };
+            button(painter, rect, label, hovered == Some(target), strong);
+        }
+        let names = &self.shelf.names;
+        let hint = if names.is_empty() {
+            "NO SAVED BUILDS YET".to_owned()
+        } else {
+            format!("{} SAVED: CLICK ONE", names.len())
+        };
+        painter.text(
+            x,
+            panel.y + SHELF_TOP - 22.0,
+            SMALL,
+            &hint,
+            srgb(MUTED, 1.0),
+        );
+        for (rect, target) in layout.builds_rows(names.len()) {
+            let Target::Saved(index) = target else {
+                continue;
+            };
+            let selected = self.shelf.selected == Some(index);
+            if selected || hovered == Some(target) {
+                painter.rect(
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    srgb(STEEL, if selected { 0.9 } else { 0.5 }),
+                );
+            }
+            painter.text(
+                rect.x + 4.0,
+                rect.y + 2.0,
+                SMALL,
+                &names[index],
+                srgb(PALE, 1.0),
+            );
+        }
+        if names.len() > SHELF_ROWS {
+            #[allow(clippy::cast_precision_loss)]
+            painter.text(
+                x,
+                panel.y + SHELF_TOP + ROW * SHELF_ROWS as f32 + 4.0,
+                SMALL,
+                &format!("+{} MORE", names.len() - SHELF_ROWS),
+                srgb(MUTED, 1.0),
+            );
         }
     }
 
@@ -1943,11 +2226,7 @@ mod tests {
     fn click(builder: &mut Builder, target: Target) -> Option<Action> {
         let (rect, _) = builder
             .layout()
-            .targets(
-                builder
-                    .controls_open
-                    .then(|| builder.controls.layout().bindings.len()),
-            )
+            .targets(builder.side())
             .into_iter()
             .find(|(_, item)| *item == target)
             .unwrap_or_else(|| panic!("{target:?} is on screen"));
@@ -2000,6 +2279,99 @@ mod tests {
             click(&mut builder, Target::Ready),
             Some(Action::Ready(STANDARD, None))
         );
+    }
+
+    fn typed(builder: &mut Builder, codes: &[KeyCode]) {
+        for code in codes {
+            builder.key(*code);
+        }
+    }
+
+    #[test]
+    fn a_saved_build_and_its_layout_come_back_after_a_change_in_either_stage() {
+        for stage in [Stage::Setup, Stage::BetweenLives] {
+            let store = std::rc::Rc::new(saved::MemoryBuilds::default());
+            let mut builder = drawn(stage).with_store(store.clone());
+            // An edited layout to save with the build.
+            builder.key(KeyCode::KeyK);
+            click(&mut builder, Target::Binding(0));
+            click(&mut builder, Target::Edit(ControlEdit::Weaker));
+            let layout = builder.controls.layout().clone();
+            // B opens the panel; the name is typed (B and the builder's shortcuts type too).
+            builder.key(KeyCode::KeyB);
+            assert!(builder.builds_open && !builder.controls_open);
+            typed(
+                &mut builder,
+                &[
+                    KeyCode::KeyB,
+                    KeyCode::KeyO,
+                    KeyCode::KeyT,
+                    KeyCode::KeyX,
+                    KeyCode::Backspace,
+                    KeyCode::Space,
+                    KeyCode::Digit1,
+                    KeyCode::Period,
+                ],
+            );
+            assert_eq!(builder.shelf.name, "BOT_1");
+            builder.key(KeyCode::Enter);
+            assert_eq!(builder.notice.as_deref(), Some("saved BOT_1"));
+            assert_eq!(store.names(), Ok(vec!["BOT_1".to_owned()]));
+            assert_eq!(builder.bench.draft(), &STANDARD, "typing edits nothing");
+
+            // Change the build and the layout.
+            builder.key(KeyCode::Escape);
+            assert!(!builder.builds_open);
+            click(&mut builder, Target::Loadout(1));
+            builder.frame(None, 1280, 720, 0.0);
+            assert_eq!(builder.bench.draft(), &HEAVY);
+            builder.controls.preset();
+            assert_ne!(builder.controls.layout(), &layout);
+
+            // Load restores both, as one edit.
+            click(&mut builder, Target::Builds);
+            builder.frame(None, 1280, 720, 0.0);
+            click(&mut builder, Target::Saved(0));
+            click(&mut builder, Target::Shelf(ShelfEdit::Load));
+            assert_eq!(builder.notice.as_deref(), Some("loaded BOT_1"));
+            assert_eq!(builder.bench.draft(), &STANDARD);
+            assert_eq!(builder.controls.layout(), &layout);
+            assert!(builder.controls.custom());
+            builder.key(KeyCode::Escape);
+            builder.key(KeyCode::KeyZ);
+            assert_eq!(builder.bench.draft(), &HEAVY, "undo takes the load back");
+            builder.key(KeyCode::KeyY);
+
+            // Saving over it waits for a second press.
+            click(&mut builder, Target::Builds);
+            click(&mut builder, Target::Saved(0));
+            builder.bench.load(HEAVY);
+            click(&mut builder, Target::Shelf(ShelfEdit::Save));
+            assert_eq!(
+                builder.shelf.confirm,
+                Some(Confirm::Overwrite("BOT_1".to_owned()))
+            );
+            click(&mut builder, Target::Shelf(ShelfEdit::Save));
+            assert_eq!(builder.notice.as_deref(), Some("overwrote BOT_1"));
+
+            // A damaged save is refused with its reason, and the bench keeps its build.
+            store.write("BAD", "53484244ff00").unwrap();
+            builder.shelf.refresh().unwrap();
+            builder.shelf.name = "BAD".to_owned();
+            builder.bench.load(STANDARD);
+            click(&mut builder, Target::Shelf(ShelfEdit::Load));
+            let notice = builder.notice.clone().unwrap();
+            assert!(notice.starts_with("can't load:"), "{notice}");
+            assert_eq!(builder.bench.draft(), &STANDARD);
+
+            // Delete on a second press.
+            builder.frame(None, 1280, 720, 0.0);
+            click(&mut builder, Target::Saved(1));
+            click(&mut builder, Target::Shelf(ShelfEdit::Delete));
+            click(&mut builder, Target::Shelf(ShelfEdit::Delete));
+            assert_eq!(builder.notice.as_deref(), Some("deleted BOT_1"));
+            assert_eq!(store.names(), Ok(vec!["BAD".to_owned()]));
+        }
     }
 }
 

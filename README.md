@@ -397,10 +397,29 @@ configured (an input flag, `Intent::edit`; a lost connection lets go of it). Whi
 is no rebuilding. In the browser the page hides its own overlays while the builder is open. Not
 in the builder yet: typed exact angles
 and a testing chamber (post-beta).
+
+**Saved builds** (`shooter_client::builder::saved`, #140). In the builder, before the match and
+between lives, B (or Builds) opens the builds panel in the inspector's place: type a name
+(letters, digits, `-`, Space for `_`, up to 16; Backspace erases) and press Enter or Save to save
+the build on the bench with its control layout (the build's preset if you kept it). A name
+already saved asks first: Save again (Overwrite?) to write over it. Click a listed save and Load
+puts it on the bench (one edit: Z takes it back), or Delete removes it on a second press. Escape
+or Back closes the panel. A save is a versioned envelope (magic `SHBD`, format version, name, the
+build in the simulation's wire encoding, `shooter_sim::wire::encode_build`, and the layout in
+`encode_bindings`), kept as hex text. Loading puts the save through the bench's validation (every
+rule but the build-point ceiling, so a build over budget saved while you were working on it comes
+back to be finished; Ready still takes only a valid build) and the layout through the bindings
+check against that build; a save of another format version, a damaged one or one the rules
+refuse is refused with the reason and the bench keeps its build. The native client keeps one
+file per build, `<NAME>.build`, in `shooter/builds` under the user's data directory
+(`$XDG_DATA_HOME` or `~/.local/share` on Linux, `~/Library/Application Support` on macOS,
+`%APPDATA%` on Windows); the browser keeps them in the page's `localStorage` as
+`shooter.build.<NAME>`, and a blocked or full storage shows its error instead of saving.
+[Capture](docs/captures/140/builds.png).
 `cargo run -p shooter-client --release --example builder_views -- <dir>` renders the bench
 (before the match, a part being placed, snapping on a crowded face, a part turned about each
 axis, a refused placement, a turned parent, a part selected again, a selected weapon, the
-controls panel, an over-budget build, a build between lives) offscreen;
+controls panel, the saved builds panel, an over-budget build, a build between lives) offscreen;
 [captures](docs/captures/57-builder/), [snapping and turning](docs/captures/124/).
 
 **Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,

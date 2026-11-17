@@ -527,6 +527,10 @@ impl In<'_> {
     }
     /// Inverse of `Out::build`, validated against [`BETA`].
     fn build(&mut self) -> Result<Assembly, WireError> {
+        BETA.validate(&self.candidate()?).map_err(WireError::Build)
+    }
+    /// Inverse of `Out::build`, not yet validated.
+    fn candidate(&mut self) -> Result<Candidate, WireError> {
         let parts = (0..self.u8()?)
             .map(|_| {
                 let id = self.u8()?;
@@ -565,8 +569,7 @@ impl In<'_> {
                 })
             })
             .collect::<Result<Vec<_>, WireError>>()?;
-        BETA.validate(&Candidate { parts })
-            .map_err(WireError::Build)
+        Ok(Candidate { parts })
     }
     fn gait(&mut self) -> Result<GaitChoice, WireError> {
         Ok(match self.u8()? {
@@ -1490,6 +1493,28 @@ pub fn decode_bindings(bytes: &[u8]) -> Result<Bindings, WireError> {
         .check_bounds()
         .map_err(|_| WireError::Malformed("a binding out of bounds"))?;
     Ok(bindings)
+}
+
+/// A robot build alone, as a snapshot or an input carries it (`Out::build`): what the client's
+/// saved builds keep (shooter#140).
+#[must_use]
+pub fn encode_build(build: &Assembly) -> Vec<u8> {
+    let mut out = Out(Vec::new());
+    out.build(build);
+    out.0
+}
+
+/// Inverse of [`encode_build`], before validation: the caller validates the candidate against
+/// the catalog it builds with ([`crate::robot::Catalog::validate`]).
+///
+/// # Errors
+///
+/// If the bytes are truncated or trail, or a part has unknown flags or a turned root.
+pub fn decode_build(bytes: &[u8]) -> Result<Candidate, WireError> {
+    let mut input = In(bytes);
+    let candidate = input.candidate()?;
+    input.finish()?;
+    Ok(candidate)
 }
 
 /// The robots' exact mechanical state ([`crate::mechanics::State`]): a robot count, then per

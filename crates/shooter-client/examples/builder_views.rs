@@ -3,10 +3,12 @@
 //! hand previewed on a socket it fits, snapping on a crowded face, a part in hand turned about
 //! each axis, a placement the rules refuse for a taken cell, a placement on a turned parent, a
 //! part selected again after placing, a selected weapon, the rail rack with its long rail
-//! selected (shooter#126), the controls panel, an over-budget build and a build between lives.
+//! selected (shooter#126), the controls panel, the saved builds panel (shooter#140), an
+//! over-budget build and a build between lives.
 //! Writes PPM images to the directory given (default `target/builder-views`).
 
-use shooter_client::builder::view::{Builder, Stage};
+use shooter_client::builder::saved::MemoryBuilds;
+use shooter_client::builder::view::{Builder, ShelfEdit, Stage, Target};
 use shooter_client::gpu::Gpu;
 use shooter_client::robots::{self, Robots};
 use shooter_sim::robot::parts::{
@@ -153,6 +155,30 @@ fn main() -> Result<(), String> {
     builder.controls_open = true;
     builder.controls.selected = Some(0);
     shoot(&mut builder, "controls.ppm")?;
+
+    // The builds panel (shooter#140) on a store in memory: three saves, the heavy one loaded
+    // onto the bench, then a new name typed.
+    let store = std::rc::Rc::new(MemoryBuilds::default());
+    let mut builder = Builder::new(STANDARD, Stage::Setup).with_store(store);
+    builder.act(Target::Builds);
+    for (name, build) in [("SCOUT", STANDARD), ("TANK-2", HEAVY), ("ARMORY", ARMORY)] {
+        builder.bench.load(build);
+        builder.shelf.name = name.to_owned();
+        builder.act(Target::Shelf(ShelfEdit::Save));
+    }
+    builder.act(Target::Saved(2));
+    builder.act(Target::Shelf(ShelfEdit::Load));
+    builder.shelf.name.clear();
+    for code in [
+        KeyCode::KeyH,
+        KeyCode::KeyE,
+        KeyCode::KeyA,
+        KeyCode::KeyV,
+        KeyCode::KeyY,
+    ] {
+        builder.key(code);
+    }
+    shoot(&mut builder, "builds.ppm")?;
 
     // Over the build points: invalid, Ready off.
     let mut builder = Builder::new(ARMORY, Stage::Setup);
