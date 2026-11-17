@@ -9,11 +9,12 @@ direction (Atlas D1.i46.1, D2.i46.\*, tracker #45): a third-person arena shooter
 robots, about 12 slots and three arenas. The third-person camera, the robot build schema and
 the 12 slots are in, the robot builder opens before the match and between lives, the fighters
 are drawn as their robot builds from asset-tooling's robot,
-weapons and locomotion kits, and the medium arena is built from its arena kit; the rest is not
-implemented yet. Everything below describes what works today: a third-person, 12-slot
-deathmatch on the 76 m greybox yard by default, the kit-built 56 m assembly works (the medium
-arena) on request, and the 40 m greybox hall as the test fixture, every fighter a mechanical
-robot (its compound bodies on motorised joints) carried by the fast-movement rules.
+weapons and locomotion kits, and the medium and small arenas are built from its arena kit; the
+rest is not implemented yet. Everything below describes what works today: a third-person,
+12-slot deathmatch on the 76 m greybox yard by default, the kit-built 56 m assembly works (the
+medium arena) and 32 m proving cell (the small arena) on request, and the 40 m greybox hall as
+the test fixture, every fighter a mechanical robot (its compound bodies on motorised joints)
+carried by the fast-movement rules.
 
 ## What a player does
 
@@ -53,8 +54,8 @@ same simulation in-process: you in slot 0 against eleven bots, no server needed.
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID, its arena
 (geometry, collision, spawn points, jump pads, module pickup pads, bot waypoints) and the player
-count it is laid out for. The first of the beta's three arenas, the medium one, is in, built from
-asset-tooling's arena kit; two interim greybox maps stay:
+count it is laid out for. Two of the beta's three arenas, the medium and the small one, are in,
+built from asset-tooling's arena kit; two interim greybox maps stay:
 
 - `assembly-works`, the medium arena (shooter#52; 4 to 12 players, 14 spawn points): a multilevel
   robotic assembly factory repurposed for combat (the owner's choice of setting), a 56 m hall
@@ -74,6 +75,23 @@ asset-tooling's arena kit; two interim greybox maps stay:
   barriers and crates are marked as destruction candidates for shooter#60 (nothing breaks yet)
   and four repair anchors (under the mezzanines and in the bays) are data for shooter#61. Plan,
   views and frames: [docs/captures/52](docs/captures/52).
+- `proving-cell`, the small close-quarters arena (shooter#53; 2 to 6 players, 12 spawn points so
+  the default 12 slots still fit): a purpose-built combat test cell (the owner's choice of
+  setting), a 32 m square inside 10 m walls, point-symmetric, from the same kit as the works. In
+  the middle stands the 2 m test stage, a 6 m dais with the rail capacitor at its centre and
+  staggered low cover, climbed by an 8 m ramp from the north and from the south (or a double
+  jump; a 2 m container west of it meets its corner). Along the north and the south wall runs a
+  3 m observation gallery, 4 m deep, with low cover at its edge and thrusters on it, reached by
+  a 12 m ramp along the side wall, a jump pad in front of it (12 m/s up, 6 m/s toward it) or the
+  grapple (hooked on the wall above it, from the stage); under it a 2.6 m high passage runs from
+  behind its ramp to a control booth, a 7 m room in the corner with a doorway onto the floor and
+  one into the passage, each behind a 2 m blast screen. A 4 m deep test bay in each side wall,
+  a barrier and crates break up the floor. Nothing is far and fights are close; the booths have two
+  doorways and the passages open along their length, so no fight is forced down a one-way
+  corridor; no spawn point is in sight of another. Its low cover, open-floor
+  barriers and crates are destruction candidates for shooter#60 (the blast screens stay, the
+  booths' spawn points rely on them) and a repair anchor in each booth is data for shooter#61.
+  Views and frames: [docs/captures/53](docs/captures/53).
 - `greybox-yard`, the default for hosted matches and practice (6 to 12 players, 14 spawn points):
   a 76 m square with 5 m walls, point-symmetric (the north half turned half a turn is the south
   half). A raised walkway crosses the middle, a 3 m deck on two pillars that you can walk under,
@@ -98,11 +116,11 @@ pieces of their own. The proxies come from the pinned kit's descriptor through a
 simulation reads no files. Both clients draw each placement's kit mesh where the simulation puts
 it and lay the floor with the kit's 2 m plates; until the kit is read a kit-built map waits, and
 if it cannot be read the map is drawn as boxes with a note in the HUD. The greybox maps are
-unchanged. The small and large arenas (#53, #55) use the same path.
+unchanged. The small arena uses the same path, as will the large one (#55).
 `cargo test -p shooter-client --test arena` checks the table against the pinned kit, the kit's
 decoding and that every placed module is drawn inside the box its collision comes from;
 `scripts/gen-arena-kit.py` rewrites the table after a pin bump; `cargo run -p shooter-client
---release --example arena_views -- assembly-works DIR` renders a map's overview and route views
+--release --example arena_views -- assembly-works DIR` (or `proving-cell`) renders a map's overview and route views
 offscreen.
 
 The recommended capacity never changes the slot count (12 unless the host sets another per
@@ -445,7 +463,8 @@ and keeps its use). On the greybox the capacitor lies on the platform's south-ea
 that sees the whole hall, and the thrusters in the open south-west quarter under its sightline;
 on the greybox yard the capacitor lies on the walkway's middle and thrusters on each platform;
 on the assembly works the capacitor lies on the gantry bridge's middle and thrusters on each crane
-tower.
+tower; on the proving cell the capacitor lies on the test stage's middle and thrusters on each
+gallery.
 A module lasts until its uses are spent, its holder dies or the round ends (owner decision on
 #62); nothing drops. A robot carries one module, and taking another replaces it. A pad is back
 30 s after it was taken; every pad is ready at the start of a round. When several robots reach a
@@ -467,9 +486,11 @@ The movement is scripted on physics-engine on a tour of the greybox, the greybox
 (up its ramp, along the deck, off its edge, and its jump pad onto it), the assembly works' routes
 (up its ramp, along the mezzanine and the bridge and off its edge; into its low cover, over it
 and into a barrier; its pad, its work platforms and the grapple on the crane mast onto the crane
-tower) and on scripted moves (sprint, slide, double jump, a thruster-module jump, jump pad, ramp
-slides, a thin wall, a step, a rocket jump, a grapple onto a ledge), each replaying exactly on
-both backends (`tests/tour.rs`, `tests/moves.rs`). The Rapier A/B
+tower), the proving cell's (up its gallery ramp, along the gallery and off its edge; up the stage
+and down its other ramp; its pad and a grapple from the stage onto the gallery) and on scripted
+moves (sprint, slide, double jump, a thruster-module jump, jump pad, ramp slides, a thin wall, a
+step, a rocket jump, a grapple onto a ledge), each replaying exactly on both backends
+(`tests/tour.rs`, `tests/moves.rs`, `tests/maps.rs`). The Rapier A/B
 (`cargo test -p shooter-sim --features physics-ab --test physics_ab`) compares the match's robots
 sprinting, sliding and stopping on flat ground, whole and on one leg, the shooting range and the
 close range for the shotgun, laser and flamethrower, and the mechanics fixtures (rolling,

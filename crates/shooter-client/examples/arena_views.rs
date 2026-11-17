@@ -9,7 +9,8 @@
 //! ```
 //!
 //! writes `overview.ppm` and `view-1.ppm`, `view-2.ppm`, … (the map's [`views`]) into the
-//! directory (default `target/arena-views`); the map defaults to `assembly-works`.
+//! directory (default `target/arena-views`); the map defaults to `assembly-works` (or
+//! `proving-cell`).
 
 use render_engine::glam::Vec3;
 use shooter_client::arena_art::ArenaArt;
@@ -37,6 +38,23 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
             (Vec3::new(-8.0, 2.0, -12.0), Vec3::new(-8.5, 1.5, -24.0)),
             // A charging bay in the east wall, from the floor.
             (Vec3::new(18.0, 2.0, -6.0), Vec3::new(27.0, 1.5, -11.0)),
+        ],
+        MapId::ProvingCell => vec![
+            // The test floor from the south-east: the stage, its north ramp and the north
+            // gallery beyond.
+            (Vec3::new(10.0, 2.0, 1.0), Vec3::new(0.0, 2.5, -5.0)),
+            // On the stage, north toward the gallery and its low cover.
+            (Vec3::new(-1.0, 4.0, 1.5), Vec3::new(-3.0, 3.5, -14.0)),
+            // From the north gallery's deck east toward the control booth.
+            (Vec3::new(-9.0, 5.0, -14.0), Vec3::new(12.0, 2.0, -9.0)),
+            // Through the booth's south doorway to its blast screen.
+            (Vec3::new(12.5, 1.8, -6.2), Vec3::new(13.0, 1.5, -12.0)),
+            // The passage under the north gallery, west toward its closed end.
+            (Vec3::new(5.0, 1.8, -13.5), Vec3::new(-14.0, 1.5, -15.0)),
+            // The floor west of the stage: the container, the jump pad and the gallery's ramp.
+            (Vec3::new(-5.5, 2.2, 1.5), Vec3::new(-10.0, 2.0, -9.0)),
+            // The test bay in the east wall, from the floor.
+            (Vec3::new(7.0, 2.0, 1.0), Vec3::new(15.0, 1.5, -4.0)),
         ],
         _ => vec![(Vec3::new(0.0, 2.0, 10.0), Vec3::new(0.0, 2.0, 0.0))],
     }

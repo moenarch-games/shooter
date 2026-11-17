@@ -4,7 +4,8 @@
 //! and a close range for the shotgun, laser and flamethrower, and the greybox yard's walkway
 //! (up its ramp, along and off it) and its jump pad onto it, and the assembly works' routes (its
 //! ramp, mezzanine and bridge, its cover, and its pad, work platforms and crane mast onto the
-//! crane tower). The movement and weapon tests check
+//! crane tower), and the proving cell's (its ramp and gallery, its stage, its pad and a grapple
+//! from the stage onto the gallery). The movement and weapon tests check
 //! what each one does and the Rapier A/B test runs each on both backends.
 
 use crate::arena::{Arena, Piece, Post};
@@ -12,6 +13,7 @@ use crate::physics::RampRise;
 use crate::physics::Vec3i;
 use crate::pickups::{ArenaModule, ModulePad};
 use crate::player::Intent;
+use crate::proving_cell::STAGE_TOP;
 use crate::robot::{Assembly, HEAVY, SKIRMISHER};
 use crate::tour::{EAST, Leg, NORTH, SOUTH, hold, stand, walk};
 use crate::weapons::{MAX_PITCH, Weapon};
@@ -563,6 +565,100 @@ pub const WORKS_GRAPPLE: Scenario = Scenario {
     ],
 };
 
+/// The proving cell from the foot of its north gallery's ramp: north up the 12 m ramp onto the
+/// gallery, east along its deck past the thrusters, then south off its edge between its low
+/// covers to the floor 3 m below.
+pub const CELL_GALLERY: Scenario = Scenario {
+    name: "the cell's ramp and gallery",
+    arena: || Arena {
+        spawn: Vec3i::new(-1_400, 0, 150),
+        spawn_yaw: NORTH,
+        ..Arena::proving_cell()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the ramp", NORTH, 130),
+        walk("along the gallery", EAST, 92),
+        stand("on the gallery", 10),
+        walk("off the edge", SOUTH, 40),
+        stand("below", 40),
+    ],
+};
+
+/// The proving cell's stage: south up its north ramp onto the 2 m stage, across it past the rail
+/// capacitor and down its south ramp.
+pub const CELL_STAGE: Scenario = Scenario {
+    name: "the cell's stage",
+    arena: || Arena {
+        spawn: Vec3i::new(0, 0, -1_250),
+        spawn_yaw: SOUTH,
+        ..Arena::proving_cell()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the ramp", SOUTH, 85),
+        stand("on the stage", 10),
+        walk("down the south ramp", SOUTH, 125),
+        stand("at its foot", 10),
+    ],
+};
+
+/// The proving cell's jump pad in front of the north gallery: onto it, thrown north onto the
+/// gallery's deck.
+pub const CELL_PAD: Scenario = Scenario {
+    name: "the cell's pad onto the gallery",
+    arena: || Arena {
+        spawn: Vec3i::new(-700, 0, -650),
+        spawn_yaw: NORTH,
+        ..Arena::proving_cell()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("onto the pad", NORTH, 20),
+        stand("thrown", 90),
+        stand("on the gallery", 20),
+    ],
+};
+
+/// Pitch steps from the stage grapple's eye (-100, 365, -250) up to the north wall 7 m up behind
+/// the gallery, (-100, 700, -1600): atan(335 / 1350) ≈ 13.9°.
+const GALLERY_PITCH: i16 = 2_537;
+
+/// The proving cell from its stage's north edge: hook the north wall over the gallery, get reeled
+/// up and over the gallery's edge, let go and step onto its deck.
+pub const CELL_GRAPPLE: Scenario = Scenario {
+    name: "the cell's grapple onto the gallery",
+    arena: || Arena {
+        spawn: Vec3i::new(-100, STAGE_TOP, -250),
+        spawn_yaw: NORTH,
+        ..Arena::proving_cell()
+    },
+    legs: &[
+        hold(
+            "take the grapple",
+            Intent {
+                yaw: NORTH,
+                pitch: GALLERY_PITCH,
+                select: Some(Weapon::Grapple),
+                ..Intent::IDLE
+            },
+            15,
+        ),
+        hold(
+            "hook and reel in",
+            Intent {
+                yaw: NORTH,
+                pitch: GALLERY_PITCH,
+                fire: true,
+                ..Intent::IDLE
+            },
+            90,
+        ),
+        walk("let go onto the gallery", NORTH, 30),
+        stand("on the gallery", 60),
+    ],
+};
+
 pub const ALL: &[Scenario] = &[
     SPRINT_AND_SLIDE,
     DOUBLE_JUMP,
@@ -582,6 +678,10 @@ pub const ALL: &[Scenario] = &[
     WORKS_TOWER_PAD,
     WORKS_STEPS,
     WORKS_GRAPPLE,
+    CELL_GALLERY,
+    CELL_STAGE,
+    CELL_PAD,
+    CELL_GRAPPLE,
 ];
 
 /// This tick's controls for scripted person `index`: run and strafe in turns, sweep the view

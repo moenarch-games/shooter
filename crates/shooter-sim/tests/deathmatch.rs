@@ -958,6 +958,13 @@ fn bots_keep_moving_and_scoring_on_the_assembly_works() {
     bots_keep_moving_and_scoring_on(MapId::AssemblyWorks, 1_500.0);
 }
 
+/// The same on the proving cell (shooter#53), the small map: twelve bots crowd its 32 m, and
+/// none is stranded behind its booths' screens, in its test bays or on its stage and galleries.
+#[test]
+fn bots_keep_moving_and_scoring_on_the_proving_cell() {
+    bots_keep_moving_and_scoring_on(MapId::ProvingCell, 1_500.0);
+}
+
 /// Twelve bots for 90 s on `map`: plenty of shots, at least ten kills, every bot at least
 /// `roams` units from where it started and none idle (alive, mobile, not firing, within 1 m of
 /// one spot) for 5 s.
@@ -1048,6 +1055,27 @@ fn a_bot_match_on_the_assembly_works_replays_exactly() {
     };
     assert_eq!(play(3), play(3));
     assert_ne!(play(3), play(4));
+}
+
+/// A bot match on the proving cell replays exactly from its seed, at its recommended six slots
+/// and at the default twelve, and another seed plays out differently.
+#[test]
+fn a_bot_match_on_the_proving_cell_replays_exactly() {
+    let play = |seed, slots| {
+        let rules = Rules {
+            slots,
+            ..Rules::deathmatch(seed)
+        };
+        let mut session = Session::on_map(MapId::ProvingCell, rules).unwrap();
+        for _ in 0..1_200 {
+            session.step().unwrap();
+        }
+        encode_snapshot(&session.snapshot())
+    };
+    for slots in [6, 12] {
+        assert_eq!(play(3, slots), play(3, slots));
+        assert_ne!(play(3, slots), play(4, slots));
+    }
 }
 
 /// One tick: A (person 1) rails B's root chassis while B lives, and B (person 2) holds `b`,

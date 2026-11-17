@@ -22,6 +22,7 @@ pub mod names;
 pub mod physics;
 pub mod pickups;
 pub mod player;
+pub mod proving_cell;
 pub mod rng;
 pub mod robot;
 pub mod scenarios;

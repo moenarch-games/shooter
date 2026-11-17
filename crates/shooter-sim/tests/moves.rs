@@ -205,6 +205,54 @@ fn the_assembly_works_cover_blocks_and_is_jumped() {
     );
 }
 
+/// The proving cell's vertical routes: its ramp climbs onto the gallery and the deck carries a
+/// fighter along it, and its edge drops them to the floor; the stage's ramps climb onto it and
+/// down again; the pad and a grapple from the stage each put a fighter on the gallery.
+#[test]
+fn the_proving_cell_routes_reach_its_high_ground() {
+    use shooter_sim::proving_cell::{DECK_TOP, STAGE_TOP};
+    let deck = DECK_TOP as f32 + HALF;
+    let on_gallery = |sample: &Sample| {
+        sample.grounded
+            && (sample.center[1] - deck).abs() < STAND
+            && (-1_600.0..=-1_200.0).contains(&sample.center[2])
+    };
+    let samples = run(scenarios::CELL_GALLERY);
+    let up = end_of(&samples, "up the ramp").unwrap();
+    assert!(on_gallery(up), "{up:?}");
+    let along = end_of(&samples, "on the gallery").unwrap();
+    assert!(on_gallery(along) && along.center[0] > -500.0, "{along:?}");
+    let below = end_of(&samples, "below").unwrap();
+    assert!(
+        below.grounded && (below.center[1] - HALF).abs() < STAND && below.center[2] > -1_150.0,
+        "{below:?}"
+    );
+
+    let samples = run(scenarios::CELL_STAGE);
+    let stage = end_of(&samples, "on the stage").unwrap();
+    assert!(
+        stage.grounded
+            && (stage.center[1] - (STAGE_TOP as f32 + HALF)).abs() < STAND
+            && stage.center[2].abs() < 300.0,
+        "{stage:?}"
+    );
+    let foot = end_of(&samples, "at its foot").unwrap();
+    assert!(
+        foot.grounded && (foot.center[1] - HALF).abs() < STAND && foot.center[2] > 1_100.0,
+        "{foot:?}"
+    );
+
+    let samples = run(scenarios::CELL_PAD);
+    assert_eq!(samples.iter().filter(|s| s.launched).count(), 1);
+    let landed = end_of(&samples, "on the gallery").unwrap();
+    assert!(on_gallery(landed), "{landed:?}");
+
+    let samples = run(scenarios::CELL_GRAPPLE);
+    assert!(samples.iter().any(|s| s.hooked));
+    let hung = end_of(&samples, "on the gallery").unwrap();
+    assert!(on_gallery(hung) && !hung.hooked, "{hung:?}");
+}
+
 #[test]
 fn a_slide_climbs_the_ramp_and_runs_down_it() {
     let samples = run(scenarios::RAMP_SLIDE);

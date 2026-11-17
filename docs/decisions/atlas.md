@@ -289,6 +289,30 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
 
 - **D2.i102.1** (owner, 2026-11-16; shooter#102, option B): **Camera-targeted, muzzle-authoritative shots.** The third-person camera establishes the intended aim point, but a damaging ranged weapon's actual hit ray or projectile originates at its mounted, connected weapon muzzle and travels toward that point. Geometry between the muzzle and the aim point blocks or intercepts the shot even if the camera sees the target: camera peeking does not enable shooting through cover. The authoritative origin and intersection are simulation/host rules shared with native and WebGPU prediction, reticle and visual effects; the client renderer may not supply independent combat truth. Preserve the existing weapon damage, energy, part-loss, lag-compensation and replay contracts, reconciling muzzle transforms with the real weapon/robot kit and articulation. This applies to mounted damaging ranged weapons, with the grapple's separate movement/rope contract reconciled rather than silently changed. **Intent only; implementation/visual acceptance pending** in #102 and #49. Draft PR #84 remains its previously defined battery/laser-visual change, without this gameplay redesign unless separately integrated.
 
+
+- **D2.i104.1** (owner, 2026-11-16; shooter#104; answers Q4's movement and
+  target choices, option A): A grapple attached to **arena geometry** supports
+  **momentum-based swinging and active pulling/reeling toward its anchor at the
+  same time**. It does not latch onto another fighter in the first robot beta.
+  The shipped 30 m reach and 0.75 s between hooks are provisional balance
+  defaults, not fixed owner-approved values. Preserve deterministic host-owned
+  anchor, rope, release and prediction semantics; implementation verification
+  for the new mounted-module path remains in #104.
+
+- **D2.i104.2** (owner, 2026-11-16; shooter#104; supersedes D2.5's
+  gun-in-rotation classification and only the grapple-as-weapon aspect of
+  D2.i46.8): The grappling hook is an **optional socket-mounted robot module**,
+  not a standard gun in the weapon rotation or a mandatory movement ability.
+  It occupies a legitimate free-form component attachment, spends build points
+  and shared energy, and responds to its **own configurable control binding**.
+  A robot without an operational mounted grapple cannot use the action; loss,
+  detachment or disconnection disables it through the same authoritative part
+  rules as other components. Reuse #71's component graph, #57's builder, #74's
+  bindings and the existing grapple mechanics. Exact cost, attachment variants,
+  use interval and reach remain implementation tuning, not new product policy.
+  The legacy gun remains current shipped behavior until #104 migrates both
+  clients and the host, with replay, prediction and live visual acceptance.
+
 ## 3. Platforms
 
 - **D3.1** (owner, 2026-11-11): Native wgpu client on render-engine plus a browser client on Pages.
@@ -411,7 +435,14 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   (4 to 12 players, 14 spawn points), point-symmetric with mezzanines and a gantry bridge at 3 m
   and crane towers at 5 m; its name, size, layout, pickup and repair anchors and destruction
   candidates (its low cover, barriers and crates) are provisional choices, to be tuned in
-  playtests. The yard stays the default.
+  playtests. The yard stays the default. Since shooter#53 the small arena is in: `proving-cell`,
+  a 32 m purpose-built combat test cell (owner decisions B and C on #53) built from the same arena
+  kit (2 to 6 players recommended, 12 spawn points so the default 12 slots still fit),
+  point-symmetric with a 2 m test stage carrying the rail capacitor in the middle, 3 m
+  observation galleries along two walls carrying thrusters, a control booth with two doorways in
+  two corners and a test bay in two side walls; its name, size, layout, spawn count, pickup and
+  repair anchors (in the booths) and destruction candidates (its low cover, open-floor barriers
+  and crates) are provisional choices, to be tuned in playtests.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration
