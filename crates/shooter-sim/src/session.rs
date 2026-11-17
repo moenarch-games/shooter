@@ -746,8 +746,11 @@ pub struct StepReport {
     pub sliding: bool,
     /// It touched down this tick after being airborne.
     pub landed: bool,
-    /// The weapon copy that fired this tick.
+    /// The last weapon copy that fired this tick (the last of [`StepReport::volley`]).
     pub fired: Option<Instance>,
+    /// Every copy that fired this tick, in the order granted: the grapple's hook, the swing,
+    /// then the guns by part (shooter#127).
+    pub volley: weapons::Volley,
     /// Damage dealt to others (fighters and dummies) this tick.
     pub damage: i32,
     /// A rocket exploded this tick.
@@ -1546,7 +1549,7 @@ impl Session {
             dummy.drive(&mut self.world, self.tick)?;
         }
 
-        let mut local_fired = None;
+        let mut local_volley = weapons::Volley::default();
         for slot in 0..self.fighters.len() {
             let fighter = &mut self.fighters[slot];
             if !fighter.alive() {
@@ -1582,23 +1585,42 @@ impl Session {
                     .then_some(grapple),
                 None => None,
             };
-            // The grapple's hook, the swing, then the gun ask the shared pool for their energy,
-            // first come, first served ([`crate::energy`]); a weapon part the robot has lost
-            // cannot ask ([`crate::damage`]), so it neither fires nor spends a cooldown; nor can
-            // a weapon the build does not carry. A switch to a weapon copy it may not hold is
-            // refused ([`weapons::resolve`]): the host decides, the prediction and replays
-            // alike. Every copy of a weapon is its own instance (shooter#125): its own mod,
-            // refire and muzzle; the melee key swings the first blade still connected.
+            // The grapple's hook, the swing, then the guns ask the shared pool for their energy,
+            // first come, first served in that order and the guns by part ID ([`crate::energy`],
+            // shooter#127). The guns asked are the held copy while the primary trigger is down
+            // and every copy the direct weapon bindings and groups name; each fires if it is
+            // ready, its family's salvo limit allows ([`Weapon::salvo`]) and the pool grants it,
+            // and a refusal refuses only that copy. A weapon part the robot has lost cannot ask
+            // ([`crate::damage`]), so it neither fires nor spends a cooldown; nor can a weapon
+            // the build does not carry, nor a part that is no gun. A switch to a weapon copy it
+            // may not hold is refused ([`weapons::resolve`]): the host decides, the prediction
+            // and replays alike. Every copy of a weapon is its own instance (shooter#125): its
+            // own mod, refire and muzzle; the melee key swings the first blade still connected.
             let charge = &mut fighter.energy;
             let held = fighter.arsenal.held;
-            let fired = fighter.arsenal.trigger_tuned(
-                intent
-                    .select
-                    .and_then(|select| weapons::resolve(select, held, &armed)),
+            let select = intent
+                .select
+                .and_then(|select| weapons::resolve(select, held, &armed));
+            let mut requests: Vec<Instance> = Vec::new();
+            if playing {
+                if intent.fire {
+                    requests.push(select.unwrap_or(held));
+                }
+                requests.extend(
+                    intent
+                        .triggers
+                        .parts()
+                        .iter()
+                        .filter_map(|part| armed.iter().find(|armed| armed.part == *part))
+                        .filter(|instance| instance.weapon.gun()),
+                );
+            }
+            let volley = fighter.arsenal.trigger_tuned(
+                select,
                 parts
                     .first(&build, Weapon::EnergyBlade)
                     .filter(|_| intent.melee && playing),
-                intent.fire && playing,
+                &requests,
                 self.tick,
                 |instance| tuning_of(&build, carried, instance).refire_ticks(instance.weapon),
                 |instance| {
@@ -1611,13 +1633,13 @@ impl Session {
             );
             if let Some(grapple) = hook {
                 if slot == 0 {
-                    local_fired = Some(grapple);
+                    local_volley.push(grapple);
                 }
                 self.fire(slot, grapple, intent)?;
             }
-            if let Some(instance) = fired {
+            for &instance in volley.shots() {
                 if slot == 0 {
-                    local_fired = Some(instance);
+                    local_volley.push(instance);
                 }
                 self.fire(slot, instance, intent)?;
                 // The shot went out boosted; it spends a use of the module that boosted it.
@@ -1735,7 +1757,8 @@ impl Session {
             self.run_pickups();
         }
         let mut report = StepReport {
-            fired: local_fired,
+            fired: local_volley.shots().last().copied(),
+            volley: local_volley,
             damage: self.dealt.first().copied().unwrap_or(0),
             exploded,
             jumped: moves.jumped,
@@ -1814,14 +1837,11 @@ impl Session {
                 }
                 Pilot::Bot(bot) => {
                     if fighter.respawn_at.is_none() {
-                        fighter.intent = bot.think(
-                            slot,
-                            &sights,
-                            &self.world,
-                            &self.arena,
-                            fighter.arsenal.held,
-                            tick,
-                        );
+                        // The copies it still has: what its weapon request may name.
+                        let copies: Vec<Instance> =
+                            fighter.parts.instances(&fighter.build).collect();
+                        fighter.intent =
+                            bot.think(slot, &sights, &self.world, &self.arena, &copies, tick);
                         // Its robot's actuators through its build's preset layout, from the
                         // keys its movement would press: the same commands a person's layout
                         // sends ([`crate::bindings`]).

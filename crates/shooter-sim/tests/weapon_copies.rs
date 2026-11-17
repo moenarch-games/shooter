@@ -1,7 +1,7 @@
 //! Several mounted copies of one weapon (shooter#125): two rail guns or four rocket launchers on
 //! one robot are distinct weapons, each addressed by its part, with its own mod, refire, muzzle,
-//! health and loss; a switch names a copy or a weapon; one copy fires at a time; the wire, a
-//! predictor and the bots follow.
+//! health and loss; a switch names a copy or a weapon; the wire, a predictor and the bots
+//! follow.
 // The platform's floats only check results here; the simulation uses libm (clippy.toml).
 #![allow(clippy::disallowed_methods)]
 
@@ -265,7 +265,7 @@ fn losing_one_rail_gun_leaves_the_other() {
 }
 
 /// The rocket pod's four launchers are four places in the cycle, each fired from its own muzzle,
-/// and never two in one tick.
+/// and never two in one tick (their salvo limit, shooter#127).
 #[test]
 fn the_rocket_pod_cycles_its_four_launchers_one_at_a_time() {
     let mut session = duel(ROCKET_POD, STANDARD);
@@ -290,7 +290,8 @@ fn the_rocket_pod_cycles_its_four_launchers_one_at_a_time() {
             assert!(distance(*first, *second) > 15.0, "{froms:?}");
         }
     }
-    // Held down with a switch to another launcher every tick: still one rocket at a time.
+    // Held down with a switch to another launcher every tick: one rocket at a time, no faster
+    // than the family's salvo spacing, though faster than one launcher alone.
     let mut volleys = 0;
     for tick in 0..240 {
         let a = Intent {
@@ -303,7 +304,9 @@ fn the_rocket_pod_cycles_its_four_launchers_one_at_a_time() {
         assert!(shots <= 1);
         volleys += shots;
     }
-    assert!(volleys <= 240 / 48 + 1, "{volleys} rockets");
+    let spacing = Weapon::RocketLauncher.salvo().unwrap().spacing as usize;
+    assert!(volleys <= 240 / spacing + 1, "{volleys} rockets");
+    assert!(volleys > 240 / 48 + 1, "{volleys} rockets");
 }
 
 /// The wire carries a switch to a copy or to a weapon, the copy held and the copy that fired;

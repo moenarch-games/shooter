@@ -120,10 +120,12 @@ fn shoot(
         select: Some(weapon.into()),
         ..Intent::IDLE
     };
-    for _ in 0..120 {
+    // A quarter second at least: B turns to face `b_yaw` meanwhile.
+    for waited in 0..120 {
         step(session, take, facing(b_yaw));
         let held = session.fighters[0].arsenal.held.weapon == weapon;
-        if held && session.fighters[0].energy == session.fighters[0].pool().capacity {
+        if waited >= 15 && held && session.fighters[0].energy == session.fighters[0].pool().capacity
+        {
             break;
         }
     }

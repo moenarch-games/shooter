@@ -948,6 +948,10 @@ fn inputs_and_snapshots_round_trip() {
             );
             motors
         },
+        triggers: [9, 7, 12]
+            .map(shooter_sim::robot::PartId)
+            .into_iter()
+            .collect(),
     };
     let command = decode_input(&encode_input(intent, 77, None, None)).unwrap();
     assert_eq!((command.intent, command.view_tick), (intent, 77));
@@ -1142,10 +1146,9 @@ fn the_flame_ignites_before_it_burns_a_fighter() {
         });
         burns.push(burnt);
     }
-    // The switch takes 12 ticks; then 15 ticks of ignition before the first burn.
-    let switch = weapons::SWITCH_TICKS as usize;
+    // No switch delay (shooter#127): 15 ticks of ignition before the first burn.
     let ignition = weapons::FLAME_IGNITION_TICKS as usize;
-    let first = switch + ignition;
+    let first = ignition;
     assert_eq!(burns.iter().position(|burnt| *burnt), Some(first));
     assert!(burns[first..34].iter().all(|burnt| *burnt));
     // After letting go on tick 35, it ignites again.

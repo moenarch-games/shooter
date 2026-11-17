@@ -12,7 +12,7 @@ use crate::arena::Arena;
 use crate::fixed::{subunits_per_tick, subunits_per_tick_squared};
 use crate::physics::{StepUp, Vec3i};
 use crate::trig;
-use crate::weapons::Select;
+use crate::weapons::{Select, Triggers};
 
 /// The reference fighter box, 0.6 m × 1.8 m × 0.6 m: the dummies' bodies, and how high above its feet
 /// a robot's centre is.
@@ -74,7 +74,8 @@ pub struct Intent {
     /// Where the player aims up (positive) or down, in `trig` angle steps within
     /// ±[`crate::weapons::MAX_PITCH`].
     pub pitch: i16,
-    /// Trigger held: fires whenever the held weapon is ready.
+    /// The primary trigger held: fires the held weapon copy whenever it is ready (a convenience
+    /// beside the direct weapon bindings, shooter#127).
     pub fire: bool,
     /// Melee held: swings the energy blade whenever it is ready ([`crate::melee`]).
     pub melee: bool,
@@ -97,6 +98,11 @@ pub struct Intent {
     /// its connected actuators take ([`crate::bindings::Motors::controls`]); the rest stand at
     /// rest.
     pub motors: crate::bindings::Motors,
+    /// The weapon copies its direct weapon bindings and weapon groups ask to fire this tick
+    /// (shooter#127, [`crate::bindings`]), beside the primary trigger: each fires if it is ready,
+    /// its family's salvo limit allows and the pool grants its energy
+    /// ([`crate::weapons::Arsenal::trigger_tuned`]).
+    pub triggers: Triggers,
 }
 
 impl Intent {
@@ -116,6 +122,7 @@ impl Intent {
         edit: false,
         repair: None,
         motors: crate::bindings::Motors::REST,
+        triggers: Triggers::NONE,
     };
 }
 
