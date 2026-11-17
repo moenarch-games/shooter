@@ -279,6 +279,16 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   robot out of its respawn and out of a round's start; the builder closes when a snapshot shows
   the readied build configured, and a person whose inputs stop (a lost connection) lets go of it
   after the input hold. Not yet: action-group bindings (shooter#74) and typed exact angles.
+  Since shooter#124 (reliable snapping and turning; the rotation's presentation stays the owner's
+  open question, so no gizmo, only keys, buttons and a key hint): the socket under the pointer is
+  the cell a ray from the camera meets on the first part box (hidden sockets are neither lit nor
+  taken; off any socket face, the nearest lit socket snaps), a placement is previewed valid or
+  not (the simulation's footprint, `Catalog::footprint`, and placement, `mechanics::placement_of`;
+  refused in red with the part in the way and the reason) and a click commits the previewed
+  build. The keys turn the part in hand first, else the selected part, by a quarter turn by
+  default (G steps to an eighth and about a degree; Shift back, Ctrl a degree), Z / Y undo and
+  redo every edit to the exact build, Escape cancels a drag and a refused drop keeps the part in
+  hand.
 - **D2.i70.12** (owner, 2026-11-13; shooter#70): What ships today is the baseline, not the beta
   contract: `shooter_sim::robot` (shooter#47) with its anatomical torso, head, arm and locomotion
   sockets, hand and shoulder hardpoints, named loadouts and its mass, power, heat and cooling

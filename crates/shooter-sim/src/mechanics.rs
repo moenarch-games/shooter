@@ -325,17 +325,8 @@ fn frames(build: &Assembly) -> Vec<(PartId, Frame)> {
             Some(mount) => {
                 let parent_at = index(mount.parent).expect("validated parents exist");
                 let parent = resolve(parent_at, parts, frames, index);
-                let parent_cells = cells_of(&parts[parent_at]);
-                let site = part_type(&parts[parent_at])
-                    .site(mount.socket)
-                    .expect("validated sockets exist");
-                let socket = socket_frame(site.face, site.u, site.v, parent_cells);
-                let rotation = socket.rotation.then(turn(mount.orientation));
-                let pivot = [CELL / 2.0, CELL / 2.0, 0.0];
-                parent.then(Frame {
-                    rotation,
-                    origin: sub(socket.origin, rotation.apply(pivot)),
-                })
+                mounted(parent, &parts[parent_at], mount.socket, mount.orientation)
+                    .expect("validated sockets exist")
             }
         };
         frames[at] = Some(frame);
@@ -356,22 +347,55 @@ pub struct Placement {
     pub half_extents: [f32; 3],
 }
 
+/// The frame of a part mounted on `socket` of `parent` (whose frame is `at`), turned
+/// `orientation`, if `parent` has that socket.
+fn mounted(at: Frame, parent: &Part, socket: SocketId, orientation: Orientation) -> Option<Frame> {
+    let site = part_type(parent).site(socket)?;
+    let socket = socket_frame(site.face, site.u, site.v, cells_of(parent));
+    let rotation = socket.rotation.then(turn(orientation));
+    let pivot = [CELL / 2.0, CELL / 2.0, 0.0];
+    Some(at.then(Frame {
+        rotation,
+        origin: sub(socket.origin, rotation.apply(pivot)),
+    }))
+}
+
+/// `part`'s placement in the frame `frame`.
+fn placed(part: &Part, frame: Frame) -> Placement {
+    let half = scale(size(cells_of(part)), 0.5);
+    Placement {
+        part: part.id,
+        centre: frame.point(half),
+        orientation: frame.rotation.quaternion(),
+        half_extents: half,
+    }
+}
+
 /// Every part of `build` placed in its robot's frame, in part-ID order.
 #[must_use]
 pub fn placements(build: &Assembly) -> Vec<Placement> {
     frames(build)
         .into_iter()
         .zip(build.parts())
-        .map(|((id, frame), part)| {
-            let half = scale(size(cells_of(part)), 0.5);
-            Placement {
-                part: id,
-                centre: frame.point(half),
-                orientation: frame.rotation.quaternion(),
-                half_extents: half,
-            }
-        })
+        .map(|((_, frame), part)| placed(part, frame))
         .collect()
+}
+
+/// Where `part` (its kind, mod and mount, whatever its ID) would be placed in `build`'s frame
+/// if it were mounted as its mount says, valid or not: the same placement [`placements`] gives
+/// it once a build holds it (the builder's preview of a placement the rules refuse,
+/// shooter#124). `None` if the part is the root, its parent is not in `build`, the parent has no
+/// such socket or the part type is not in the catalog.
+#[must_use]
+pub fn placement_of(build: &Assembly, part: &Part) -> Option<Placement> {
+    let mount = part.mount?;
+    BETA.part_type(part.kind)?;
+    let (_, at) = frames(build)
+        .into_iter()
+        .find(|(id, _)| *id == mount.parent)?;
+    let parent = build.part(mount.parent)?;
+    let frame = mounted(at, parent, mount.socket, mount.orientation)?;
+    Some(placed(part, frame))
 }
 
 /// Where a socket is in its robot's frame (units): the centre of its cell on its part's face and

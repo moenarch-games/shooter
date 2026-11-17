@@ -1254,6 +1254,94 @@ impl Catalog {
             .map_or(Tuning::BASE, |modification| modification.tuning)
     }
 
+    /// The cells of `site`'s face on a parent of type `parent` that a part of type `kind` with
+    /// `modification`, turned `orientation` there, reserves: its base (a heavy mod makes it at
+    /// least two cells long) turned with the yaw's nearest quarter turn, cells past the face's
+    /// edge left out. The footprint rule of [`Catalog::validate`].
+    fn reserved(
+        &self,
+        kind: &PartType,
+        modification: Option<ModId>,
+        orientation: Orientation,
+        site: Site,
+        parent: &PartType,
+    ) -> impl Iterator<Item = (u8, u8)> + use<> {
+        let heavy = modification
+            .and_then(|id| self.modification(id))
+            .is_some_and(|modification| modification.heavy);
+        let length = if heavy {
+            kind.cells[1].max(2)
+        } else {
+            kind.cells[1]
+        };
+        footprint(
+            (kind.cells[0], length),
+            orientation.quarter_turns(),
+            (site.u, site.v),
+            site.face.grid(parent.cells),
+        )
+    }
+
+    /// The sockets of `parent` in `build` that a part of type `kind` with `modification`,
+    /// mounted on `socket` turned `orientation`, would reserve: its footprint exactly as
+    /// [`Catalog::validate`] checks it, whether or not the placement is valid (the builder's
+    /// preview, shooter#124). Empty if `build` has no such parent or socket, or the part type is
+    /// unknown.
+    #[must_use]
+    pub fn footprint(
+        &self,
+        build: &Assembly,
+        parent: PartId,
+        socket: SocketId,
+        kind: PartTypeId,
+        modification: Option<ModId>,
+        orientation: Orientation,
+    ) -> Vec<SocketId> {
+        let (Some(parent), Some(kind)) = (
+            build
+                .part(parent)
+                .and_then(|part| self.part_type(part.kind)),
+            self.part_type(kind),
+        ) else {
+            return Vec::new();
+        };
+        let Some(site) = parent.site(socket) else {
+            return Vec::new();
+        };
+        let (yaw, pitch, roll) = orientation.raw();
+        self.reserved(
+            kind,
+            modification,
+            Orientation::canonical(yaw, pitch, roll),
+            site,
+            parent,
+        )
+        .filter_map(|(u, v)| parent.socket(site.face, u, v))
+        .collect()
+    }
+
+    /// The sockets of `parent` in `build` that its children's footprints reserve, each with the
+    /// child holding it (children in ID order).
+    #[must_use]
+    pub fn claims(&self, build: &Assembly, parent: PartId) -> Vec<(SocketId, PartId)> {
+        build
+            .children(parent)
+            .filter_map(|child| Some((child, child.mount?)))
+            .flat_map(|(child, mount)| {
+                self.footprint(
+                    build,
+                    parent,
+                    mount.socket,
+                    child.kind,
+                    child.modification,
+                    mount.orientation,
+                )
+                .into_iter()
+                .map(move |socket| (socket, child.id))
+            })
+            .collect()
+    }
+
     /// The one validation path for a build, in a fixed order so the same candidate always fails
     /// the same way: the part ceiling and known codes; unique IDs (canonical ID order); one root
     /// chassis; parents and their sockets; connection to the root; footprints; mods and weapons;
@@ -1343,22 +1431,13 @@ impl Catalog {
         // Footprints: no cell of a face claimed twice.
         let mut claimed: Vec<(PartId, Face, (u8, u8), PartId)> = Vec::new();
         for &(part, parent, site) in &sites {
-            let kind = type_of(part);
             let mount = part.mount.expect("children have mounts");
-            let heavy = part
-                .modification
-                .and_then(|id| self.modification(id))
-                .is_some_and(|modification| modification.heavy);
-            let length = if heavy {
-                kind.cells[1].max(2)
-            } else {
-                kind.cells[1]
-            };
-            for cell in footprint(
-                (kind.cells[0], length),
-                mount.orientation.quarter_turns(),
-                (site.u, site.v),
-                site.face.grid(type_of(parent).cells),
+            for cell in self.reserved(
+                type_of(part),
+                part.modification,
+                mount.orientation,
+                site,
+                type_of(parent),
             ) {
                 if let Some(&(.., owner)) = claimed
                     .iter()

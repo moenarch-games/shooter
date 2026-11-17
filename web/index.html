@@ -254,8 +254,19 @@
         }
       });
       // Tab shows the scores; keep it from moving the focus off the game.
+      // In the builder, Ctrl with R and F turns a part a degree and Ctrl+Z / Ctrl+Y undo and redo:
+      // not the page's reload, find, or the browser's own undo. (The browser keeps Ctrl+T: G
+      // changes the builder's rotation step instead.)
+      const builderKeys = new Set(["KeyR", "KeyF", "KeyZ", "KeyY", "KeyG"]);
       document.addEventListener("keydown", (event) => {
         if (event.key === "Tab") event.preventDefault();
+        if (
+          document.body.hasAttribute("data-builder") &&
+          (event.ctrlKey || event.metaKey) &&
+          builderKeys.has(event.code)
+        ) {
+          event.preventDefault();
+        }
       });
       if (!navigator.gpu) {
         const error = document.getElementById("error");

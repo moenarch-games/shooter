@@ -329,17 +329,30 @@ or the part in hand: cells, mass, health, points, energy, motor, the energy a sh
 turn in degrees and its mod), and the budget along the bottom: build points and parts against
 their limits, mass, energy and regeneration, and whether the build is valid (or the rule it
 breaks). Drag a part from the catalogue onto a socket, or click it and click sockets to place
-copies; the sockets it fits light up, and hovering one previews the part there with its real
-geometry, its box and the cells its footprint takes. Click a part to select it. R, T and F turn
-the selected part (or the one in hand) an eighth of a turn about its socket's normal, pitch and
-roll axes (Shift back, Ctrl a degree instead, exact either way); M cycles a weapon's mods, X or
+copies; the sockets it fits light up (sockets hidden behind other parts are not shown). The
+socket under the pointer is the cell of the face the pointer is over, found by a ray from the
+camera through the pointer into the parts' boxes (#124), so crowded faces, cells beside a taken
+footprint, large parts and turned parents resolve to the cell actually under it; over a part
+without sockets, or just off the robot, the pointer snaps to the nearest lit socket. That socket
+previews the part there turned as it is in hand, with its real geometry, its box and the cells
+its footprint reserves (the simulation's own footprint), or, if the rules refuse it, the box
+and footprint in red, the cell another part holds and that part marked and the reason (for a
+taken cell, which part is in the way and to turn the part or pick a free socket). What a click
+commits is the build the preview showed. Click a part to select it. R, T and F turn the part in
+hand (or, with nothing in hand, the selected part) about its socket's normal, pitch and roll
+axes by the step, a quarter turn (G steps to an eighth, then about a degree, and back; Shift
+turns back, Ctrl a degree whatever the step; exact either way); M cycles a weapon's mods, X or
 Delete removes a part and what hangs from it (never the root chassis: "new frame" starts over
-from a chassis in hand), Escape drops or deselects, right drag or the arrow keys turn the view,
-the wheel zooms. A further chassis mounts on a socket like any part, so frames of several
-cuboids build up. Every edit goes through the simulation's one validation path: an edit that
-breaks a structural rule (a taken cell, a mod that does not fit, a weapon twice, the part
-ceiling) is refused with the reason, and only the build points may run over while you work;
-Ready takes only a valid build, which the host validates again. Nothing warns about odd builds.
+from a chassis in hand), Z undoes an edit and Y or Shift+Z redoes it (back to the exact build),
+Escape cancels a drag, drops what is in hand or deselects, right drag or the arrow keys turn the
+view, the wheel zooms. A drop the rules refuse keeps the part in hand. A further chassis mounts
+on a socket like any part, so frames of several cuboids build up. Every edit goes through the
+simulation's one validation path: an edit that breaks a structural rule (a taken cell, a mod
+that does not fit, a weapon twice, the part ceiling) is refused with the reason, and only the
+build points may run over while you work; Ready takes only a valid build, which the host
+validates again. Nothing warns about odd builds. In the browser the pointer and the frame are
+both device pixels, and the page keeps Ctrl+R, Ctrl+F, Ctrl+Z and Ctrl+Y for the builder (the
+browser keeps Ctrl+T, so the fine pitch step there is G's).
 When your robot is destroyed, the respawn counts down as before, with "[B] Edit Robot" on
 screen: B opens the builder on the build you come back as and holds the respawn, at no time
 limit, even across a round's start, until you press Ready and the host shows the build
@@ -348,8 +361,10 @@ is no rebuilding. In the browser the page hides its own overlays while the build
 in the builder yet: actuator bindings and action groups (#74, Atlas D2.i70.7), typed exact angles
 and a testing chamber (post-beta).
 `cargo run -p shooter-client --release --example builder_views -- <dir>` renders the bench
-(before the match, a part being placed, a selected weapon, an over-budget build, a build between
-lives) offscreen; [captures](docs/captures/57-builder/).
+(before the match, a part being placed, snapping on a crowded face, a part turned about each
+axis, a refused placement, a turned parent, a part selected again, a selected weapon, an
+over-budget build, a build between lives) offscreen; [captures](docs/captures/57-builder/),
+[snapping and turning](docs/captures/124/).
 
 **Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
 D2.i70.4, D2.i89.1): the root chassis stores 100 and regenerates 24 a second (other chassis
