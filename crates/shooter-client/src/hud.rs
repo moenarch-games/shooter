@@ -357,6 +357,7 @@ mod tests {
             pellets: Vec::new(),
             pickups: Vec::new(),
             drops: Vec::new(),
+            scenery: Vec::new(),
             events: Vec::new(),
             names: Vec::new(),
         };

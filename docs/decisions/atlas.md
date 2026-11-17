@@ -174,7 +174,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   keeps it upright facing the aim, its legs stride and wheels roll along, its bodies slide
   frictionless (the drive carries them) and its legs bend within the gaits' range; a lost part
   leaves the bodies; snapshots, prediction and replays carry the exact state. The drive is a
-  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it.
+  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it. Both
+  clients draw every part where those bodies are (the legs' hip and knee, the wheels' and tracks'
+  roll and the joints' turn included; shooter#54), not from the kit's leg clips.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
   humanoids and other bipeds, four-leg robo-dogs on built-in quadruped walking presets, wheels and
   tracks, stationary platforms and grappling-only machines, all from the same part types and rules.
@@ -461,7 +463,17 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   observation galleries along two walls carrying thrusters, a control booth with two doorways in
   two corners and a test bay in two side walls; its name, size, layout, spawn count, pickup and
   repair anchors (in the booths) and destruction candidates (its low cover, open-floor barriers
-  and crates) are provisional choices, to be tuned in playtests.
+  and crates) are provisional choices, to be tuned in playtests. Since shooter#55 the large arena
+  is in: `drydock`, an 80 m repurposed spaceship shipyard (D2.i55.1) built from the same arena
+  kit (8 to 12 players recommended, 14 spawn points, all on the ground), point-symmetric: two
+  identical docked ships head to tail either side of a 32 m central corridor, each hull 12 m
+  wide and 56 m long from the kit's hull modules (no interiors) with a walkable 4 m foredeck and
+  a raised 6 m stern deck carrying thrusters; a 4 m dock gantry along each hull with a 16 m ramp
+  at either end and two gangways onto the foredeck; a 12 m outer lane behind each hull with a
+  jump pad onto the foredeck; masts for the grapple; an 8 m crane pylon in the corridor's middle
+  with the rail capacitor at its foot. Its name, size, hull heights, layout, spawn count, pickup
+  and repair anchors (under the gantries and in the outer lanes) and destruction candidates (its
+  low cover, floor barriers and crates) are provisional choices, to be tuned in playtests.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration
@@ -517,3 +529,15 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
 - **Q2.i70.6**: Performance limits: parts per robot, articulated bodies and active debris per match,
   debris lifetime, and the representative multi-robot scenes they are measured on (D2.i70.1,
   D2.i70.5, D2.i70.10).
+- **Q2.i60.1**: Arena destruction balance: which placeables of each map break, their health, what
+  damages them and how much, and whether a broken one ever comes back within a round (D2.i46.11;
+  shooter#60 leaves pieces and thresholds to map and content balance).
+  Defaults in use until decided (shooter#60, `shooter_sim::scenery`): each kit-built map's marked
+  destruction candidates break (its low cover, barriers and crates; a door once a map places one),
+  except a candidate another module rests on (the lower crate of a stack), which carries it.
+  Health: low cover 150, a barrier 250, a crate 60, a door 200. Every weapon damages them as it
+  damages a robot part it meets first: hitscan and pellets that stop on one, the flame on the one
+  it stops on, a blade swing that strikes no robot, a rocket's blast by the nearest point of its
+  pieces with the robots' falloff (100 at the blast, nothing at 3 m); a battery's blast does
+  not. Broken is final for the round (deaths and respawns keep it); a new round restores every
+  placeable.

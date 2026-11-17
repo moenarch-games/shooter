@@ -4,7 +4,8 @@
 //! off, the gait clock: what a client resumes prediction from), their robot builds, the charge in each
 //! one's energy pool, every part's health (what it has lost follows from them,
 //! [`crate::damage`]) and the module each carries, the rockets, the shotgun pellets, the module
-//! pads, the modules dropped at deaths and the tick's events). Robot builds travel as raw codes and are decoded
+//! pads, the modules dropped at deaths, the arena placeables' health ([`crate::scenery`]: the
+//! damaged ones, by stable ID) and the tick's events). Robot builds travel as raw codes and are decoded
 //! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored; a
 //! part health above its catalog health, or a charge above the capacity of the parts still
 //! connected, is malformed.
@@ -25,11 +26,12 @@ use crate::physics::articulated::{Motion as BodyMotion, Pose};
 use crate::pickups::{ArenaModule, Carried, DROP_LIFETIME_TICKS, Drop};
 use crate::player::{Intent, Motion};
 use crate::robot::{Assembly, AssemblyError, BETA, Candidate, PartId, RawMount, RawPart};
+use crate::scenery::PlaceableState;
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 17;
+pub const WIRE_VERSION: u8 = 18;
 const NONE: u8 = u8::MAX;
 
 /// A build part's flags: it has a parent, it is turned, it carries a mod.
@@ -151,6 +153,9 @@ pub struct Snapshot {
     pub pickups: Vec<PickupState>,
     /// The modules dead carriers dropped, oldest first, exact (a client predicts taking them).
     pub drops: Vec<Drop>,
+    /// The arena's damaged placeables by ascending stable ID, at what health they have left (0:
+    /// broken); every other one is whole ([`crate::scenery`]).
+    pub scenery: Vec<PlaceableState>,
     pub events: Vec<Event>,
     /// The names people picked, by slot (slots without one show as "Player N").
     pub names: Vec<(u8, String)>,
@@ -268,6 +273,7 @@ impl Session {
                 })
                 .collect(),
             drops: self.drops.clone(),
+            scenery: self.scenery.state(),
             events: self.events.clone(),
             names: self
                 .fighters
@@ -895,6 +901,12 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         out.u8(drop.from);
         out.u32(drop.expires_in);
     }
+    let scenery = &snapshot.scenery[..snapshot.scenery.len().min(usize::from(u16::MAX))];
+    out.u16(u16::try_from(scenery.len()).unwrap_or(u16::MAX));
+    for placeable in scenery {
+        out.u16(placeable.id);
+        out.u16(placeable.health);
+    }
     out.u8(count(snapshot.events.len()));
     for event in snapshot.events.iter().take(usize::from(u8::MAX)) {
         encode_event(&mut out, event);
@@ -1040,6 +1052,17 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
             Ok(drop)
         })
         .collect::<Result<Vec<_>, WireError>>()?;
+    let scenery = (0..input.u16()?)
+        .map(|_| {
+            Ok(PlaceableState {
+                id: input.u16()?,
+                health: input.u16()?,
+            })
+        })
+        .collect::<Result<Vec<_>, WireError>>()?;
+    if scenery.windows(2).any(|pair| pair[0].id >= pair[1].id) {
+        return Err(WireError::Malformed("placeables out of ID order"));
+    }
     let events = (0..input.u8()?)
         .map(|_| decode_event(&mut input))
         .collect::<Result<Vec<_>, _>>()?;
@@ -1057,6 +1080,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
         pellets,
         pickups,
         drops,
+        scenery,
         events,
         names,
     })

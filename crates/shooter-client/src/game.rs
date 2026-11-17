@@ -5,6 +5,9 @@
 //! plays the map it is given; online, the host's snapshots name the map.
 
 use crate::interpolation::Interpolation;
+use crate::robots::Frames;
+use crate::scene::METRES_PER_UNIT;
+use render_engine::glam::Vec3;
 use shooter_sim::physics::World;
 use shooter_sim::session::{Fighter, LOCAL_PLAYER};
 use shooter_sim::{Assembly, Event, Intent, MapId, Rules, Session, Snapshot, StepReport};
@@ -127,6 +130,32 @@ impl Game {
         }
     }
 
+    /// Where `slot`'s mechanical robot's bodies are drawn `blend` (0..1) of a tick after the
+    /// drawing clock (between the snapshots around it), while it is alive there.
+    #[must_use]
+    pub fn other_frames(&self, slot: u8, blend: f32) -> Option<Frames> {
+        match self {
+            Self::Practice { others, .. } => others.frames(slot, blend),
+            Self::Online(online) => online.other_frames(slot, blend),
+        }
+    }
+
+    /// Where the local fighter's mechanical robot's bodies are now (predicted online), while it
+    /// is alive.
+    #[must_use]
+    pub fn local_frames(&self) -> Option<Frames> {
+        let session = match self {
+            Self::Practice { session, .. } => Some(&**session),
+            Self::Online(online) => online.live(),
+        }?;
+        let fighter = session.local();
+        if !fighter.alive() {
+            return None;
+        }
+        let center = Vec3::from(fighter.center()) * METRES_PER_UNIT;
+        Frames::of_robot(&session.mechanics, fighter.slot, center)
+    }
+
     /// The physics world of the match's map, once it is known: the practice match's own, or
     /// online the predictor's. The camera keeps clear of its arena and the reticle traces it.
     #[must_use]
@@ -212,6 +241,7 @@ pub mod online {
     use shooter_sim::grapple::Hook;
     use shooter_sim::names;
     use shooter_sim::player::Motion;
+    use shooter_sim::scenery::PlaceableState;
     use shooter_sim::weapons::Delivery;
     use shooter_sim::wire::encode_input;
     use shooter_sim::{
@@ -245,6 +275,9 @@ pub mod online {
         name: Option<String>,
         /// The loadout asked of the host, if any.
         build: Option<Assembly>,
+        /// The arena's damaged placeables as the host last said (the predictor stands its arena
+        /// so before every predicted tick).
+        scenery: Vec<PlaceableState>,
         /// The local fighter's part damage as the host last said (the predictor keeps it).
         parts: PartDamage,
         player_id: Option<u32>,
@@ -293,6 +326,7 @@ pub mod online {
                 name: name.and_then(names::sanitize),
                 build: None,
                 parts: PartDamage::default(),
+                scenery: Vec::new(),
                 player_id: None,
                 predictor: None,
                 predicting: false,
@@ -360,6 +394,10 @@ pub mod online {
 
         pub fn other_center(&self, slot: u8, blend: f32) -> Option<[f32; 3]> {
             self.others.center(slot, blend)
+        }
+
+        pub fn other_frames(&self, slot: u8, blend: f32) -> Option<crate::robots::Frames> {
+            self.others.frames(slot, blend)
         }
 
         fn local_slot(&self) -> Option<u8> {
@@ -485,9 +523,14 @@ pub mod online {
 
         fn predict(&mut self, intent: Intent) -> Result<StepReport, String> {
             let parts = self.parts;
+            let scenery = self.scenery.clone();
             let predictor = self.predictor_mut()?;
             // Part damage is the host's alone: the predicted fighter keeps the host's last word.
             predictor.fighters[0].parts = parts;
+            // So is the arena's destruction: what the prediction's shots did to it is dropped.
+            predictor
+                .adopt_scenery(&scenery)
+                .map_err(|error| error.to_string())?;
             predictor.tick(intent).map_err(|error| error.to_string())
         }
 
@@ -511,6 +554,13 @@ pub mod online {
         }
 
         fn reconcile(&mut self, snapshot: &Snapshot) -> Result<(), String> {
+            // The arena's placeables stand as the host has them, whatever the prediction did.
+            self.scenery.clone_from(&snapshot.scenery);
+            if let Some(predictor) = self.predictor.as_mut() {
+                predictor
+                    .adopt_scenery(&self.scenery)
+                    .map_err(|error| error.to_string())?;
+            }
             let Some(me) = self.player_id.and_then(|id| snapshot.of_player(id)) else {
                 return Ok(());
             };
