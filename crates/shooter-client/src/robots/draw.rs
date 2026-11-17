@@ -59,11 +59,6 @@ struct SlotRobot {
     /// each `set_material`, so they change only when this does).
     glow: Option<u8>,
     marker: InstanceId,
-    phase: f32,
-    /// Each part's roll angle (radians; only wheels and tracks turn), from its ground motion.
-    rolls: Vec<f32>,
-    /// Where it looked last frame (its turn rate).
-    forward: Option<Vec3>,
     /// Its weapons' transitions, from its first frame.
     memory: Option<Memory>,
 }
@@ -219,7 +214,6 @@ impl Robots {
             world_from_local: HIDDEN,
             skin: None,
         });
-        let rolls = vec![0.0; model.parts.len()];
         SlotRobot {
             build,
             model,
@@ -228,9 +222,6 @@ impl Robots {
             materials,
             glow: None,
             marker,
-            phase: 0.0,
-            rolls,
-            forward: None,
             memory: None,
         }
     }
@@ -270,41 +261,11 @@ impl Robots {
             let Some(robot) = &mut self.slots[slot] else {
                 continue;
             };
-            robot.phase = pose::advance_phase(robot.phase, &robot.model, &view.state, seconds);
             let memory = robot
                 .memory
                 .get_or_insert_with(|| Memory::settled(&view.state));
             memory.advance(&view.state, seconds);
-            let yaw_rate = robot.forward.map_or(0.0, |from| {
-                pose::yaw_rate(from, view.state.forward, seconds)
-            });
-            robot.forward = Some(view.state.forward);
-            pose::advance_rolls(
-                &mut robot.rolls,
-                &robot.model,
-                &view.state,
-                yaw_rate,
-                seconds,
-            );
-            // The simulation's wheel and track angles where the view has them, else the rolls.
-            let mut joints = view.parts.joints.to_vec();
-            for (part, angle) in robot.model.parts.iter().zip(&robot.rolls) {
-                if part.roll.is_some() && !joints.iter().any(|(id, _)| *id == part.id) {
-                    joints.push((part.id, *angle));
-                }
-            }
-            let parts = PartStates {
-                joints: &joints,
-                ..view.parts
-            };
-            let posed = pose::pose(
-                &robot.model,
-                &self.kit,
-                &view.state,
-                robot.phase,
-                &parts,
-                memory,
-            );
+            let posed = pose::pose(&robot.model, &self.kit, &view.state, &view.parts, memory);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let glow = (view.glow.clamp(0.0, 1.0) * 8.0).round() as u8;
             if robot.glow != Some(glow) {
@@ -366,7 +327,7 @@ impl Robots {
             world.set_instance(robot.marker, instance);
             drawn.push(Drawn {
                 slot: view.slot,
-                label: posed.animation.label(&robot.model),
+                label: posed.animation.label(),
                 grapple: posed.grapple,
                 muzzles: posed.muzzles,
             });

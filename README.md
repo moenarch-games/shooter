@@ -54,8 +54,8 @@ same simulation in-process: you in slot 0 against eleven bots, no server needed.
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID, its arena
 (geometry, collision, spawn points, jump pads, module pickup pads, bot waypoints) and the player
-count it is laid out for. Two of the beta's three arenas, the medium and the small one, are in,
-built from asset-tooling's arena kit; two interim greybox maps stay:
+count it is laid out for. The beta's three arenas, the medium, the small and the large one, are
+in, built from asset-tooling's arena kit; two interim greybox maps stay:
 
 - `assembly-works`, the medium arena (shooter#52; 4 to 12 players, 14 spawn points): a multilevel
   robotic assembly factory repurposed for combat (the owner's choice of setting), a 56 m hall
@@ -92,6 +92,26 @@ built from asset-tooling's arena kit; two interim greybox maps stay:
   barriers and crates are destruction candidates for shooter#60 (the blast screens stay, the
   booths' spawn points rely on them) and a repair anchor in each booth is data for shooter#61.
   Views and frames: [docs/captures/53](docs/captures/53).
+- `drydock`, the large long-sightline arena (shooter#55; 8 to 12 players, 14 spawn points): a
+  repurposed spaceship shipyard (the owner's choice, Atlas D2.i55.1), an 80 m square inside 10 m
+  walls, point-symmetric, from the same kit. Two docked spacecraft lie head to tail either side
+  of a 32 m central industrial corridor; there are no ship interiors. Each hull, 12 m wide and
+  56 m long, is built from the kit's hull modules: 2 m sides, a 45° shoulder up to a walkable
+  4 m foredeck, 8 m wide, with staggered 80 cm hull ribs as low cover and a sensor mast at the
+  bow, and a raised 6 m stern deck, 16 m long, with a rib, a mast and the thrusters, climbed from
+  the foredeck by an 8 m ramp. Along each hull's corridor side runs a 4 m dock gantry with a
+  16 m ramp down from either end and two gangways over the shoulder onto the foredeck; behind
+  each hull a 12 m outer lane along the perimeter has containers, a barrier and a jump pad that
+  throws a fighter over the shoulder onto the foredeck (15 m/s up, 9 m/s toward it), and a lane
+  round each bow and stern joins it to the corridor. The corridor's floor has containers,
+  barriers, low cover, crates and an 8 m crane pylon in the middle, with the rail capacitor at
+  its foot. Every hull top has several routes up (the gantry's two ramps for wheels and tracks,
+  the gangways, the pad, the grapple on a mast); each stern deck is in sight of the other ship's
+  hull and of the gantries, and the pylon cuts the line between the two stern decks, so no hull
+  top is an unanswered perch. All spawn points are on the ground and none is in sight of another.
+  Its low cover, floor barriers and crates are destruction candidates for shooter#60 and four
+  repair anchors (under the gantries and in the outer lanes) are data for shooter#61. Views and
+  frames: [docs/captures/55](docs/captures/55).
 - `greybox-yard`, the default for hosted matches and practice (6 to 12 players, 14 spawn points):
   a 76 m square with 5 m walls, point-symmetric (the north half turned half a turn is the south
   half). A raised walkway crosses the middle, a 3 m deck on two pillars that you can walk under,
@@ -116,11 +136,11 @@ pieces of their own. The proxies come from the pinned kit's descriptor through a
 simulation reads no files. Both clients draw each placement's kit mesh where the simulation puts
 it and lay the floor with the kit's 2 m plates; until the kit is read a kit-built map waits, and
 if it cannot be read the map is drawn as boxes with a note in the HUD. The greybox maps are
-unchanged. The small arena uses the same path, as will the large one (#55).
+unchanged. The small and the large arena use the same path.
 `cargo test -p shooter-client --test arena` checks the table against the pinned kit, the kit's
 decoding and that every placed module is drawn inside the box its collision comes from;
 `scripts/gen-arena-kit.py` rewrites the table after a pin bump; `cargo run -p shooter-client
---release --example arena_views -- assembly-works DIR` (or `proving-cell`) renders a map's overview and route views
+--release --example arena_views -- assembly-works DIR` (or `proving-cell`, `drydock`) renders a map's overview and route views
 offscreen.
 
 The recommended capacity never changes the slot count (12 unless the host sets another per
@@ -406,8 +426,8 @@ the capsule did; two of the capsule-tuned routes, the works' 4 m step from the 2
 thruster jump onto a 2 m ledge, no longer land for the standard robot). Snapshots carry each
 living robot's exact state (every body's motion, its lost parts, its gait clock; wire version
 16), from which a client resumes its prediction: bit for bit like the host, whole or one-legged
-(`cargo test -p shooter-sim --test match_robots`). The clients still draw the robots at their
-centres and facing (the legs' kit clips, not the bodies' poses).
+(`cargo test -p shooter-sim --test match_robots`). Both clients draw each robot where those
+bodies are (below).
 
 **Robot models** (`shooter_client::robots`, #54). Both clients draw every fighter as its validated
 build from three asset-tooling kits: `shooter-combat-robot` (the chassis, beams, hinge, rotor,
@@ -427,13 +447,18 @@ places it (`mechanics::placements`), so loadouts look different, and each mod si
 weapon's anchor from the weapons kit's descriptor. Wheels and tracks turn about the axles the
 locomotion kit's descriptor (`socket-grid-kit-descriptor-v3`) puts exactly where the simulation's
 mechanics turn them (the mount normal; the wheel's 0.18 m tyre, the track's two 0.1 m road
-wheels), by their `roll` clip at the joint's angle (the belt moves with the wheels): the
-simulation's angle where a state gives one (the gallery's mechanics fixtures), and in a match
-(drawn from the robot's centre and facing, not yet its bodies' poses), the turn the robot's ground
-motion and turn rate would give them, so the two sides turn opposite ways and a robot turning on
-the spot counter-rotates its tracks. The robot stands on its feet and faces its look; its legs
-rest when idle, walk the kit's clips when running (at most 2.5 cycles a second, so feet slide at
-full speed), tuck while airborne or grappling and crouch in a slide. The weapons play the kit's
+wheels), by their `roll` clip at the joint's angle (the belt moves with the wheels).
+
+Every living robot is drawn where the simulation has its mechanical robot's bodies
+(`robots::frames`): the local one from the prediction, the others between the two snapshots
+around the drawing clock (each body's frame blended), moved with the fighter's drawn centre. Each
+part sits on the body that carries it, so the robot stands, leans, and with its legs shot off lies
+on its chassis as the simulation has it; a leg's hip and knee take the angles its thigh and shin
+have turned (its ankle stays at rest: the simulation's foot is fixed to its shin), so the legs
+stride with the simulation's gait; a wheel or a track rolls by the angle its body (a track's first
+road wheel) has turned about its axle; a hinge's or rotor's moving piece, and everything on it,
+turns as the body it carries has turned. The kit's leg clips are not played. Without a mechanical
+robot (the builder's bench) a robot stands at rest on its feet. The weapons play the kit's
 states from the match (`robots::weapon`): a shot's recoil and muzzle flash, the laser's and
 flamethrower's loops while firing, the rail gun's recharge and the rocket pod's alternating tubes
 and reload over their (mod-tuned) refire time, the grapple's launch (its hook flies to where the
@@ -444,18 +469,20 @@ flames and pellets are drawn from the weapon's muzzle frame (the long barrel's w
 rather than a guessed offset. The named loadouts mount every weapon on the root chassis' front with
 its muzzle along the aim (#91), so shots leave muzzles that face it; the simulation decides where
 shots start and what they hit. A dead robot topples over until it
-respawns. Strafing (no sideways clip) is a missing animation: a magenta marker floats over the
-robot and the HUD names it. Hinges and rotors would turn about the simulation's anchor (the centre
-of their top face, where the kit pivots at the cube's centre), but nothing in a match turns them
-yet. Parts a robot has lost (from the host's per-part state in each snapshot) fall from where they
-came off to the floor with their weapons and mods and lie there until it respawns, while the rest
-of it keeps animating; damaged parts draw their damaged look where the kit has one (the armor
-plate, the wheel and the track). `cargo run -p shooter-client --release --example robot_gallery
--- <dir>` renders the loadouts, the mechanics fixtures (the car, strafer and turret with their
-wheels where the simulation turned them, and the gallery's own mini-tank on tracks: in the
-simulation its hull rests on the floor and its tracks spin without moving it, #58), every pose,
-the weapons' states, the mods, and damaged and lost wheels and tracks offscreen
-([captures](docs/captures/54-locomotion/)).
+respawns (procedural: a dead fighter has no mechanical robot). Strafing is a missing animation
+(neither the kit nor the simulation's gait has a sideways step: the legs stride while the robot
+moves sideways): a magenta marker floats over the robot and the HUD names it. Parts a robot has
+lost (from the host's per-part state in each snapshot) fall from where they came off to the floor
+with their weapons and mods and lie there until it respawns, while the rest of it stays on its
+bodies; damaged parts draw their damaged look where the kit has one (the armor plate, the wheel
+and the track). `cargo run -p shooter-client --release --example robot_gallery -- <dir>`
+renders the loadouts and mechanics fixtures as the simulation spawns them (the turret's rotor and
+hinge driven), the standard build standing, walking, walking on one leg and lying on its chassis
+without legs (each alone in the mechanics world, without the match's drive that holds a fighter
+upright), the weapons' states, the mods, and the wheeled fixtures and the gallery's own mini-tank
+as the simulation drove them (in the simulation its hull rests on the floor and its tracks spin
+without moving it, #58) with damaged and lost wheels and tracks offscreen
+([captures](docs/captures/54-locomotion/), [mechanics poses](docs/captures/54/)).
 
 **Weapon mods.** A weapon part may carry one mod, which costs build points and mass and changes
 how that weapon fires (on the host, in the client's prediction and in lag-compensated hits

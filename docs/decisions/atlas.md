@@ -174,7 +174,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   keeps it upright facing the aim, its legs stride and wheels roll along, its bodies slide
   frictionless (the drive carries them) and its legs bend within the gaits' range; a lost part
   leaves the bodies; snapshots, prediction and replays carry the exact state. The drive is a
-  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it.
+  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it. Both
+  clients draw every part where those bodies are (the legs' hip and knee, the wheels' and tracks'
+  roll and the joints' turn included; shooter#54), not from the kit's leg clips.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
   humanoids and other bipeds, four-leg robo-dogs on built-in quadruped walking presets, wheels and
   tracks, stationary platforms and grappling-only machines, all from the same part types and rules.
@@ -313,6 +315,18 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   The legacy gun remains current shipped behavior until #104 migrates both
   clients and the host, with replay, prediction and live visual acceptance.
 
+- **D2.i45.1** (owner, 2026-11-16; shooter#45; answers Q3, option A):
+  The **energy blade is the only quick-melee weapon for the first modular-robot
+  beta**. It remains a mounted, functional part of the robot's build, available
+  by its own quick-melee binding (V or mouse back by default) while a gun is
+  selected, rather than joining the ordinary gun rotation; retain the shipped
+  last-weapon selection fallback where it applies (D2.i46.8). No separate
+  heavy hammer or additional melee roster is a beta prerequisite. Reconsider
+  meaningfully distinct melee modules after actual native/browser match
+  playtesting, with any new part and art owned by their existing respective
+  repositories (D5.i46.1). Existing blade reach, damage, timing and shove
+  values remain provisional balancing, not separately approved numeric policy.
+
 ## 3. Platforms
 
 - **D3.1** (owner, 2026-11-11): Native wgpu client on render-engine plus a browser client on Pages.
@@ -442,7 +456,17 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   observation galleries along two walls carrying thrusters, a control booth with two doorways in
   two corners and a test bay in two side walls; its name, size, layout, spawn count, pickup and
   repair anchors (in the booths) and destruction candidates (its low cover, open-floor barriers
-  and crates) are provisional choices, to be tuned in playtests.
+  and crates) are provisional choices, to be tuned in playtests. Since shooter#55 the large arena
+  is in: `drydock`, an 80 m repurposed spaceship shipyard (D2.i55.1) built from the same arena
+  kit (8 to 12 players recommended, 14 spawn points, all on the ground), point-symmetric: two
+  identical docked ships head to tail either side of a 32 m central corridor, each hull 12 m
+  wide and 56 m long from the kit's hull modules (no interiors) with a walkable 4 m foredeck and
+  a raised 6 m stern deck carrying thrusters; a 4 m dock gantry along each hull with a 16 m ramp
+  at either end and two gangways onto the foredeck; a 12 m outer lane behind each hull with a
+  jump pad onto the foredeck; masts for the grapple; an 8 m crane pylon in the corridor's middle
+  with the rail capacitor at its foot. Its name, size, hull heights, layout, spawn count, pickup
+  and repair anchors (under the gantries and in the outer lanes) and destruction candidates (its
+  low cover, floor barriers and crates) are provisional choices, to be tuned in playtests.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration

@@ -5,6 +5,9 @@
 //! plays the map it is given; online, the host's snapshots name the map.
 
 use crate::interpolation::Interpolation;
+use crate::robots::Frames;
+use crate::scene::METRES_PER_UNIT;
+use render_engine::glam::Vec3;
 use shooter_sim::physics::World;
 use shooter_sim::session::{Fighter, LOCAL_PLAYER};
 use shooter_sim::{Assembly, Event, Intent, MapId, Rules, Session, Snapshot, StepReport};
@@ -125,6 +128,32 @@ impl Game {
             Self::Practice { others, .. } => others.center(slot, blend),
             Self::Online(online) => online.other_center(slot, blend),
         }
+    }
+
+    /// Where `slot`'s mechanical robot's bodies are drawn `blend` (0..1) of a tick after the
+    /// drawing clock (between the snapshots around it), while it is alive there.
+    #[must_use]
+    pub fn other_frames(&self, slot: u8, blend: f32) -> Option<Frames> {
+        match self {
+            Self::Practice { others, .. } => others.frames(slot, blend),
+            Self::Online(online) => online.other_frames(slot, blend),
+        }
+    }
+
+    /// Where the local fighter's mechanical robot's bodies are now (predicted online), while it
+    /// is alive.
+    #[must_use]
+    pub fn local_frames(&self) -> Option<Frames> {
+        let session = match self {
+            Self::Practice { session, .. } => Some(&**session),
+            Self::Online(online) => online.live(),
+        }?;
+        let fighter = session.local();
+        if !fighter.alive() {
+            return None;
+        }
+        let center = Vec3::from(fighter.center()) * METRES_PER_UNIT;
+        Frames::of_robot(&session.mechanics, fighter.slot, center)
     }
 
     /// The physics world of the match's map, once it is known: the practice match's own, or
@@ -365,6 +394,10 @@ pub mod online {
 
         pub fn other_center(&self, slot: u8, blend: f32) -> Option<[f32; 3]> {
             self.others.center(slot, blend)
+        }
+
+        pub fn other_frames(&self, slot: u8, blend: f32) -> Option<crate::robots::Frames> {
+            self.others.frames(slot, blend)
         }
 
         fn local_slot(&self) -> Option<u8> {

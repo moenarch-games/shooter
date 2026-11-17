@@ -351,6 +351,51 @@ fn the_proving_cell_routes_land_alike_on_the_rapier_oracle() {
     }
 }
 
+/// The drydock (shooter#55): up the gantry's ramp and over a gangway onto the foredeck, up the
+/// stern ramp, the outer lane's pad and a grapple on the bow mast onto the foredeck. As on the
+/// proving cell, the standard robot stands on the same level on both backends after every
+/// route's resting legs, and the pad and the hook act alike.
+#[test]
+fn the_drydock_routes_land_alike_on_the_rapier_oracle() {
+    use shooter_sim::robot::STANDARD;
+    for scenario in [
+        scenarios::DOCK_GANTRY,
+        scenarios::DOCK_STERN,
+        scenarios::DOCK_PAD,
+        scenarios::DOCK_GRAPPLE,
+    ] {
+        let engine = run_as(Backend::Engine, scenario.arena, scenario.legs, STANDARD);
+        let rapier = run_as(Backend::Rapier, scenario.arena, scenario.legs, STANDARD);
+        let resting = scenario.legs.iter().filter(|leg| {
+            let intent = leg.intent;
+            intent.forward == 0 && intent.strafe == 0 && !intent.jump && !intent.fire
+        });
+        for leg in resting {
+            let (a, b) = (
+                end_of(&engine, leg.name).unwrap(),
+                end_of(&rapier, leg.name).unwrap(),
+            );
+            println!(
+                "{} {:<24} engine {:>8.2?} rapier {:>8.2?}",
+                scenario.name, leg.name, a.center, b.center
+            );
+            assert!(
+                (a.center[1] - b.center[1]).abs() < 30.0,
+                "{}: level after {:?}: {a:?} {b:?}",
+                scenario.name,
+                leg.name
+            );
+        }
+        let acts = |samples: &[Sample]| {
+            (
+                samples.iter().filter(|s| s.launched).count(),
+                samples.iter().any(|s| s.hooked),
+            )
+        };
+        assert_eq!(acts(&engine), acts(&rapier), "{}", scenario.name);
+    }
+}
+
 /// The shots and hits of `scenario` on physics-engine as `build`.
 fn combat(scenario: Scenario, build: Assembly) -> Vec<(u32, Option<Weapon>, i32)> {
     run_as(Backend::Engine, scenario.arena, scenario.legs, build)

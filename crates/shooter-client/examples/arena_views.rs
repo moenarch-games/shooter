@@ -10,7 +10,7 @@
 //!
 //! writes `overview.ppm` and `view-1.ppm`, `view-2.ppm`, … (the map's [`views`]) into the
 //! directory (default `target/arena-views`); the map defaults to `assembly-works` (or
-//! `proving-cell`).
+//! `proving-cell`, `drydock`).
 
 use render_engine::glam::Vec3;
 use shooter_client::arena_art::ArenaArt;
@@ -56,6 +56,23 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
             (Vec3::new(-5.5, 2.2, 1.5), Vec3::new(-10.0, 2.0, -9.0)),
             // The test bay in the east wall, from the floor.
             (Vec3::new(7.0, 2.0, 1.0), Vec3::new(15.0, 1.5, -4.0)),
+        ],
+        MapId::Drydock => vec![
+            // The corridor from its north end: the gantries along both hulls and the crane
+            // pylon in the middle.
+            (Vec3::new(2.0, 3.0, -36.0), Vec3::new(0.0, 2.5, 0.0)),
+            // From the west gantry across the corridor to the east ship's raised stern deck.
+            (Vec3::new(-14.0, 6.0, 8.0), Vec3::new(20.0, 6.0, -20.0)),
+            // A gangway from the west gantry over the shoulder onto the foredeck.
+            (Vec3::new(-11.0, 6.0, -4.0), Vec3::new(-22.0, 4.0, -10.0)),
+            // On the west foredeck, south up its ramp to the stern deck and its mast.
+            (Vec3::new(-21.0, 6.5, -12.0), Vec3::new(-22.0, 6.0, 10.0)),
+            // From the west stern deck over the corridor: the east foredeck and its gantry.
+            (Vec3::new(-22.0, 8.0, 26.0), Vec3::new(14.0, 3.0, 4.0)),
+            // The west outer lane from the north: its containers, the jump pad and the hull.
+            (Vec3::new(-34.0, 2.2, -30.0), Vec3::new(-30.0, 2.0, 0.0)),
+            // The bow lane, east past the bow's container toward the corridor.
+            (Vec3::new(-37.0, 2.2, -36.0), Vec3::new(0.0, 2.0, -31.0)),
         ],
         _ => vec![(Vec3::new(0.0, 2.0, 10.0), Vec3::new(0.0, 2.0, 0.0))],
     }
