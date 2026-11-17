@@ -5,12 +5,12 @@
 //! restoring the build, a destroyed battery's energy and blast, the wire and a predictor following the
 //! host, and bot matches that lose parts and replay exactly.
 
+use shooter_sim::aim;
 use shooter_sim::damage::{BATTERY_BLAST_DAMAGE, PartDamage};
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{ARMOR_PLATE, BEAM_LONG, CHASSIS_L, CHASSIS_S, SENSOR};
 use shooter_sim::robot::{ARMORY, BETA, Face, HEAVY, PartId, RawMount, RawPart, STANDARD};
-use shooter_sim::trig;
 use shooter_sim::weapons::{SPLASH_DAMAGE, Weapon};
 use shooter_sim::wire::{decode_snapshot, encode_snapshot};
 use shooter_sim::{Arena, Assembly, Event, Input, Intent, Rules, Session, Spawn};
@@ -76,15 +76,9 @@ fn part_center(session: &Session, slot: usize, part: PartId) -> [f32; 3] {
     parts.get(index).expect("a connected part").center
 }
 
-/// The yaw and pitch from `slot`'s eye to `point`.
-#[allow(clippy::cast_possible_truncation)]
+/// The yaw and pitch that put `slot`'s reticle on `point` ([`aim::at`]).
 fn aim_at(session: &Session, slot: usize, point: [f32; 3]) -> (u16, i16) {
-    let eye = session.fighters[slot].eye();
-    let d = [0, 1, 2].map(|axis| point[axis] - eye[axis]);
-    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
-    let run = d[0].hypot(d[2]).round() as i32;
-    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
-    (yaw, pitch)
+    aim::at(Some(&session.world), session.fighters[slot].eye(), point)
 }
 
 /// One tick: A holds `a`, B holds `b` (both seeing the match as it is).

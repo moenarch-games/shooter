@@ -238,15 +238,20 @@ still text: the page's overlay in the browser and the window title natively.
 Screenshots: [docs/captures/92](docs/captures/92).
 
 **Camera and aim.** Native and browser clients share one third-person follow camera
-(`shooter-client`'s `camera`): 3.5 m behind the eye along the aim, 0.6 m right of it and 0.3 m
-above, a 1.2 rad (69°) vertical field of view. It keeps 0.2 m clear of the arena (it is pulled
-in at once in front of a wall, floor or ceiling and eases back out), never through it; fighters
-do not push it, and your own fighter is not drawn while the camera is inside it. Shots and
-swings still leave the fighter, not the camera: every shot from the eye along the aim, the blade
-from the feet, exactly as before (`shooter_sim::aim`). The reticle is drawn where that shot
-meets the arena or another fighter as you see them, the same function the host resolves
-hitscan with, so it sits slightly off the screen's centre (more for close targets) and lands on
-cover in front of your fighter even where the camera sees past it.
+(`shooter-client`'s `camera`, on the simulation's rig in `shooter_sim::aim`): 3.5 m behind the
+eye along the aim, 0.6 m right of it and 0.3 m above, a 1.2 rad (69°) vertical field of view.
+It keeps 0.2 m clear of the arena (it is pulled in at once in front of a wall, floor or ceiling
+and eases back out), never through it; fighters do not push it, and your own fighter is not
+drawn while the camera is inside it. The camera picks the target, the weapon fires (#102, Atlas
+D2.i102.1): the camera's centre ray (from level with your eye on) picks what you aim at, the
+arena or another fighter as you see them, and the reticle sits on it at the screen's centre. A
+ranged shot (rifle, rail gun, rockets, shotgun, laser, flamethrower) leaves the held weapon's
+muzzle where your robot carries it (the weapons kit's muzzle anchor on the weapon part, the long
+barrel's when it has one) and flies toward that point, so cover beside your robot that the
+camera sees past stops it: a red marker then shows where the shot will really land. The host
+resolves every shot with the same functions (`shooter_sim::aim`), lag-compensated as before, and
+draws its flash, beam, pellets and rockets from that muzzle. The grapple still leaves the eye
+along the aim, the blade the feet.
 
 The left mouse button fires. The mouse wheel steps through the weapons your robot carries and
 still has (down or E for the next, up or Q for the previous), in the order below, wrapping round
