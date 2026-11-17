@@ -9,11 +9,12 @@ direction (Atlas D1.i46.1, D2.i46.\*, tracker #45): a third-person arena shooter
 robots, about 12 slots and three arenas. The third-person camera, the robot build schema and
 the 12 slots are in, the robot builder opens before the match and between lives, the fighters
 are drawn as their robot builds from asset-tooling's robot,
-weapons and locomotion kits, and the medium arena is built from its arena kit; the rest is not
-implemented yet. Everything below describes what works today: a third-person, 12-slot
-deathmatch on the 76 m greybox yard by default, the kit-built 56 m assembly works (the medium
-arena) on request, and the 40 m greybox hall as the test fixture, the fighters still moving as
-capsules.
+weapons and locomotion kits, and the medium and small arenas are built from its arena kit; the
+rest is not implemented yet. Everything below describes what works today: a third-person,
+12-slot deathmatch on the 76 m greybox yard by default, the kit-built 56 m assembly works (the
+medium arena) and 32 m proving cell (the small arena) on request, and the 40 m greybox hall as
+the test fixture, every fighter a mechanical robot (its compound bodies on motorised joints)
+carried by the fast-movement rules.
 
 ## What a player does
 
@@ -26,8 +27,8 @@ weapons.
 
 | Need | Crate |
 | --- | --- |
-| Collision, character movement, rays, projectiles | physics-engine, used directly through `shooter_sim::physics` (Rapier A/B oracle in CI) |
-| Grapple rope on a character | shooter-sim stand-in until physics-engine has it (moritzbrantner/physics-engine#557) |
+| Collision, the robots' compound bodies and motorised joints, rays, projectiles | physics-engine, used directly through `shooter_sim::physics` (Rapier A/B oracle in CI) |
+| Grapple rope on a robot | shooter-sim stand-in (a velocity rule, `grapple::Hook::pull`) |
 | Lighting, particles (muzzle flashes, trims, impacts) | render-engine |
 | Positional gunfire and impacts, native and Web Audio | game-audio |
 | Mouse, keyboard, gamepad, pointer lock | input-bindings |
@@ -53,8 +54,8 @@ same simulation in-process: you in slot 0 against eleven bots, no server needed.
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID, its arena
 (geometry, collision, spawn points, jump pads, module pickup pads, bot waypoints) and the player
-count it is laid out for. The first of the beta's three arenas, the medium one, is in, built from
-asset-tooling's arena kit; two interim greybox maps stay:
+count it is laid out for. Two of the beta's three arenas, the medium and the small one, are in,
+built from asset-tooling's arena kit; two interim greybox maps stay:
 
 - `assembly-works`, the medium arena (shooter#52; 4 to 12 players, 14 spawn points): a multilevel
   robotic assembly factory repurposed for combat (the owner's choice of setting), a 56 m hall
@@ -74,6 +75,23 @@ asset-tooling's arena kit; two interim greybox maps stay:
   barriers and crates are marked as destruction candidates for shooter#60 (nothing breaks yet)
   and four repair anchors (under the mezzanines and in the bays) are data for shooter#61. Plan,
   views and frames: [docs/captures/52](docs/captures/52).
+- `proving-cell`, the small close-quarters arena (shooter#53; 2 to 6 players, 12 spawn points so
+  the default 12 slots still fit): a purpose-built combat test cell (the owner's choice of
+  setting), a 32 m square inside 10 m walls, point-symmetric, from the same kit as the works. In
+  the middle stands the 2 m test stage, a 6 m dais with the rail capacitor at its centre and
+  staggered low cover, climbed by an 8 m ramp from the north and from the south (or a double
+  jump; a 2 m container west of it meets its corner). Along the north and the south wall runs a
+  3 m observation gallery, 4 m deep, with low cover at its edge and thrusters on it, reached by
+  a 12 m ramp along the side wall, a jump pad in front of it (12 m/s up, 6 m/s toward it) or the
+  grapple (hooked on the wall above it, from the stage); under it a 2.6 m high passage runs from
+  behind its ramp to a control booth, a 7 m room in the corner with a doorway onto the floor and
+  one into the passage, each behind a 2 m blast screen. A 4 m deep test bay in each side wall,
+  a barrier and crates break up the floor. Nothing is far and fights are close; the booths have two
+  doorways and the passages open along their length, so no fight is forced down a one-way
+  corridor; no spawn point is in sight of another. Its low cover, open-floor
+  barriers and crates are destruction candidates for shooter#60 (the blast screens stay, the
+  booths' spawn points rely on them) and a repair anchor in each booth is data for shooter#61.
+  Views and frames: [docs/captures/53](docs/captures/53).
 - `greybox-yard`, the default for hosted matches and practice (6 to 12 players, 14 spawn points):
   a 76 m square with 5 m walls, point-symmetric (the north half turned half a turn is the south
   half). A raised walkway crosses the middle, a 3 m deck on two pillars that you can walk under,
@@ -98,11 +116,11 @@ pieces of their own. The proxies come from the pinned kit's descriptor through a
 simulation reads no files. Both clients draw each placement's kit mesh where the simulation puts
 it and lay the floor with the kit's 2 m plates; until the kit is read a kit-built map waits, and
 if it cannot be read the map is drawn as boxes with a note in the HUD. The greybox maps are
-unchanged. The small and large arenas (#53, #55) use the same path.
+unchanged. The small arena uses the same path, as will the large one (#55).
 `cargo test -p shooter-client --test arena` checks the table against the pinned kit, the kit's
 decoding and that every placed module is drawn inside the box its collision comes from;
 `scripts/gen-arena-kit.py` rewrites the table after a pin bump; `cargo run -p shooter-client
---release --example arena_views -- assembly-works DIR` renders a map's overview and route views
+--release --example arena_views -- assembly-works DIR` (or `proving-cell`) renders a map's overview and route views
 offscreen.
 
 The recommended capacity never changes the slot count (12 unless the host sets another per
@@ -234,7 +252,8 @@ the robot has not played yet (no input applied since its person joined: the buil
 match), when it is that build at once.
 Snapshots carry each fighter's build and the one it comes back as. The cell size, chassis sizes,
 part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part keys await the
-asset kits, and a build does not yet change movement, but it is the arsenal: a fighter spawns
+asset kits, and a build changes movement only through its body (its shape collides, its locomotion
+sets its share of the speed), but it is the arsenal: a fighter spawns
 holding its build's first weapon in the rotation that is not the grapple (the grapple, then the
 blade, only when it carries nothing else; #96) and fires only what the build mounts (#92). The
 `pyro` loadout
@@ -293,16 +312,15 @@ pool (below).
 build has its own health (provisional, Atlas Q2.i70.1: chassis 270, 290 and 310 by size, so a front
 rail kill still takes four hits, or three overcharged; beams 50 and 60, hinge and rotor 40,
 battery 60, sensor 30, leg 70, wheel 50, track 90, armor plate
-120, light weapons 40, heavy ones 60). The host places each fighter's parts as boxes where the
-simulation lays out its build, standing on the capsule's feet and facing its look (the capsule
-still moves it; the mechanical robots do not drive fighters yet, #73), and resolves every strike
+120, light weapons 40, heavy ones 60). The host places each fighter's parts as boxes where its
+mechanical robot's bodies carry them (below, **Mechanical robots in the match**), and resolves every strike
 onto them, deterministically, each part at most once a strike: a hitscan beam, a pellet or a
 rocket meets the parts along its path (a shot through a gap flies on); the first one takes the
 damage, unless it is an armor plate and the weapon penetrates, when the plate takes the rest and
 a share goes on to the part behind it (rail gun 50 %, rifle and laser 20 %, nothing else;
 provisional). A blast (a rocket's splash, a battery's) hurts every part within reach by its
 falloff to that part; the blade and the flame strike the part nearest the attacker's eye.
-Lag-compensated shots and swings place the parts at the centre and facing the shooter saw. A part
+Lag-compensated shots and swings meet the parts where the shooter saw them. A part
 works fully until zero; then it is destroyed for the rest of that life and everything no longer
 connected to the root chassis through the part tree falls away with it (breaking a beam drops it
 and whatever hangs from it; another chassis section is ordinary structure). Destroying the root chassis
@@ -311,14 +329,16 @@ weapon part no longer fires or swings and cannot be selected (nor can a gun the 
 carried, #92); a destroyed battery sets off a small blast (40 at its
 centre, 0.8 m; provisional, Atlas Q2.i70.5) through the same damage, and a battery it destroys
 blasts in turn, once each; a robot with no connected leg, wheel or track cannot walk, jump or
-slide but stays alive while its root chassis does. Losing some of its legs changes nothing yet: how the
-surviving ones move it is the mechanical robots' (#73), and the capsule invents no fallback.
+slide but stays alive while its root chassis does. A lost leg, wheel or track comes off the
+robot's bodies: it no longer holds it up (a robot whose legs are shot off drops onto its chassis
+and lies there), and the robot walks at the share of its locomotion it still has (half speed on
+one of two legs).
 Snapshots carry every part's health (the lost parts follow from it), with a hit's part and each
 detachment as events; the client's prediction takes the host's part state, replays reproduce it
 and bots aim at their target's root chassis and switch off a lost gun.
 
-**Mechanics** (`shooter_sim::mechanics`, Atlas D2.i70.5, the first half of #73). The simulation
-can build any valid robot as a mechanical one in a dynamic world of its own
+**Mechanics** (`shooter_sim::mechanics`, Atlas D2.i70.5, #73). The simulation
+builds any valid robot as a mechanical one in a dynamic world of its own
 (`shooter_sim::physics::articulated`, on physics-engine's compound bodies and revolute joints
 with motors): every part placed in space from its socket and exact orientation, rigidly joined
 parts one compound body with each part's mass where it is mounted, and a separate body on a
@@ -336,10 +356,32 @@ command the hip and knee servos, so legs mounted wrong go nowhere and nothing te
 actuator reports its angle, rate, torque and whether it stalled (at its torque, far from its
 command). Part poses and per-part ray hits follow the bodies, and the state encodes exactly
 (`wire::encode_mechanics`, `encode_controls`): a world restored from it continues bit for bit.
-The fighters in a match still move on the capsule controller: putting mechanical
-robots into the match, its snapshots, prediction and replays, is #73's second half, with the
-bindings (#74). Masses, torques, rates, draws and gait timings are provisional; a 12-robot scene
-(66 joints) steps in about 0.16 ms a tick natively on physics-engine (0.20 ms on Rapier).
+Masses, torques, rates, draws and gait timings are provisional; a 12-robot scene
+(66 joints) steps in about 0.18 ms a tick natively on physics-engine (0.21 ms on Rapier).
+
+**Mechanical robots in the match** (#73). Every living fighter is its robot in that world, in its
+slot (its bodies' ids follow from the slot; an open slot has none): no capsule. A spawn adds it
+standing at its spawn point, a death or a slot changing hands removes it, and a part shot off
+leaves its bodies (it no longer weighs, touches or drives anything; what stays keeps its pose and
+motion); each change rebuilds the world from its exact state, so the host, a predicting client and
+a replay hold the same world. The fast-movement rules (sprint, slide, double jump, jump pads, air
+control, the grapple's rope) give the velocity a movement drive sets on the whole robot's centre
+of mass, which also keeps it upright and turns it to face the aim (at most 16 rad/s); its legs
+stride on the suggested gait and its wheels and tracks roll at the rate its speed gives them, and
+every motor draws from the pool after the tick's jumps, swings and shots (two legs: 8 a second
+against the chassis' 24, so weapons recharge a third slower; provisional). The simplest mapping
+until the bindings (#74), with what it costs: the robot's bodies slide frictionless where the
+drive takes them (its feet do not drag it), its legs bend only within the gaits' range (±0.4 rad
+at the hip, 0.8 at the knee) so bumps cannot fold them, it walks only with a leg, wheel or track
+on the ground, it hops onto ledges up to 35 cm its feet catch (the capsule's step-up), and a
+landing does not bounce it back up. Its parts' boxes are where its bodies carry them; it collides
+as its bodies (its guns reach over a 1.2 m cover and stop it a little further from a wall than
+the capsule did; two of the capsule-tuned routes, the works' 4 m step from the 2 m one and the
+thruster jump onto a 2 m ledge, no longer land for the standard robot). Snapshots carry each
+living robot's exact state (every body's motion, its lost parts, its gait clock; wire version
+16), from which a client resumes its prediction: bit for bit like the host, whole or one-legged
+(`cargo test -p shooter-sim --test match_robots`). The clients still draw the robots at their
+centres and facing (the legs' kit clips, not the bodies' poses).
 
 **Robot models** (`shooter_client::robots`, #54). Both clients draw every fighter as its validated
 build from three asset-tooling kits: `shooter-combat-robot` (the chassis, beams, hinge, rotor,
@@ -360,10 +402,10 @@ weapon's anchor from the weapons kit's descriptor. Wheels and tracks turn about 
 locomotion kit's descriptor (`socket-grid-kit-descriptor-v3`) puts exactly where the simulation's
 mechanics turn them (the mount normal; the wheel's 0.18 m tyre, the track's two 0.1 m road
 wheels), by their `roll` clip at the joint's angle (the belt moves with the wheels): the
-simulation's angle where a state gives one (the gallery's mechanics fixtures), and in a match,
-where the fighters move as capsules (the named loadouts walk on legs), the turn the robot's ground
+simulation's angle where a state gives one (the gallery's mechanics fixtures), and in a match
+(drawn from the robot's centre and facing, not yet its bodies' poses), the turn the robot's ground
 motion and turn rate would give them, so the two sides turn opposite ways and a robot turning on
-the spot counter-rotates its tracks. The robot stands on its capsule's feet and faces its look; its legs
+the spot counter-rotates its tracks. The robot stands on its feet and faces its look; its legs
 rest when idle, walk the kit's clips when running (at most 2.5 cycles a second, so feet slide at
 full speed), tuck while airborne or grappling and crouch in a slide. The weapons play the kit's
 states from the match (`robots::weapon`): a shot's recoil and muzzle flash, the laser's and
@@ -421,7 +463,8 @@ and keeps its use). On the greybox the capacitor lies on the platform's south-ea
 that sees the whole hall, and the thrusters in the open south-west quarter under its sightline;
 on the greybox yard the capacitor lies on the walkway's middle and thrusters on each platform;
 on the assembly works the capacitor lies on the gantry bridge's middle and thrusters on each crane
-tower.
+tower; on the proving cell the capacitor lies on the test stage's middle and thrusters on each
+gallery.
 A module lasts until its uses are spent, its holder dies or the round ends (owner decision on
 #62); nothing drops. A robot carries one module, and taking another replaces it. A pad is back
 30 s after it was taken; every pad is ready at the start of a round. When several robots reach a
@@ -439,16 +482,22 @@ degrees of wandering error, strafing as they fire; the flamethrower inside 5 m, 
 slots) or the shotgun (odd slots) up close, rockets or the laser at mid range, the rail gun far off,
 and inside 3 m they rush in and swing the blade.
 
-The movement and the weapons are checked against Rapier on a scripted tour of the greybox, the
-greybox yard's walkway (up its ramp, along the deck, off its edge, and its jump pad onto it), the
-assembly works' routes (up its ramp, along the mezzanine and the bridge and off its edge; into its
-low cover, over it and into a barrier; its pad, its work platforms and the grapple on the crane
-mast onto the crane tower) and on
-scripted moves (sprint, slide, double jump, a thruster-module jump, jump pad, ramp slides, a thin wall, a step, a rocket
-jump, a grapple onto a ledge, a shooting range, a close range for the shotgun, laser and flamethrower):
-`cargo test -p shooter-sim --features physics-ab --test physics_ab`, which also runs the
-mechanics fixtures on both (rolling, strafing, the stall, both turrets, tipping, per-part hits,
-the robo-dog walking). `cargo test -p shooter-sim --test mechanics` checks those fixtures, the
+The movement is scripted on physics-engine on a tour of the greybox, the greybox yard's walkway
+(up its ramp, along the deck, off its edge, and its jump pad onto it), the assembly works' routes
+(up its ramp, along the mezzanine and the bridge and off its edge; into its low cover, over it
+and into a barrier; its pad, its work platforms and the grapple on the crane mast onto the crane
+tower), the proving cell's (up its gallery ramp, along the gallery and off its edge; up the stage
+and down its other ramp; its pad and a grapple from the stage onto the gallery) and on scripted
+moves (sprint, slide, double jump, a thruster-module jump, jump pad, ramp slides, a thin wall, a
+step, a rocket jump, a grapple onto a ledge), each replaying exactly on both backends
+(`tests/tour.rs`, `tests/moves.rs`, `tests/maps.rs`). The Rapier A/B
+(`cargo test -p shooter-sim --features physics-ab --test physics_ab`) compares the match's robots
+sprinting, sliding and stopping on flat ground, whole and on one leg, the shooting range and the
+close range for the shotgun, laser and flamethrower, and the mechanics fixtures (rolling,
+strafing, the stall, both turrets, tipping, per-part hits, the robo-dog walking); over ledges,
+steps and pads the robots' legs catching a lip, and Rapier's servo spring under the heavier
+builds, part the two backends' paths. A match's twelve robots step in about 0.45 ms a session
+tick natively (`--release -- --ignored twelve`). `cargo test -p shooter-sim --test mechanics` checks those fixtures, the
 biped and quadruped presets, badly mounted legs, motor energy draw, and that a restored world
 and a replay continue bit for bit.
 `cargo test -p shooter-sim --test robot` checks the sockets and canonical orientations, valid

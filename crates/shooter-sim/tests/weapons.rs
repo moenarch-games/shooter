@@ -14,9 +14,8 @@ use shooter_sim::{Arena, Event, Intent, Piece, Post, Session, Weapon};
 /// One person alone in `arena`, built as the [`ARMORY`]: every weapon to fire.
 fn armory(arena: Arena) -> Session {
     let mut session = Session::new(arena).expect("arena builds");
-    let fighter = &mut session.fighters[0];
-    fighter.configured = ARMORY;
-    fighter.rebuild(ARMORY);
+    session.fighters[0].configured = ARMORY;
+    session.rebuild(0, ARMORY).unwrap();
     session
 }
 
@@ -243,8 +242,28 @@ fn a_shotgun_blast_is_a_fixed_pattern_of_pellets() {
             .iter()
             .all(|(flying, struck)| flying.is_empty() && struck.is_empty())
     );
-    // ...which repeats the pattern exactly.
-    assert_eq!(flight(&mut session), first);
+    // ...which repeats the pattern (from where the robot now stands: its legs settle a few
+    // centimetres between the blasts).
+    let second = flight(&mut session);
+    assert_eq!(second.len(), first.len());
+    for ((flying, struck), (again, struck_again)) in first.iter().zip(&second) {
+        assert_eq!(
+            (flying.len(), struck.len()),
+            (again.len(), struck_again.len())
+        );
+        for (a, b) in flying.iter().zip(again) {
+            assert!(
+                (0..3).all(|axis| (a[axis] - b[axis]).abs() < 4 * 256),
+                "{a:?} {b:?}"
+            );
+        }
+        for (a, b) in struck.iter().zip(struck_again) {
+            assert!(
+                (0..3).all(|axis| (a[axis] - b[axis]).abs() < 4.0),
+                "{a:?} {b:?}"
+            );
+        }
+    }
 }
 
 /// A dummy `metres` south of the close range's shooter and nothing else in the way.

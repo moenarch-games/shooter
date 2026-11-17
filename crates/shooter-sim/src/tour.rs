@@ -77,14 +77,24 @@ pub const LEGS: &[Leg] = &[
     walk("up the south ramp", NORTH, 130),
     stand("on the platform", 10),
     jump("jump on the platform", NORTH, 0),
-    stand("airborne and landing", 50),
+    stand("airborne and landing", 60),
     // West down the west ramp (x -4 m to -12 m), then into the west wall's face at x = -20 m.
     walk("down the west ramp", WEST, 110),
     walk("into the west wall", WEST, 60),
     // Back east to the crate's line (x = -12 m) and south against its north face (z = 11.6 m).
     walk("back east", EAST, 64),
     walk("against the crate", SOUTH, 100),
-    // A running jump onto it, then stop on top.
+    // A step back, still facing it (a robot's legs stop against it while its body leans over
+    // the top), then a running jump onto it, then stop on top.
+    hold(
+        "back off",
+        Intent {
+            forward: -1,
+            yaw: SOUTH,
+            ..Intent::IDLE
+        },
+        8,
+    ),
     jump("jump at the crate", SOUTH, 1),
     walk("over the edge", SOUTH, 14),
     stand("on the crate", 40),
@@ -125,7 +135,7 @@ pub fn run_legs(session: &mut Session, legs: &[Leg]) -> Result<Vec<Sample>, Phys
             samples.push(Sample {
                 tick,
                 leg: leg.name,
-                center: session.local().player.center(&session.world),
+                center: session.local().center(),
                 grounded: report.grounded,
                 sliding: report.sliding,
                 launched: report.launched,

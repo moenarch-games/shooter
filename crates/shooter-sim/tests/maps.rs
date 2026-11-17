@@ -74,7 +74,7 @@ fn every_slot_starts_on_a_spawn_point_of_its_own() {
         let feet: Vec<[f32; 3]> = session
             .fighters
             .iter()
-            .map(|fighter| fighter.player.feet(&session.world))
+            .map(|fighter| fighter.feet())
             .collect();
         for (index, a) in feet.iter().enumerate() {
             for b in &feet[index + 1..] {
@@ -130,7 +130,7 @@ fn a_match_keeps_its_map_and_spawns_on_it_through_rounds() {
                 continue;
             };
             let fighter = &session.fighters[usize::from(slot)];
-            let feet = fighter.player.feet(&session.world);
+            let feet = fighter.feet();
             assert!(
                 points.iter().any(|point| {
                     point.yaw == yaw
@@ -341,5 +341,106 @@ fn works_high_ground_has_routes_up() {
             }),
             "{tower:?}"
         );
+    }
+}
+
+/// The proving cell (shooter#53) is a distinct, kit-built small map: a stable ID and tag, smaller
+/// than the greybox hall, laid out for a duel to a 6-player skirmish yet with a spawn point for
+/// each default slot, every piece derived from its kit placements, inside the body IDs arena
+/// geometry may take, and the yard stays the default.
+#[test]
+fn the_proving_cell_is_the_kit_built_small_map() {
+    use shooter_sim::arena::{FIRST_PLAYER_BODY, FLOOR_BODY};
+    use shooter_sim::arena_kit;
+    assert_eq!(MapId::ProvingCell.as_str(), "proving-cell");
+    assert_eq!(MapId::ProvingCell.tag(), 4);
+    assert_eq!(MapId::DEFAULT, MapId::GreyboxYard);
+    let cell = Arena::proving_cell();
+    assert_eq!(MapId::ProvingCell.arena(), cell);
+    let (greybox, works) = (Arena::greybox(), Arena::assembly_works());
+    assert!(cell.half_size < greybox.half_size && cell.half_size < works.half_size);
+    assert!(MapId::ProvingCell.capacity().fits(2));
+    assert!(MapId::ProvingCell.capacity().max <= 6);
+    assert_eq!(
+        cell.spawn_points().len(),
+        usize::from(DEATHMATCH_SLOTS),
+        "a spawn point per default slot"
+    );
+    assert_eq!(cell.pieces, arena_kit::pieces(&cell.placements));
+    assert!(FLOOR_BODY.0 + cell.pieces.len() as u64 + 1 < FIRST_PLAYER_BODY);
+    let reach = cell.half_size + 60;
+    for placement in &cell.placements {
+        let [min, max] = placement.bounds();
+        assert!(
+            min.x >= -reach && max.x <= reach && min.z >= -reach && max.z <= reach,
+            "{placement:?}"
+        );
+        assert!(min.y >= -10, "{placement:?}");
+    }
+    for pad in &cell.pads {
+        assert!(cell.placements.iter().any(|placement| {
+            placement.module == arena_kit::Module::JumpPad && placement.at == pad.center
+        }));
+    }
+    let destructible: Vec<_> = cell.placements.iter().filter(|p| p.destructible).collect();
+    assert!(destructible.len() >= 8);
+    assert!(
+        destructible
+            .iter()
+            .all(|p| p.module.broken_proxies().is_some())
+    );
+    assert!(!cell.repair_anchors.is_empty());
+    // Its own layout, not a copy of the works.
+    assert_ne!(cell.placements, works.placements);
+}
+
+/// No two of the proving cell's spawn points see each other, and its bot points link up by
+/// walks, every spawn point to at least two.
+#[test]
+fn cell_spawns_are_out_of_sight_and_linked_by_walks() {
+    let arena = Arena::proving_cell();
+    assert_eq!(spawns_in_sight(&arena), Vec::new());
+    assert_walks_link_up(&arena);
+}
+
+/// The proving cell's high ground: the stage carries the rail capacitor and the galleries the
+/// thrusters, both are bot points a walk reaches up their ramps, a jump pad throws onto each
+/// gallery, and no bot point on the floor is more than 20 m from the stage: a close-quarters
+/// map.
+#[test]
+fn cell_high_ground_has_routes_up() {
+    use shooter_sim::pickups::Class;
+    use shooter_sim::proving_cell::{DECK_TOP, STAGE_TOP};
+    let arena = Arena::proving_cell();
+    let points = arena.bot_points();
+    for top in [STAGE_TOP, DECK_TOP] {
+        assert!(
+            points.iter().filter(|point| point.y == top).count() >= 2,
+            "{top}: {points:?}"
+        );
+    }
+    let capacitor = arena
+        .module_pads
+        .iter()
+        .find(|pad| pad.module.class() == Class::Weapon)
+        .unwrap();
+    assert_eq!(capacitor.center, Vec3i::new(0, STAGE_TOP, 0));
+    let thrusters: Vec<_> = arena
+        .module_pads
+        .iter()
+        .filter(|pad| pad.module.class() == Class::Movement)
+        .collect();
+    assert_eq!(thrusters.len(), 2);
+    for gallery in thrusters {
+        assert_eq!(gallery.center.y, DECK_TOP);
+        assert!(
+            arena.pads.iter().any(|pad| {
+                (pad.center.z - gallery.center.z).abs() < 800 && pad.launch.y >= 1_200
+            }),
+            "{gallery:?}"
+        );
+    }
+    for point in points.iter().filter(|point| point.y == 0) {
+        assert!(point.x.abs().max(point.z.abs()) < 2_000, "{point:?}");
     }
 }

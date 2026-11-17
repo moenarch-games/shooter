@@ -5,6 +5,7 @@
 //! builds that no longer exist (the heat sink) rejected.
 
 use shooter_sim::energy::{MILLI, Pool, spend};
+use shooter_sim::mechanics::Layout;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::pickups::{THRUSTER_JUMP_ENERGY, THRUSTER_JUMPS};
 use shooter_sim::robot::{ARMORY, AssemblyError, HEAVY, MARKSMAN, SKIRMISHER, STANDARD};
@@ -57,9 +58,9 @@ fn duel() -> Session {
 
 /// Person A is built as the [`ARMORY`] (it fires only what it carries), whole and full.
 fn armory(session: &mut Session) {
+    session.fighters[0].configured = ARMORY;
+    session.rebuild(0, ARMORY).unwrap();
     let fighter = &mut session.fighters[0];
-    fighter.configured = ARMORY;
-    fighter.rebuild(ARMORY);
     fighter.energy = fighter.pool().capacity;
 }
 
@@ -147,6 +148,7 @@ fn simultaneous_requests_exhaust_the_pool_in_a_fixed_order() {
     let blade = Weapon::EnergyBlade.energy();
     let rifle = Weapon::EnergyRifle.energy();
     let regen = Pool::of(&STANDARD).regen;
+    let motors = |left| after_motors(&STANDARD, left);
     // (charge before the tick, boosted jump?, what fired, charge after the tick's regeneration)
     let cases = [
         // Enough for everything: the jump and the swing; the swing keeps the gun down.
@@ -154,7 +156,7 @@ fn simultaneous_requests_exhaust_the_pool_in_a_fixed_order() {
             THRUSTER_JUMP_ENERGY + blade + rifle,
             true,
             vec![Weapon::EnergyBlade],
-            rifle + regen,
+            motors(rifle) + regen,
         ),
         // The jump takes 15, the swing is refused, the gun gets its turn with the 2 left.
         (
@@ -164,16 +166,21 @@ fn simultaneous_requests_exhaust_the_pool_in_a_fixed_order() {
             regen,
         ),
         // The jump takes 15; neither the swing nor the gun can be paid.
-        (THRUSTER_JUMP_ENERGY + 1_000, true, vec![], 1_000 + regen),
+        (
+            THRUSTER_JUMP_ENERGY + 1_000,
+            true,
+            vec![],
+            motors(1_000) + regen,
+        ),
         // The jump cannot be paid (a plain jump, the use kept); the swing can.
         (
             THRUSTER_JUMP_ENERGY - 1,
             false,
             vec![Weapon::EnergyBlade],
-            THRUSTER_JUMP_ENERGY - 1 - blade + regen,
+            motors(THRUSTER_JUMP_ENERGY - 1 - blade) + regen,
         ),
         // Nothing can be paid: a plain jump, no swing, no shot; only regeneration.
-        (1_000, false, vec![], 1_000 + regen),
+        (1_000, false, vec![], motors(1_000) + regen),
     ];
     for (charge, boosted, fired, after) in cases {
         let mut session = duel();
@@ -235,10 +242,11 @@ fn regeneration_restarts_a_starved_weapon() {
             assert!(before >= Weapon::RailGun.energy());
         }
     }
-    // 30 energy at 0.4 a tick, regenerated after each tick's requests: 75 ticks refill it, so
-    // the first shot goes out on the tick after, then one every 75 ticks (the rail gun's own 72
-    // is shorter: the pool is the limit).
-    assert_eq!(fired_at, [75, 150, 225]);
+    // 30 energy at 0.4 a tick less the legs' servos (two legs, 4 a second each: 0.132 a tick,
+    // after the gun's request), regenerated after each tick's requests: 112 ticks refill it, so
+    // the first shot goes out then, and one every 112 ticks (the rail gun's own 72 is shorter:
+    // the pool is the limit).
+    assert_eq!(fired_at, [112, 224]);
 
     // The laser drains the pool (0.6 a tick against 0.4) and, once it is dry, sputters at what
     // regeneration pays: it never fires on a charge it cannot pay.
@@ -270,16 +278,17 @@ fn regeneration_restarts_a_starved_weapon() {
     for _ in 0..500 {
         beams += act(&mut session, &mut sequence, hold).len();
     }
-    // 100 at a net 0.2 a tick: a full pool holds the beam for about 500 ticks.
-    assert_eq!(beams, 499);
+    // 100 at a net 0.2 a tick, and the legs' servos while the pool can pay them: a full pool
+    // holds the beam for 400 ticks.
+    assert_eq!(beams, 400);
     let mut sputter = Vec::new();
     for _ in 0..12 {
         sputter.push(act(&mut session, &mut sequence, hold).len());
     }
     assert!(sputter.contains(&0) && sputter.contains(&1), "{sputter:?}");
     assert!(session.fighters[0].energy < Weapon::Laser.energy() + 400);
-    // Let go: the pool refills to its capacity and stops there.
-    for _ in 0..300 {
+    // Let go: the pool refills to its capacity (the legs' servos drawing on) and stops there.
+    for _ in 0..400 {
         act(
             &mut session,
             &mut sequence,
@@ -301,7 +310,7 @@ fn tuned_weapons_pay_their_tuned_cost() {
         (SKIRMISHER, Weapon::Shotgun, 7_200),
     ] {
         let mut session = duel();
-        session.fighters[0].rebuild(build);
+        session.rebuild(0, build).unwrap();
         session.fighters[0].energy = Pool::of(&build).capacity;
         let mut sequence = 0;
         let aim = Intent {
@@ -334,7 +343,7 @@ fn tuned_weapons_pay_their_tuned_cost() {
         let regen = Pool::of(&build).regen;
         assert_eq!(
             session.fighters[0].energy,
-            (before - cost + regen).min(Pool::of(&build).capacity),
+            (after_motors(&build, before - cost) + regen).min(Pool::of(&build).capacity),
             "{weapon:?}"
         );
     }
@@ -415,4 +424,16 @@ fn a_bot_match_keeps_every_pool_in_bounds_and_deterministic() {
         trace
     };
     assert_eq!(run(), run());
+}
+
+/// What is left of `charge` once `build`'s motors (every actuator, held or driven each tick in
+/// the match) have asked for their tick's draw, in part-ID order (shooter#73).
+fn after_motors(build: &shooter_sim::Assembly, mut charge: u32) -> u32 {
+    for actuator in Layout::of(build).actuators {
+        spend(
+            &mut charge,
+            u32::from(actuator.drive.draw) * MILLI / u32::from(shooter_sim::TICK_HZ),
+        );
+    }
+    charge
 }

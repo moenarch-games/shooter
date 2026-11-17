@@ -117,9 +117,8 @@ fn duel_arena() -> Arena {
 
 /// `slot` is built as `build` this life and the next (a fighter fires only what it carries).
 fn equip(session: &mut Session, slot: usize, build: Assembly) {
-    let fighter = &mut session.fighters[slot];
-    fighter.configured = build;
-    fighter.rebuild(build);
+    session.fighters[slot].configured = build;
+    session.rebuild(u8::try_from(slot).unwrap(), build).unwrap();
 }
 
 fn duel_rules() -> Rules {
@@ -151,9 +150,9 @@ fn chest_pitch() -> i16 {
 /// places it.
 #[allow(clippy::cast_possible_truncation)]
 fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
-    let eye = session.fighters[from].player.eye(&session.world);
+    let eye = session.fighters[from].eye();
     let target = &session.fighters[to];
-    let parts = target.hitboxes(target.player.center(&session.world), target.intent.yaw);
+    let parts = target.hitboxes();
     let chassis = parts
         .get(PartDamage::root(&target.build).unwrap())
         .unwrap()
@@ -170,7 +169,7 @@ fn modded_duel_shot(seen_ticks_ago: u32, build: Assembly, weapon: Weapon) -> Opt
     let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
     assert_eq!(session.join(1).unwrap(), Some(0));
     assert_eq!(session.join(2).unwrap(), Some(1));
-    session.fighters[0].rebuild(build);
+    session.rebuild(0, build).unwrap();
     let mut sequence = 0;
     let mut step = |session: &mut Session, a: Intent, b: Intent, view_tick: u32| {
         sequence += 1;
@@ -311,10 +310,10 @@ fn the_reticle_sight_is_where_the_hosted_beam_ends() {
             step(&mut session, aiming);
         }
         let b = &session.fighters[1];
-        let parts = b.hitboxes(b.player.center(&session.world), b.intent.yaw);
+        let parts = b.hitboxes();
         let sight = aim::sight(
             &session.world,
-            session.fighters[0].player.eye(&session.world),
+            session.fighters[0].eye(),
             weapons::aim(yaw, pitch),
             range_units,
             body_of(0),
@@ -442,8 +441,7 @@ fn the_blade_strikes_the_nearest_part_whatever_gun_is_held() {
     for sequence in 1..=120 {
         let now = session.ticks();
         // A follows B up after each shove, stopping 1.5 m short.
-        let gap = session.fighters[1].player.center(&session.world)[2]
-            - session.fighters[0].player.center(&session.world)[2];
+        let gap = session.fighters[1].center()[2] - session.fighters[0].center()[2];
         let swing = Intent {
             melee: true,
             forward: i8::from(gap > 150.0),
@@ -632,11 +630,11 @@ fn a_hosted_grapple_is_carried_and_predicted() {
             );
             host.step().unwrap();
             let snapshot = decode_snapshot(&encode_snapshot(&host.snapshot())).unwrap();
-            let me = *snapshot.of_player(7).unwrap();
+            let me = snapshot.of_player(7).unwrap().clone();
             if predicting {
                 predictor.tick(leg.intent).unwrap();
                 let predicted = predictor.local();
-                let center = predicted.player.center(&predictor.world);
+                let center = predicted.center();
                 assert_eq!(predicted.hook, me.hook, "{} tick {sequence}", leg.name);
                 for axis in 0..3 {
                     assert!(
@@ -648,14 +646,14 @@ fn a_hosted_grapple_is_carried_and_predicted() {
                 }
             } else if me.hook.is_some() {
                 predictor
-                    .place(0, me.position, me.velocity, me.motion, me.held, me.hook)
+                    .place(0, me.robot.as_ref().unwrap(), me.motion, me.held, me.hook)
                     .unwrap();
                 predicting = true;
             }
         }
     }
     assert!(predicting, "the host set the hook");
-    let me = *host.snapshot().of_player(7).unwrap();
+    let me = host.snapshot().of_player(7).unwrap().clone();
     assert!(me.hook.is_none());
     assert!(me.position[1] > 380.0, "on the ledge: {:?}", me.position);
 }
@@ -771,8 +769,7 @@ fn the_flame_burns_other_fighters_never_its_owner() {
             break;
         }
         let now = session.ticks();
-        let gap = session.fighters[1].player.center(&session.world)[2]
-            - session.fighters[0].player.center(&session.world)[2];
+        let gap = session.fighters[1].center()[2] - session.fighters[0].center()[2];
         let flame = Intent {
             forward: i8::from(gap > 300.0),
             fire: true,
@@ -797,8 +794,7 @@ fn the_flame_burns_other_fighters_never_its_owner() {
                     ..
                 } => {
                     burnt += damage;
-                    let gap = session.fighters[1].player.center(&session.world)[2]
-                        - session.fighters[0].player.center(&session.world)[2];
+                    let gap = session.fighters[1].center()[2] - session.fighters[0].center()[2];
                     first.get_or_insert(gap);
                 }
                 Event::Hit { victim: 0, .. } => panic!("the flame burnt its owner"),
@@ -806,8 +802,9 @@ fn the_flame_burns_other_fighters_never_its_owner() {
             }
         }
     }
-    // The flame reaches B only once A has walked within its 6 m (and B's half width).
-    let reach = (weapons::FLAME_REACH_UNITS + weapons::FLAME_RADIUS_UNITS + 30) as f32;
+    // The flame reaches B only once A has walked within its 6 m (and the reach of B's parts
+    // toward A: its guns, about 45 units ahead of its centre).
+    let reach = (weapons::FLAME_REACH_UNITS + weapons::FLAME_RADIUS_UNITS + 45) as f32;
     assert!(
         first.is_some_and(|gap| gap <= reach && gap > reach - 60.0),
         "first burn {first:?} apart"
@@ -961,6 +958,13 @@ fn bots_keep_moving_and_scoring_on_the_assembly_works() {
     bots_keep_moving_and_scoring_on(MapId::AssemblyWorks, 1_500.0);
 }
 
+/// The same on the proving cell (shooter#53), the small map: twelve bots crowd its 32 m, and
+/// none is stranded behind its booths' screens, in its test bays or on its stage and galleries.
+#[test]
+fn bots_keep_moving_and_scoring_on_the_proving_cell() {
+    bots_keep_moving_and_scoring_on(MapId::ProvingCell, 1_500.0);
+}
+
 /// Twelve bots for 90 s on `map`: plenty of shots, at least ten kills, every bot at least
 /// `roams` units from where it started and none idle (alive, mobile, not firing, within 1 m of
 /// one spot) for 5 s.
@@ -997,7 +1001,7 @@ fn bots_keep_moving_and_scoring_on(map: MapId, roams: f32) {
                 anchor[slot] = None;
                 continue;
             }
-            let feet = fighter.player.feet(&session.world);
+            let feet = fighter.feet();
             let from = *start[slot].get_or_insert(feet);
             farthest[slot] = farthest[slot].max((feet[0] - from[0]).hypot(feet[2] - from[2]));
             match anchor[slot] {
@@ -1051,6 +1055,27 @@ fn a_bot_match_on_the_assembly_works_replays_exactly() {
     };
     assert_eq!(play(3), play(3));
     assert_ne!(play(3), play(4));
+}
+
+/// A bot match on the proving cell replays exactly from its seed, at its recommended six slots
+/// and at the default twelve, and another seed plays out differently.
+#[test]
+fn a_bot_match_on_the_proving_cell_replays_exactly() {
+    let play = |seed, slots| {
+        let rules = Rules {
+            slots,
+            ..Rules::deathmatch(seed)
+        };
+        let mut session = Session::on_map(MapId::ProvingCell, rules).unwrap();
+        for _ in 0..1_200 {
+            session.step().unwrap();
+        }
+        encode_snapshot(&session.snapshot())
+    };
+    for slots in [6, 12] {
+        assert_eq!(play(3, slots), play(3, slots));
+        assert_ne!(play(3, slots), play(4, slots));
+    }
 }
 
 /// One tick: A (person 1) rails B's root chassis while B lives, and B (person 2) holds `b`,

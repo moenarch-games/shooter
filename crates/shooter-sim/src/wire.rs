@@ -1,7 +1,7 @@
 //! The match on the wire, inside game-server's command and snapshot frames: a person's input
 //! (one per tick) and the shared snapshot every client gets each tick (the match's map, the
-//! fighters with the
-//! exact physics state a client resumes prediction from, their robot builds, the charge in each
+//! fighters with their mechanical robots' exact state (every body's motion, the parts that came
+//! off, the gait clock: what a client resumes prediction from), their robot builds, the charge in each
 //! one's energy pool, every part's health (what it has lost follows from them,
 //! [`crate::damage`]) and the module each carries, the rockets, the shotgun pellets, the module
 //! pads and the tick's events). Robot builds travel as raw codes and are decoded
@@ -29,7 +29,7 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 15;
+pub const WIRE_VERSION: u8 = 16;
 const NONE: u8 = u8::MAX;
 
 /// A build part's flags: it has a parent, it is turned, it carries a mod.
@@ -63,7 +63,7 @@ pub enum Controller {
 }
 
 /// One occupied slot.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FighterState {
     pub slot: u8,
     pub controller: Controller,
@@ -73,11 +73,16 @@ pub struct FighterState {
     pub held: Weapon,
     pub yaw: u16,
     pub pitch: i16,
-    /// Exact body centre, units (zero while dead).
+    /// Its centre ([`Fighter::center`]), units (zero while dead).
     pub position: [f32; 3],
-    /// Exact velocity, units per tick.
+    /// Its robot's root body's velocity, units per tick.
     pub velocity: [f32; 3],
     pub motion: Motion,
+    /// Its mechanical robot's exact state, while it is alive: every body's motion, the parts
+    /// that came off and the gait clock ([`crate::mechanics::RobotState`]; the charge is
+    /// `energy`). A client resumes its prediction from it and draws the parts from it
+    /// ([`RobotState::part_frames`]).
+    pub robot: Option<RobotState>,
     /// Its grapple hook while set (exact, for prediction and the cable).
     pub hook: Option<Hook>,
     /// Ticks until it respawns, while dead.
@@ -173,16 +178,22 @@ impl Snapshot {
     }
 }
 
-fn state_of(session: &Session, fighter: &Fighter) -> Option<FighterState> {
+fn state_of(session: &Session, robots: &[RobotState], fighter: &Fighter) -> Option<FighterState> {
     let controller = match fighter.pilot {
         Pilot::Open => return None,
         Pilot::Human { id } => Controller::Human(id),
         Pilot::Bot(_) => Controller::Bot,
     };
-    let body = session
-        .world
-        .body(fighter.player.body)
-        .filter(|_| fighter.alive());
+    let robot = robots
+        .iter()
+        .find(|robot| robot.slot == fighter.slot)
+        .filter(|_| fighter.alive())
+        .map(|robot| RobotState {
+            charge: fighter.energy,
+            ..robot.clone()
+        });
+    #[allow(clippy::cast_precision_loss)]
+    let per_tick = |velocity: [f32; 3]| velocity.map(|axis| axis / f32::from(crate::TICK_HZ));
     Some(FighterState {
         slot: fighter.slot,
         controller,
@@ -192,9 +203,14 @@ fn state_of(session: &Session, fighter: &Fighter) -> Option<FighterState> {
         held: fighter.arsenal.held,
         yaw: fighter.intent.yaw,
         pitch: fighter.intent.pitch,
-        position: body.map_or([0.0; 3], |body| body.exact_position()),
-        velocity: body.map_or([0.0; 3], |body| body.exact_velocity()),
-        motion: fighter.player.motion,
+        position: if fighter.alive() {
+            fighter.center()
+        } else {
+            [0.0; 3]
+        },
+        velocity: per_tick(fighter.velocity()),
+        motion: fighter.motion,
+        robot,
         hook: fighter.hook,
         respawn_in: fighter
             .respawn_at
@@ -212,6 +228,7 @@ impl Session {
     /// The match as clients see it after the last tick.
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
+        let robots = self.mechanics.state().robots;
         Snapshot {
             tick: self.ticks(),
             map: self.map,
@@ -220,7 +237,7 @@ impl Session {
             fighters: self
                 .fighters
                 .iter()
-                .filter_map(|fighter| state_of(self, fighter))
+                .filter_map(|fighter| state_of(self, &robots, fighter))
                 .collect(),
             rockets: self
                 .rockets
@@ -803,6 +820,13 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         for health in fighter.parts.health() {
             out.u16(*health);
         }
+        match &fighter.robot {
+            Some(robot) => {
+                out.u8(1);
+                out.robot(robot);
+            }
+            None => out.u8(0),
+        }
     }
     out.u8(count(snapshot.rockets.len()));
     for rocket in snapshot.rockets.iter().take(usize::from(u8::MAX)) {
@@ -890,6 +914,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 carried: None,
                 energy: 0,
                 parts: PartDamage::default(),
+                robot: None,
             };
             fighter.configured = match input.u8()? {
                 0 => fighter.build,
@@ -912,6 +937,20 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 PartDamage::from_health(&fighter.build, &health).map_err(WireError::Malformed)?;
             if fighter.energy > Pool::attached(&fighter.build, &fighter.parts).capacity {
                 return Err(WireError::Malformed("energy above the build's capacity"));
+            }
+            fighter.robot = match input.u8()? {
+                0 => None,
+                1 => Some(input.robot(fighter.slot, fighter.build)?),
+                _ => return Err(WireError::Malformed("unknown robot state")),
+            };
+            if fighter
+                .robot
+                .as_ref()
+                .is_some_and(|robot| robot.lost != fighter.parts.lost())
+            {
+                return Err(WireError::Malformed(
+                    "a robot's lost parts differ from its healths",
+                ));
             }
             Ok(fighter)
         })
@@ -1045,61 +1084,67 @@ pub fn decode_controls(bytes: &[u8]) -> Result<Controls, WireError> {
 }
 
 /// The robots' exact mechanical state ([`crate::mechanics::State`]): a robot count, then per
-/// robot its build (as in a snapshot), its charge and gait clock, and each of its bodies'
-/// position, orientation, velocity and angular velocity as exact `f32` bits.
+/// robot its slot, its build (as in a snapshot) and the robot's own state ([`Out::robot`]).
 #[must_use]
 pub fn encode_mechanics(state: &MechState) -> Vec<u8> {
     let mut out = Out(Vec::new());
     out.u8(count(state.robots.len()));
     for robot in &state.robots {
+        out.u8(robot.slot);
         out.build(&robot.build);
-        out.u32(robot.charge);
-        out.u32(robot.clock);
-        out.u8(count(robot.bodies.len()));
-        for body in &robot.bodies {
-            out.vec3(body.pose.position);
-            for value in body.pose.orientation {
-                out.u32(value.to_bits());
-            }
-            out.vec3(body.velocity);
-            out.vec3(body.angular_velocity);
-        }
+        out.robot(robot);
     }
     out.0
 }
 
-/// Inverse of [`encode_mechanics`]; builds are validated, and each robot must have its build's
-/// bodies and a charge within its pool.
-///
-/// # Errors
-///
-/// If the bytes are malformed, a build is invalid or a robot's bodies or charge do not fit its
-/// build.
-pub fn decode_mechanics(bytes: &[u8]) -> Result<MechState, WireError> {
-    let mut input = In(bytes);
-    let mut robots = Vec::new();
-    for _ in 0..input.u8()? {
-        let build = input.build()?;
-        let charge = input.u32()?;
-        let clock = input.u32()?;
+impl Out {
+    /// A robot's state after its build: the parts it lost (a bit a part index), its charge and
+    /// gait clock, and each of its bodies' position, orientation, velocity and angular velocity
+    /// as exact `f32` bits.
+    fn robot(&mut self, robot: &RobotState) {
+        self.u32(robot.lost);
+        self.u32(robot.charge);
+        self.u32(robot.clock);
+        self.u8(count(robot.bodies.len()));
+        for body in &robot.bodies {
+            self.vec3(body.pose.position);
+            for value in body.pose.orientation {
+                self.u32(value.to_bits());
+            }
+            self.vec3(body.velocity);
+            self.vec3(body.angular_velocity);
+        }
+    }
+}
+
+impl In<'_> {
+    /// Inverse of [`Out::robot`] for `slot`'s robot of `build`: its bodies must be those of
+    /// what is left of the build and its charge within the whole build's pool.
+    fn robot(&mut self, slot: u8, build: Assembly) -> Result<RobotState, WireError> {
+        let lost = self.u32()?;
+        let charge = self.u32()?;
+        let clock = self.u32()?;
         if charge > Pool::of(&build).capacity {
             return Err(WireError::Malformed("charge above capacity"));
         }
-        let count = input.u8()?;
-        if usize::from(count) != Layout::of(&build).bodies.len() {
+        if build.parts().len() < 32 && lost >> build.parts().len() != 0 {
+            return Err(WireError::Malformed("a lost part the build does not have"));
+        }
+        let count = self.u8()?;
+        if usize::from(count) != Layout::connected(&build, lost).bodies.len() {
             return Err(WireError::Malformed("bodies do not match the build"));
         }
         let bodies = (0..count)
             .map(|_| {
-                let position = input.vec3()?;
+                let position = self.vec3()?;
                 let orientation = [
-                    f32::from_bits(input.u32()?),
-                    f32::from_bits(input.u32()?),
-                    f32::from_bits(input.u32()?),
-                    f32::from_bits(input.u32()?),
+                    f32::from_bits(self.u32()?),
+                    f32::from_bits(self.u32()?),
+                    f32::from_bits(self.u32()?),
+                    f32::from_bits(self.u32()?),
                 ];
-                let velocity = input.vec3()?;
-                let angular_velocity = input.vec3()?;
+                let velocity = self.vec3()?;
+                let angular_velocity = self.vec3()?;
                 let motion = BodyMotion {
                     pose: Pose {
                         position,
@@ -1120,12 +1165,38 @@ pub fn decode_mechanics(bytes: &[u8]) -> Result<MechState, WireError> {
                 }
             })
             .collect::<Result<Vec<_>, WireError>>()?;
-        robots.push(RobotState {
+        Ok(RobotState {
+            slot,
             build,
+            lost,
             charge,
             clock,
             bodies,
-        });
+        })
+    }
+}
+
+/// Inverse of [`encode_mechanics`]; builds are validated, and each robot must have its build's
+/// bodies and a charge within its pool.
+///
+/// # Errors
+///
+/// If the bytes are malformed, a build is invalid or a robot's bodies or charge do not fit its
+/// build.
+pub fn decode_mechanics(bytes: &[u8]) -> Result<MechState, WireError> {
+    let mut input = In(bytes);
+    let mut robots = Vec::new();
+    for _ in 0..input.u8()? {
+        let slot = input.u8()?;
+        let build = input.build()?;
+        let robot = input.robot(slot, build)?;
+        if robots
+            .last()
+            .is_some_and(|last: &RobotState| last.slot >= slot)
+        {
+            return Err(WireError::Malformed("robots out of slot order"));
+        }
+        robots.push(robot);
     }
     input.finish()?;
     Ok(MechState { robots })

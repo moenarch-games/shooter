@@ -282,7 +282,7 @@ fn the_builder_s_builds_reach_the_host_before_the_match_and_between_lives() {
     game.configure(PYRO);
     let me = |game: &Game| {
         let slot = game.local_slot()?;
-        game.snapshot()?.slot(slot).copied()
+        game.snapshot()?.slot(slot).cloned()
     };
     let play = |game: &mut Game, intent: Intent, seconds: u64, until: &dyn Fn(&Game) -> bool| {
         let deadline = Instant::now() + Duration::from_secs(seconds);
