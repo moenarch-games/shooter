@@ -278,6 +278,8 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   headroom. The pinned robot kit still ships a `robot.core` model, which the client skips by name
   until a kit release drops it.
 
+- **D2.i102.1** (owner, 2026-11-16; shooter#102, option B): **Camera-targeted, muzzle-authoritative shots.** The third-person camera establishes the intended aim point, but a damaging ranged weapon's actual hit ray or projectile originates at its mounted, connected weapon muzzle and travels toward that point. Geometry between the muzzle and the aim point blocks or intercepts the shot even if the camera sees the target: camera peeking does not enable shooting through cover. The authoritative origin and intersection are simulation/host rules shared with native and WebGPU prediction, reticle and visual effects; the client renderer may not supply independent combat truth. Preserve the existing weapon damage, energy, part-loss, lag-compensation and replay contracts, reconciling muzzle transforms with the real weapon/robot kit and articulation. This applies to mounted damaging ranged weapons, with the grapple's separate movement/rope contract reconciled rather than silently changed. **Intent only; implementation/visual acceptance pending** in #102 and #49. Draft PR #84 remains its previously defined battery/laser-visual change, without this gameplay redesign unless separately integrated.
+
 ## 3. Platforms
 
 - **D3.1** (owner, 2026-11-11): Native wgpu client on render-engine plus a browser client on Pages.
