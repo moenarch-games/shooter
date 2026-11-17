@@ -311,7 +311,7 @@ fn the_presets_drive_wheels_and_legs_as_mounted_on_flat_ground_and_a_slope() {
     assert!(up > 0.99);
     let (start, end, _) = drive(&floor(), fixtures::car(), held("KeyD"), 300);
     assert!(
-        (end[0] - start[0]).hypot(end[2] - start[2]) < 5.0,
+        libm::hypotf(end[0] - start[0], end[2] - start[2]) < 5.0,
         "{end:?}"
     );
     // Up a 1:10 slope that starts 40 cm ahead.
@@ -350,7 +350,7 @@ fn badly_mounted_locomotion_is_not_corrected() {
     // Legs on the roof step in the air.
     let (start, end, _) = drive(&floor(), fixtures::upside_down_legs(), w, 180);
     assert!(
-        (end[0] - start[0]).hypot(end[2] - start[2]) < 10.0,
+        libm::hypotf(end[0] - start[0], end[2] - start[2]) < 10.0,
         "{end:?}"
     );
 }
