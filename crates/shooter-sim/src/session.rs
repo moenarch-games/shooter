@@ -371,9 +371,8 @@ impl Fighter {
         repair::eligible(&self.build, &self.parts, &self.hitboxes())
     }
 
-    /// The weapon it takes up at spawn: the first its build lets it hold that is not the grapple,
-    /// else the grapple, else the blade ([`weapons::spawn_weapon`]), the energy rifle when it has
-    /// none.
+    /// The weapon it takes up at spawn: the first gun its build lets it hold, else the blade
+    /// ([`weapons::spawn_weapon`]; never the grapple module), the energy rifle when it has none.
     fn first_weapon(&self) -> Weapon {
         weapons::spawn_weapon(|weapon| self.parts.armed(&self.build, weapon)).unwrap_or_default()
     }
@@ -692,7 +691,7 @@ pub struct StepReport {
 /// Something a tick did that the clients show or sound.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
-    /// A shot left `from` (units: its weapon's muzzle, the eye for the grapple and the blade,
+    /// A shot (or the grapple module's hook) left `from` (units: its muzzle, the eye for the blade,
     /// [`aim`]) along `direction` (unit vector).
     Fired {
         slot: u8,
@@ -1469,13 +1468,32 @@ impl Session {
                 continue;
             }
             let intent = fighter.intent;
-            // A set hook holds while the trigger stays down: no second hook until it is let go.
-            let hooked = fighter.hook.is_some();
             let (build, carried, parts) = (fighter.build, fighter.carried, fighter.parts);
-            // The swing, then the gun, ask the shared pool for their energy, first come, first
-            // served ([`crate::energy`]); a weapon part the robot has lost cannot ask
-            // ([`crate::damage`]), so it neither fires nor spends a cooldown; nor can a weapon
-            // the build does not carry. A switch to a weapon it may not hold is refused
+            // The grapple module (Atlas D2.i104.2) on its own key, whatever gun is held: a set
+            // hook holds while the key stays down and the module is still connected
+            // ([`crate::damage`]); let go, or with the module lost or cut off, the rope goes. A
+            // robot without a working module has no grapple: the host refuses the key. No
+            // second hook until the first is let go.
+            let grappling = intent.grapple && playing && parts.armed(&build, Weapon::Grapple);
+            if !grappling {
+                fighter.hook = None;
+            }
+            let hook = grappling
+                && fighter.hook.is_none()
+                && fighter.arsenal.hook(
+                    self.tick,
+                    tuning_of(&build, carried, Weapon::Grapple).refire_ticks(Weapon::Grapple),
+                    || {
+                        energy::spend(
+                            &mut fighter.energy,
+                            tuning_of(&build, carried, Weapon::Grapple).energy(Weapon::Grapple),
+                        )
+                    },
+                );
+            // The grapple's hook, the swing, then the gun ask the shared pool for their energy,
+            // first come, first served ([`crate::energy`]); a weapon part the robot has lost
+            // cannot ask ([`crate::damage`]), so it neither fires nor spends a cooldown; nor can
+            // a weapon the build does not carry. A switch to a weapon it may not hold is refused
             // ([`weapons::holdable`]): the host decides, the prediction and replays alike.
             let charge = &mut fighter.energy;
             let fired = fighter.arsenal.trigger_tuned(
@@ -1483,7 +1501,7 @@ impl Session {
                     .select
                     .filter(|weapon| parts.holdable(&build, *weapon)),
                 intent.melee && playing,
-                intent.fire && playing && !hooked,
+                intent.fire && playing,
                 self.tick,
                 |weapon| tuning_of(&build, carried, weapon).refire_ticks(weapon),
                 |weapon| {
@@ -1491,13 +1509,11 @@ impl Session {
                         && energy::spend(charge, tuning_of(&build, carried, weapon).energy(weapon))
                 },
             );
-            if hooked
-                && !(intent.fire
-                    && playing
-                    && fighter.arsenal.held == Weapon::Grapple
-                    && parts.armed(&build, Weapon::Grapple))
-            {
-                fighter.hook = None;
+            if hook {
+                if slot == 0 {
+                    local_fired = Some(Weapon::Grapple);
+                }
+                self.fire(slot, Weapon::Grapple, intent)?;
             }
             if let Some(weapon) = fired {
                 if slot == 0 {
@@ -2137,7 +2153,9 @@ impl Session {
     /// arena and the fighters where the shooter saw them, and a mounted ranged weapon's shot
     /// leaves its muzzle toward it. A hitscan beam resolves now (lag-compensated), a rocket or a
     /// shotgun blast's pellets start flying, a flame burns what it touches now once it has
-    /// ignited. The grapple and the blade leave the eye along the aim.
+    /// ignited. The grapple module's hook leaves its mount's muzzle toward the target too and
+    /// sets where its line first meets arena geometry ([`Hook::fire`]). The blade leaves the eye
+    /// along the aim.
     fn fire(&mut self, slot: usize, weapon: Weapon, intent: Intent) -> Result<(), PhysicsError> {
         let shooter = &self.fighters[slot];
         // The robot is no body in the scenery's world: rays leave its muzzle and meet the other
@@ -2146,7 +2164,7 @@ impl Session {
         let eye = shooter.eye();
         let delivery = shooter.tuning(weapon).delivery(weapon);
         let muzzle = match delivery {
-            Delivery::Grapple | Delivery::Melee => None,
+            Delivery::Melee => None,
             _ => shooter.muzzle(weapon),
         };
         let seen = self.seen_by(slot);
@@ -2175,11 +2193,11 @@ impl Session {
                 self.rockets.push(Rocket::launch(body, from, direction));
             }
             Delivery::Grapple => {
-                let (hook, trace) = Hook::fire(&self.world, eye, direction, body);
+                let (hook, trace) = Hook::fire(&self.world, from, eye, direction, body);
                 self.fighters[slot].hook = hook;
                 self.events.push(Event::Beam {
                     weapon,
-                    from: eye,
+                    from,
                     end: trace.end,
                     normal: trace.hit.map_or([0.0; 3], |hit| hit.normal),
                     struck: hook.is_some(),

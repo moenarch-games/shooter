@@ -17,7 +17,9 @@
 //! between the muzzle and the target stops it though the camera sees past: peeking with the
 //! camera never shoots through cover. A muzzle pushed into a wall fires from the wall's near
 //! face. A target not ahead of the muzzle (closer than the muzzle reaches) is shot along the aim.
-//! The grapple and the blade keep leaving the eye along the aim (their own contracts).
+//! The grapple module's hook leaves its own muzzle toward the target the same way (shooter#104;
+//! its rope is still tied at the eye, [`crate::grapple`]); the blade keeps leaving the eye along
+//! the aim (its own contract).
 //!
 //! The reticle covers the intended target, and when the muzzle's own line meets something short
 //! of it a second, blocked marker shows where the shot will really land ([`Shot::blocked`]).
@@ -370,10 +372,10 @@ impl Shot {
     }
 }
 
-/// A shot of a weapon at `muzzle` (`None`: from the eye along the aim, the grapple and the
-/// blade) from a fighter's `eye` aiming at `yaw` and `pitch`: the camera picks the intended
-/// target among the scenery and the `fighters` (where the shooter sees them), and the shot
-/// leaves the muzzle toward it.
+/// A shot of a weapon at `muzzle` (`None`: from the eye along the aim, the blade) from a
+/// fighter's `eye` aiming at `yaw` and `pitch`: the camera picks the intended target among the
+/// scenery and the `fighters` (where the shooter sees them), and the shot leaves the muzzle
+/// toward it.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn aimed<'a>(

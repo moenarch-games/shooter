@@ -633,6 +633,8 @@ impl App {
                 // Only a captured mouse shoots: the click that captures it does not.
                 fire: self.captured && self.controls.fire_held(),
                 melee: self.captured && self.controls.melee_held(),
+                // The grapple module's own key (shooter#104); the host refuses it without one.
+                grapple: self.captured && self.controls.grapple_held(),
                 select,
                 edit: false,
                 repair,

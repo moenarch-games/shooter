@@ -923,6 +923,7 @@ fn inputs_and_snapshots_round_trip() {
         crouch: true,
         fire: true,
         melee: true,
+        grapple: true,
         select: Some(Weapon::RocketLauncher),
         edit: true,
         repair: Some(shooter_sim::repair::Order::Start(

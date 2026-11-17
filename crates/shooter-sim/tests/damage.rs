@@ -645,7 +645,8 @@ fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
     assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
     b_takes(&mut session, select(Weapon::Shotgun));
     assert_eq!(session.fighters[1].arsenal.held, Weapon::Shotgun);
-    // The grapple lost: refused; back to the rifle is fine.
+    // The grapple module is never held, whole or lost (Atlas D2.i104.2); back to the rifle is
+    // fine.
     let b = &mut session.fighters[1];
     let build = b.build;
     let index = |weapon| {
