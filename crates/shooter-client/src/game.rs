@@ -241,6 +241,8 @@ pub mod online {
     use shooter_sim::grapple::Hook;
     use shooter_sim::names;
     use shooter_sim::player::Motion;
+    use shooter_sim::repair::Repair;
+    use shooter_sim::scenery::PlaceableState;
     use shooter_sim::weapons::Delivery;
     use shooter_sim::wire::encode_input;
     use shooter_sim::{
@@ -263,6 +265,9 @@ pub mod online {
         energy: u32,
         /// The weapon it holds (the host may refuse a switch the prediction made).
         held: Weapon,
+        /// Its field repair (the host may refuse an order, or pause it for a hit the
+        /// prediction cannot see).
+        repair: Option<Repair>,
     }
 
     pub struct Online {
@@ -274,6 +279,9 @@ pub mod online {
         name: Option<String>,
         /// The loadout asked of the host, if any.
         build: Option<Assembly>,
+        /// The arena's damaged placeables as the host last said (the predictor stands its arena
+        /// so before every predicted tick).
+        scenery: Vec<PlaceableState>,
         /// The local fighter's part damage as the host last said (the predictor keeps it).
         parts: PartDamage,
         player_id: Option<u32>,
@@ -322,6 +330,7 @@ pub mod online {
                 name: name.and_then(names::sanitize),
                 build: None,
                 parts: PartDamage::default(),
+                scenery: Vec::new(),
                 player_id: None,
                 predictor: None,
                 predicting: false,
@@ -518,9 +527,14 @@ pub mod online {
 
         fn predict(&mut self, intent: Intent) -> Result<StepReport, String> {
             let parts = self.parts;
+            let scenery = self.scenery.clone();
             let predictor = self.predictor_mut()?;
             // Part damage is the host's alone: the predicted fighter keeps the host's last word.
             predictor.fighters[0].parts = parts;
+            // So is the arena's destruction: what the prediction's shots did to it is dropped.
+            predictor
+                .adopt_scenery(&scenery)
+                .map_err(|error| error.to_string())?;
             predictor.tick(intent).map_err(|error| error.to_string())
         }
 
@@ -539,11 +553,23 @@ pub mod online {
                 },
             )
         }
+        /// The predicted field repair.
+        fn repair(&self) -> Option<Repair> {
+            self.live()?.local().repair
+        }
+
         pub fn hook(&self) -> Option<[f32; 3]> {
             self.live()?.local().hook.map(|hook| hook.anchor_units())
         }
 
         fn reconcile(&mut self, snapshot: &Snapshot) -> Result<(), String> {
+            // The arena's placeables stand as the host has them, whatever the prediction did.
+            self.scenery.clone_from(&snapshot.scenery);
+            if let Some(predictor) = self.predictor.as_mut() {
+                predictor
+                    .adopt_scenery(&self.scenery)
+                    .map_err(|error| error.to_string())?;
+            }
             let Some(me) = self.player_id.and_then(|id| snapshot.of_player(id)) else {
                 return Ok(());
             };
@@ -553,7 +579,8 @@ pub mod online {
                 return Ok(());
             }
             // Predicted shots fire at the host's pace for this life's build (its weapon mods)
-            // and module, and jumps leave as the host's do; the pads are as the host has them.
+            // and module, and jumps leave as the host's do; the pads and the dropped modules are
+            // as the host has them.
             // The energy pool is predicted like the body: reset to the host's charge with it. The
             // part damage is the host's: a lost weapon does not fire and a robot without
             // connected locomotion does not walk in the prediction either.
@@ -565,6 +592,7 @@ pub mod online {
                 for (pickup, host) in predictor.pickups.iter_mut().zip(&snapshot.pickups) {
                     pickup.ready_in = host.ready_in;
                 }
+                predictor.drops.clone_from(&snapshot.drops);
             }
             let place = |predictor: &mut Session| {
                 // Its robot resumes in the host's exact state (bodies, lost parts, gait clock).
@@ -580,6 +608,7 @@ pub mod online {
                     .place_debris(&snapshot.debris)
                     .map_err(|error| error.to_string())?;
                 predictor.fighters[0].energy = me.energy;
+                predictor.fighters[0].repair = me.repair;
                 Ok::<(), String>(())
             };
             if !self.predicting {
@@ -609,7 +638,8 @@ pub mod online {
                 || acked.motion != me.motion
                 || acked.hook != me.hook
                 || acked.energy != me.energy
-                || acked.held != me.held;
+                || acked.held != me.held
+                || acked.repair != me.repair;
             if off {
                 place(self.predictor_mut()?)?;
                 let replay: Vec<Pending> = self.pending.drain(..).collect();
@@ -622,6 +652,7 @@ pub mod online {
                         pending.energy,
                         pending.held,
                     ) = self.state();
+                    pending.repair = self.repair();
                     self.pending.push_back(pending);
                 }
             }
@@ -715,6 +746,7 @@ pub mod online {
                         hook,
                         energy,
                         held,
+                        repair: self.repair(),
                     });
                     while self.pending.len() > 120 {
                         self.pending.pop_front();

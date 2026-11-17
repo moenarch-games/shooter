@@ -1,7 +1,7 @@
 //! The window, the fixed-tick loop and the frame: input in, the match ticks (in-process practice
 //! or a hosted match), render out.
 
-use crate::arena_art::ArenaArt;
+use crate::arena_art::{ArenaArt, Placed};
 use crate::audio::Sounds;
 use crate::builder::view::{Action, Builder, Stage, death_prompt};
 use crate::camera::{self, Follow};
@@ -10,12 +10,14 @@ use crate::effects::Effects;
 use crate::game::Game;
 use crate::gpu::Gpu;
 use crate::hud::{Hud, HudText};
-use crate::overlay::{Overlay, Vitals};
+use crate::overlay::{Overlay, Vitals, repair_panel};
+use crate::repair_menu::RepairMenu;
 use crate::robots::{self, RobotState, RobotView, Robots, track::Tracker};
 use crate::scene::{self, Actors, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT, SWING_SECONDS};
 use render_engine::glam::{Mat4, Vec3};
 use shooter_sim::aim::{self, RETICLE_RANGE_UNITS};
 use shooter_sim::damage::{Hitboxes, PartDamage};
+use shooter_sim::physics::Vec3i;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
 use shooter_sim::robot::PartId;
 use shooter_sim::scenarios::scripted_intent;
@@ -99,6 +101,8 @@ pub struct App {
     game: Game,
     /// The map drawn in the GPU's world, once the game knows it and the GPU is up.
     drawn: Option<MapId>,
+    /// Its kit-built modules, drawn as the match's snapshots say they stand (broken or whole).
+    placed: Option<Placed>,
     controls: Controls,
     look: Look,
     pads: Option<gilrs::Gilrs>,
@@ -108,6 +112,7 @@ pub struct App {
     overlay: Overlay,
     /// The weapon the controls ask for (a select key, or the next and previous steps).
     selection: Selection,
+    repair_menu: RepairMenu,
     shown: HudText,
     /// Tab held: the scoreboard shows.
     board: bool,
@@ -175,6 +180,7 @@ impl App {
             look: Look::new(radians(game.map().map_or(0, |map| map.arena().spawn_yaw))),
             game,
             drawn: None,
+            placed: None,
             controls: Controls::new(),
             pads: gilrs::Gilrs::new()
                 .inspect_err(|error| crate::log(&format!("gamepads unavailable: {error}")))
@@ -183,6 +189,7 @@ impl App {
             hud: Hud::default(),
             overlay: Overlay::default(),
             selection: Selection::default(),
+            repair_menu: RepairMenu::default(),
             shown: HudText::default(),
             board: false,
             effects: None,
@@ -332,12 +339,14 @@ impl App {
             look: Look::new(radians(game.map().map_or(0, |map| map.arena().spawn_yaw))),
             game,
             drawn: None,
+            placed: None,
             controls: Controls::new(),
             pads: None,
             sounds: Sounds::new(),
             hud: Hud::default(),
             overlay: Overlay::default(),
             selection: Selection::default(),
+            repair_menu: RepairMenu::default(),
             shown: HudText::default(),
             board: false,
             effects: None,
@@ -486,8 +495,22 @@ impl App {
             return;
         }
         let art = self.arena_art.as_ref().and_then(|art| art.as_ref().ok());
-        scene::build(&mut gpu.world, &arena, art);
+        self.placed = scene::build(&mut gpu.world, &arena, art);
         self.drawn = Some(map);
+    }
+
+    /// The drawn arena's placeables as the match's latest snapshot has them (the host's word
+    /// online, the in-process match's in practice): the renderer keeps no damage of its own.
+    fn show_scenery(&mut self) {
+        let (Some(gpu), Some(placed), Some(Ok(art)), Some(snapshot)) = (
+            &mut self.gpu,
+            &self.placed,
+            &self.arena_art,
+            self.game.snapshot(),
+        ) else {
+            return;
+        };
+        art.show(&mut gpu.world, placed, &snapshot.scenery);
     }
 
     fn capture(&mut self, captured: bool) {
@@ -562,6 +585,7 @@ impl App {
     /// One local tick: the controls become an intent, the match ticks, and its events play.
     fn tick(&mut self, now: Instant) -> bool {
         let (forward, strafe) = self.controls.movement();
+        let repairs = self.controls.take_repairs();
         let intent = if let Some(tick) = &mut self.scripted {
             let intent = scripted_intent(0, *tick);
             *tick += 1;
@@ -569,6 +593,7 @@ impl App {
             intent
         } else if self.builder.is_some() {
             // In the builder: Edit Robot held, the robot dead and waiting (D2.i70.11).
+            self.repair_menu = RepairMenu::default();
             Intent {
                 yaw: self.look.sim_yaw(),
                 pitch: self.look.sim_pitch(),
@@ -577,8 +602,14 @@ impl App {
             }
         } else {
             // The wheel and Q/E step through the weapons the robot still has, from the one it
-            // holds as predicted; the host decides.
-            let steps = self.controls.take_steps();
+            // holds as predicted; the host decides. While the repair menu is open they move
+            // through it instead, and R there repairs the part chosen (the host decides too).
+            let mut steps = self.controls.take_steps();
+            let repair = self.repair_menu.tick(
+                self.game.local_fighter().map(|(me, _)| me),
+                repairs,
+                &mut steps,
+            );
             let select = match self.game.local_fighter() {
                 Some((me, _)) => self.selection.intent(
                     self.controls.selected(),
@@ -604,6 +635,7 @@ impl App {
                 melee: self.captured && self.controls.melee_held(),
                 select,
                 edit: false,
+                repair,
             }
         };
         let tick = match self.game.tick(intent) {
@@ -730,6 +762,7 @@ impl App {
         }
         let ticks = ticks.min(MAX_TICKS_PER_FRAME);
         self.draw_map();
+        self.show_scenery();
         #[cfg(target_arch = "wasm32")]
         if self.builder_shown != self.builder.is_some() {
             self.builder_shown = self.builder.is_some();
@@ -778,18 +811,24 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        // The modules lying on their pads (ready to take).
+        // The modules lying on their pads (ready to take), and where dead carriers dropped them.
         #[allow(clippy::cast_precision_loss)]
+        let ground = |center: Vec3i| {
+            Vec3::from([center.x, center.y, center.z].map(|axis| axis as f32)) * METRES_PER_UNIT
+        };
         let modules: Vec<(Vec3, ArenaModule)> = snapshot
             .iter()
-            .flat_map(|snapshot| &snapshot.pickups)
-            .filter(|pickup| pickup.ready_in == 0)
-            .map(|pickup| {
-                let center = [pickup.center.x, pickup.center.y, pickup.center.z];
-                (
-                    Vec3::from(center.map(|axis| axis as f32)) * METRES_PER_UNIT,
-                    pickup.module,
-                )
+            .flat_map(|snapshot| {
+                let pads = snapshot
+                    .pickups
+                    .iter()
+                    .filter(|pickup| pickup.ready_in == 0)
+                    .map(|pickup| (ground(pickup.center), pickup.module));
+                let drops = snapshot
+                    .drops
+                    .iter()
+                    .map(|drop| (ground(drop.center), drop.carried.module));
+                pads.chain(drops)
             })
             .collect();
         let me = local.and_then(|slot| snapshot.and_then(|snapshot| snapshot.slot(slot)));
@@ -847,6 +886,11 @@ impl App {
                     },
                     glow: view.glow,
                     parts: robots::PartStates::default(),
+                    // The part the repair menu points at, or the one under repair.
+                    highlight: self
+                        .game
+                        .local_fighter()
+                        .and_then(|(fighter, _)| self.repair_menu.highlight(fighter)),
                 });
             }
         }
@@ -907,6 +951,7 @@ impl App {
                     },
                     glow: view.glow,
                     parts: robots::PartStates::default(),
+                    highlight: None,
                 });
             }
             fighters.push(view);
@@ -931,6 +976,7 @@ impl App {
                 },
                 glow: 0.0,
                 parts: robots::PartStates::default(),
+                highlight: None,
             });
         }
         // The reticle covers what a shot fired now meets: from the eye along the aim the
@@ -1062,11 +1108,19 @@ impl App {
             .game
             .local_fighter()
             .map(|(me, tick)| Vitals::of(me, tick));
+        // And field repair: the quick menu, the repair under way or what there is to repair.
+        let repair = self
+            .game
+            .local_fighter()
+            .map(|(me, _)| self.repair_menu.view(me));
         let Some(gpu) = &mut self.gpu else {
             return true;
         };
         let (width, height) = gpu.size();
         scene.overlay = self.overlay.draw(vitals.as_ref(), width, height, seconds);
+        if let Some(repair) = &repair {
+            scene.overlay.extend(repair_panel(repair, height));
+        }
         if let Some(ticks) = respawn_in {
             scene.overlay.extend(death_prompt(
                 f32::from(u16::try_from(ticks).unwrap_or(u16::MAX)) / f32::from(TICK_HZ),

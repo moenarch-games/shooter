@@ -3,7 +3,7 @@
 //! exact), a checkered floor for a sense of speed, glowing jump pads, the module pickups' pads, and the hall's lighting;
 //! and the [`Actors`] that move over it.
 
-use crate::arena_art::ArenaArt;
+use crate::arena_art::{ArenaArt, Placed};
 use crate::camera::{self, basis};
 use crate::effects::tint;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
@@ -135,14 +135,18 @@ const PAD_THICKNESS: f32 = 0.02;
 /// Uploads the arena and retains its instances in `world`: they are drawn every frame. A
 /// kit-built map (one with placements) is drawn from the arena kit when `art` is there, else
 /// (the kit unavailable) and on the greybox maps as boxes; the module pads on every map.
-pub fn build(world: &mut World, arena: &Arena, art: Option<&ArenaArt>) {
-    match art.filter(|_| !arena.placements.is_empty()) {
-        Some(art) => {
-            art.draw(world, arena);
+/// Returns the kit's placed modules, whose looks follow the match's destruction
+/// ([`ArenaArt::show`]); the boxes stand as the map authored them.
+pub fn build(world: &mut World, arena: &Arena, art: Option<&ArenaArt>) -> Option<Placed> {
+    let placed = match art.filter(|_| !arena.placements.is_empty()) {
+        Some(art) => Some(art.draw(world, arena)),
+        None => {
+            greybox(world, arena);
+            None
         }
-        None => greybox(world, arena),
-    }
+    };
     module_pads(world, arena);
+    placed
 }
 
 /// The arena's pieces as boxes and wedges on a checkered floor, and its jump pads as glowing

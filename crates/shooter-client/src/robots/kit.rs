@@ -20,7 +20,9 @@
 //! (`shooter_sim::robot::parts`, `BETA.mods`). Every kit key must be a catalog part or mod of
 //! that kit, and every catalog part and mod must be in a kit (the arena kit's keys are the
 //! simulation's arena modules, `shooter_sim::arena_kit::Module`); anything else fails the load
-//! loudly ([`complete`]).
+//! loudly ([`complete`]). One catalog part has no model of its own yet: the repair module
+//! (`robot.repair-module`, shooter#61) is drawn as the robot kit's sensor ([`drawn_key`]) until
+//! the robot kit ships one (moritzbrantner/asset-tooling#742).
 
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::material::{Sampler, TextureData};
@@ -129,6 +131,17 @@ impl Bundle {
             Self::Locomotion => part.is_some_and(|part| rolls(part.kind)),
             Self::Arena => Module::ALL.iter().any(|module| module.key() == key),
         }
+    }
+}
+
+/// The kit entry catalog part `key` is drawn with: its own, but the repair module's, which the
+/// robot kit has no model for yet and draws as the sensor (the nearest small utility module).
+#[must_use]
+pub fn drawn_key(key: &str) -> &str {
+    if key == shooter_sim::robot::parts::REPAIR_MODULE.key {
+        shooter_sim::robot::parts::SENSOR.key
+    } else {
+        key
     }
 }
 
@@ -383,7 +396,7 @@ pub fn complete(plans: &[Plan]) -> Result<(), String> {
         .map(|entry| entry.key.as_str())
         .collect();
     for part in BETA.parts {
-        if !keys.contains(part.key) {
+        if !keys.contains(drawn_key(part.key)) {
             return Err(format!("robot kit: catalog part {} is in no kit", part.key));
         }
     }

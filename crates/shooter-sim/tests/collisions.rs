@@ -4,7 +4,9 @@
 //! independent of the order the physics meets its contacts, an armor plate taking the impact, a
 //! parent part breaking and its branch coming off as debris that falls, collides and retires, the
 //! root chassis broken by an impact as the kill, the debris budget, exact continuation and the
-//! wire, and a bounded multi-robot scene measuring active debris and update cost.
+//! wire, the interactions with field repair (an impact pauses it like a hit), module drops (a
+//! carrier killed by an impact drops its module) and breakable placeables (debris on a crate falls
+//! when it breaks), and a bounded multi-robot scene measuring active debris and update cost.
 //!
 //! `cargo test -p shooter-sim --test collisions`; the scene:
 //! `cargo test --release -p shooter-sim --test collisions -- --ignored --nocapture`
@@ -615,4 +617,138 @@ fn twelve_robots_shedding_debris_a_tick() {
          with the weapons shattered; {shed:.3} ms/tick (worst {shed_worst:.3}) with them as \
          debris, {mean:.1} pieces active on average, {peak} at most (budget {MAX_DEBRIS})"
     );
+}
+
+/// The interactions with field repair (shooter#61), module drops (shooter#62) and breakable
+/// placeables (shooter#60).
+mod interactions {
+    use super::*;
+    use shooter_sim::arena_kit::{self, Module, Placement, Turn};
+    use shooter_sim::repair::{Order, PAUSE_TICKS};
+    use shooter_sim::robot::MECHANIC;
+    use shooter_sim::scenery::PlaceableState;
+    use shooter_sim::{ArenaModule, Carried};
+
+    const LEG: PartId = PartId(5);
+
+    #[test]
+    fn an_impact_on_the_part_under_repair_pauses_it_like_a_hit() {
+        // The mechanic repairs its worn left leg, then falls far enough that the leg, its
+        // lowest part, takes a blow it survives: the repair pauses, as for a weapon's hit.
+        let mut paused = None;
+        for height in (900u16..=1_400).step_by(25) {
+            let mut session = match_of(&[MECHANIC], false);
+            place(&mut session, 0, [0.0, 0.0, 0.0], NORTH);
+            for _ in 0..10 {
+                step(&mut session, &[facing(NORTH)]);
+            }
+            let leg = 2;
+            assert_eq!(MECHANIC.parts()[leg].id, LEG);
+            session.fighters[0].parts.hurt(&MECHANIC, leg, 40);
+            let repair = Intent {
+                repair: Some(Order::Start(LEG)),
+                ..facing(NORTH)
+            };
+            step(&mut session, &[repair]);
+            assert_eq!(session.fighters[0].repair.map(|r| r.target), Some(LEG));
+            // Up into the air with the repair under way, and down.
+            let feet = session.fighters[0].feet();
+            place(
+                &mut session,
+                0,
+                [feet[0], f32::from(height), feet[2]],
+                NORTH,
+            );
+            let mut blows = Vec::new();
+            for _ in 0..90 {
+                step(&mut session, &[facing(NORTH)]);
+                blows.extend(impacts(&session.events));
+                if !blows.is_empty() {
+                    break;
+                }
+            }
+            match blows.first() {
+                Some(&(0, part, damage))
+                    if part == LEG && session.fighters[0].parts.attached(leg) =>
+                {
+                    paused = Some((height, damage, session.fighters[0].repair));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let (height, damage, repair) = paused.expect("a fall that strikes the leg and spares it");
+        println!("{height} units: the leg took {damage}");
+        let repair = repair.expect("the repair goes on, paused");
+        assert_eq!(repair.target, LEG);
+        assert_eq!(repair.paused, PAUSE_TICKS);
+    }
+
+    #[test]
+    fn a_carrier_killed_by_an_impact_drops_its_module() {
+        let mut session = match_of(&[legless()], false);
+        place(&mut session, 0, [0.0, 6_000.0, 0.0], NORTH);
+        session.fighters[0].carried = Some(Carried {
+            module: ArenaModule::Thrusters,
+            uses_left: 3,
+        });
+        for _ in 0..240 {
+            step(&mut session, &[facing(NORTH)]);
+            if !session.fighters[0].alive() {
+                break;
+            }
+        }
+        assert!(!session.fighters[0].alive(), "the impact killed it");
+        assert_eq!(session.drops.len(), 1, "{:?}", session.drops);
+        assert_eq!(session.drops[0].carried.module, ArenaModule::Thrusters);
+        assert_eq!(session.drops[0].from, 0);
+    }
+
+    #[test]
+    fn debris_on_a_crate_falls_when_the_crate_breaks() {
+        let placements = vec![Placement::new(Module::Crate, [0, 0, 0], Turn::None).destructible()];
+        let mut arena = arena(false);
+        arena.pieces = arena_kit::pieces(&placements);
+        arena.placements = placements;
+        let rules = Rules {
+            slots: 1,
+            bots: false,
+            local: false,
+            seed: 0,
+            frag_limit: 0,
+            time_limit_ticks: 0,
+            intermission_ticks: 60,
+            respawn_ticks: 600,
+        };
+        let mut session = Session::with_rules(arena, rules).unwrap();
+        // A battery's worth of debris dropped onto the crate (80 units tall).
+        let mut host = match_of(&[pole()], false);
+        place(&mut host, 0, [0.0, 3_000.0, 0.0], NORTH);
+        while host.mechanics.debris().is_empty() {
+            step(&mut host, &[facing(NORTH)]);
+        }
+        let mut piece = host.mechanics.debris()[0];
+        piece.motion.pose.position = [0.0, 200.0, 0.0];
+        piece.motion.velocity = [0.0; 3];
+        piece.motion.angular_velocity = [0.0; 3];
+        session.place_debris(&[piece]).unwrap();
+        for _ in 0..40 {
+            session.step().unwrap();
+        }
+        let on_crate = session.mechanics.debris()[0].motion.pose.position[1];
+        assert!(on_crate > 80.0, "it lies on the crate: {on_crate}");
+        // The crate breaks: the world is rebuilt on the broken pieces with the debris kept.
+        session
+            .adopt_scenery(&[PlaceableState { id: 0, health: 0 }])
+            .unwrap();
+        assert_eq!(session.mechanics.debris().len(), 1);
+        let mut lowest = on_crate;
+        for _ in 0..40 {
+            session.step().unwrap();
+            if let Some(piece) = session.mechanics.debris().first() {
+                lowest = lowest.min(piece.motion.pose.position[1]);
+            }
+        }
+        assert!(lowest < on_crate - 20.0, "{on_crate} -> {lowest}");
+    }
 }

@@ -9,8 +9,9 @@
 //! destroyed part stay; the rest are lost, destroyed or not ([`PartDamage::lost`]). That is the
 //! subtree below the destroyed part; when the root chassis itself is destroyed, everything is
 //! lost and the robot is dead. Lost is derived from the healths alone, so the wire carries the
-//! healths only. Nothing comes back mid-life: health only goes down, and respawn restores the configured build
-//! ([`PartDamage::fresh`]).
+//! healths only. Nothing comes back mid-life: a destroyed or lost part stays gone, and only a
+//! field repair ([`crate::repair`], [`PartDamage::heal`]) raises the health of a damaged part
+//! still connected; respawn restores the configured build ([`PartDamage::fresh`]).
 //!
 //! **Hitboxes** ([`Hitboxes`]). The match's fighters are mechanical robots (shooter#73), so a
 //! fighter's parts are where its bodies carry them ([`Hitboxes::posed`]): each connected part's
@@ -141,6 +142,16 @@ impl PartDamage {
         self.lost
     }
 
+    /// Every part of the build (bits by index).
+    #[must_use]
+    pub const fn everything(&self) -> u32 {
+        if self.len as usize >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << self.len) - 1
+        }
+    }
+
     /// Part `index` is still connected (and so not destroyed).
     #[must_use]
     pub const fn attached(&self, index: usize) -> bool {
@@ -244,6 +255,33 @@ impl PartDamage {
             destroyed,
             lost: self.lost & !before,
         })
+    }
+
+    /// Part `index` of `build` has taken damage and is still connected (above zero): what a
+    /// field repair may restore ([`crate::repair`]).
+    #[must_use]
+    pub fn damaged(&self, build: &Assembly, index: usize) -> bool {
+        self.attached(index)
+            && build
+                .parts()
+                .get(index)
+                .is_some_and(|part| self.health[index] < part_type(part).health)
+    }
+
+    /// `amount` of health back to part `index` of `build`, never past its catalog health: only
+    /// a part still connected (a destroyed or lost one is gone for the life). The health it
+    /// gained.
+    pub fn heal(&mut self, build: &Assembly, index: usize, amount: u16) -> u16 {
+        if !self.attached(index) {
+            return 0;
+        }
+        let Some(part) = build.parts().get(index) else {
+            return 0;
+        };
+        let whole = part_type(part).health;
+        let gained = amount.min(whole.saturating_sub(self.health[index]));
+        self.health[index] += gained;
+        gained
     }
 }
 
@@ -433,6 +471,15 @@ impl Hitboxes {
     #[must_use]
     pub fn get(&self, index: usize) -> Option<&PartBox> {
         self.boxes.iter().find(|part| part.index == index)
+    }
+
+    /// How far (units) part `index`'s box comes to `point` (0 inside it), if it is connected.
+    #[must_use]
+    pub fn reach(&self, index: usize, point: [f32; 3]) -> Option<f32> {
+        let part = self.get(index)?;
+        let on = Self::closest(part, point);
+        let gap = [0, 1, 2].map(|axis| on[axis] - point[axis]);
+        Some(dot(gap, gap).sqrt())
     }
 
     /// Where along `translation` (0..=1) a ray from `origin` enters each box it meets: (the

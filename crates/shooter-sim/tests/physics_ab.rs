@@ -4,8 +4,9 @@
 //! (sprint, slide, double jump, a thruster-module jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
 //! a shooting range, a close range for the shotgun, laser and flamethrower) on physics-engine and on the Rapier oracle
 //! (`shooter_sim::physics::using_backend`), and the mechanics fixtures (shooter#73: rolling,
-//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog) and a fall's collision
-//! damage and debris (shooter#75) on both.
+//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog), broken cover
+//! (shooter#60: rays across it, a robot on its remains) and a fall's collision damage and debris
+//! (shooter#75) on both.
 //! Both must follow the same path within a few centimetres, agree on support at the end of every
 //! leg, and fire, hit and explode on the same ticks for the same damage (rays and the rocket and
 //! pellet sweeps are the backends' `cast_ray`, the flame their `overlap_box`).
@@ -214,6 +215,91 @@ fn twelve_robots_in_a_match_a_tick() {
             );
         });
     }
+}
+
+/// Broken collision (shooter#60): a barrier and low cover broken by the host on both backends.
+/// Rays across them meet the same pieces at the same heights (over the remains, through them and
+/// at the stubs), and the standard robot set down on each one's remains stands at the same level
+/// on both (within 30 units, as on the proving cell's ledges): the broken variant's pieces, not
+/// the intact ones, in the scenery's world and the robots' alike.
+#[test]
+fn broken_cover_collides_alike_on_the_rapier_oracle() {
+    use shooter_sim::arena_kit::{self, Module, Placement, Turn};
+    use shooter_sim::robot::STANDARD;
+    use shooter_sim::scenery::PlaceableState;
+    fn arena() -> Arena {
+        let placements = vec![
+            Placement::new(Module::Barrier, [0, 0, 0], Turn::None).destructible(),
+            Placement::new(Module::CoverLow, [600, 0, 0], Turn::Quarter).destructible(),
+        ];
+        Arena {
+            pieces: arena_kit::pieces(&placements),
+            placements,
+            ..Arena::greybox()
+        }
+    }
+    // Over the barrier's base and through its stub; over the cover's base and through its stub
+    // (a quarter turn puts its -x end at +z).
+    let rays: [([f32; 3], [f32; 3]); 4] = [
+        ([0.0, 150.0, -300.0], [0.0, 0.0, 600.0]),
+        ([75.0, 150.0, -300.0], [0.0, 0.0, 600.0]),
+        ([300.0, 90.0, -40.0], [600.0, 0.0, 0.0]),
+        ([300.0, 90.0, 70.0], [600.0, 0.0, 0.0]),
+    ];
+    let run = |backend: Backend| {
+        using_backend(backend, || {
+            let mut session = Session::new(arena()).expect("arena builds");
+            session.rebuild(0, STANDARD).unwrap();
+            let before: Vec<_> = rays
+                .iter()
+                .map(|(from, along)| {
+                    session
+                        .world
+                        .cast_ray(*from, *along, |_| true)
+                        .map(|hit| hit.body)
+                })
+                .collect();
+            session
+                .adopt_scenery(&[
+                    PlaceableState { id: 0, health: 0 },
+                    PlaceableState { id: 1, health: 0 },
+                ])
+                .unwrap();
+            let after: Vec<_> = rays
+                .iter()
+                .map(|(from, along)| {
+                    session
+                        .world
+                        .cast_ray(*from, *along, |_| true)
+                        .map(|hit| hit.body)
+                })
+                .collect();
+            let mut levels = Vec::new();
+            for feet in [[-25.0, 110.0, 0.0], [630.0, 66.0, 30.0]] {
+                session.stand(0, feet).unwrap();
+                for _ in 0..90 {
+                    session.tick(shooter_sim::Intent::IDLE).unwrap();
+                }
+                levels.push(session.local().feet()[1]);
+            }
+            (before, after, levels)
+        })
+    };
+    let (engine, rapier) = (run(Backend::Engine), run(Backend::Rapier));
+    println!("engine {engine:?}\nrapier {rapier:?}");
+    assert_eq!((&engine.0, &engine.1), (&rapier.0, &rapier.1));
+    // Intact, every ray meets cover; broken, only the stubs stop them.
+    assert!(engine.0.iter().all(Option::is_some));
+    assert_eq!(
+        engine.1.iter().map(Option::is_some).collect::<Vec<_>>(),
+        [false, true, false, true]
+    );
+    for (a, b) in engine.2.iter().zip(&rapier.2) {
+        assert!((a - b).abs() < 30.0, "levels {:?} {:?}", engine.2, rapier.2);
+    }
+    // On the remains: the barrier's 1 m base and the cover's 56 cm one, not their intact tops.
+    assert!((90.0..130.0).contains(&engine.2[0]), "{:?}", engine.2);
+    assert!((46.0..80.0).contains(&engine.2[1]), "{:?}", engine.2);
 }
 
 /// The proving cell (shooter#53): its ramp, gallery deck and the drop off the gallery's edge; up

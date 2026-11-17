@@ -807,6 +807,7 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
             .is_multiple_of(300)
             .then(|| weapons[(tick / 300 + person) as usize % weapons.len()]),
         edit: false,
+        repair: None,
     }
 }
 

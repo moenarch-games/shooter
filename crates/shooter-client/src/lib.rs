@@ -16,6 +16,7 @@ pub mod hud;
 pub mod interpolation;
 pub mod net;
 pub mod overlay;
+pub mod repair_menu;
 pub mod robots;
 pub mod scene;
 

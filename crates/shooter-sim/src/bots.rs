@@ -306,6 +306,7 @@ impl Bot {
                 && dy.abs() < crate::player::EYE_HEIGHT_UNITS,
             select: Some(weapon),
             edit: false,
+            repair: None,
         }
     }
 
@@ -326,8 +327,16 @@ impl Bot {
                 .filter(|index| Some(*index) != self.waypoint)
                 .filter(|index| arena.clear_walk(feet, points[*index]))
                 .collect();
+            // Pressed against a wall, no walk is clear: it heads for the nearest point.
             let choices = if open.is_empty() {
-                (0..points.len()).collect()
+                (0..points.len())
+                    .filter(|index| Some(*index) != self.waypoint)
+                    .min_by_key(|index| {
+                        let point = points[*index];
+                        trig::xz_length(point.x - feet.x, point.z - feet.z)
+                    })
+                    .into_iter()
+                    .collect()
             } else {
                 open
             };

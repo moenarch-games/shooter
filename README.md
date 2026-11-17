@@ -72,7 +72,7 @@ in, built from asset-tooling's arena kit; two interim greybox maps stay:
   by a jump pad at its foot that throws 15 m/s up, or by the grapple on its 3 m mast. 4 m deep
   charging bays in the side walls, the bay walls, the tower and the floor's 4 m pillars break
   the long lines; no spawn point is in sight of another, and none is a dead end. Its low cover,
-  barriers and crates are marked as destruction candidates for shooter#60 (nothing breaks yet)
+  barriers and crates are destruction candidates that break (shooter#60, below)
   and four repair anchors (under the mezzanines and in the bays) are data for shooter#61. Plan,
   views and frames: [docs/captures/52](docs/captures/52).
 - `proving-cell`, the small close-quarters arena (shooter#53; 2 to 6 players, 12 spawn points so
@@ -150,6 +150,32 @@ so a joining client builds and predicts on that map; practice takes `--map <id>`
 `?map=<id>` in the browser. Replays record their map and restore it; an unknown map ID is
 refused everywhere.
 
+**Arena destruction** (shooter#60). On a kit-built map the placements its map marks as
+destruction candidates (low cover, barriers, crates; doors once a map places one) are damageable
+placeables (`shooter_sim::scenery`), each with a stable ID, its placement's index in the map.
+The host alone damages them, through the hit queries that already hurt robots: a hitscan ray or
+a pellet that stops on one, the flame burning on one, a blade swing that meets one instead of a
+robot, a rocket's blast by the point of its pieces nearest the blast (the same falloff as on
+robot parts). At zero health it breaks: its placement turns to the kit's broken variant and its
+collision to that variant's proxies, at the end of the tick that broke it, so from the next
+tick on the physics world, the robots' world, every ray, projectile and flame, hooks (one set on
+it lets go) and the bots' sight and walks all meet the broken pieces. Only the candidates break:
+floors, decks, platforms, ramps, walls and the blast screens never do, and a candidate something
+else rests on (the lower crate of a stack) carries it and never breaks either. Each candidate
+keeps a run of body IDs of its own, so breaking one moves no other body. A broken placeable stays
+broken through deaths and respawns until the round restarts, which brings every one back whole.
+Health is provisional (Atlas Q2.i60.1): low cover 150, a barrier 250, a crate 60, a door 200.
+The snapshot carries the damaged placeables' health by ID (wire 17), so replays verify it tick
+for tick; a predicting client stands its arena as the host's last snapshot has it before every
+predicted tick, so what its own predicted shots do to the arena lasts one tick at most, and both clients draw each placeable as
+the kit's intact or broken mesh from the snapshot alone (no damage rule of their own, no rubble
+or placeholder art; the box fallback for a kit that cannot be read stays whole).
+`cargo test -p shooter-sim --test destruction` covers hitscan and blast destruction, overlapping
+cover, a shot and a jump blocked before and open after, restoration, the wire, a predictor and
+replays; `physics_ab` checks broken collision on the Rapier oracle;
+`cargo run -p shooter-client --release --example arena_views -- MAP DIR broken` draws a map with
+every placeable broken ([docs/captures/60](docs/captures/60)).
+
 ```sh
 scripts/fetch-robot-kit.sh                 # the pinned robot, weapons, locomotion and arena kits into target/*-kit
 cargo run -p shooter-client --release      # native window, practice
@@ -191,7 +217,7 @@ the host's reconnect grace. A public host is described in [docs/hosting.md](docs
 
 Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
-mouse. Steer in the air with WASD.
+mouse. Steer in the air with WASD. R opens the quick repair menu (below, **Field repair**).
 
 **HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser:
 render-engine's screen-overlay quads in the robot kits' palette (pale grey on graphite, olive, an
@@ -201,7 +227,9 @@ the window. Bottom right, the held weapon: its silhouette, name and mod, the ene
 its next shot), short of energy or lost, and above it a slot for every weapon the build carries
 with its key (lost ones red and struck out); a switch flashes the panel and sweeps a highlight
 across it. Bottom left, the root chassis' health and the energy pool, with the share one shot of
-the held weapon takes marked in orange. render-engine's overlay draws solid rectangles only, so
+the held weapon takes marked in orange, and above them, in teal, the field repair panel (the
+quick repair menu while it is open, else the repair under way, else how many parts may be
+repaired). render-engine's overlay draws solid rectangles only, so
 the text is a 5×7 bitmap font and the weapons are pixel silhouettes, both drawn as quads in the
 client. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
 the carried module and its uses left, the kill and pickup feed, banners and the scoreboard) is
@@ -260,7 +288,7 @@ is drawn and heard as soon as you press; the host decides what it strikes.
 sockets, one per 20 cm surface cell (a 20 × 40 × 80 cm chassis has 28). Each part has a stable ID,
 one parent socket and an exact orientation (binary angles, stored in one canonical form); a larger
 part reserves its footprint of neighbouring cells on its parent's face, and no two parts may
-claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints, a battery, a sensor, legs, wheels, tracks, an armor plate and the eight
+claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints, a battery, a sensor, a repair module, legs, wheels, tracks, an armor plate and the eight
 shipped weapons. A build is valid with one chassis root, no cycles, each weapon at most once, at
 most 32 parts and at most 110 build points; there is no power, heat or cooling budget. The root
 chassis is the robot's vital part (Atlas D2.i89.1, #89): there is no separate control core, and a
@@ -378,6 +406,27 @@ resting contact, the struck part against contact order, plates, a broken parent'
 debris, the impact kill, the budget, exact continuation and the wire; with `--release --
 --ignored --nocapture` it measures twelve robots shedding debris.
 
+**Field repair** (`shooter_sim::repair`, Atlas D2.i70.9, #61). A build may mount repair modules
+(`robot.repair-module`: 20 × 20 × 20 cm, 12 kg, 8 points, 40 health; the `mechanic` loadout has
+one on its chassis' back). R opens a quick menu over the running match listing only the parts the
+robot may repair now: damaged, still connected, and within 0.6 m of a working module's centre
+where the robot's bodies carry them (a module does not repair itself). The wheel or Q/E moves
+through it, R again repairs the chosen part (or stops the repair under way) and closes it; the
+part is lit teal on the robot, and the robot keeps walking, aiming and firing. The order goes to
+the host, which refuses a part that is not eligible (stale, out of reach, whole, destroyed). A
+repair restores one health every 0.1 s for 15 energy a second from the shared pool, after the
+tick's jump, swing and shot and before the motors, so an empty pool holds it until regeneration
+pays; it ends when the part is whole and stops when the part or its module is lost or out of
+reach. A hit on the part under repair or on its module pauses it for 0.75 s (a further hit starts
+the pause over): no health and no energy meanwhile, the work done is kept and it resumes by
+itself; hits elsewhere do not pause it. Destroyed parts stay gone; death ends a repair and
+respawn restores the build. Snapshots carry each fighter's repair (part, module, progress,
+pause) and the parts it may repair; the client predicts its own, replays reproduce it, and bots
+do not repair. The radius, rate, energy and pause are provisional (Atlas Q2.i70.3). The robot kit
+has no repair module model yet (moritzbrantner/asset-tooling#742): it is drawn as the sensor.
+Views (the menu with the leg lit, repairing, paused; `--example repair_views`):
+[docs/captures/61](docs/captures/61).
+
 **Mechanics** (`shooter_sim::mechanics`, Atlas D2.i70.5, #73). The simulation
 builds any valid robot as a mechanical one in a dynamic world of its own
 (`shooter_sim::physics::articulated`, on physics-engine's compound bodies and revolute joints
@@ -420,7 +469,7 @@ as its bodies (its guns reach over a 1.2 m cover and stop it a little further fr
 the capsule did; two of the capsule-tuned routes, the works' 4 m step from the 2 m one and the
 thruster jump onto a 2 m ledge, no longer land for the standard robot). Snapshots carry each
 living robot's exact state (every body's motion, its lost parts, its gait clock; wire version
-16), from which a client resumes its prediction: bit for bit like the host, whole or one-legged
+18), from which a client resumes its prediction: bit for bit like the host, whole or one-legged
 (`cargo test -p shooter-sim --test match_robots`). Both clients draw each robot where those
 bodies are (below).
 
@@ -494,7 +543,8 @@ field): `standard`, `heavy` (with a battery: 160 energy), `skirmisher` (rapid-cy
 efficiency-coiled shotgun), `marksman` (long-barrel rifle, overcharged rail gun: three hits a
 front kill instead of four, on the root chassis) or `pyro` (long-barrel laser reaching 45 m,
 flamethrower, blade and grapple on the small chassis: 180 kg, 79 of 110 points, the root
-chassis' 100 energy; it spawns holding the laser),
+chassis' 100 energy; it spawns holding the laser) or `mechanic` (the standard build with a
+repair module on the chassis' back, **Field repair**),
 each a two-legged component tree with a sensor
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads
@@ -515,17 +565,23 @@ on the assembly works the capacitor lies on the gantry bridge's middle and thrus
 tower; on the proving cell the capacitor lies on the test stage's middle and thrusters on each
 gallery.
 A module lasts until its uses are spent, its holder dies or the round ends (owner decision on
-#62); nothing drops. A robot carries one module, and taking another replaces it. A pad is back
-30 s after it was taken; every pad is ready at the start of a round. When several robots reach a
-ready pad in the same tick the nearest (feet to pad centre) takes it, then the lowest slot. The
-host owns all of it; snapshots carry the pads and each fighter's module, the HUD's status line
-shows the carried module and its uses left, the feed announces pickups, and the pads are drawn
-as tinted plates with the module floating over them while it is there. Values are provisional
-(Atlas Q2.i46.3); the boosts are paid from the robot's shared energy pool (owner option B on #62).
+#62). A robot that dies carrying one drops it where it fell, with the uses it had left (a robot
+falling out of the arena takes it along); any living robot, whatever its build, takes the drop
+by walking onto it, the dead holder's effect is gone, and an untaken drop is gone after 30 s or
+at the round's end. A robot carries one module, and taking another replaces it. A pad is back
+30 s after it was taken, whatever happens to its module; every pad is ready at the start of a
+round. When several robots reach a ready pad or a drop in the same tick the nearest (feet to its
+centre) takes it, then the lowest slot (pads first, then drops, oldest first). The host owns all
+of it; snapshots carry the pads, the drops and each fighter's module (wire version 18), clients
+predict taking a drop, the HUD's status line shows the carried module and its uses left, the
+feed announces pickups, drops and who took a drop with how many uses, and the pads are drawn as
+tinted plates with the module floating over them while it is there, a drop as the same module
+floating where it lies. Values are provisional (Atlas Q2.i46.3); the boosts are paid from the
+robot's shared energy pool (owner option B on #62).
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points
 and the map's waypoints (wall gaps, doorways, ramp ends, the decks, the platforms), taking only straight
-walks no wall or ramp side blocks,
+walks no wall or ramp side blocks (pressed against a wall, with no such walk, the nearest point),
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
 degrees of wandering error, strafing as they fire; the flamethrower inside 5 m, the rifle (even
 slots) or the shotgun (odd slots) up close, rockets or the laser at mid range, the rail gun far off,
@@ -554,9 +610,10 @@ builds of every form (the loadouts, a mini-tank, a robo-dog, a humanoid, station
 grappling-only machines), every rejection (the retired core code, cycles, double parents, overlaps, the part
 ceiling, mods), the budgets at their limits, tampered builds on the wire, modded fire and builds
 through a replayed match; the A/B also runs the shooting and close ranges as the modded loadouts.
-`cargo test -p shooter-sim --test pickups` checks contested pads, pad respawn, modules lasting a
-life until spent or death, round and map starts, the rail capacitor's lag-compensated hits and
-frags, thrusters, robots of different builds and the wire.
+`cargo test -p shooter-sim --test pickups` checks contested pads and drops, pad respawn, modules lasting a
+life until spent or death, the drop at death with its uses left and its pickup by another build,
+the drops' lifetime, round ends and map starts, the rail capacitor's lag-compensated hits and
+frags, thrusters, robots of different builds, a client predicting a drop's pickup and the wire.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
 lag compensation of shots and swings, that the reticle's aim ends where the hosted beam does, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
 clients through a real game-server host on loopback, resumes a severed connection in its slot and

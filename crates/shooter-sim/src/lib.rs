@@ -1,6 +1,6 @@
 //! The shooter's deterministic simulation, shared by the native and browser clients and the
 //! game-server host: the map catalog ([`maps`]) and its arenas (kit-built ones from [`arena_kit`] placements), how a fighter moves in it (walk, sprint, slide, double
-//! jump, jump pads, air control, rocket jumps), the energy weapons and where their shots land ([`aim`]), the shared robot energy pool ([`energy`]), per-part damage ([`damage`]), deaths, respawns and
+//! jump, jump pads, air control, rocket jumps), the energy weapons and where their shots land ([`aim`]), the shared robot energy pool ([`energy`]), per-part damage ([`damage`]), field repair ([`repair`]), deaths, respawns and
 //! the deathmatch score, the bots, the robot builds ([`robot`]) and their mechanics ([`mechanics`]), the contested module pickups ([`pickups`]) and the
 //! match on the wire. Physics is physics-engine through
 //! [`physics`] (Rapier only as the A/B oracle under the `physics-ab` feature).
@@ -25,9 +25,11 @@ pub mod physics;
 pub mod pickups;
 pub mod player;
 pub mod proving_cell;
+pub mod repair;
 pub mod rng;
 pub mod robot;
 pub mod scenarios;
+pub mod scenery;
 pub mod session;
 pub mod tour;
 pub mod trig;

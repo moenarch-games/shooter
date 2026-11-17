@@ -127,8 +127,9 @@ impl Model {
                 + axes.z_axis.abs() * half.z;
             top = top.max(centre.y + extent.y);
             back = back.min(centre.x - extent.x);
+            let drawn = super::kit::drawn_key(part_type.key);
             let entry = kit
-                .entry(part_type.key, "default")
+                .entry(drawn, "default")
                 .ok_or_else(|| format!("robot: part {} has no kit entry", part_type.key))?;
             let corner = centre - rotation * half;
             let robot_from_local = Mat4::from_rotation_translation(rotation, corner)
@@ -169,7 +170,7 @@ impl Model {
                     .mount
                     .and_then(|mount| build.parts().iter().position(|p| p.id == mount.parent)),
                 entry,
-                damaged: kit.entry(part_type.key, "damaged"),
+                damaged: kit.entry(drawn, "damaged"),
                 robot_from_local,
                 refire: weapon.map_or(0.0, |weapon| refire(build, weapon)),
                 roll,
