@@ -45,7 +45,6 @@ use crate::scene::{self, METRES_PER_UNIT};
 use render_engine::glam::{Quat, Vec2, Vec3, Vec4};
 use render_engine::scene::{OverlayQuad, Scene};
 use render_engine::world::World;
-use shooter_sim::Weapon;
 use shooter_sim::bindings::Bindings;
 use shooter_sim::mechanics::{Placement, placement_of, placements, sockets};
 use shooter_sim::robot::{
@@ -1110,13 +1109,9 @@ impl Builder {
                     sliding: false,
                     hook: None,
                     since_fired: f32::INFINITY,
-                    fired: Weapon::EnergyRifle,
+                    fired: shooter_sim::Instance::default(),
                     shots: 0,
-                    held: BETA
-                        .weapons(&shown)
-                        .map(|(_, weapon)| weapon)
-                        .next()
-                        .unwrap_or_default(),
+                    held: BETA.weapons(&shown).next().unwrap_or_default(),
                     energy: 1.0,
                     swing: None,
                     dead_for: None,
@@ -1341,7 +1336,14 @@ impl Builder {
         painter.text(x, y, CELL, heading, srgb(MUTED, 1.0));
         y += 22.0;
         if let Some(kind) = kind {
-            painter.text(x, y, CELL, &part_name(kind), srgb(ORANGE, 1.0));
+            // A weapon mounted more than once: which copy this one is (shooter#125).
+            let name = selected
+                .and_then(|part| BETA.instance(draft, part.id))
+                .map_or_else(
+                    || part_name(kind),
+                    |instance| crate::overlay::copy_name(draft, instance),
+                );
+            painter.text(x, y, CELL, &name, srgb(ORANGE, 1.0));
             y += 22.0;
             let [cx, cy, cz] = kind.cells;
             let mut rows = vec![
@@ -1999,7 +2001,7 @@ mod snapping {
     use super::*;
     use crate::builder::{COARSE, Step};
     use shooter_sim::robot::parts::{
-        BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_RIFLE, SENSOR, TRACK,
+        BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_M, CHASSIS_S, SENSOR, TRACK,
     };
     use shooter_sim::robot::{AssemblyError, Face, HEAVY, STANDARD};
 
@@ -2339,20 +2341,30 @@ mod snapping {
         builder.mouse(true, true);
         builder.mouse(true, false);
         assert_eq!(builder.bench.hand, None);
-        // A drop the rules refuse keeps the part in hand, with the reason.
-        builder.bench.hand = Some(ENERGY_RIFLE.id);
+        // A drop the rules refuse keeps the part in hand, with the reason: a battery on the
+        // back's (0, 0) holds (0, 1), which a second battery turned a quarter on (1, 1) reaches.
+        builder.bench.hand = Some(BATTERY.id);
+        builder.bench.turn = Orientation::IDENTITY;
+        builder
+            .bench
+            .place(PartId(0), CHASSIS_S.socket(Face::NegX, 0, 0).unwrap())
+            .unwrap();
+        builder.bench.selected = None;
+        builder.bench.turn = Orientation::canonical(COARSE, 0, 0);
+        let before = *builder.bench.draft();
         builder.dragging = true;
         draw(&mut builder);
-        assert!(builder.point_at(PartId(0), back));
+        let beside = CHASSIS_S.socket(Face::NegX, 1, 1).unwrap();
+        assert!(builder.point_at(PartId(0), beside));
         draw(&mut builder);
         builder.mouse(false, false);
-        assert_eq!(*builder.bench.draft(), STANDARD);
-        assert_eq!(builder.bench.hand, Some(ENERGY_RIFLE.id));
+        assert_eq!(*builder.bench.draft(), before);
+        assert_eq!(builder.bench.hand, Some(BATTERY.id));
         assert!(
             builder
                 .notice
                 .as_deref()
-                .is_some_and(|notice| notice.contains("already mounted")),
+                .is_some_and(|notice| notice.contains("the footprint meets the Battery")),
             "{:?}",
             builder.notice
         );

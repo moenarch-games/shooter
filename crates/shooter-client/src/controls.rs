@@ -12,7 +12,7 @@ use input_bindings_core::{
     RepeatPolicy, RuntimeActionPhase, RuntimeDecision, SemanticControlState, WheelDirection,
     WhenExpr,
 };
-use shooter_sim::Weapon;
+use shooter_sim::{Instance, Select, Weapon};
 use std::collections::BTreeMap;
 use winit::keyboard::KeyCode;
 
@@ -555,16 +555,17 @@ impl Notches {
     }
 }
 
-/// The weapon the local fighter asks to hold: a select key held, or where the next and previous
-/// steps lead through the weapons it carries and still has ([`shooter_sim::weapons::cycled`]).
-/// A step's target is asked for every tick for [`Selection::ASK_TICKS`] (inputs are unreliable
-/// datagrams; asking for the weapon already held changes nothing), and steps taken meanwhile
-/// count on from it, so quick notches add up however late the host's word comes. The host
-/// decides: it refuses a weapon the robot does not have.
+/// The weapon the local fighter asks to hold: a select key held (the copy of that weapon held,
+/// else its first copy, [`shooter_sim::weapons::resolve`]), or where the next and previous steps
+/// lead through the weapon copies it carries and still has, every copy its own step
+/// ([`shooter_sim::weapons::cycled`], shooter#125). A step's target is asked for every tick for
+/// [`Selection::ASK_TICKS`] (inputs are unreliable datagrams; asking for the copy already held
+/// changes nothing), and steps taken meanwhile count on from it, so quick notches add up however
+/// late the host's word comes. The host decides: it refuses a copy the robot does not have.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Selection {
     /// The step's target and the ticks it has been asked for.
-    wanted: Option<(Weapon, u32)>,
+    wanted: Option<(Instance, u32)>,
 }
 
 impl Selection {
@@ -572,32 +573,32 @@ impl Selection {
     pub const ASK_TICKS: u32 = 30;
 
     /// This tick's `select`: `direct` (a select key) if held, else the cycle's target `steps`
-    /// on from the last target (or from `held`, the weapon held as predicted), with `armed`
-    /// saying which weapons the build still has.
+    /// on from the last target (or from `held`, the copy held as predicted), among `armed`, the
+    /// copies the build still has.
     pub fn intent(
         &mut self,
         direct: Option<Weapon>,
         steps: i32,
-        held: Weapon,
-        armed: impl Fn(Weapon) -> bool,
-    ) -> Option<Weapon> {
-        if direct.is_some() {
+        held: Instance,
+        armed: &[Instance],
+    ) -> Option<Select> {
+        if let Some(weapon) = direct {
             self.wanted = None;
-            return direct;
+            return Some(Select::Weapon(weapon));
         }
         if steps != 0 {
-            let from = self.wanted.map_or(held, |(weapon, _)| weapon);
+            let from = self.wanted.map_or(held, |(instance, _)| instance);
             if let Some(target) = shooter_sim::weapons::cycled(from, steps, armed) {
                 self.wanted = Some((target, 0));
             }
         }
-        let (weapon, asked) = self.wanted.as_mut()?;
+        let (instance, asked) = self.wanted.as_mut()?;
         *asked += 1;
-        let weapon = *weapon;
+        let instance = *instance;
         if *asked >= Self::ASK_TICKS {
             self.wanted = None;
         }
-        Some(weapon)
+        Some(instance.into())
     }
 }
 
@@ -840,42 +841,57 @@ mod tests {
     #[test]
     fn the_selection_cycles_the_carried_weapons_and_keeps_asking_for_a_while() {
         use Weapon::{EnergyBlade, EnergyRifle, Grapple, Laser, RailGun, Shotgun};
+        let at = Instance::new;
+        let (rifle, shotgun, laser) = (at(7, EnergyRifle), at(10, Shotgun), at(11, Laser));
         // The grapple module is carried but never in the cycle.
-        let standard = |weapon| {
-            matches!(
-                weapon,
-                EnergyRifle | Grapple | Laser | Shotgun | EnergyBlade
-            )
-        };
+        let standard = [rifle, at(8, EnergyBlade), at(9, Grapple), shotgun, laser];
         let mut selection = Selection::default();
-        assert_eq!(selection.intent(None, 0, EnergyRifle, standard), None);
+        assert_eq!(selection.intent(None, 0, rifle, &standard), None);
         assert_eq!(
-            selection.intent(None, 1, EnergyRifle, standard),
-            Some(Shotgun)
+            selection.intent(None, 1, rifle, &standard),
+            Some(shotgun.into())
         );
         // A second notch before the switch shows counts on from the first one's target.
         assert_eq!(
-            selection.intent(None, 1, EnergyRifle, standard),
-            Some(Laser)
+            selection.intent(None, 1, rifle, &standard),
+            Some(laser.into())
         );
         // Asked for until the host surely has it, then nothing.
         let mut asked = 1;
-        while selection.intent(None, 0, Laser, standard).is_some() {
+        while selection.intent(None, 0, laser, &standard).is_some() {
             asked += 1;
         }
         assert_eq!(asked, Selection::ASK_TICKS);
         // Wraps round; a select key wins over the cycle and ends it.
         assert_eq!(
-            selection.intent(None, 1, Laser, standard),
-            Some(EnergyRifle)
+            selection.intent(None, 1, laser, &standard),
+            Some(rifle.into())
         );
         assert_eq!(
-            selection.intent(Some(RailGun), 0, Shotgun, standard),
-            Some(RailGun)
+            selection.intent(Some(RailGun), 0, shotgun, &standard),
+            Some(Select::Weapon(RailGun))
         );
-        assert_eq!(selection.intent(None, 0, Shotgun, standard), None);
+        assert_eq!(selection.intent(None, 0, shotgun, &standard), None);
         // Nothing to cycle through: nothing asked.
-        assert_eq!(selection.intent(None, 1, EnergyRifle, |_| false), None);
+        assert_eq!(selection.intent(None, 1, rifle, &[]), None);
+    }
+
+    #[test]
+    fn the_selection_steps_through_every_copy_of_a_weapon() {
+        // The twin rail (shooter#125): each rail gun is its own step.
+        let at = Instance::new;
+        let (left, right) = (at(7, Weapon::RailGun), at(9, Weapon::RailGun));
+        let twin = [
+            left,
+            at(8, Weapon::EnergyBlade),
+            right,
+            at(10, Weapon::Grapple),
+        ];
+        let mut selection = Selection::default();
+        assert_eq!(selection.intent(None, 1, left, &twin), Some(right.into()));
+        let mut selection = Selection::default();
+        assert_eq!(selection.intent(None, 1, right, &twin), Some(left.into()));
+        assert_eq!(selection.intent(None, -1, right, &twin), Some(right.into()));
     }
 
     #[test]

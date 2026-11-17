@@ -44,5 +44,5 @@ pub use pickups::{ArenaModule, Carried, ModulePad};
 pub use player::Intent;
 pub use robot::{Assembly, AssemblyError, Candidate};
 pub use session::{Event, Fighter, Input, Phase, Pilot, Rules, Session, StepReport};
-pub use weapons::Weapon;
+pub use weapons::{Instance, Select, Weapon};
 pub use wire::{Controller, FighterState, Snapshot};

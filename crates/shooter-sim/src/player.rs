@@ -12,7 +12,7 @@ use crate::arena::Arena;
 use crate::fixed::{subunits_per_tick, subunits_per_tick_squared};
 use crate::physics::{StepUp, Vec3i};
 use crate::trig;
-use crate::weapons::Weapon;
+use crate::weapons::Select;
 
 /// The reference fighter box, 0.6 m × 1.8 m × 0.6 m: the dummies' bodies, and how high above its feet
 /// a robot's centre is.
@@ -82,8 +82,9 @@ pub struct Intent {
     /// ready, and a set hook holds (reeling and swinging) until this is let go
     /// ([`crate::grapple`]). Its own key, whatever gun is held.
     pub grapple: bool,
-    /// Switch to this weapon (it stays held until another is selected).
-    pub select: Option<Weapon>,
+    /// Switch to this weapon copy, or to a copy of this weapon ([`crate::weapons::resolve`]); it
+    /// stays held until another is selected.
+    pub select: Option<Select>,
     /// Edit Robot held (Atlas D2.i70.11): while its robot is dead, the person is in the builder
     /// and it does not come back until this is released (Ready). It does nothing while the
     /// robot is alive: a living robot is never rebuilt (D2.i46.7).

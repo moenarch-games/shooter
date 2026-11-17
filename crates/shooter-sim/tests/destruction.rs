@@ -97,13 +97,13 @@ fn aim_at(session: &Session, point: [f32; 3]) -> (u16, i16) {
 /// events.
 fn fire_at(session: &mut Session, weapon: Weapon, point: [f32; 3]) -> Vec<Event> {
     let take = Intent {
-        select: Some(weapon),
+        select: Some(weapon.into()),
         ..Intent::IDLE
     };
     for _ in 0..240 {
         step(session, take);
         let fighter = &session.fighters[0];
-        if fighter.arsenal.held == weapon && fighter.energy == fighter.pool().capacity {
+        if fighter.arsenal.held.weapon == weapon && fighter.energy == fighter.pool().capacity {
             break;
         }
     }
@@ -115,7 +115,7 @@ fn fire_at(session: &mut Session, weapon: Weapon, point: [f32; 3]) -> Vec<Event>
                 yaw,
                 pitch,
                 fire: true,
-                select: Some(weapon),
+                select: Some(weapon.into()),
                 ..Intent::IDLE
             },
         );

@@ -24,7 +24,7 @@ use shooter_sim::scenarios::scripted_intent;
 
 use shooter_sim::session::{body_of, slot_of};
 use shooter_sim::weapons::Delivery;
-use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, TICK_HZ, Weapon};
+use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, Select, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -695,11 +695,11 @@ impl App {
                     self.controls.selected(),
                     steps,
                     me.arsenal.held,
-                    |weapon| me.parts.armed(&me.build, weapon),
+                    &me.instances(),
                 ),
                 None => {
                     self.selection = Selection::default();
-                    self.controls.selected()
+                    self.controls.selected().map(Select::Weapon)
                 }
             };
             // The robot's actuators through the person's control layout (shooter#74): the keys
@@ -788,7 +788,11 @@ impl App {
         self.local_swing += seconds;
         self.tracker
             .tick(&tick.events, local, tick.report.fired, seconds);
-        if tick.report.fired == Some(Weapon::EnergyBlade) {
+        if tick
+            .report
+            .fired
+            .is_some_and(|fired| fired.weapon == Weapon::EnergyBlade)
+        {
             self.local_swing = 0.0;
         }
         for event in &tick.events {
@@ -956,7 +960,7 @@ impl App {
                 forward,
                 health: crate::hud::chassis_share(me),
                 glow: self.glows[usize::from(me.slot)],
-                held: me.held,
+                held: me.held.weapon,
                 hook: self
                     .game
                     .local_hook()
@@ -1018,7 +1022,7 @@ impl App {
                 forward: looking(fighter.yaw, fighter.pitch),
                 health: crate::hud::chassis_share(fighter),
                 glow: self.glows[slot],
-                held: fighter.held,
+                held: fighter.held.weapon,
                 hook: fighter
                     .hook
                     .map(|hook| Vec3::from(hook.anchor_units()) * METRES_PER_UNIT),
@@ -1106,7 +1110,7 @@ impl App {
                         at: shift(muzzle.at),
                     })
                 });
-                let muzzle = match me.held.delivery() {
+                let muzzle = match me.held.weapon.delivery() {
                     Delivery::Grapple | Delivery::Melee => None,
                     _ => muzzle,
                 };

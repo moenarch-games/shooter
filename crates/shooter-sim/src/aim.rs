@@ -29,7 +29,7 @@ use crate::damage::Hitboxes;
 use crate::physics::{BodyId, World};
 use crate::robot::{Assembly, BETA, Kind, LONG_BARREL, ModId};
 use crate::trig::{self, TRIG_ONE};
-use crate::weapons::{self, MAX_PITCH, Trace, Weapon};
+use crate::weapons::{self, Instance, MAX_PITCH, Trace, Weapon};
 
 /// How far (units) a client looks along its aim for the reticle: further than any arena.
 pub const RETICLE_RANGE_UNITS: i32 = 20_000;
@@ -285,17 +285,19 @@ pub struct Muzzle {
     pub at: [f32; 3],
 }
 
-/// The muzzle of `build`'s first connected `weapon` part in `parts` (its connected parts where
+/// The muzzle of the weapon copy `instance` of `build` in `parts` (its connected parts where
 /// they are, [`crate::Fighter::hitboxes`]), with its mod's muzzle when it has one; `None` when
-/// it mounts no such weapon still connected, or the weapon has no muzzle (the blade).
+/// that copy is no longer connected, or the weapon has no muzzle (the blade). Every copy fires
+/// from its own muzzle (shooter#125).
 #[must_use]
-pub fn muzzle(build: &Assembly, parts: &Hitboxes, weapon: Weapon) -> Option<Muzzle> {
+pub fn muzzle(build: &Assembly, parts: &Hitboxes, instance: Instance) -> Option<Muzzle> {
     #[allow(clippy::cast_precision_loss)]
     let cell_mm = crate::robot::CELL_MM as f32;
+    let weapon = instance.weapon;
     parts.boxes.iter().find_map(|part| {
         let built = build.parts().get(part.index)?;
         let kind = BETA.part_type(built.kind)?.kind;
-        if kind != Kind::Weapon(weapon) {
+        if built.id != instance.part || kind != Kind::Weapon(weapon) {
             return None;
         }
         let [x, y, z] = muzzle_anchor_mm(weapon, built.modification)?;
@@ -448,7 +450,7 @@ pub fn at(world: Option<&World>, eye: [f32; 3], point: [f32; 3]) -> (u16, i16) {
 mod tests {
     use super::*;
     use crate::damage::PartDamage;
-    use crate::robot::{MARKSMAN, STANDARD};
+    use crate::robot::{MARKSMAN, PartId, ROCKET_POD, STANDARD, TWIN_RAIL};
 
     fn placed(build: &Assembly, damage: &PartDamage) -> Hitboxes {
         Hitboxes::place(build, damage, [0.0, 100.0, 0.0], 0)
@@ -465,15 +467,71 @@ mod tests {
             .unwrap()
     }
 
+    fn first(build: &Assembly, weapon: Weapon) -> Instance {
+        BETA.first(build, weapon).unwrap()
+    }
+
     fn close(a: [f32; 3], b: [f32; 3]) -> bool {
         length(sub(a, b)) < 1e-3
+    }
+
+    #[test]
+    fn every_copy_of_a_weapon_fires_from_its_own_muzzle() {
+        for (build, weapon, copies) in [
+            (TWIN_RAIL, Weapon::RailGun, 2),
+            (ROCKET_POD, Weapon::RocketLauncher, 4),
+        ] {
+            let mut damage = PartDamage::fresh(&build);
+            let parts = placed(&build, &damage);
+            let instances: Vec<Instance> = BETA
+                .weapons(&build)
+                .filter(|instance| instance.weapon == weapon)
+                .collect();
+            assert_eq!(instances.len(), copies);
+            let muzzles: Vec<Muzzle> = instances
+                .iter()
+                .map(|instance| muzzle(&build, &parts, *instance).unwrap())
+                .collect();
+            for (instance, muzzle) in instances.iter().zip(&muzzles) {
+                let index = build
+                    .parts()
+                    .iter()
+                    .position(|part| part.id == instance.part)
+                    .unwrap();
+                assert_eq!(muzzle.mount, parts.get(index).unwrap().center);
+            }
+            for (a, first) in muzzles.iter().enumerate() {
+                for second in &muzzles[a + 1..] {
+                    assert!(length(sub(first.at, second.at)) > 10.0, "{muzzles:?}");
+                }
+            }
+            // One copy lost: it has no muzzle, the others keep theirs.
+            let index = build
+                .parts()
+                .iter()
+                .position(|part| part.id == instances[0].part)
+                .unwrap();
+            damage.hurt(&build, index, i32::from(u16::MAX)).unwrap();
+            let parts = placed(&build, &damage);
+            assert_eq!(muzzle(&build, &parts, instances[0]), None);
+            for (instance, before) in instances.iter().zip(&muzzles).skip(1) {
+                assert_eq!(muzzle(&build, &parts, *instance).as_ref(), Some(before));
+            }
+            // A part that is not that weapon has no muzzle as it.
+            let wrong = Instance {
+                part: PartId(0),
+                weapon,
+            };
+            assert_eq!(muzzle(&build, &parts, wrong), None);
+        }
     }
 
     #[test]
     fn a_muzzle_is_the_kits_anchor_along_its_weapons_barrel() {
         let parts = placed(&STANDARD, &PartDamage::fresh(&STANDARD));
         let rifle = parts.get(index_of(&STANDARD, Weapon::EnergyRifle)).unwrap();
-        let rifle_muzzle = muzzle(&STANDARD, &parts, Weapon::EnergyRifle).unwrap();
+        let rifle_muzzle =
+            muzzle(&STANDARD, &parts, first(&STANDARD, Weapon::EnergyRifle)).unwrap();
         assert_eq!(rifle_muzzle.mount, rifle.center);
         // 31 cm out of its socket, the rifle's box 40 cm long: 11 units beyond its centre on its
         // own +z (out of the chassis' front).
@@ -488,14 +546,17 @@ mod tests {
         // the part's -y).
         let parts = placed(&MARKSMAN, &PartDamage::fresh(&MARKSMAN));
         let rifle = parts.get(index_of(&MARKSMAN, Weapon::EnergyRifle)).unwrap();
-        let long = muzzle(&MARKSMAN, &parts, Weapon::EnergyRifle).unwrap();
+        let long = muzzle(&MARKSMAN, &parts, first(&MARKSMAN, Weapon::EnergyRifle)).unwrap();
         let along = add(scale(rifle.axes[1], -10.0), scale(rifle.axes[2], 20.0));
         assert!(
             close(long.at, add(rifle.center, along)),
             "{long:?} {rifle:?}"
         );
         // The blade has none.
-        assert_eq!(muzzle(&STANDARD, &parts, Weapon::EnergyBlade), None);
+        assert_eq!(
+            muzzle(&STANDARD, &parts, first(&STANDARD, Weapon::EnergyBlade)),
+            None
+        );
     }
 
     #[test]
@@ -510,7 +571,7 @@ mod tests {
         // Mounted pointing up, its up toward -X.
         shotgun.axes = [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let centre = shotgun.center;
-        let muzzle = muzzle(&STANDARD, &parts, Weapon::Shotgun).unwrap();
+        let muzzle = muzzle(&STANDARD, &parts, first(&STANDARD, Weapon::Shotgun)).unwrap();
         // 36.2 cm out of the socket on a 40 cm box: 16.2 units above its centre.
         assert!(
             close(muzzle.at, add(centre, [0.0, 16.2, 0.0])),
@@ -524,8 +585,11 @@ mod tests {
         let index = index_of(&STANDARD, Weapon::EnergyRifle);
         damage.hurt(&STANDARD, index, i32::from(u16::MAX)).unwrap();
         let parts = placed(&STANDARD, &damage);
-        assert_eq!(muzzle(&STANDARD, &parts, Weapon::EnergyRifle), None);
-        assert!(muzzle(&STANDARD, &parts, Weapon::Shotgun).is_some());
+        assert_eq!(
+            muzzle(&STANDARD, &parts, first(&STANDARD, Weapon::EnergyRifle)),
+            None
+        );
+        assert!(muzzle(&STANDARD, &parts, first(&STANDARD, Weapon::Shotgun)).is_some());
     }
 
     #[test]

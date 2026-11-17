@@ -175,6 +175,10 @@ impl Refusal {
 
 /// A part of `build` by name (its type's), or by ID if it is not there.
 fn named(build: &Assembly, id: PartId) -> String {
+    if let Some(instance) = BETA.instance(build, id) {
+        // A weapon mounted more than once: which copy (shooter#125).
+        return crate::overlay::copy_name(build, instance);
+    }
     build
         .part(id)
         .and_then(|part| BETA.part_type(part.kind))
@@ -198,10 +202,6 @@ pub fn describe(build: &Assembly, error: AssemblyError, subject: Option<PartId>)
                 named(build, holder)
             )
         }
-        AssemblyError::DuplicateWeapon(weapon) => format!(
-            "the {} is already mounted: one of each weapon",
-            crate::overlay::weapon_name(weapon)
-        ),
         AssemblyError::TooManyParts(_) => {
             format!("the robot has its {MAX_PARTS} parts: remove one first")
         }
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn a_taken_socket_or_a_second_copy_of_a_weapon_is_refused() {
+    fn a_taken_socket_is_refused_and_a_second_copy_of_a_weapon_goes_on() {
         let mut bench = holding(&BATTERY);
         // The rifle holds the front's cell (1, 2).
         let rifle = CHASSIS_S.socket(Face::PosX, 1, 2).unwrap();
@@ -671,12 +671,48 @@ mod tests {
         assert_eq!(*bench.draft(), STANDARD);
         bench.hand = Some(SHOTGUN.id);
         let back = CHASSIS_S.socket(Face::NegX, 0, 0).unwrap();
+        // A second copy of a weapon is no rule broken (shooter#125): it goes on, its own part.
+        let copy = bench.place(PartId(0), back).unwrap();
+        assert_eq!(bench.check().map(|build| build == *bench.draft()), Ok(true));
+        let shotguns: Vec<PartId> = BETA
+            .weapons(bench.draft())
+            .filter(|instance| instance.weapon == Weapon::Shotgun)
+            .map(|instance| instance.part)
+            .collect();
+        // The lowest free ID (1), so it is the first copy by part ID.
+        assert_eq!(shotguns, [copy, PartId(10)]);
         assert_eq!(
-            bench.place(PartId(0), back),
-            Err(Refusal::Rule(AssemblyError::DuplicateWeapon(
-                Weapon::Shotgun
-            )))
+            crate::overlay::copy_name(
+                bench.draft(),
+                shooter_sim::Instance {
+                    part: copy,
+                    weapon: Weapon::Shotgun
+                }
+            ),
+            "Shotgun 1/2"
         );
+    }
+
+    /// The rocket pod on the bench (shooter#125): four launchers, each listed by its own number,
+    /// one removed leaving the other three numbered anew; it stays a valid build.
+    #[test]
+    fn the_bench_holds_and_names_every_copy_of_a_weapon() {
+        use shooter_sim::robot::ROCKET_POD;
+        let mut bench = Workbench::new(ROCKET_POD);
+        assert_eq!(bench.check(), Ok(ROCKET_POD));
+        let names = |bench: &Workbench| -> Vec<String> {
+            BETA.weapons(bench.draft())
+                .map(|copy| crate::overlay::copy_name(bench.draft(), copy))
+                .collect()
+        };
+        assert_eq!(
+            names(&bench),
+            ["Rockets 1/4", "Rockets 2/4", "Rockets 3/4", "Rockets 4/4"]
+        );
+        bench.selected = Some(PartId(8));
+        bench.remove().unwrap();
+        assert_eq!(names(&bench), ["Rockets 1/3", "Rockets 2/3", "Rockets 3/3"]);
+        assert!(bench.check().is_ok());
     }
 
     #[test]

@@ -25,6 +25,9 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
+/// 16: the logged commands are wire-23 inputs (a weapon switch names a weapon or an exact
+/// mounted copy, shooter#125; the third and fourth scripted people play the twin rail and the
+/// rocket pod) and the digests cover wire-23 snapshots (the copy held, the copy that fired).
 /// 15: the logged commands are wire-22 inputs (each carries the actuator commands its
 /// person's control layout resolved, shooter#74; the scripted people play the named loadouts'
 /// preset) and the digests cover wire-22 snapshots.
@@ -41,7 +44,7 @@ const MAGIC: &[u8; 4] = b"SHRP";
 /// robot's part healths, part hits and detachments); 7 carried wire 12 (shared energy charge,
 /// batteries, no heat), 6 wire 11 (robot builds as socket-grid component trees), 5 wire 10
 /// (module pickups), 4 wire 9 (robot builds with weapon mods).
-const FORMAT: u8 = 15;
+const FORMAT: u8 = 16;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 
@@ -475,6 +478,57 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(fighters, usize::from(slots));
+        }
+    }
+
+    /// Four scripted people, the third on the twin rail and the fourth on the rocket pod
+    /// (shooter#125): the match replays tick for tick, and both fire more than one copy of their
+    /// weapon.
+    #[test]
+    fn a_replay_with_weapon_copies_reproduces_every_tick() {
+        use shooter_sim::Assembly;
+        use shooter_sim::robot::{BETA, PartId, ROCKET_POD, TWIN_RAIL};
+        let script = Script {
+            ticks: 900,
+            people: 4,
+            ..Script::DEFAULT
+        };
+        let replay = record(script).unwrap();
+        let bytes = replay.encode().unwrap();
+        assert_eq!(Replay::decode(&bytes).unwrap(), replay);
+        assert_eq!(verify(&replay).unwrap().checkpoints_verified, 900);
+        let mut copies: Vec<(Assembly, PartId)> = Vec::new();
+        replay
+            .play(u64::MAX, |session| {
+                for event in &session.events {
+                    if let Event::Fired {
+                        slot, weapon, part, ..
+                    } = *event
+                    {
+                        let fighter = &session.fighters[usize::from(slot)];
+                        let build = fighter.build;
+                        if fighter.human().is_some()
+                            && [TWIN_RAIL, ROCKET_POD].contains(&build)
+                            && BETA.instance(&build, part).map(|copy| copy.weapon) == Some(weapon)
+                            && !copies.contains(&(build, part))
+                        {
+                            copies.push((build, part));
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        for build in [TWIN_RAIL, ROCKET_POD] {
+            let fired: Vec<PartId> = copies
+                .iter()
+                .filter(|(of, _)| *of == build)
+                .map(|(_, part)| *part)
+                .collect();
+            assert!(
+                fired.contains(&PartId(7)) && fired.contains(&PartId(9)),
+                "{fired:?}"
+            );
         }
     }
 

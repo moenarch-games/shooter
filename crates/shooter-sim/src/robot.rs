@@ -38,8 +38,10 @@
 //!
 //! **Rules.** Only objective rules reject a build: known codes, one root chassis, existing parents
 //! and sockets, no cycles, footprints on their faces without overlaps, mods on the weapons they
-//! fit, each weapon at most once (the arsenal looks a weapon's mod up by weapon), the
-//! technical part-count ceiling [`MAX_PARTS`], and the build points. Nothing requires
+//! fit, the technical part-count ceiling [`MAX_PARTS`], and the build points. A weapon may be
+//! mounted any number of times (shooter#125): two rail guns or four rocket launchers are valid
+//! when the sockets and the build points allow them, and each copy is its own
+//! [`crate::weapons::Instance`], addressed by its part. Nothing requires
 //! locomotion: stationary, asymmetrical or grappling-only robots are valid. Every attachment is
 //! rigid; only joint and locomotion parts move ([`crate::mechanics`] places every part in space
 //! and builds the robot's bodies, joints and motors from the tree).
@@ -69,15 +71,15 @@
 //!
 //! A build does not yet change how a fighter moves, but it is its arsenal (shooter#92): a fighter
 //! holds, fires and swings only the weapons its build mounts and still has, a weapon without a
-//! mod fires as shipped, and a mounted weapon's mod applies whenever it fires, on the host and in
-//! a client's prediction alike. Every part has component health; [`crate::damage`] places the
+//! mod fires as shipped, and a mounted weapon's mod applies whenever that copy fires, on the host
+//! and in a client's prediction alike. Every part has component health; [`crate::damage`] places the
 //! parts on the fighter as hitboxes, resolves strikes onto them and detaches what is destroyed:
 //! a lost weapon part no longer fires, a lost battery takes its energy with it, a robot without a connected
 //! locomotion part cannot walk, and the root chassis is the only kill. [`crate::mechanics`]
 //! builds any valid build as a mechanical robot, but the match's fighters do not use it yet (shooter#73's
 //! second half); locomotion (shooter#58) and the builder (shooter#57) apply the rest.
 
-use crate::weapons::{Delivery, Weapon};
+use crate::weapons::{Delivery, Instance, Weapon};
 use parts::{
     BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, FLAMETHROWER, GRAPPLE,
     LASER, LEG, RAIL_GUN, REPAIR_MODULE, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
@@ -968,6 +970,35 @@ pub const MECHANIC: Assembly = with_weapons(
     )),
 );
 
+/// A fixture with two rail guns (shooter#125): the heavy frame with a rail gun high on either
+/// side of the medium chassis' front (IDs 7 and 9), the blade below the left one, the grapple
+/// below the right one and a battery on its back for the shots. Each copy is its own weapon: its
+/// own mount, mod, health and refire. Valid in [`BETA`].
+pub const TWIN_RAIL: Assembly = with_weapons(
+    frame(&CHASSIS_M),
+    [
+        forward(7, &RAIL_GUN, &CHASSIS_M, 1, 2),
+        forward(8, &ENERGY_BLADE, &CHASSIS_M, 1, 1),
+        forward(9, &RAIL_GUN, &CHASSIS_M, 0, 2),
+        forward(10, &GRAPPLE, &CHASSIS_M, 0, 1),
+    ],
+    Some(Part::on(11, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0)),
+);
+
+/// A fixture with four rocket launchers (shooter#125) filling the small chassis' front, two low
+/// and two high (IDs 7 to 10), and nothing else: 109 of the 110 build points. One launcher fires
+/// at a time, the one held. Valid in [`BETA`].
+pub const ROCKET_POD: Assembly = with_weapons(
+    frame(&CHASSIS_S),
+    [
+        forward(7, &ROCKET_LAUNCHER, &CHASSIS_S, 1, 0),
+        forward(8, &ROCKET_LAUNCHER, &CHASSIS_S, 0, 0),
+        forward(9, &ROCKET_LAUNCHER, &CHASSIS_S, 1, 2),
+        forward(10, &ROCKET_LAUNCHER, &CHASSIS_S, 0, 2),
+    ],
+    None,
+);
+
 /// The test ranges' build: every weapon, unmodded, on the front of the large chassis (the
 /// light ones in the bottom two rows, the rail gun and the rocket launcher above), on the shared
 /// frame. A fighter fires only what its build carries (shooter#92), so the scripted weapon
@@ -991,7 +1022,8 @@ pub const ARMORY: Assembly = authored(&[
 /// The named loadouts a person picks from until the builder (shooter#57): the unmodified
 /// standard and heavy builds, the two contrasting modded ones and the pyro (the laser and the
 /// flamethrower, shooter#96) and the mechanic (a field repair module, shooter#61), all
-/// component trees.
+/// component trees. The builds with several copies of one weapon ([`TWIN_RAIL`], [`ROCKET_POD`])
+/// are fixtures, not among them; the builder makes any such build.
 pub const LOADOUTS: [(&str, Assembly); 6] = [
     ("standard", STANDARD),
     ("heavy", HEAVY),
@@ -1105,7 +1137,6 @@ pub enum AssemblyError {
     NotAWeapon(PartId),
     /// The mod does not fit the weapon.
     DoesNotFit(ModId, Weapon),
-    DuplicateWeapon(Weapon),
     OverBudget {
         points: u32,
         build_points: u32,
@@ -1145,7 +1176,6 @@ impl fmt::Display for AssemblyError {
             Self::DoesNotFit(id, weapon) => {
                 write!(formatter, "mod {} does not fit {weapon:?}", id.0)
             }
-            Self::DuplicateWeapon(weapon) => write!(formatter, "{weapon:?} is mounted twice"),
             Self::OverBudget {
                 points,
                 build_points,
@@ -1214,25 +1244,52 @@ impl Catalog {
         }
     }
 
-    /// The weapons mounted in `build`, in part ID order.
-    pub fn weapons<'a>(
-        &'a self,
-        build: &'a Assembly,
-    ) -> impl Iterator<Item = (PartId, Weapon)> + 'a {
-        build
-            .parts()
-            .iter()
-            .filter_map(|part| Some((part.id, self.weapon(part)?)))
+    /// The weapons mounted in `build`, every copy its own instance, in part ID order.
+    pub fn weapons<'a>(&'a self, build: &'a Assembly) -> impl Iterator<Item = Instance> + 'a {
+        build.parts().iter().filter_map(|part| {
+            Some(Instance {
+                part: part.id,
+                weapon: self.weapon(part)?,
+            })
+        })
     }
 
-    /// The mod on `weapon` in `build`, wherever it is mounted.
+    /// The first copy of `weapon` mounted in `build` (the lowest part ID), if any.
     #[must_use]
-    pub fn mod_on(&self, build: &Assembly, weapon: Weapon) -> Option<ModId> {
-        build
-            .parts()
-            .iter()
-            .find(|part| self.weapon(part) == Some(weapon))
-            .and_then(|part| part.modification)
+    pub fn first(&self, build: &Assembly, weapon: Weapon) -> Option<Instance> {
+        self.weapons(build)
+            .find(|instance| instance.weapon == weapon)
+    }
+
+    /// The weapon mounted as part `part` of `build`, if it is one.
+    #[must_use]
+    pub fn instance(&self, build: &Assembly, part: PartId) -> Option<Instance> {
+        let weapon = self.weapon(build.part(part)?)?;
+        Some(Instance { part, weapon })
+    }
+
+    /// Which copy `instance` is of its weapon in `build`, and how many copies `build` mounts
+    /// (lost ones too, so the numbers stay put): `(1, 1)` for a weapon mounted once, `(2, 4)`
+    /// for the second of four rocket launchers by part ID. `None` if it is no weapon of the
+    /// build.
+    #[must_use]
+    pub fn copy(&self, build: &Assembly, instance: Instance) -> Option<(u8, u8)> {
+        let copies = || {
+            self.weapons(build)
+                .filter(move |other| other.weapon == instance.weapon)
+        };
+        let index = copies().position(|other| other == instance)?;
+        let count = copies().count();
+        Some((
+            u8::try_from(index + 1).unwrap_or(u8::MAX),
+            u8::try_from(count).unwrap_or(u8::MAX),
+        ))
+    }
+
+    /// The mod on part `part` of `build`, if any.
+    #[must_use]
+    pub fn mod_at(&self, build: &Assembly, part: PartId) -> Option<ModId> {
+        build.part(part).and_then(|part| part.modification)
     }
 
     /// The mods in `build` with the weapon each is on, in part ID order.
@@ -1246,10 +1303,13 @@ impl Catalog {
             .filter_map(|part| Some((part.id, self.weapon(part)?, part.modification?)))
     }
 
-    /// How `weapon` fires in `build`: its mod's tuning, else the shipped weapon's.
+    /// How the copy `instance` fires in `build`: its mod's tuning, else the shipped weapon's.
     #[must_use]
-    pub fn tuning(&self, build: &Assembly, weapon: Weapon) -> Tuning {
-        self.mod_on(build, weapon)
+    pub fn tuning(&self, build: &Assembly, instance: Instance) -> Tuning {
+        build
+            .part(instance.part)
+            .filter(|part| self.weapon(part) == Some(instance.weapon))
+            .and_then(|part| part.modification)
             .and_then(|id| self.modification(id))
             .map_or(Tuning::BASE, |modification| modification.tuning)
     }
@@ -1344,8 +1404,8 @@ impl Catalog {
 
     /// The one validation path for a build, in a fixed order so the same candidate always fails
     /// the same way: the part ceiling and known codes; unique IDs (canonical ID order); one root
-    /// chassis; parents and their sockets; connection to the root; footprints; mods and weapons;
-    /// then the build points.
+    /// chassis; parents and their sockets; connection to the root; footprints; mods; then the
+    /// build points.
     ///
     /// # Errors
     ///
@@ -1449,21 +1509,17 @@ impl Catalog {
             }
         }
 
-        let mut seen = Vec::new();
+        // Mods on the weapons they fit. A weapon may be mounted any number of times
+        // (shooter#125): the sockets and the build points bound its copies.
         for part in &parts {
-            let weapon = self.weapon(part);
             if let Some(id) = part.modification {
-                let weapon = weapon.ok_or(AssemblyError::NotAWeapon(part.id))?;
+                let weapon = self
+                    .weapon(part)
+                    .ok_or(AssemblyError::NotAWeapon(part.id))?;
                 let modification = self.modification(id).expect("mods were checked");
                 if !modification.fits.contains(&weapon) {
                     return Err(AssemblyError::DoesNotFit(id, weapon));
                 }
-            }
-            if let Some(weapon) = weapon {
-                if seen.contains(&weapon) {
-                    return Err(AssemblyError::DuplicateWeapon(weapon));
-                }
-                seen.push(weapon);
             }
         }
 

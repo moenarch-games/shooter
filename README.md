@@ -260,8 +260,13 @@ still has (down or E for the next, up or Q for the previous), in the order below
 and skipping the ones it does not carry or has lost; the blade stays on V, unless it is the last
 weapon left, when it is held and the trigger swings it. One wheel notch is one step, whether the
 wheel reports lines or pixels: a burst of events within 60 ms is one notch. 1 to 6 pick a weapon
-directly. A fighter holds and fires only the weapons its build mounts (#92): the host refuses a
-switch to any other, and the prediction follows the host.
+directly (the copy held if it is one, else that weapon's first copy). A fighter holds and fires
+only the weapons its build mounts (#92): the host refuses a switch to any other, and the
+prediction follows the host. A build may mount one weapon several times (#125): every copy is
+its own weapon, addressed by its part, with its own mount, mod, health, refire and muzzle, its own
+step on the wheel and its own numbered slot on the HUD ("Rail gun 1/2"); losing one copy leaves
+the others. One weapon is held and fires at a time, as before: switching to another copy does not
+skip the last shot's refire (firing several at once is #127).
 
 | Key | Weapon | Shot |
 | --- | --- | --- |
@@ -303,8 +308,8 @@ sockets, one per 20 cm surface cell (a 20 × 40 × 80 cm chassis has 28). Each p
 one parent socket and an exact orientation (binary angles, stored in one canonical form); a larger
 part reserves its footprint of neighbouring cells on its parent's face, and no two parts may
 claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints, a battery, a sensor, a repair module, legs, wheels, tracks, an armor plate and the eight
-shipped weapons. A build is valid with one chassis root, no cycles, each weapon at most once, at
-most 32 parts and at most 110 build points; there is no power, heat or cooling budget. The root
+shipped weapons. A build is valid with one chassis root, no cycles, at most 32 parts and at most
+110 build points, whatever weapons it mounts how often (two rail guns, four rocket launchers, #125); there is no power, heat or cooling budget. The root
 chassis is the robot's vital part (Atlas D2.i89.1, #89): there is no separate control core, and a
 build naming the retired core (part code 30) is rejected as an unknown part. Nothing requires locomotion: tanks, four-legged dogs,
 humanoids, stationary turrets and grappling-only machines are all valid. Every fighter starts as
@@ -350,9 +355,10 @@ Escape cancels a drag, drops what is in hand or deselects, right drag or the arr
 view, the wheel zooms. A drop the rules refuse keeps the part in hand. A further chassis mounts
 on a socket like any part, so frames of several cuboids build up. Every edit goes through the
 simulation's one validation path: an edit that breaks a structural rule (a taken cell, a mod
-that does not fit, a weapon twice, the part ceiling) is refused with the reason, and only the
-build points may run over while you work; Ready takes only a valid build, which the host
-validates again. Nothing warns about odd builds. In the browser the pointer and the frame are
+that does not fit, the part ceiling) is refused with the reason, and only the build points may
+run over while you work; Ready takes only a valid build, which the host validates again.
+Nothing warns about odd builds. A weapon may go on again on another socket; the inspector names
+each copy by its number (#125). In the browser the pointer and the frame are
 both device pixels, and the page keeps Ctrl+R, Ctrl+F, Ctrl+Z and Ctrl+Y for the builder (the
 browser keeps Ctrl+T, so the fine pitch step there is G's).
 When your robot is destroyed, the respawn counts down as before, with "[B] Edit Robot" on
@@ -476,7 +482,7 @@ and Part +/- or Flip Part, New for a new binding on the selected part, Preset to
 edit is checked against the build's actuators by the simulation and refused with its reason.
 Ready takes the layout with the build; while you have not edited it, it follows your build's
 preset. The client resolves the layout every tick and its input carries the resulting
-per-actuator commands (wire 22, replay format 15); the host takes only commands the robot's
+per-actuator commands (wire 22 and on; wire 23 and replay format 16 address weapons by copy, #125); the host takes only commands the robot's
 connected actuators can take and rests every other actuator, so a tampered input moves nothing
 a layout could not. Bots press their build's preset from their movement. The layout lives for
 the session (not saved yet).
