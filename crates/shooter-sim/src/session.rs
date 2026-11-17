@@ -30,6 +30,14 @@
 //! wheel or track on the ground is footing, and the wished speeds scale by the share of its
 //! locomotion it still has ([`crate::player::Traction`]).
 //!
+//! **Collisions and debris** (shooter#75, Atlas D2.i70.10). After the step, a robot that a hard
+//! impact (another robot, debris, the arena, a high fall) changed fast enough takes a blow on the
+//! part reaching furthest toward what it hit ([`crate::impact`]), nobody's (a collision kill
+//! costs a frag, as a fall does). A large part carried away whole stays a physical body for a
+//! while ([`Mechanics::break_off`], [`crate::mechanics::DebrisState`]); destroyed and small ones
+//! do not. Debris retires deterministically (lifetime, rest, budget, its robot's respawn) at the
+//! start of a tick and travels in snapshots, so a predicting client holds it exactly.
+//!
 //! Hitscan shots and blade swings are lag-compensated: a person's shot is checked against the
 //! fighters' parts where that person saw them (where their bodies carried them at the snapshot
 //! tick its command names, at most [`MAX_REWIND_TICKS`] back; the parts they have now), while
@@ -781,12 +789,12 @@ struct Frame {
 }
 
 /// A destroyed battery's blast waiting to go off this tick: where, and who and what destroyed
-/// the battery.
+/// the battery (nobody and nothing: a collision, [`crate::impact`]).
 #[derive(Clone, Copy, Debug)]
 struct Blast {
     at: [f32; 3],
-    attacker: usize,
-    weapon: Weapon,
+    attacker: Option<usize>,
+    weapon: Option<Weapon>,
 }
 
 #[derive(Debug)]
@@ -986,7 +994,8 @@ impl Session {
     }
 
     /// The robots catch up with the fighters: the dead leave the world and the parts each has
-    /// lost come off its bodies ([`Mechanics::sever`]).
+    /// lost come off its bodies; the large ones carried away whole stay physical debris for a
+    /// while, destroyed ones shatter ([`Mechanics::break_off`], shooter#75).
     fn settle_robots(&mut self) -> Result<(), PhysicsError> {
         for slot in 0..self.fighters.len() {
             let id = u8::try_from(slot).unwrap_or(u8::MAX);
@@ -998,11 +1007,18 @@ impl Session {
                 continue;
             }
             let lost = fighter.parts.lost();
+            let intact = fighter
+                .parts
+                .health()
+                .iter()
+                .enumerate()
+                .filter(|(_, health)| **health > 0)
+                .fold(0u32, |mask, (index, _)| mask | (1 << index));
             if self
                 .mechanics
                 .robot(id)
                 .is_some_and(|robot| robot.lost != lost)
-                && self.mechanics.sever(id, lost)?
+                && self.mechanics.break_off(id, lost, intact)?
             {
                 self.refresh(slot)?;
             }
@@ -1075,6 +1091,9 @@ impl Session {
             slot: fighter.slot,
             yaw: at.yaw,
         });
+        // What its last life left lying about retires with it (shooter#75).
+        self.mechanics
+            .clear_debris(u8::try_from(slot).unwrap_or(u8::MAX))?;
         #[allow(clippy::cast_precision_loss)]
         let feet = [at.feet.x, at.feet.y, at.feet.z].map(|axis| axis as f32);
         self.spawn_robot(slot, feet, at.yaw)
@@ -1228,6 +1247,35 @@ impl Session {
         self.refresh(usize::from(slot))
     }
 
+    /// Puts the match's physical debris in the exact state `debris` (a snapshot's): a client
+    /// resuming its prediction among the pieces the host has.
+    ///
+    /// # Errors
+    ///
+    /// If there are more pieces than [`mechanics::MAX_DEBRIS`] or the world refuses one.
+    pub fn place_debris(&mut self, debris: &[mechanics::DebrisState]) -> Result<(), PhysicsError> {
+        self.mechanics.place_debris(debris)?;
+        for slot in 0..self.fighters.len() {
+            self.refresh(slot)?;
+        }
+        Ok(())
+    }
+
+    /// Sets `slot`'s living robot moving at `velocity` (units a second) as one whole, as a
+    /// launch would: scripts and tests staging a collision.
+    ///
+    /// # Errors
+    ///
+    /// If the physics world refuses the velocity.
+    pub fn launch(&mut self, slot: u8, velocity: [f32; 3]) -> Result<(), PhysicsError> {
+        let Some(root) = self.mechanics.root_motion(usize::from(slot)) else {
+            return Ok(());
+        };
+        self.mechanics
+            .drive(slot, velocity, root.angular_velocity)?;
+        self.refresh(usize::from(slot))
+    }
+
     /// Queues one tick of person `id`'s controls; the fighter applies one queued input per tick.
     /// Whether `id` holds a slot.
     pub fn queue(&mut self, id: u32, input: Input) -> bool {
@@ -1294,6 +1342,8 @@ impl Session {
     pub fn step(&mut self) -> Result<StepReport, PhysicsError> {
         self.events.clear();
         self.dealt.iter_mut().for_each(|dealt| *dealt = 0);
+        // Debris that retired last tick leaves before anything moves a body.
+        self.mechanics.retire_debris()?;
         if let Phase::Intermission { restarts_at, .. } = self.phase
             && self.tick >= restarts_at
         {
@@ -1315,6 +1365,13 @@ impl Session {
             }
         }
 
+        // How each robot moved after the last step, before this tick's drives: what collision
+        // damage measures against ([`crate::impact`]).
+        let before: Vec<Option<[f32; 3]>> = self
+            .fighters
+            .iter()
+            .map(|fighter| fighter.stance.as_ref().map(|stance| stance.velocity))
+            .collect();
         let mut moves = crate::player::Moves::default();
         // What each robot's motors are told this tick, by slot.
         let mut motors: Vec<Option<Controls>> = vec![None; self.fighters.len()];
@@ -1516,6 +1573,13 @@ impl Session {
                 robot.charge = energy;
             }
         }
+        // How the tick's drives, pulls and pushes set each robot moving.
+        let set: Vec<Option<[f32; 3]>> = (0..self.fighters.len())
+            .map(|slot| {
+                self.mechanics
+                    .velocity(u8::try_from(slot).unwrap_or(u8::MAX))
+            })
+            .collect();
         self.mechanics.step(&controls)?;
         for robot in self.mechanics.robots() {
             if let Some(fighter) = self.fighters.get_mut(usize::from(robot.slot)) {
@@ -1533,6 +1597,7 @@ impl Session {
         for slot in 0..self.fighters.len() {
             self.refresh(slot)?;
         }
+        self.collide(&before, &set);
         #[allow(clippy::cast_precision_loss)]
         for slot in 0..self.fighters.len() {
             let fighter = &self.fighters[slot];
@@ -1891,17 +1956,24 @@ impl Session {
     /// every battery blast they set off.
     fn strike(&mut self, victim: usize, attacker: usize, blows: &[Blow], weapon: Weapon) {
         for blow in blows {
-            self.hurt_part(victim, attacker, *blow, weapon);
+            self.hurt_part(victim, Some(attacker), *blow, Some(weapon));
         }
         self.settle_blasts();
     }
 
-    /// One blow on one of `victim`'s parts ([`crate::damage`]): its health goes down; at zero
+    /// One blow on one of `victim`'s parts ([`crate::damage`]) by `attacker`'s `weapon`
+    /// (nobody's and none: a collision, [`crate::impact`]): its health goes down; at zero
     /// it comes off with what hung from it, a lost battery takes its capacity and its share of
     /// the charge, a destroyed one queues its blast, and a destroyed root chassis
     /// kills.
     #[allow(clippy::cast_possible_truncation)]
-    fn hurt_part(&mut self, victim: usize, attacker: usize, blow: Blow, weapon: Weapon) {
+    fn hurt_part(
+        &mut self,
+        victim: usize,
+        attacker: Option<usize>,
+        blow: Blow,
+        weapon: Option<Weapon>,
+    ) {
         if !self.fighters[victim].alive() {
             return;
         }
@@ -1923,18 +1995,18 @@ impl Session {
             repair.struck(build.parts()[blow.index].id);
         }
         let vital = fighter.chassis_health() == 0;
-        if attacker != victim {
+        if let Some(attacker) = attacker.filter(|attacker| *attacker != victim) {
             self.dealt[attacker] += blow.damage;
         }
         self.events.push(Event::Hit {
             victim: victim as u8,
-            attacker: Some(attacker as u8),
+            attacker: attacker.map(|attacker| attacker as u8),
             part: build.parts()[blow.index].id,
             damage: blow.damage,
             at: blow.at,
         });
         if vital {
-            self.kill(victim, Some(attacker), Some(weapon));
+            self.kill(victim, attacker, weapon);
             return;
         }
         let destroyed = change.destroyed.then_some(blow.index);
@@ -1961,6 +2033,37 @@ impl Session {
                     weapon,
                 });
             }
+        }
+    }
+
+    /// Collision damage ([`crate::impact`]), in slot order: each living robot's impact this
+    /// step, measured from how it moved `before` the tick's drives, how they `set` it moving and
+    /// how it moves now, strikes its part reaching furthest toward what it hit. Nobody is the
+    /// attacker: a robot that dies of it loses a frag, as for a fall.
+    fn collide(&mut self, before: &[Option<[f32; 3]>], set: &[Option<[f32; 3]>]) {
+        let gravity = self
+            .mechanics
+            .gravity()
+            // m/s² to units (centimetres) a second, one step's worth.
+            .map(|axis| axis * 100.0 / f32::from(crate::TICK_HZ));
+        for slot in 0..self.fighters.len() {
+            let fighter = &self.fighters[slot];
+            let (Some(before), Some(set), Some(stance)) = (
+                before.get(slot).copied().flatten(),
+                set.get(slot).copied().flatten(),
+                fighter.stance.as_ref().filter(|_| fighter.alive()),
+            ) else {
+                continue;
+            };
+            let Some(impact) = crate::impact::measure(before, set, stance.velocity, gravity) else {
+                continue;
+            };
+            let damage = crate::impact::damage(impact.speed);
+            let blows = crate::impact::strike(&stance.hitboxes, impact.direction, damage);
+            for blow in blows {
+                self.hurt_part(slot, None, blow, None);
+            }
+            self.settle_blasts();
         }
     }
 

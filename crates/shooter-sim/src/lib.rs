@@ -16,6 +16,7 @@ pub mod dummies;
 pub mod energy;
 pub mod fixed;
 pub mod grapple;
+pub mod impact;
 pub mod maps;
 pub mod mechanics;
 pub mod melee;

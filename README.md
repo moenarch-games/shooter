@@ -385,6 +385,27 @@ Snapshots carry every part's health (the lost parts follow from it), with a hit'
 detachment as events; the client's prediction takes the host's part state, replays reproduce it
 and bots aim at their target's root chassis and switch off a lost gun.
 
+**Collisions and debris** (`shooter_sim::impact`, `shooter_sim::mechanics`, Atlas D2.i70.10,
+#75). A hard impact damages the part actually hit, under the same rules: after each step the
+host measures how much a robot's contacts changed its centre of mass's velocity (less gravity,
+and less what its own movement drive put in that tick, so walking or leaning into a wall counts
+for nothing), and above 20 m/s (provisional, Atlas Q2.i70.5: a sprint, a slide, jump and pad
+landings and the maps' drops stay below it; a fall of about 10 m or a broadside ram at 20 m/s
+each reach it) every metre a second more deals 20 to the part reaching furthest toward what it
+hit, through the weapons' ray resolution with no penetration (an armor plate there takes it all);
+the root chassis broken so is the kill, costing a frag like a fall. A resting or pressed robot is
+never hurt tick after tick. A part carried away whole when its parent breaks, at least 12 kg,
+stays a physical body for a while (debris: it falls, collides with the arena, robots and other
+debris), retiring after 5 s, after lying still 1 s, at its robot's respawn, or as the oldest past
+16 at once (provisional, Q2.i70.6); destroyed and lighter parts shatter (clients let them fall
+on their own). Snapshots carry the debris exactly (wire 20), the prediction resumes among it, and
+clients draw those parts where the debris is. physics-engine does not report contact impulses
+yet (moritzbrantner/physics-engine#575), hence the whole-robot measure.
+`cargo test -p shooter-sim --test collisions` checks rams, a glancing hit, falls, low-speed and
+resting contact, the struck part against contact order, plates, a broken parent's branch as
+debris, the impact kill, the budget, exact continuation and the wire; with `--release --
+--ignored --nocapture` it measures twelve robots shedding debris.
+
 **Field repair** (`shooter_sim::repair`, Atlas D2.i70.9, #61). A build may mount repair modules
 (`robot.repair-module`: 20 × 20 × 20 cm, 12 kg, 8 points, 40 health; the `mechanic` loadout has
 one on its chassis' back). R opens a quick menu over the running match listing only the parts the
@@ -496,7 +517,8 @@ respawns (procedural: a dead fighter has no mechanical robot). Strafing is a mis
 (neither the kit nor the simulation's gait has a sideways step: the legs stride while the robot
 moves sideways): a magenta marker floats over the robot and the HUD names it. Parts a robot has
 lost (from the host's per-part state in each snapshot) fall from where they came off to the floor
-with their weapons and mods and lie there until it respawns, while the rest of it stays on its
+with their weapons and mods and lie there until it respawns (the ones the host keeps as physical
+debris are drawn where the snapshot has them and vanish when it retires them), while the rest of it stays on its
 bodies; damaged parts draw their damaged look where the kit has one (the armor plate, the wheel
 and the track). `cargo run -p shooter-client --release --example robot_gallery -- <dir>`
 renders the loadouts and mechanics fixtures as the simulation spawns them (the turret's rotor and

@@ -360,6 +360,7 @@ mod tests {
             scenery: Vec::new(),
             events: Vec::new(),
             names: Vec::new(),
+            debris: Vec::new(),
         };
         let carried = Carried {
             module: ArenaModule::Thrusters,

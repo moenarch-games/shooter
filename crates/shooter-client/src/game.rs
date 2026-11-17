@@ -603,6 +603,10 @@ pub mod online {
                 predictor
                     .place(0, robot, me.motion, me.held, me.hook)
                     .map_err(|error| error.to_string())?;
+                // Among the host's physical debris, exactly (shooter#75).
+                predictor
+                    .place_debris(&snapshot.debris)
+                    .map_err(|error| error.to_string())?;
                 predictor.fighters[0].energy = me.energy;
                 predictor.fighters[0].repair = me.repair;
                 Ok::<(), String>(())

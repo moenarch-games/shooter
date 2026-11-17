@@ -5,8 +5,9 @@
 //! one's energy pool, every part's health (what it has lost follows from them,
 //! [`crate::damage`]) and the module each carries, the rockets, the shotgun pellets, the module
 //! pads, the modules dropped at deaths, the arena placeables' health ([`crate::scenery`]: the
-//! damaged ones, by stable ID) and the tick's events), and each fighter's field repair under way
-//! and the parts it may repair now ([`crate::repair`]). Robot builds travel as raw codes and are
+//! damaged ones, by stable ID) and the tick's events), each fighter's field repair under way
+//! and the parts it may repair now ([`crate::repair`]), and the physical debris with its exact
+//! motion ([`crate::mechanics::DebrisState`]). Robot builds travel as raw codes and are
 //! decoded
 //! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored; a
 //! part health above its catalog health, or a charge above the capacity of the parts still
@@ -21,10 +22,11 @@ use crate::energy::Pool;
 use crate::grapple::Hook;
 use crate::maps::MapId;
 use crate::mechanics::{
-    Command as MechCommand, Controls, Gait, GaitChoice, Layout, RobotState, State as MechState,
+    Command as MechCommand, Controls, DebrisState, Gait, GaitChoice, Layout, MAX_DEBRIS,
+    RobotState, State as MechState,
 };
 use crate::physics::Vec3i;
-use crate::physics::articulated::{Motion as BodyMotion, Pose};
+use crate::physics::articulated::{Child, Motion as BodyMotion, Pose, Shape};
 use crate::pickups::{ArenaModule, Carried, DROP_LIFETIME_TICKS, Drop};
 use crate::player::{Intent, Motion};
 use crate::repair::{self, Order, Repair};
@@ -34,9 +36,10 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-/// 19: inputs carry a repair order, snapshots each fighter's repair and repairable parts
-/// (shooter#61); 18 added the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 19;
+/// 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a repair order,
+/// snapshots each fighter's repair and repairable parts (shooter#61); 18 added the dropped
+/// modules (shooter#62), 17 the placeables (shooter#60).
+pub const WIRE_VERSION: u8 = 20;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -172,6 +175,9 @@ pub struct Snapshot {
     pub events: Vec<Event>,
     /// The names people picked, by slot (slots without one show as "Player N").
     pub names: Vec<(u8, String)>,
+    /// The physical debris, in the order it came off, exactly (shooter#75): what clients draw
+    /// and a predictor resumes with.
+    pub debris: Vec<DebrisState>,
 }
 
 impl Snapshot {
@@ -296,6 +302,7 @@ impl Session {
                 .filter(|fighter| fighter.human().is_some())
                 .filter_map(|fighter| Some((fighter.slot, fighter.name.clone()?)))
                 .collect(),
+            debris: self.mechanics.debris().to_vec(),
         }
     }
 }
@@ -955,6 +962,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         out.u8(*slot);
         out.text(name);
     }
+    out.debris(&snapshot.debris);
     out.0
 }
 
@@ -1136,6 +1144,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
     let names = (0..input.u8()?)
         .map(|_| Ok((input.u8()?, input.text()?)))
         .collect::<Result<Vec<_>, WireError>>()?;
+    let debris = input.debris()?;
     input.finish()?;
     Ok(Snapshot {
         tick,
@@ -1150,6 +1159,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
         scenery,
         events,
         names,
+        debris,
     })
 }
 
@@ -1245,6 +1255,7 @@ pub fn encode_mechanics(state: &MechState) -> Vec<u8> {
         out.build(&robot.build);
         out.robot(robot);
     }
+    out.debris(&state.debris);
     out.0
 }
 
@@ -1349,6 +1360,117 @@ pub fn decode_mechanics(bytes: &[u8]) -> Result<MechState, WireError> {
         }
         robots.push(robot);
     }
+    let debris = input.debris()?;
     input.finish()?;
-    Ok(MechState { robots })
+    Ok(MechState { robots, debris })
+}
+
+impl Out {
+    /// The physical debris ([`crate::mechanics::DebrisState`]): a count, then per piece the
+    /// slot and part it came off, its age and still ticks, its box (half extents, centre and
+    /// orientation in its robot's frame, mass) and its body's motion, as exact `f32` bits.
+    fn debris(&mut self, debris: &[DebrisState]) {
+        self.u8(count(debris.len()));
+        for piece in debris.iter().take(usize::from(u8::MAX)) {
+            self.u8(piece.slot);
+            self.u8(piece.part.0);
+            self.u16(piece.age);
+            self.u16(piece.rest);
+            let Shape::Box(half) = piece.piece.shape else {
+                unreachable!("debris pieces are boxes")
+            };
+            self.vec3(half);
+            self.vec3(piece.piece.position);
+            self.quat(piece.piece.orientation);
+            self.u32(piece.piece.mass.to_bits());
+            self.motion(&piece.motion);
+        }
+    }
+
+    fn quat(&mut self, value: [f32; 4]) {
+        for axis in value {
+            self.u32(axis.to_bits());
+        }
+    }
+
+    fn motion(&mut self, motion: &BodyMotion) {
+        self.vec3(motion.pose.position);
+        self.quat(motion.pose.orientation);
+        self.vec3(motion.velocity);
+        self.vec3(motion.angular_velocity);
+    }
+}
+
+impl In<'_> {
+    fn quat(&mut self) -> Result<[f32; 4], WireError> {
+        Ok([
+            f32::from_bits(self.u32()?),
+            f32::from_bits(self.u32()?),
+            f32::from_bits(self.u32()?),
+            f32::from_bits(self.u32()?),
+        ])
+    }
+
+    /// Inverse of [`Out::debris`]: at most [`MAX_DEBRIS`] pieces, every value finite, every box
+    /// and mass positive.
+    fn debris(&mut self) -> Result<Vec<DebrisState>, WireError> {
+        let count = self.u8()?;
+        if usize::from(count) > MAX_DEBRIS {
+            return Err(WireError::Malformed("more debris than its budget"));
+        }
+        (0..count)
+            .map(|_| {
+                let slot = self.u8()?;
+                let part = PartId(self.u8()?);
+                let age = self.u16()?;
+                let rest = self.u16()?;
+                let half = self.vec3()?;
+                let position = self.vec3()?;
+                let orientation = self.quat()?;
+                let mass = f32::from_bits(self.u32()?);
+                let motion = BodyMotion {
+                    pose: Pose {
+                        position: self.vec3()?,
+                        orientation: self.quat()?,
+                    },
+                    velocity: self.vec3()?,
+                    angular_velocity: self.vec3()?,
+                };
+                let values = [
+                    &half[..],
+                    &position,
+                    &orientation,
+                    &[mass],
+                    &motion.pose.position,
+                    &motion.pose.orientation,
+                    &motion.velocity,
+                    &motion.angular_velocity,
+                ];
+                if !values
+                    .iter()
+                    .copied()
+                    .flatten()
+                    .all(|value| value.is_finite())
+                {
+                    return Err(WireError::Malformed("debris state not finite"));
+                }
+                if half.iter().any(|half| *half <= 0.0) || mass <= 0.0 {
+                    return Err(WireError::Malformed("debris without size or mass"));
+                }
+                Ok(DebrisState {
+                    slot,
+                    part,
+                    piece: Child {
+                        shape: Shape::Box(half),
+                        position,
+                        orientation,
+                        mass,
+                    },
+                    age,
+                    rest,
+                    motion,
+                })
+            })
+            .collect()
+    }
 }

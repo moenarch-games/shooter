@@ -241,6 +241,21 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   detached pieces stay briefly physical and collidable; small shards are visual only; debris is
   retired deterministically by a bounded lifetime, sleep or budget policy. Persistent wreckage, full
   fracturing, stress and fatigue are later. Owner: shooter#75.
+  Since shooter#75 this ships, with the simplest options for what was open (`shooter_sim::impact`,
+  `shooter_sim::mechanics`): physics-engine reports contact starts, not impulses
+  (moritzbrantner/physics-engine#575), so a robot's impact is measured as a whole: the change one
+  step gave its centre of mass's velocity beyond gravity's share and beyond what only takes back
+  its own movement drive's setting that tick (walking, driving or leaning into something), which
+  carries the relative speed and both sides' masses. Above the threshold it strikes the part
+  reaching furthest toward what was hit (ties by part ID, so not by contact order) through the
+  weapons' ray resolution with no penetration (a plate there takes it all); nobody is the
+  attacker, so a collision kill costs a frag like a fall. A destroyed part shatters (cosmetic); a
+  part carried away whole when its parent breaks is large debris at or above a mass threshold,
+  one box body per part, colliding with the arena, robots and other debris (shots pass it: strikes
+  meet part boxes, not bodies), retired by lifetime, rest, its robot's respawn or the budget
+  (oldest first), always at the start of a tick; snapshots (wire 20), the prediction and replays
+  carry it exactly, and clients draw those parts where it is. A robot's death leaves no debris
+  (a dead robot leaves the world whole, as before). Defaults under Q2.i70.5 and Q2.i70.6.
 - **D2.i70.11** (owner, 2026-11-13 and 2026-11-14; shooter#57; refines D2.i46.7): The builder is a
   simplified blueprint workbench, not an elaborate 3D garage: a draggable part catalogue, a central
   blueprint surface with the rotatable chassis, its sockets, placement footprints and the real part
@@ -550,9 +565,22 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   Defaults in use until decided (shooter#56): a destroyed battery's blast reaches 80 units
   (0.8 m) from its centre and deals 40 there, falling off linearly to nothing at its edge, to
   every connected part of every robot within reach; it pushes nothing.
+  Since shooter#75 (`shooter_sim::impact`): an impact damages from a one-step velocity change
+  of 20 m/s (above a slide's 15 m/s and the bots' landings in the shipped maps, at most about
+  18 m/s measured; about a 10 m fall, a broadside ram at 20 m/s each), dealing 20 for every
+  metre a second above it, rounded down, to the one part struck (a 30 m fall breaks a leg, a
+  60 m fall onto a legless chassis kills). The grapple's pull (up to 24 m/s) can reach it: a
+  robot reeled into a wall at nearly top speed takes a little damage.
 - **Q2.i70.6**: Performance limits: parts per robot, articulated bodies and active debris per match,
   debris lifetime, and the representative multi-robot scenes they are measured on (D2.i70.1,
   D2.i70.5, D2.i70.10).
+  Defaults in use until decided (shooter#75, `shooter_sim::mechanics`): at most 16 pieces of
+  debris at once per match (the oldest retires first), each retiring 5 s after it came off or
+  after lying still (under 5 cm/s and 0.5 rad/s) 1 s, or when it falls out of the arena or its
+  robot respawns; only parts of 12 kg or more (with their mod) become debris. Measured on twelve
+  standard robots shedding their weapons once a second each (native, release, `collisions --
+  --ignored`): about 0.46 ms a tick with them shattered and about 0.61 ms with them as debris,
+  the budget full throughout.
 - **Q2.i60.1**: Arena destruction balance: which placeables of each map break, their health, what
   damages them and how much, and whether a broken one ever comes back within a round (D2.i46.11;
   shooter#60 leaves pieces and thresholds to map and content balance).

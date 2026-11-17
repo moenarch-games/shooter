@@ -468,7 +468,7 @@ fn mechanics_on_the_wire_are_validated() {
     let mut rich = state.clone();
     rich.robots[0].charge = u32::MAX;
     assert!(decode_mechanics(&encode_mechanics(&rich)).is_err());
-    let empty = State { robots: vec![] };
+    let empty = State::default();
     assert_eq!(decode_mechanics(&encode_mechanics(&empty)).unwrap(), empty);
 
     let controls = Controls {

@@ -797,6 +797,11 @@ impl App {
 
         let local = self.game.local_slot();
         let snapshot = self.game.snapshot();
+        // The physical debris where the host has it (shooter#75): its parts are drawn there, not
+        // falling on their own.
+        if let Some(snapshot) = snapshot {
+            self.tracker.debris(&snapshot.debris);
+        }
         let rockets: Vec<Vec3> = snapshot
             .map(|snapshot| {
                 snapshot
