@@ -30,7 +30,7 @@ cargo test -p shooter-sim --test match_robots --locked                     # rob
 cargo test -p shooter-sim --test damage --locked                           # per-part damage: front/side hits, splash, plates, lost parts, core kill, battery blast
 scripts/cross-build-hashes.sh [MAP|all [TICKS]]                            # native vs wasm32 (wasm32-wasip1 under Node) per-tick state hashes of the scripted match; first divergent tick
 cargo test -p shooter-sim --test grapple --locked                          # the grapple module: no module no hook, muzzle, pull, swing, release, module lost, energy
-cargo test -p shooter-sim --test collisions --locked                       # collision damage and debris: rams, glancing, falls, resting contact, plates, debris fall/retire/budget, wire
+cargo test -p shooter-sim --test collisions --locked                       # collision damage and debris: rams, glancing, falls, resting contact, hung on a lip, plates, debris fall/retire/budget, wire
 cargo test -p shooter-sim --test repair --locked                           # field repair: legs and weapons repaired, pauses on direct hits, refusals, shared pool, respawn, wire, prediction, replay
 cargo test -p shooter-sim --test destruction --locked                      # arena destruction (`scenery`): stable IDs, hitscan and blast breaks, overlapping cover, opened lines and routes, round restore, wire, predictor, replays (arena_views -- MAP DIR broken draws it)
 cargo test -p shooter-client --test online --locked                        # two clients through a real host on loopback

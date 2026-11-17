@@ -750,7 +750,7 @@ pub const DOCK_GRAPPLE: Scenario = Scenario {
             },
             95,
         ),
-        walk("let go onto the foredeck", WEST, 4),
+        walk("let go onto the foredeck", WEST, 10),
         stand("on the foredeck", 90),
     ],
 };

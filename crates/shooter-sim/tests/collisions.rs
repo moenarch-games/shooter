@@ -6,7 +6,9 @@
 //! root chassis broken by an impact as the kill, the debris budget, exact continuation and the
 //! wire, the interactions with field repair (an impact pauses it like a hit), module drops (a
 //! carrier killed by an impact drops its module) and breakable placeables (debris on a crate falls
-//! when it breaks), and a bounded multi-robot scene measuring active debris and update cost.
+//! when it breaks), a robot hung on a ledge's lip by its chassis stepping off when steered (and a
+//! legless one staying put), and a bounded multi-robot scene measuring active debris and update
+//! cost.
 //!
 //! `cargo test -p shooter-sim --test collisions`; the scene:
 //! `cargo test --release -p shooter-sim --test collisions -- --ignored --nocapture`
@@ -752,5 +754,84 @@ mod interactions {
             }
         }
         assert!(lowest < on_crate - 20.0, "{on_crate} -> {lowest}");
+    }
+}
+
+/// One robot on an open floor with a 1.6 m block (2 m by 1.2 m, its north face at z = 60): the
+/// drydock's generator, where a bot once came to hang on the lip by its guns for good.
+fn by_a_block(build: Assembly) -> Session {
+    let mut session = match_of(&[build], false);
+    let mut arena = arena(false);
+    arena.pieces = vec![Piece::Block {
+        center: Vec3i::new(0, 80, 0),
+        half: Vec3i::new(100, 80, 60),
+    }];
+    let rules = session.rules;
+    session = Session::with_rules(arena, rules).unwrap();
+    assert_eq!(session.join(1).unwrap(), Some(0));
+    session.fighters[0].configured = build;
+    session.rebuild(0, build).unwrap();
+    session
+}
+
+/// Facing the block from just north of it, dropped from above its feet's reach: it comes to
+/// rest hung on the lip, upright, its feet 39 cm off the floor.
+fn hung_on_the_lip(build: Assembly) -> Session {
+    let mut session = by_a_block(build);
+    place(&mut session, 0, [0.0, 40.0, 90.0], SOUTH);
+    run(&mut session, &[facing(SOUTH)], 120);
+    session
+}
+
+/// Facing -Z (yaw a half turn).
+const SOUTH: u16 = 32_768;
+
+#[test]
+fn a_robot_hung_on_a_ledge_by_its_chassis_steps_off_when_steered() {
+    let mut session = hung_on_the_lip(STANDARD);
+    // Resting on its body with its feet in the air, it lies where it is while idle...
+    run(&mut session, &[facing(SOUTH)], 120);
+    let fighter = &session.fighters[0];
+    let footing = fighter.stance.as_ref().unwrap().footing;
+    assert!(footing.any && !footing.feet, "{footing:?}");
+    assert!(fighter.feet()[1] > 30.0, "{:?}", fighter.feet());
+    let hung = fighter.feet();
+    // ...but steered away from the block it steps off and stands on the floor (it would hang
+    // there for good if resting on its body always held the drive).
+    let back = Intent {
+        forward: -1,
+        ..facing(SOUTH)
+    };
+    run(&mut session, &[back], 120);
+    run(&mut session, &[facing(SOUTH)], 30);
+    let fighter = &session.fighters[0];
+    let footing = fighter.stance.as_ref().unwrap().footing;
+    assert!(footing.feet, "{footing:?} at {:?}", fighter.feet());
+    assert!(fighter.feet()[1].abs() < 5.0, "{:?}", fighter.feet());
+    assert!(
+        fighter.feet()[2] > hung[2] + 50.0,
+        "{hung:?} -> {:?}",
+        fighter.feet()
+    );
+}
+
+#[test]
+fn a_legless_robot_resting_on_its_body_stays_put_when_steered() {
+    // Without its legs nothing walks it: steered at the lip or lying on the floor, it stays
+    // (a tipped-over one, too: `session::upright`'s unit test).
+    let steer = Intent {
+        forward: -1,
+        strafe: 1,
+        ..facing(SOUTH)
+    };
+    for feet in [[0.0, 40.0, 90.0], [0.0, 0.0, 400.0]] {
+        let mut session = by_a_block(legless());
+        place(&mut session, 0, feet, SOUTH);
+        run(&mut session, &[facing(SOUTH)], 120);
+        let rest = session.fighters[0].feet();
+        run(&mut session, &[steer], 120);
+        let moved = session.fighters[0].feet();
+        let drift = (moved[0] - rest[0]).hypot(moved[2] - rest[2]);
+        assert!(drift < 5.0, "{rest:?} -> {moved:?}");
     }
 }

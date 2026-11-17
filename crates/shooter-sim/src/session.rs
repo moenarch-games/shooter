@@ -2603,3 +2603,25 @@ impl Session {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::upright;
+
+    /// Only a robot leaning less than 45° may step off a ledge it is hung on: one tipped over
+    /// lies where it is (`tests/collisions.rs` steps an upright one off a block's lip).
+    #[test]
+    fn only_a_robot_leaning_less_than_45_degrees_is_upright() {
+        // Upright, then turned half round about the vertical: upright either way.
+        assert!(upright([0.0, 0.0, 0.0, 1.0]));
+        assert!(upright([0.0, 1.0, 0.0, 0.0]));
+        // Leaning 30° forward (about X) and 40° sideways (about Z): upright.
+        assert!(upright([0.258_819, 0.0, 0.0, 0.965_926]));
+        assert!(upright([0.0, 0.0, 0.342_020, 0.939_693]));
+        // Leaning 50°, on its side and upside down: tipped over.
+        assert!(!upright([0.422_618, 0.0, 0.0, 0.906_308]));
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(!upright([0.0, 0.0, half, half]));
+        assert!(!upright([1.0, 0.0, 0.0, 0.0]));
+    }
+}
