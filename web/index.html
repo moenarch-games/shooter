@@ -165,8 +165,9 @@
         <strong id="mode">Click to play: practice deathmatch against bots</strong><br />
         WASD to move · mouse to look · Space to jump, again in the air to double jump · Shift to
         sprint · C while sprinting to slide · left mouse to fire · mouse wheel or Q / E to cycle the
-        weapons your robot carries, or 1 to 7 for rifle, rail gun, rockets, grapple (hold to reel
-        in), shotgun, laser, flamethrower · V (or the mouse's back button) to swing the energy blade
+        weapons your robot carries, or 1 to 6 for rifle, rail gun, rockets, shotgun, laser,
+        flamethrower · right mouse (or F) held to grapple, with a grapple module mounted · V (or
+        the mouse's back button) to swing the energy blade
         · Tab for the scores · Esc to release the mouse · when destroyed, B to edit the robot
         (the respawn waits until Ready)
         <form id="join" method="get">
@@ -245,9 +246,12 @@
       document.addEventListener("pointerlockchange", () => {
         overlay.hidden = document.pointerLockElement !== null;
       });
-      // The builder turns the view on a right drag: no context menu over it.
+      // The builder turns the view on a right drag and the right button grapples in the match: no
+      // context menu over either.
       document.addEventListener("contextmenu", (event) => {
-        if (document.body.hasAttribute("data-builder")) event.preventDefault();
+        if (document.body.hasAttribute("data-builder") || document.pointerLockElement) {
+          event.preventDefault();
+        }
       });
       // Tab shows the scores; keep it from moving the focus off the game.
       document.addEventListener("keydown", (event) => {

@@ -228,11 +228,11 @@ fn the_weapon_cycle_goes_through_the_host() {
         if me.arsenal.held != Weapon::EnergyRifle {
             continue;
         }
-        // Two notches down: rifle, grapple, shotgun.
+        // One notch down: rifle, shotgun (the grapple module is never in the cycle).
         let mut selection = Selection::default();
         let (build, parts) = (me.build, me.parts);
         let armed = |weapon| parts.armed(&build, weapon);
-        let select = selection.intent(None, 2, Weapon::EnergyRifle, armed);
+        let select = selection.intent(None, 1, Weapon::EnergyRifle, armed);
         assert_eq!(select, Some(Weapon::Shotgun));
         game.tick(Intent {
             select,

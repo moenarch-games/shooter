@@ -20,8 +20,8 @@ carried by the fast-movement rules.
 
 Open the native client or the browser build on Pages and join a hosted deathmatch.
 Bots fill the empty slots. Move fast: sprint, slide, step up low ledges, double jump, jump pads,
-rocket jumps, the grapple hook and air control. Fight with energy guns, a grapple hook and melee
-weapons.
+rocket jumps, the grapple hook (a module your robot mounts) and air control. Fight with energy
+guns and melee weapons.
 
 ## Foundations
 
@@ -40,7 +40,7 @@ weapons.
 
 The current slice is a deathmatch in an arena (by default the greybox yard, below) with ramps,
 a raised level and jump pads onto it,
-six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower), the grapple hook and an energy blade. Twelve slots by default; bots fill every slot no
+six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower), an energy blade and the grapple hook, a mounted module on its own key. Twelve slots by default; bots fill every slot no
 person holds. A kill scores a frag; dying by your own rocket, your own battery's blast or a fall costs one. The dead respawn after 2 s (unless they press B, Edit Robot, below) at the spawn point
 farthest from everyone else. A round ends at 15 frags or after 5 minutes, the scores show for 8 s
 and a fresh round starts. A fighter is its robot build with per-part health (below, **Part
@@ -250,14 +250,14 @@ muzzle where your robot carries it (the weapons kit's muzzle anchor on the weapo
 barrel's when it has one) and flies toward that point, so cover beside your robot that the
 camera sees past stops it: a red marker then shows where the shot will really land. The host
 resolves every shot with the same functions (`shooter_sim::aim`), lag-compensated as before, and
-draws its flash, beam, pellets and rockets from that muzzle. The grapple still leaves the eye
-along the aim, the blade the feet.
+draws its flash, beam, pellets and rockets from that muzzle. The grapple module's hook leaves its
+own muzzle toward the same point (#104; its rope is tied at the eye), the blade the feet.
 
 The left mouse button fires. The mouse wheel steps through the weapons your robot carries and
 still has (down or E for the next, up or Q for the previous), in the order below, wrapping round
 and skipping the ones it does not carry or has lost; the blade stays on V, unless it is the last
 weapon left, when it is held and the trigger swings it. One wheel notch is one step, whether the
-wheel reports lines or pixels: a burst of events within 60 ms is one notch. 1 to 7 pick a weapon
+wheel reports lines or pixels: a burst of events within 60 ms is one notch. 1 to 6 pick a weapon
 directly. A fighter holds and fires only the weapons its build mounts (#92): the host refuses a
 switch to any other, and the prediction follows the host.
 
@@ -266,18 +266,25 @@ switch to any other, and the prediction follows the host.
 | 1 | Energy rifle | Hitscan bolts, 12 damage, 10 a second |
 | 2 | Rail gun | One hitscan beam, 85 damage, every 1.2 s |
 | 3 | Rocket launcher | A 24 m/s rocket, every 0.8 s: up to 100 splash damage within 3 m, and a push |
-| 4 | Grapple hook | A hook that holds on the arena while the trigger is down and reels you in |
-| 5 | Shotgun | A blast of 10 pellets in a fixed 4.5° spread, every 0.9 s: 240 m/s projectiles slowed by drag, 9 damage each up close down to 6 at their 25 m range |
-| 6 | Laser | A continuous beam while the trigger is down: 2 damage a tick (120 a second) to the first target within 30 m |
-| 7 | Flamethrower | A 6 m flame, 1.2 m across, cut short by walls: after a 0.25 s ignition, 3 damage a tick (180 a second) to everyone in it |
+| 4 | Shotgun | A blast of 10 pellets in a fixed 4.5° spread, every 0.9 s: 240 m/s projectiles slowed by drag, 9 damage each up close down to 6 at their 25 m range |
+| 5 | Laser | A continuous beam while the trigger is down: 2 damage a tick (120 a second) to the first target within 30 m |
+| 6 | Flamethrower | A 6 m flame, 1.2 m across, cut short by walls: after a 0.25 s ignition, 3 damage a tick (180 a second) to everyone in it |
 
 Rocket jump by firing at your feet as you jump: the blast throws you about 5 m up. Your own
 rocket hurts you at half damage (a rocket jump costs every part near your feet up to 50, the legs most).
 
-The grapple hook (4) sets on arena geometry within 30 m (not on fighters) while you hold the
-trigger: it reels you toward the hook at up to 24 m/s and the rope never lets you further away
-than you have come, so running or falling across it swings you round the hook. Let go to drop
-off; the next hook is ready 0.75 s after the last one fired. It is a deterministic stand-in in
+**The grapple module** (#104, Atlas D2.i104.1, D2.i104.2) is an optional robot part, not a gun: a
+build mounts the grapple hook on any free socket like any part (10 kg, 10 build points), and only
+a robot whose module is still on and connected can grapple. Hold the right mouse button (or F),
+whatever gun you hold, and the hook leaves the module's muzzle toward what the camera targets and
+sets on arena geometry within 30 m (not on fighters): it reels you toward the hook at up to 24 m/s
+and the rope never lets you further away than you have come, so running or falling across it
+swings you round the hook while it reels. Let go to drop off; the next hook is ready 0.75 s after
+the last one set. Each hook costs 10 energy from the shared pool (none spent, no hook, when the
+pool has less). Losing the module, or its connection to the root chassis, lets go of the rope at
+once and refuses the key until a respawn restores the build; dying lets go too. Every named
+loadout mounts one; bots never grapple. The 30 m reach, 0.75 s interval and 10 energy are
+provisional tuning. It is a deterministic stand-in in
 `shooter-sim` until physics-engine can pull a character on a rope
 (moritzbrantner/physics-engine#557).
 
@@ -307,8 +314,8 @@ Snapshots carry each fighter's build and the one it comes back as. The cell size
 part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part keys await the
 asset kits, and a build changes movement only through its body (its shape collides, its locomotion
 sets its share of the speed), but it is the arsenal: a fighter spawns
-holding its build's first weapon in the rotation that is not the grapple (the grapple, then the
-blade, only when it carries nothing else; #96) and fires only what the build mounts (#92). The
+holding its build's first gun in the rotation (the blade only when it carries no gun; #96, the
+grapple module never, #104) and fires only what the build mounts (#92). The
 `pyro` loadout
 carries the laser and the flamethrower (#96); the tests' over-budget `ARMORY` build carries every
 weapon. You build your robot in the builder (below, **Robot builder**).
@@ -354,8 +361,8 @@ flamethrower 0.6 and 0.5 every tick they burn (36 and 30 a second, more than the
 chassis regenerates). A request is granted whole or not at all: with too little energy the shot, swing or
 hook simply does not happen (no cooldown is spent) and works again once regeneration has paid for
 it; the charge never goes below zero. Within a tick a robot's requests go first come, first
-served in a fixed order: a thruster jump, then the blade swing, then the gun (provisional, Atlas
-Q2.i70.4). There is no heat or cooling. The host owns the pool; snapshots carry each robot's
+served in a fixed order: a thruster jump, then the grapple module's hook, then the blade swing,
+then the gun (provisional, Atlas Q2.i70.4). There is no heat or cooling. The host owns the pool; snapshots carry each robot's
 charge, the client predicts its own, replays reproduce it, and the HUD's energy bar shows it. Values are provisional (Atlas Q2.i70.1). A lost battery (destroyed, or carried off
 with a part it hung from) takes its capacity and its share of the charge with it, once; a
 destroyed one also blasts its neighbours (below, **Part damage**). Motors draw from the same
@@ -615,6 +622,11 @@ builds of every form (the loadouts, a mini-tank, a robo-dog, a humanoid, station
 grappling-only machines), every rejection (the retired core code, cycles, double parents, overlaps, the part
 ceiling, mods), the budgets at their limits, tampered builds on the wire, modded fire and builds
 through a replayed match; the A/B also runs the shooting and close ranges as the modded loadouts.
+`cargo test -p shooter-sim --test grapple` checks the grapple module: no module, no grapple; the
+hook leaves the module's muzzle (turned with the robot) on its own key while a gun fires; the
+pull and the rope that only shortens; a pendulum swing under a ceiling without stretching; letting
+go with the momentum kept; the module lost mid-pull; its energy and interval; bots never grapple;
+the replays' scripted people grapple.
 `cargo test -p shooter-sim --test pickups` checks contested pads and drops, pad respawn, modules lasting a
 life until spent or death, the drop at death with its uses left and its pickup by another build,
 the drops' lifetime, round ends and map starts, the rail capacitor's lag-compensated hits and

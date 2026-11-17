@@ -324,7 +324,11 @@ fn the_proving_cell_routes_land_alike_on_the_rapier_oracle() {
         // launch or a landing a tick apart).
         let resting = scenario.legs.iter().filter(|leg| {
             let intent = leg.intent;
-            intent.forward == 0 && intent.strafe == 0 && !intent.jump && !intent.fire
+            intent.forward == 0
+                && intent.strafe == 0
+                && !intent.jump
+                && !intent.fire
+                && !intent.grapple
         });
         for leg in resting {
             let (a, b) = (
@@ -369,7 +373,11 @@ fn the_drydock_routes_land_alike_on_the_rapier_oracle() {
         let rapier = run_as(Backend::Rapier, scenario.arena, scenario.legs, STANDARD);
         let resting = scenario.legs.iter().filter(|leg| {
             let intent = leg.intent;
-            intent.forward == 0 && intent.strafe == 0 && !intent.jump && !intent.fire
+            intent.forward == 0
+                && intent.strafe == 0
+                && !intent.jump
+                && !intent.fire
+                && !intent.grapple
         });
         for leg in resting {
             let (a, b) = (

@@ -554,6 +554,12 @@ pub mod parts {
     pub const RAIL_GUN: PartType = weapon(Weapon::RailGun, "weapon.rail-gun", true, [25, 20]);
     #[rustfmt::skip]
     pub const ROCKET_LAUNCHER: PartType = weapon(Weapon::RocketLauncher, "weapon.rocket-launcher", true, [30, 20]);
+    /// The grapple module (Atlas D2.i104.2, shooter#104): an optional component on any free
+    /// socket, mounted and lost like a weapon part (10 kg, 10 build points, 40 health), but
+    /// never a gun in the rotation: it hooks on its own key ([`crate::grapple`]). Its hook's
+    /// energy and interval are [`Weapon::energy`] and [`Weapon::refire_ticks`] of
+    /// [`Weapon::Grapple`], its reach [`crate::grapple::RANGE_UNITS`]: provisional tuning. The
+    /// weapons kit's `weapon.grapple-hook` model draws it.
     #[rustfmt::skip]
     pub const GRAPPLE: PartType = weapon(Weapon::Grapple, "weapon.grapple-hook", false, [10, 10]);
     #[rustfmt::skip]
