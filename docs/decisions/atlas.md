@@ -426,7 +426,14 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   (4 to 12 players, 14 spawn points), point-symmetric with mezzanines and a gantry bridge at 3 m
   and crane towers at 5 m; its name, size, layout, pickup and repair anchors and destruction
   candidates (its low cover, barriers and crates) are provisional choices, to be tuned in
-  playtests. The yard stays the default.
+  playtests. The yard stays the default. Since shooter#53 the small arena is in: `proving-cell`,
+  a 32 m purpose-built combat test cell (owner decisions B and C on #53) built from the same arena
+  kit (2 to 6 players recommended, 12 spawn points so the default 12 slots still fit),
+  point-symmetric with a 2 m test stage carrying the rail capacitor in the middle, 3 m
+  observation galleries along two walls carrying thrusters, a control booth with two doorways in
+  two corners and a test bay in two side walls; its name, size, layout, spawn count, pickup and
+  repair anchors (in the booths) and destruction candidates (its low cover, open-floor barriers
+  and crates) are provisional choices, to be tuned in playtests.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration

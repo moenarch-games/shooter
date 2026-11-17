@@ -29,6 +29,10 @@ pub enum MapId {
     /// 56 m multilevel robotic assembly factory built from the arena kit, with mezzanines, a
     /// gantry bridge and crane towers.
     AssemblyWorks,
+    /// The proving cell ([`Arena::proving_cell`]), the beta's small close-quarters arena
+    /// (shooter#53): a 32 m purpose-built combat test cell built from the arena kit, with a 2 m
+    /// test stage, 3 m observation galleries and corner control booths.
+    ProvingCell,
 }
 
 /// The players a map is laid out for, inclusive. A recommendation for whoever sets up a
@@ -73,7 +77,12 @@ impl std::error::Error for UnknownMap {}
 
 impl MapId {
     /// Every catalogued map.
-    pub const ALL: [Self; 3] = [Self::Greybox, Self::GreyboxYard, Self::AssemblyWorks];
+    pub const ALL: [Self; 4] = [
+        Self::Greybox,
+        Self::GreyboxYard,
+        Self::AssemblyWorks,
+        Self::ProvingCell,
+    ];
     /// The map a match is played on when none is chosen.
     pub const DEFAULT: Self = Self::GreyboxYard;
 
@@ -84,6 +93,7 @@ impl MapId {
             Self::Greybox => "greybox",
             Self::GreyboxYard => "greybox-yard",
             Self::AssemblyWorks => "assembly-works",
+            Self::ProvingCell => "proving-cell",
         }
     }
 
@@ -94,6 +104,7 @@ impl MapId {
             Self::Greybox => 1,
             Self::GreyboxYard => 2,
             Self::AssemblyWorks => 3,
+            Self::ProvingCell => 4,
         }
     }
 
@@ -114,6 +125,9 @@ impl MapId {
             Self::GreyboxYard => Capacity { min: 6, max: 12 },
             // Medium: from a 4-player skirmish to the default 12, two spawn points to spare.
             Self::AssemblyWorks => Capacity { min: 4, max: 12 },
+            // Small: a duel to a 6-player skirmish. Its 12 spawn points still take the default
+            // 12 slots (practice, a host that sets none), only crowded.
+            Self::ProvingCell => Capacity { min: 2, max: 6 },
         }
     }
 
@@ -131,6 +145,7 @@ impl MapId {
             Self::Greybox => Arena::greybox(),
             Self::GreyboxYard => Arena::greybox_yard(),
             Self::AssemblyWorks => Arena::assembly_works(),
+            Self::ProvingCell => Arena::proving_cell(),
         }
     }
 }

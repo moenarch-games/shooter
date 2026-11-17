@@ -198,6 +198,17 @@ fn the_assembly_works_matches_the_rapier_oracle() {
     compare(scenarios::WORKS_GRAPPLE);
 }
 
+/// The proving cell (shooter#53): its ramp, gallery deck and the drop off the gallery's edge; up
+/// the stage and down its other ramp; the jump pad and the grapple from the stage onto the
+/// gallery.
+#[test]
+fn the_proving_cell_matches_the_rapier_oracle() {
+    compare(scenarios::CELL_GALLERY);
+    compare(scenarios::CELL_STAGE);
+    compare(scenarios::CELL_PAD);
+    compare(scenarios::CELL_GRAPPLE);
+}
+
 /// The shots and hits of `scenario` on physics-engine as `build`.
 fn combat(scenario: Scenario, build: Assembly) -> Vec<(u32, Option<Weapon>, i32)> {
     run_as(Backend::Engine, scenario.arena, scenario.legs, build)
