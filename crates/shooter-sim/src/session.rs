@@ -499,6 +499,33 @@ fn whole(position: [f32; 3]) -> Vec3i {
     Vec3i::new(x, y, z)
 }
 
+/// Below this speed up or down (units a second) a robot held up by its chassis has come to rest
+/// there rather than glancing off on its way down...
+const PERCHED_REST: f32 = 2.0;
+/// ...and with no scenery this far (units) under its feet it is hung up on it, not leaning on
+/// a wall a step above the ground.
+const PERCHED_HEIGHT: f32 = 20.0;
+
+/// A robot held up by its chassis, upright, at rest and high off the ground: perched on a
+/// ledge's lip rather than tipped over.
+fn perched(world: &World, stance: &Stance) -> bool {
+    let feet = stance.feet();
+    upright(stance.origin.orientation)
+        && stance.velocity[1].abs() < PERCHED_REST
+        && world
+            .cast_ray(feet, [0.0, -PERCHED_HEIGHT, 0.0], |body| {
+                body.0 < FIRST_PLAYER_BODY
+            })
+            .is_none()
+}
+
+/// A robot's frame at `orientation` leans less than 45° from upright: its up axis's height,
+/// `1 - 2 (x² + z²)`, is above `cos 45°` (arithmetic only, so every platform agrees).
+fn upright(orientation: [f32; 4]) -> bool {
+    let [x, _, z, _] = orientation;
+    1.0 - 2.0 * (x * x + z * z) > std::f32::consts::FRAC_1_SQRT_2
+}
+
 /// The angular velocity (radians a second) that turns a robot's frame from `orientation`
 /// halfway to upright and facing `yaw` in a tick: the movement drive's balance and aim.
 /// Arithmetic only (no transcendental functions), so every platform agrees.
@@ -1452,8 +1479,14 @@ impl Session {
                 traction,
             );
             // Resting on its body rather than its feet (its legs shot off, tipped over), it lies
-            // where it is: the movement drive is all that slides a robot over the ground.
-            let velocity = if stance.footing.any && !stance.footing.feet && !hooked {
+            // where it is: the movement drive is all that slides a robot over the ground. One
+            // still upright and hung up on a ledge by its chassis, its feet in the air
+            // ([`perched`]), steps off it under the drive's air control while it means to move
+            // (else it hangs there for good).
+            let perched = fighter.parts.mobile(&fighter.build)
+                && crate::player::wish_direction(intent).is_some()
+                && perched(&self.world, stance);
+            let velocity = if stance.footing.any && !stance.footing.feet && !hooked && !perched {
                 Vec3i::new(0, velocity.y, 0)
             } else {
                 velocity
@@ -2498,7 +2531,7 @@ impl Session {
             .collect();
         let strike = |at: [f32; 3]| {
             let normal = [eye[0] - at[0], 0.0, eye[2] - at[2]];
-            let length = normal[0].hypot(normal[2]).max(f32::EPSILON);
+            let length = libm::hypotf(normal[0], normal[2]).max(f32::EPSILON);
             Event::Beam {
                 weapon: Weapon::EnergyBlade,
                 from: eye,
@@ -2601,5 +2634,27 @@ impl Session {
             self.strike(slot, attacker, &blows, Weapon::RocketLauncher);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upright;
+
+    /// Only a robot leaning less than 45° may step off a ledge it is hung on: one tipped over
+    /// lies where it is (`tests/collisions.rs` steps an upright one off a block's lip).
+    #[test]
+    fn only_a_robot_leaning_less_than_45_degrees_is_upright() {
+        // Upright, then turned half round about the vertical: upright either way.
+        assert!(upright([0.0, 0.0, 0.0, 1.0]));
+        assert!(upright([0.0, 1.0, 0.0, 0.0]));
+        // Leaning 30° forward (about X) and 40° sideways (about Z): upright.
+        assert!(upright([0.258_819, 0.0, 0.0, 0.965_926]));
+        assert!(upright([0.0, 0.0, 0.342_020, 0.939_693]));
+        // Leaning 50°, on its side and upside down: tipped over.
+        assert!(!upright([0.422_618, 0.0, 0.0, 0.906_308]));
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(!upright([0.0, 0.0, half, half]));
+        assert!(!upright([1.0, 0.0, 0.0, 0.0]));
     }
 }

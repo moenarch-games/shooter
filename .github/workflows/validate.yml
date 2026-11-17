@@ -29,6 +29,9 @@ jobs:
       build_command: |
         cargo build --workspace --locked
         cargo check -p shooter-client --lib --target wasm32-unknown-unknown --locked
+        # Native and wasm32 must simulate the same match bit for bit (shooter#120): 30 s of the
+        # scripted match on every map, compared tick by tick.
+        scripts/cross-build-hashes.sh all 1800
       artifact_paths: ""
 
   merge-ready:

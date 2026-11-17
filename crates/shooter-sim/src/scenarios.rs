@@ -138,7 +138,7 @@ pub const THRUSTER_JUMP: Scenario = Scenario {
         walk("run up", SOUTH, 6),
         jump_toward("jump", SOUTH),
         walk("climb", SOUTH, 50),
-        stand("on the ledge", 30),
+        stand("on the ledge", 45),
     ],
 };
 

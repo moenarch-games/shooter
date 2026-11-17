@@ -1,5 +1,7 @@
 //! The scripted tour on physics-engine: the player climbs the ramp, jumps, descends and stops at
 //! the wall.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::player::{PLAYER_HALF_EXTENTS, WALK_SPEED_SUBUNITS_PER_TICK, walk_velocity};
 use shooter_sim::tour::{self, end_of};

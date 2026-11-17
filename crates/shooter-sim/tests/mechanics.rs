@@ -3,6 +3,8 @@
 //! and quadruped presets while badly mounted legs stay constrained; motors draw from the shared
 //! pool first come, first served; part poses and per-part ray hits follow the bodies; and a
 //! world restored from its encoded state continues bit for bit (host, prediction, replay).
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::energy::MILLI;
 use shooter_sim::mechanics::fixtures::{
