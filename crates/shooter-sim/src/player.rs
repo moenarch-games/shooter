@@ -91,6 +91,11 @@ pub struct Intent {
     /// Start or stop a field repair ([`crate::repair`]): sent once, like a weapon switch; the
     /// host checks it and refuses a part that is not eligible.
     pub repair: Option<crate::repair::Order>,
+    /// What the person's control layout tells the robot's actuators this tick (Atlas D2.i70.7,
+    /// [`crate::bindings`]): its joints, legs, wheels and tracks. The host keeps only commands
+    /// its connected actuators take ([`crate::bindings::Motors::controls`]); the rest stand at
+    /// rest.
+    pub motors: crate::bindings::Motors,
 }
 
 impl Intent {
@@ -109,6 +114,7 @@ impl Intent {
         select: None,
         edit: false,
         repair: None,
+        motors: crate::bindings::Motors::REST,
     };
 }
 

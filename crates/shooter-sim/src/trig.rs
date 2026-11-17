@@ -165,6 +165,8 @@ const fn quadrant_error(t: u16, a: i64, b: i64) -> i64 {
 }
 
 #[cfg(test)]
+// The platform's floating point is these tests' oracle only (`clippy.toml`).
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

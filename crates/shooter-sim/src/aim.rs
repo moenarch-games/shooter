@@ -328,7 +328,7 @@ pub fn angles(direction: [f32; 3]) -> Option<(u16, i16)> {
     #[allow(clippy::cast_possible_truncation)]
     let [x, y, z] = unit.map(|axis| (axis * SCALE).round() as i32);
     #[allow(clippy::cast_possible_truncation)]
-    let run = (unit[0].hypot(unit[2]) * SCALE).round() as i32;
+    let run = (libm::hypotf(unit[0], unit[2]) * SCALE).round() as i32;
     let pitch = trig::yaw_from_vector(y, run.max(1))?;
     let yaw = trig::yaw_from_vector(x, z).unwrap_or(0);
     #[allow(clippy::cast_possible_wrap)]

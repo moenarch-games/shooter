@@ -4,6 +4,8 @@
 //! longer fire, a robot that no longer walks), the root chassis as the only kill and respawn
 //! restoring the build, a destroyed battery's energy and blast, the wire and a predictor following the
 //! host, and bot matches that lose parts and replay exactly.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::aim;
 use shooter_sim::damage::{BATTERY_BLAST_DAMAGE, PartDamage};

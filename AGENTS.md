@@ -50,8 +50,9 @@ scripts/profile.sh [OUT] [native|web|all]                                  # run
 ```
 
 CI (`.github/workflows/validate.yml`) runs fmt, Clippy, the kits' fetch, the full test suite with
-`physics-ab` and the native build in one cached Rust job; an independently cached `wasm32` check
-runs in parallel. Both are required for merge readiness and superseded runs are cancelled.
+`physics-ab`, the native build and the native-vs-`wasm32` state hash comparison
+(`scripts/cross-build-hashes.sh`, 1800 ticks on every map) in one cached Rust job; an
+independently cached `wasm32` check runs in parallel. Both are required for merge readiness and superseded runs are cancelled.
 `pages.yml` builds and deploys `web/dist` from `main`; the nightly or manually dispatched
 `profile.yml` uploads bot-match and native-client (lavapipe) profiles, and in a second job the
 browser client's (headless Chromium, SwiftShader WebGPU), as artifacts (no thresholds).

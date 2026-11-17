@@ -67,6 +67,17 @@ fn main() -> Result<(), String> {
         &out.join("selected.ppm"),
     )?;
 
+    // The controls panel (shooter#74) on the standard build's preset, its W binding selected.
+    let mut builder = Builder::new(STANDARD, Stage::Setup);
+    builder.controls_open = true;
+    builder.controls.selected = Some(0);
+    shoot(
+        &mut gpu,
+        &mut robots,
+        &mut builder,
+        &out.join("controls.ppm"),
+    )?;
+
     // Over the build points: invalid, Ready off.
     let mut builder = Builder::new(ARMORY, Stage::Setup);
     shoot(
