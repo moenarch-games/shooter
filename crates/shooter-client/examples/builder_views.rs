@@ -1,6 +1,7 @@
 //! The robot builder (shooter#57) drawn offscreen through the client's own path, with the pinned
 //! kits (`scripts/fetch-robot-kit.sh`): the bench before the match, a part in hand previewed on
-//! a socket it fits, a selected weapon, an over-budget build and a build between lives. Writes
+//! a socket it fits, a selected weapon, the rail rack with its long rail selected (shooter#126),
+//! an over-budget build and a build between lives. Writes
 //! PPM images to the directory given (default `target/builder-views`).
 
 use shooter_client::builder::view::{Builder, Stage};
@@ -66,6 +67,13 @@ fn main() -> Result<(), String> {
         &mut builder,
         &out.join("selected.ppm"),
     )?;
+
+    // The rail rack (shooter#126) from its front right, its long rail selected (with the four
+    // weapons it carries).
+    let mut builder = Builder::new(shooter_sim::robot::RAIL_RACK, Stage::Setup);
+    builder.bench.selected = Some(PartId(3));
+    builder.look_from(0.6, 0.25);
+    shoot(&mut gpu, &mut robots, &mut builder, &out.join("rails.ppm"))?;
 
     // The controls panel (shooter#74) on the standard build's preset, its W binding selected.
     let mut builder = Builder::new(STANDARD, Stage::Setup);

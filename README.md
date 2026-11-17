@@ -307,8 +307,20 @@ is drawn and heard as soon as you press; the host decides what it strikes.
 sockets, one per 20 cm surface cell (a 20 × 40 × 80 cm chassis has 28). Each part has a stable ID,
 one parent socket and an exact orientation (binary angles, stored in one canonical form); a larger
 part reserves its footprint of neighbouring cells on its parent's face, and no two parts may
-claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints, a battery, a sensor, a repair module, legs, wheels, tracks, an armor plate and the eight
-shipped weapons. A build is valid with one chassis root, no cycles, at most 32 parts and at most
+claim one cell. The catalog has three chassis sizes, beams, mount rails, an adapter, hinge and rotor joints, a battery, a sensor, a repair module, legs, wheels, tracks, an armor plate and the eight
+shipped weapons. Beams, mount rails and the adapter extend the attachment space (Atlas D2.i123.11,
+#126): they are ordinary parts on the same tree, with mass, health and build points, whose
+sockets are further hardpoints. A mount rail (20 × 40 or 20 × 80 cm, 1 or 2 points) lies flat
+on its parent's face, its whole length its footprint, and has a row of hardpoints on its top, so
+one rail carries two or four light weapons, or one or two heavy ones; the adapter (a 20 cm cube,
+1 point) has a socket on each of its five free faces. They turn on their sockets like any part
+(a rail turned a quarter lies across a face, overhanging its edge), the same validator checks
+their children's footprints, cycles, parents and the budget, the mechanics and the hitboxes put
+what they carry where they hold it, and losing a support loses everything on it. The fixtures
+`RAIL_RACK` (six weapons on two rails), `CROSS_RAIL` (two rail guns on a turned rail) and
+`ADAPTER_MAST` (a turned rail on an adapter) show them
+(`cargo test -p shooter-sim --test mount_rails`); the fifth scripted replay person plays the rail
+rack. A build is valid with one chassis root, no cycles, at most 32 parts and at most
 110 build points, whatever weapons it mounts how often (two rail guns, four rocket launchers, #125); there is no power, heat or cooling budget. The root
 chassis is the robot's vital part (Atlas D2.i89.1, #89): there is no separate control core, and a
 build naming the retired core (part code 30) is rejected as an unknown part. Nothing requires locomotion: tanks, four-legged dogs,
@@ -377,7 +389,8 @@ pool (below).
 
 **Part damage** (`shooter_sim::damage`, Atlas D2.i89.1, D2.i70.8, #56, #89). Every part of a
 build has its own health (provisional, Atlas Q2.i70.1: chassis 270, 290 and 310 by size, so a front
-rail kill still takes four hits, or three overcharged; beams 50 and 60, hinge and rotor 40,
+rail kill still takes four hits, or three overcharged; beams 50 and 60, mount rails 45 and 55,
+adapter 40, hinge and rotor 40,
 battery 60, sensor 30, leg 70, wheel 50, track 90, armor plate
 120, light weapons 40, heavy ones 60). The host places each fighter's parts as boxes where its
 mechanical robot's bodies carry them (below, **Mechanical robots in the match**), and resolves every strike
@@ -540,7 +553,9 @@ others) and `scripts/build-web.sh` puts each kit's release tar in `web/dist`, wh
 fetches in one request a kit and reads in memory. Every file is checked against the bundles' pins
 and bounds (4 MiB a file, 8 MiB a load, 16 MiB and 30 s a tar in the browser), every kit key must
 be a catalog part or mod of that kit and every catalog part and mod must be in a kit; otherwise
-the load fails, the HUD says why and the fighters stay boxes. Each part sits where the simulation
+the load fails, the HUD says why and the fighters stay boxes. The robot kit has no mount rail or
+adapter models yet (moritzbrantner/asset-tooling#743): a rail is drawn as the beam of its length
+laid flat, the adapter as the short beam at half its length. Each part sits where the simulation
 places it (`mechanics::placements`), so loadouts look different, and each mod sits on its
 weapon's anchor from the weapons kit's descriptor. Wheels and tracks turn about the axles the
 locomotion kit's descriptor (`socket-grid-kit-descriptor-v3`) puts exactly where the simulation's

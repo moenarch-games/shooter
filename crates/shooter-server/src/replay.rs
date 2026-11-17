@@ -532,6 +532,56 @@ mod tests {
         }
     }
 
+    /// Five scripted people, the fifth asking for the rail rack (shooter#126): the replay
+    /// decodes and verifies tick for tick, and the rack it carries and plays has the authored
+    /// socket structure, part for part and socket for socket, and fires from its rails.
+    #[test]
+    fn a_replay_with_mount_rails_reproduces_their_socket_structure() {
+        use shooter_sim::mechanics::sockets;
+        use shooter_sim::robot::{BETA, Kind, RAIL_RACK};
+        let script = Script {
+            ticks: 900,
+            people: 5,
+            ..Script::DEFAULT
+        };
+        let replay = record(script).unwrap();
+        let bytes = replay.encode().unwrap();
+        let decoded = Replay::decode(&bytes).unwrap();
+        assert_eq!(decoded, replay);
+        assert_eq!(verify(&decoded).unwrap().checkpoints_verified, 900);
+        let (mut configured, mut played, mut from_a_rail) = (false, false, false);
+        decoded
+            .play(u64::MAX, |session| {
+                for fighter in session.fighters.iter().filter(|f| f.human().is_some()) {
+                    if fighter.configured == RAIL_RACK {
+                        configured = true;
+                        assert_eq!(fighter.configured.candidate(), RAIL_RACK.candidate());
+                    }
+                    if fighter.build == RAIL_RACK {
+                        played = true;
+                        assert_eq!(sockets(&fighter.build), sockets(&RAIL_RACK));
+                    }
+                }
+                for event in &session.events {
+                    if let Event::Fired { slot, part, .. } = *event {
+                        let build = session.fighters[usize::from(slot)].build;
+                        let support = build
+                            .part(part)
+                            .and_then(|part| part.mount)
+                            .and_then(|mount| build.part(mount.parent))
+                            .and_then(|parent| BETA.part_type(parent.kind));
+                        from_a_rail |= build == RAIL_RACK
+                            && support.is_some_and(|support| support.kind == Kind::Rail);
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(configured, "the fifth person's rail rack is in the replay");
+        assert!(played, "the rail rack plays after a respawn");
+        assert!(from_a_rail, "a weapon on a rail fires");
+    }
+
     #[test]
     fn scripted_people_join_fight_and_leave() {
         let replay = record(Script::DEFAULT).unwrap();

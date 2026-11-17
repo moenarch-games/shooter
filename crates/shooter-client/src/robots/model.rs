@@ -8,8 +8,9 @@
 //! `docs/robot-locomotion.md`], socket-grid convention): a part's own x, y and z are glTF +X, −Z
 //! and +Y, and the glTF origin is the mount anchor, the centre of the mount face's first cell.
 //! The simulation places a part by its cuboid's minimum corner, so a kit mesh is drawn at
-//! `corner · rotation · anchor · axes`. A weapon points out of its socket, along its part's +z;
-//! a wheel or track turns about it.
+//! `corner · rotation · fit · anchor · axes` (`fit` lays a stand-in mesh into its part's cuboid,
+//! [`super::kit::stand_in`]). A weapon points out of its socket, along its part's +z; a wheel or
+//! track turns about it.
 
 use super::kit::{Anchor, KitData};
 use crate::scene::METRES_PER_UNIT;
@@ -133,6 +134,7 @@ impl Model {
                 .ok_or_else(|| format!("robot: part {} has no kit entry", part_type.key))?;
             let corner = centre - rotation * half;
             let robot_from_local = Mat4::from_rotation_translation(rotation, corner)
+                * super::kit::stand_in(part_type.key)
                 * Mat4::from_translation(MOUNT_ANCHOR)
                 * PART_FROM_GLTF;
             let roll = kit.entries[entry].rolling.as_ref().map(|rolling| Roll {

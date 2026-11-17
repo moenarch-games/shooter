@@ -115,6 +115,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   The core count is gone with the core (D2.i89.1). Since shooter#125 the validator no longer
   refuses a weapon mounted twice: each copy is an instance addressed by its part (own mount, mod,
   health, refire and muzzle; wire 23, replay format 16), still fired one at a time (shooter#127).
+  Since shooter#126 mount rails (20 × 40 and 20 × 80 cm, a row of hardpoints on top) and an
+  adapter (a 20 cm cube with five sockets) are catalog parts beside the beams, extending the tree
+  through the same validator, placement, damage and detachment (no wire or replay change).
 - **D2.i70.2** (owner, 2026-11-13; shooter#70): Every robot has exactly one control core, on an
   exterior socket of the player's choice. Armor may cover it (penetration exists, D2.i70.8); there
   is no exposed-face check. Destroying the core, and only that, eliminates the robot: losing

@@ -132,6 +132,9 @@ const CATALOGUE_WIDTH: f32 = 248.0;
 const INSPECTOR_WIDTH: f32 = 272.0;
 const BAR_HEIGHT: f32 = 92.0;
 const ROW: f32 = 18.0;
+/// A catalogue or loadout row: tighter than [`ROW`], so every catalogue part and loadout fits
+/// above the bar at 720 lines.
+const CATALOGUE_ROW: f32 = 16.0;
 const CELL: f32 = 2.0;
 /// The font cell of the smaller text: a glyph cell snaps to whole pixels, so below 2 it reads no
 /// smaller at 720 lines; it stays one name for the lines that would shrink first.
@@ -180,20 +183,26 @@ impl Layout {
         let mut rows = Vec::new();
         let mut y = self.catalogue.y + 28.0;
         for kind in BETA.parts {
-            rows.push((Rect::new(x, y, width, ROW), Target::Catalogue(kind.id)));
-            y += ROW;
+            rows.push((
+                Rect::new(x, y, width, CATALOGUE_ROW),
+                Target::Catalogue(kind.id),
+            ));
+            y += CATALOGUE_ROW;
         }
         y += 30.0;
         for index in 0..LOADOUTS.len() {
-            rows.push((Rect::new(x, y, width, ROW), Target::Loadout(index)));
-            y += ROW;
+            rows.push((
+                Rect::new(x, y, width, CATALOGUE_ROW),
+                Target::Loadout(index),
+            ));
+            y += CATALOGUE_ROW;
         }
         rows
     }
 
     /// Where the loadouts' heading is.
     fn loadouts_heading(&self) -> f32 {
-        self.catalogue.y + 28.0 + ROW * BETA.parts.len() as f32 + 12.0
+        self.catalogue.y + 28.0 + CATALOGUE_ROW * BETA.parts.len() as f32 + 12.0
     }
 
     /// The inspector's buttons.
@@ -1037,11 +1046,11 @@ impl Builder {
             } else if hovered == Some(target) {
                 painter.rect(rect.x, rect.y, rect.width, rect.height, srgb(PALE, 0.08));
             }
-            painter.rect(rect.x + 2.0, rect.y + 6.0, 3.0, 7.0, srgb(kind_colour, 1.0));
-            painter.text(rect.x + 10.0, rect.y + 3.0, CELL, &label, srgb(PALE, 1.0));
+            painter.rect(rect.x + 2.0, rect.y + 4.5, 3.0, 7.0, srgb(kind_colour, 1.0));
+            painter.text(rect.x + 10.0, rect.y + 1.0, CELL, &label, srgb(PALE, 1.0));
             painter.text_right(
                 rect.x + rect.width - 4.0,
-                rect.y + 3.0,
+                rect.y + 1.0,
                 CELL,
                 &points,
                 srgb(MUTED, 1.0),
