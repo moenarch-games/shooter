@@ -32,6 +32,13 @@
 //! within its family's salvo limit and with the energy for it
 //! ([`crate::weapons::Arsenal::trigger_tuned`]). A request is direct, never a timed sequence.
 //!
+//! **Tracking the aim** (shooter#132). A tracking binding ([`Output::Track`]) names joints:
+//! while held (or toggled on) each is told [`Command::Track`] instead of what else binds it.
+//! The input carries only that word; the host resolves it from its own state into a servo angle
+//! within the joint's limits that turns the gun the joint carries toward the person's camera
+//! target ([`crate::aim::track`]), so the joint turns at its servo's speed and on the pool's
+//! energy like any other, and a lost or unpowered joint aims nothing.
+//!
 //! **No chassis forces.** A binding reaches only actuators. Until the robots walk and roll on
 //! their own (see the Atlas: the interim movement drive), the match still moves a robot by the
 //! movement rules ([`crate::player::Motion::drive`]); the bindings drive its joints, legs,
@@ -52,6 +59,9 @@ pub const MAX_MOTORS: usize = 32;
 pub const FULL: i32 = 1_000;
 /// The mouse button the presets fire every gun with: the middle one (W3C 1).
 pub const ALL_GUNS_BUTTON: u8 = 1;
+/// The mouse button the presets track the aim point with (shooter#132): the right one (W3C 2),
+/// the precision aim's default.
+pub const AIM_BUTTON: u8 = 2;
 
 /// The keys a binding may name, by their W3C physical key codes (what winit's `KeyCode` and the
 /// browser's `KeyboardEvent.code` call them); a [`Source::Key`] is an index into this table.
@@ -162,6 +172,12 @@ pub enum Output {
     /// groups may overlap, and a gun asked twice in a tick fires once. Keys and buttons only;
     /// strength and inversion change nothing.
     Fire,
+    /// Track the aim point (shooter#132): while held (or toggled on) every joint in its group
+    /// is told [`Command::Track`], whatever else binds it this tick, and the host turns it
+    /// toward the person's camera target within its limits, at its servo's speed and on the
+    /// pool's energy ([`crate::aim::track`]). Joints only; keys and buttons only; strength and
+    /// inversion change nothing.
+    Track,
 }
 
 /// One part of a binding's action group, and whether it takes the binding's value reversed.
@@ -214,6 +230,8 @@ pub enum BindingError {
     /// A fire binding naming a part that is no gun of the build (the blade and the grapple
     /// module act on their own keys).
     NotAGun(usize, PartId),
+    /// A tracking binding naming a part that is no joint.
+    NotAJoint(usize, PartId),
 }
 
 impl fmt::Display for BindingError {
@@ -248,6 +266,12 @@ impl fmt::Display for BindingError {
             Self::NotAGun(at, part) => {
                 write!(formatter, "binding {}: part {} is no gun", at + 1, part.0)
             }
+            Self::NotAJoint(at, part) => write!(
+                formatter,
+                "binding {}: only joints track the aim (part {})",
+                at + 1,
+                part.0
+            ),
         }
     }
 }
@@ -354,6 +378,19 @@ impl Motors {
         commands: [(PartId(0), Command::Idle); MAX_MOTORS],
     };
 
+    /// Only joint `part` told to track the aim point ([`Command::Track`]): a script's tracking
+    /// binding held.
+    #[must_use]
+    pub const fn track(part: PartId) -> Self {
+        let mut commands = Self::REST.commands;
+        commands[0] = (part, Command::Track);
+        Self {
+            gait: GaitChoice::Suggested,
+            len: 1,
+            commands,
+        }
+    }
+
     /// These motors with `part` told `command`; false (and unchanged) if `part` is already
     /// commanded or there is no room.
     pub fn push(&mut self, part: PartId, command: Command) -> bool {
@@ -383,8 +420,9 @@ impl Motors {
     /// The robot's controls for a tick (the host's word on an input): every connected actuator
     /// of `layout` at rest (a leg standing, a wheel, track or joint braked where it is
     /// centred: a stride of zero, a rate of zero, an angle of zero) unless these motors command
-    /// it a command it takes. A command for a part that is no connected actuator, or a stride
-    /// for one that is no leg, is ignored.
+    /// it a command it takes. A command for a part that is no connected actuator, a stride for
+    /// one that is no leg, or a track for one that is no joint, is ignored. A joint's track stays
+    /// [`Command::Track`] for the match to resolve ([`Motors::resolved`]).
     #[must_use]
     pub fn controls(&self, layout: &Layout) -> Controls {
         let mut controls = Controls {
@@ -398,14 +436,48 @@ impl Motors {
                 Actuator::Locomotion(_) => Command::Rate(0),
                 Actuator::Joint(_) => Command::Angle(0),
             };
+            let joint = matches!(actuator.kind, Actuator::Joint(_));
             let command = match self.get(actuator.part) {
                 Some(Command::Stride(_)) if !leg => rest,
+                // An aim the host did not resolve ([`crate::aim::track`]) rests; only a joint
+                // tracks.
+                Some(Command::Track) if !joint => rest,
                 Some(command) => command,
                 None => rest,
             };
             controls = controls.with(actuator.part, command);
         }
         controls
+    }
+
+    /// Whether any part is told to track the aim point.
+    #[must_use]
+    pub fn tracking(&self) -> bool {
+        self.commands()
+            .iter()
+            .any(|(_, command)| *command == Command::Track)
+    }
+
+    /// These motors with every track replaced by what `resolve` makes of it (the host's angle
+    /// for that joint, [`crate::aim::track`]), or left out where it makes nothing (the part is
+    /// no connected joint: it rests).
+    #[must_use]
+    pub fn resolved(&self, mut resolve: impl FnMut(PartId) -> Option<Command>) -> Self {
+        let mut resolved = Self {
+            gait: self.gait,
+            ..Self::REST
+        };
+        for &(part, command) in self.commands() {
+            let command = match command {
+                Command::Track => match resolve(part) {
+                    Some(command) => command,
+                    None => continue,
+                },
+                command => command,
+            };
+            resolved.push(part, command);
+        }
+        resolved
     }
 }
 
@@ -451,6 +523,9 @@ impl Bindings {
                 {
                     return Err(BindingError::NotALeg(at, target.part));
                 }
+                if binding.output == Output::Track && !matches!(kind, Actuator::Joint(_)) {
+                    return Err(BindingError::NotAJoint(at, target.part));
+                }
             }
         }
         Ok(())
@@ -488,7 +563,8 @@ impl Bindings {
             }
             let axis_mode = matches!(binding.mode, Mode::Relative | Mode::Offset);
             if binding.source.is_axis() != axis_mode
-                || (binding.output == Output::Fire && binding.source.is_axis())
+                || (matches!(binding.output, Output::Fire | Output::Track)
+                    && binding.source.is_axis())
             {
                 return Err(BindingError::Mode(at));
             }
@@ -524,8 +600,11 @@ impl Bindings {
                             return layout.guns.contains(&target.part);
                         }
                         actuator_of(layout, target.part).is_some_and(|(kind, _)| {
-                            binding.output != Output::Stride
-                                || kind == Actuator::Locomotion(Locomotion::Leg)
+                            match binding.output {
+                                Output::Stride => kind == Actuator::Locomotion(Locomotion::Leg),
+                                Output::Track => matches!(kind, Actuator::Joint(_)),
+                                _ => true,
+                            }
                         })
                     })
                     .collect();
@@ -553,7 +632,8 @@ impl Bindings {
     ///   points along the robot rolls it sideways for W: its mounting says so.
     /// - **Joints**: every rotor follows the mouse's horizontal offset and every hinge its
     ///   vertical offset (up raises), so two joint axes aim a turret; the offset stays when the
-    ///   mouse stops.
+    ///   mouse stops. Held, the right mouse button (the precision aim's, shooter#132) makes every
+    ///   joint track the camera's target instead ([`Output::Track`]).
     ///
     /// - **Guns** (shooter#127): the middle mouse button fires every gun at once, one weapon
     ///   group; the left button's primary trigger fires the held copy as before.
@@ -688,6 +768,19 @@ impl Bindings {
                 &hinges,
             );
         }
+        // Held, the precision aim's button tracks the camera's target with every joint
+        // (shooter#132).
+        let tracking: Vec<Target> = rotors.iter().chain(&hinges).copied().collect();
+        if !tracking.is_empty() {
+            add(
+                Source::Button(AIM_BUTTON),
+                Mode::Hold,
+                Output::Track,
+                false,
+                100,
+                &tracking,
+            );
+        }
         // Every gun together on the middle mouse button (shooter#127); the primary trigger (the
         // left button) stays the held copy's.
         let guns: Vec<Target> = layout
@@ -735,6 +828,9 @@ impl Bindings {
         // Each part's command kind and summed value, in the order parts are first named.
         let mut sums: Vec<(PartId, Output, i32)> = Vec::new();
         let mut triggers = Triggers::NONE;
+        // The joints told to track the aim point this tick: that overrides whatever else binds
+        // them.
+        let mut tracked: Vec<PartId> = Vec::new();
         let mut held = 0u32;
         for (at, binding) in self.bindings.iter().take(MAX_BINDINGS).enumerate() {
             let bit = 1u32 << at;
@@ -775,6 +871,19 @@ impl Bindings {
                 }
                 continue;
             }
+            if binding.output == Output::Track {
+                if value != 0 {
+                    for target in &binding.targets {
+                        if actuator_of(layout, target.part)
+                            .is_some_and(|(kind, _)| matches!(kind, Actuator::Joint(_)))
+                            && !tracked.contains(&target.part)
+                        {
+                            tracked.push(target.part);
+                        }
+                    }
+                }
+                continue;
+            }
             let value = if binding.invert { -value } else { value };
             for target in &binding.targets {
                 let Some((kind, _)) = actuator_of(layout, target.part) else {
@@ -801,6 +910,10 @@ impl Bindings {
         };
         for (part, output, sum) in sums {
             let sum = sum.clamp(-FULL, FULL);
+            if tracked.contains(&part) {
+                motors.push(part, Command::Track);
+                continue;
+            }
             let command = match output {
                 Output::Stride => Command::Stride(i8::try_from(sum / 10).unwrap_or(0)),
                 Output::Rate => {
@@ -815,10 +928,14 @@ impl Bindings {
                         i16::try_from((sum * quarter / FULL).clamp(-32_767, 32_767)).unwrap_or(0),
                     )
                 }
-                // Fire bindings give no motor command.
-                Output::Fire => continue,
+                // Fire and tracking bindings give no summed command.
+                Output::Fire | Output::Track => continue,
             };
             motors.push(part, command);
+        }
+        for part in tracked {
+            // Already told to track when another binding named it first.
+            motors.push(part, Command::Track);
         }
         Actions { motors, triggers }
     }

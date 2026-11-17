@@ -1466,6 +1466,15 @@ impl Session {
             .map(|fighter| fighter.stance.as_ref().map(|stance| stance.velocity))
             .collect();
         let mut moves = crate::player::Moves::default();
+        // Where each person whose joints track the aim this tick (shooter#132) has the camera's
+        // target, among the others as they saw them: what those joints turn toward.
+        let aim_points: Vec<Option<[f32; 3]>> = (0..self.fighters.len())
+            .map(|slot| {
+                let fighter = &self.fighters[slot];
+                (playing && fighter.alive() && fighter.intent.motors.tracking())
+                    .then(|| self.aim_point(slot))
+            })
+            .collect();
         // What each robot's motors are told this tick, by slot.
         let mut motors: Vec<Option<Controls>> = vec![None; self.fighters.len()];
         for (slot, fighter) in self.fighters.iter_mut().enumerate() {
@@ -1532,6 +1541,20 @@ impl Session {
                     fighter.intent.motors
                 } else {
                     crate::bindings::Motors::REST
+                };
+                // A joint told to track the aim turns toward the angle that points the gun it
+                // carries at the camera's target, within its limits ([`aim::track`]); the host
+                // works it out from its own state, never from the input.
+                let commanded = match aim_points[slot] {
+                    Some(point) => {
+                        let parts = fighter.hitboxes();
+                        commanded.resolved(|part| {
+                            let (angle, limits) = self.mechanics.joint(id, part)?;
+                            aim::track(&fighter.build, &parts, part, angle, limits, point)
+                                .map(crate::mechanics::Command::Angle)
+                        })
+                    }
+                    None => commanded,
                 };
                 motors[slot] = Some(commanded.controls(&robot.layout));
             }
@@ -2272,6 +2295,26 @@ impl Session {
             killer: killer.map(|killer| killer as u8),
             weapon,
         });
+    }
+
+    /// Where `slot`'s camera's centre ray meets the arena or another fighter's part as its person
+    /// saw them ([`aim::target`]): its intended target, what its tracking joints aim at
+    /// (shooter#132).
+    fn aim_point(&self, slot: usize) -> [f32; 3] {
+        let fighter = &self.fighters[slot];
+        let seen = self.seen_by(slot);
+        aim::aimed(
+            &self.world,
+            fighter.eye(),
+            None,
+            fighter.intent.yaw,
+            fighter.intent.pitch,
+            body_of(fighter.slot),
+            |hit| slot_of(hit).is_none(),
+            seen.iter().map(|(other, _, parts)| (*other, parts)),
+        )
+        .target
+        .end
     }
 
     /// Fires `weapon` from `slot` ([`aim`]): the camera picks the intended target among the

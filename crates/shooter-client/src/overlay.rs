@@ -242,8 +242,7 @@ pub fn mod_name(id: ModId) -> &'static str {
     }
 }
 
-/// The key that selects `weapon`: its digit, V for the blade, or F for the grapple module (or the
-/// right button).
+/// The key that selects `weapon`: its digit, V for the blade, or F for the grapple module.
 fn key_label(weapon: Weapon) -> String {
     match weapon {
         Weapon::EnergyBlade => "V".to_owned(),
@@ -763,6 +762,43 @@ const REPAIR_WIDTH: f32 = 340.0;
 const REPAIR_LINE: f32 = 20.0;
 const REPAIR_PAD: f32 = 10.0;
 
+/// Precision aim's scope (shooter#132) for a frame `width` × `height` pixels, `zoom` of the way
+/// in (0 to 1, [`crate::camera::Precision::zoom`]): the frame darkened outside a square sight
+/// centred on the reticle, and fine cross hairs from the sight's edge toward its centre that
+/// leave the middle clear for the reticle and the guns' marks. Nothing while out.
+#[must_use]
+pub fn scope(width: u32, height: u32, zoom: f32) -> Vec<OverlayQuad> {
+    let zoom = zoom.clamp(0.0, 1.0);
+    if zoom <= 0.0 {
+        return Vec::new();
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let scale = height as f32 / 720.0;
+    let mut painter = Painter {
+        quads: Vec::with_capacity(12),
+        scale,
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let wide = width as f32 / scale;
+    let (cx, cy) = (wide / 2.0, 360.0);
+    // The sight: a square 600 units across, the rest of the frame shaded.
+    let half = 300.0;
+    let shade = Vec4::new(0.0, 0.0, 0.0, 0.55 * zoom);
+    painter.rect(0.0, 0.0, wide, cy - half, shade);
+    painter.rect(0.0, cy + half, wide, 720.0 - (cy + half), shade);
+    painter.rect(0.0, cy - half, cx - half, 2.0 * half, shade);
+    painter.rect(cx + half, cy - half, wide - (cx + half), 2.0 * half, shade);
+    // Its edge and the cross hairs, leaving the middle 80 units clear.
+    let line = Vec4::new(0.85, 0.95, 1.0, 0.6 * zoom);
+    painter.frame(cx - half, cy - half, 2.0 * half, 2.0 * half, 1.5, line);
+    let (gap, thin) = (40.0, 1.5);
+    painter.rect(cx - half, cy - thin / 2.0, half - gap, thin, line);
+    painter.rect(cx + gap, cy - thin / 2.0, half - gap, thin, line);
+    painter.rect(cx - thin / 2.0, cy - half, thin, half - gap, line);
+    painter.rect(cx - thin / 2.0, cy + gap, thin, half - gap, line);
+    painter.quads
+}
+
 /// The field repair panel (shooter#61) for a frame `height` pixels high, bottom left above the
 /// chassis and energy: the open quick repair menu (only the parts the robot may repair now, the
 /// cursor's line in the accent), else the repair under way (its part's health, paused by a hit
@@ -1072,6 +1108,37 @@ mod tests {
             }
         }
         assert!(overlay.draw(None, 1280, 720, 0.016).is_empty());
+    }
+
+    /// Precision aim's scope (shooter#132): nothing while out; in, it shades round a square
+    /// sight and draws cross hairs that keep the reticle's middle clear, within the frame at
+    /// any size.
+    #[test]
+    fn the_scope_frames_the_reticle_and_leaves_its_middle_clear() {
+        assert!(scope(1280, 720, 0.0).is_empty());
+        for (width, height) in [(1280, 720), (1920, 1080), (1024, 768)] {
+            let quads = scope(width, height, 1.0);
+            assert!(quads.len() >= 8);
+            #[allow(clippy::cast_precision_loss)]
+            let (w, h) = (width as f32, height as f32);
+            let centre = Vec2::new(w / 2.0, h / 2.0);
+            for quad in &quads {
+                let (min, max) = (quad.position, quad.position + quad.size);
+                assert!(
+                    min.x >= -1.0 && min.y >= -1.0 && max.x <= w + 1.0 && max.y <= h + 1.0,
+                    "{quad:?}"
+                );
+                // Nothing within 5 % of the frame's height of its centre.
+                let near = Vec2::new(centre.x.clamp(min.x, max.x), centre.y.clamp(min.y, max.y));
+                assert!(
+                    near.distance(centre) > h * 0.05,
+                    "{quad:?} at {width}×{height}"
+                );
+            }
+        }
+        // Half in, half as dark.
+        let (full, half) = (scope(1280, 720, 1.0), scope(1280, 720, 0.5));
+        assert!((half[0].color.w * 2.0 - full[0].color.w).abs() < 1e-6);
     }
 
     #[test]

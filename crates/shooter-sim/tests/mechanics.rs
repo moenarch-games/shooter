@@ -489,7 +489,13 @@ fn mechanics_on_the_wire_are_validated() {
     // A stride past 100 %, an unknown command, a part twice and an unknown gait are malformed;
     // any part ID may be commanded.
     assert!(decode_controls(&[0, 1, 0, 2, 3, 101, 0]).is_err());
-    assert!(decode_controls(&[0, 1, 0, 2, 4, 0, 0]).is_err());
+    assert!(decode_controls(&[0, 1, 0, 2, 5, 0, 0]).is_err());
+    // A joint told to track carries no value (shooter#132).
+    assert_eq!(
+        decode_controls(&[0, 1, 0, 2, 4, 0, 0]).unwrap().commands[2],
+        Command::Track
+    );
+    assert!(decode_controls(&[0, 1, 0, 2, 4, 1, 0]).is_err());
     assert_eq!(
         decode_controls(&[0, 1, 0, 200, 1, 0, 1]).unwrap().commands[200],
         Command::Rate(256)

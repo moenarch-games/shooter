@@ -35,6 +35,10 @@ pub const REPAIR: &str = "robot.repair";
 /// The grapple module (shooter#104, Atlas D2.i104.2): its own key, not a weapon in the cycle.
 /// Held, the robot's mounted grapple hooks and reels; let go, the rope goes.
 pub const GRAPPLE: &str = "robot.grapple";
+/// Precision aim (shooter#132, Atlas D2.i123.8): held, the camera zooms in, the mouse slows and
+/// the reticle becomes a scope's ([`crate::camera::Precision`]). The right mouse button by
+/// default; the presets' tracking joints follow the same button through the robot's layout.
+pub const AIM: &str = "weapon.aim";
 /// Select actions, in [`Weapon::ROTATION`] order.
 pub const SELECT: [&str; Weapon::ROTATION.len()] = [
     "weapon.energyRifle",
@@ -112,7 +116,7 @@ fn mouse_button(button: u16) -> InputStroke {
 pub fn action_registry() -> ActionRegistry {
     use AxisDirection::{Negative, Positive};
     use standard::{LEFT_X, LEFT_Y, SOUTH};
-    let actions: [(&str, &str, Vec<InputStroke>); 19] = [
+    let actions: [(&str, &str, Vec<InputStroke>); 20] = [
         (
             MOVE_FORWARD,
             "Move forward",
@@ -160,10 +164,11 @@ pub fn action_registry() -> ActionRegistry {
         (SELECT[3], "Shotgun", vec![key("Digit4")]),
         (SELECT[4], "Laser", vec![key("Digit5")]),
         (SELECT[5], "Flamethrower", vec![key("Digit6")]),
+        (GRAPPLE, "Grapple hook (mounted module)", vec![key("KeyF")]),
         (
-            GRAPPLE,
-            "Grapple hook (mounted module)",
-            vec![mouse_button(SECONDARY_BUTTON), key("KeyF")],
+            AIM,
+            "Precision aim (hold)",
+            vec![mouse_button(SECONDARY_BUTTON)],
         ),
         (
             REPAIR,
@@ -476,6 +481,12 @@ impl Controls {
         self.state.is_held(GRAPPLE)
     }
 
+    /// Precision aim is held ([`AIM`]).
+    #[must_use]
+    pub fn aim_held(&self) -> bool {
+        self.state.is_held(AIM)
+    }
+
     /// The weapon whose select key is held, if any.
     #[must_use]
     pub fn selected(&self) -> Option<Weapon> {
@@ -627,8 +638,15 @@ impl Look {
 
     /// Mouse motion in counts: right turns right (yaw falls), up looks up.
     pub fn mouse(&mut self, dx: f64, dy: f64) {
+        self.mouse_scaled(dx, dy, 1.0);
+    }
+
+    /// [`Self::mouse`] at `share` of the normal sensitivity (precision aim's slower look,
+    /// [`crate::camera::Precision::sensitivity`]).
+    pub fn mouse_scaled(&mut self, dx: f64, dy: f64, share: f32) {
+        let per_count = MOUSE_SENSITIVITY * share;
         #[allow(clippy::cast_possible_truncation)]
-        self.turn(dx as f32 * MOUSE_SENSITIVITY, dy as f32 * MOUSE_SENSITIVITY);
+        self.turn(dx as f32 * per_count, dy as f32 * per_count);
     }
 
     /// The right stick held for `seconds`.
@@ -759,12 +777,27 @@ mod tests {
     }
 
     #[test]
-    fn the_right_button_and_f_hold_the_grapple_module() {
+    fn f_holds_the_grapple_module_and_the_right_button_aims() {
         let mut controls = Controls::new();
+        // The right button is precision aim's now (shooter#132): it holds aim, not the hook.
         controls.mouse_down(SECONDARY_BUTTON);
-        assert!(controls.grapple_held() && !controls.fire_held());
+        assert!(controls.aim_held());
+        assert!(!controls.grapple_held() && !controls.fire_held());
+        // Held with the trigger and the all-guns button: each is its own.
+        controls.mouse_down(PRIMARY_BUTTON);
+        controls.mouse_down(1);
+        assert!(controls.aim_held() && controls.fire_held());
+        let pressed = controls.pressed([0, 0]);
+        assert_eq!(pressed.buttons, 0b111);
+        controls.mouse_up(PRIMARY_BUTTON);
+        controls.mouse_up(1);
         controls.mouse_up(SECONDARY_BUTTON);
-        assert!(!controls.grapple_held());
+        assert!(!controls.aim_held());
+        // Let go of everything (focus or the pointer lock lost): precision aim ends too.
+        controls.mouse_down(SECONDARY_BUTTON);
+        controls.release_all();
+        assert!(!controls.aim_held());
+        assert_eq!(controls.pressed([0, 0]).buttons, 0);
         controls.key_down(KeyCode::KeyF, false);
         assert!(controls.grapple_held());
         // No select key makes it a held weapon.

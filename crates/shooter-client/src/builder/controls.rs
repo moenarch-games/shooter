@@ -207,8 +207,8 @@ impl ControlsBench {
     }
 
     /// Moves the selected binding to the next mouse input: the horizontal movement, the vertical
-    /// one, then each button, then back to the horizontal movement (a fire binding: the next
-    /// button).
+    /// one, then each button, then back to the horizontal movement (a fire or tracking binding:
+    /// the next button).
     ///
     /// # Errors
     ///
@@ -216,12 +216,13 @@ impl ControlsBench {
     pub fn cycle_mouse(&mut self) -> Result<(), Refusal> {
         self.capturing = false;
         self.with_selected(|binding| {
+            // A fire or tracking binding takes buttons only.
+            let buttons_only = matches!(binding.output, Output::Fire | Output::Track);
             binding.source = match binding.source {
-                // A fire binding takes buttons only.
-                Source::Button(index) if binding.output == Output::Fire => {
+                Source::Button(index) if buttons_only => {
                     Source::Button((index + 1) % MOUSE_BUTTONS)
                 }
-                _ if binding.output == Output::Fire => Source::Button(0),
+                _ if buttons_only => Source::Button(0),
                 Source::MouseX => Source::MouseY,
                 Source::MouseY => Source::Button(0),
                 Source::Button(index) if index + 1 < MOUSE_BUTTONS => Source::Button(index + 1),
@@ -267,7 +268,13 @@ impl ControlsBench {
             .get(index)
             .ok_or(Refusal::Nothing)?
             .output;
-        let order = [Output::Stride, Output::Rate, Output::Angle, Output::Fire];
+        let order = [
+            Output::Stride,
+            Output::Rate,
+            Output::Angle,
+            Output::Fire,
+            Output::Track,
+        ];
         let at = order.iter().position(|output| *output == now).unwrap_or(0);
         let mut last = Err(Refusal::Nothing);
         for step in 1..order.len() {
@@ -401,6 +408,7 @@ pub const fn output_name(output: Output) -> &'static str {
         Output::Rate => "RATE",
         Output::Angle => "ANGLE",
         Output::Fire => "FIRE",
+        Output::Track => "TRACK",
     }
 }
 

@@ -92,7 +92,7 @@
 use crate::weapons::{Delivery, Instance, Weapon};
 use parts::{
     ADAPTER, BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, FLAMETHROWER,
-    GRAPPLE, LASER, LEG, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, RAIL_GUN, REPAIR_MODULE,
+    GRAPPLE, HINGE, LASER, LEG, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, RAIL_GUN, REPAIR_MODULE,
     ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
@@ -1066,6 +1066,21 @@ pub const ARMORY: Assembly = authored(&[
     forward(12, &FLAMETHROWER, &CHASSIS_L, 2, 1),
     forward(13, &RAIL_GUN, &CHASSIS_L, 0, 2),
     forward(14, &ROCKET_LAUNCHER, &CHASSIS_L, 1, 2),
+]);
+
+/// The rocket jump's build (shooter#132): the medium chassis on the shared frame with a hinge
+/// (ID 7) on its front, high on the right, carrying the rocket launcher (ID 8) on its top face,
+/// pointing forward at rest. A fixed gun keeps its mount's direction (Atlas D2.i123.8), so only
+/// a launcher a joint can turn toward the floor fires a rocket at the robot's feet: the hinge
+/// pitches about the robot's sideways axis, a quarter turn either way, when it tracks the aim
+/// ([`crate::bindings::Output::Track`]). A fixture, never a player's preset loadout.
+pub const ROCKET_JUMPER: Assembly = authored(&[
+    Part::root(0, &CHASSIS_M),
+    Part::on(2, &SENSOR, 0, &CHASSIS_M, Face::PosZ, 0, 0),
+    Part::on(5, &LEG, 0, &CHASSIS_M, Face::NegZ, 0, 0),
+    Part::on(6, &LEG, 0, &CHASSIS_M, Face::NegZ, 1, 0),
+    forward(7, &HINGE, &CHASSIS_M, 0, 2),
+    Part::on(8, &ROCKET_LAUNCHER, 7, &HINGE, Face::PosZ, 0, 0),
 ]);
 
 /// A fixture on mount rails (shooter#126): the medium chassis on two legs (IDs 1, 2) with a long
