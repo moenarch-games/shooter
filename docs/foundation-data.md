@@ -38,8 +38,9 @@ real players.
    with the command when the foundation has no format for it yet.
 5. **Profile:** `scripts/profile.sh [OUT] [native|web|all]` captures runtime-profiler scenarios
    (default all). The native lane has two.
-   `profiles/bot-match.yaml` is about 5 1/2 minutes of match ticks without a window; the script
-   also records the same match as a replay. It collects `process` and `native-perf`: the
+   `profiles/bot-match.yaml` is the first 4000 ticks (about 67 s) of the match without a window
+   (shorter since the mechanical robots, #73, so native-perf's report stays within its limit); the script
+   also records the same match whole (20000 ticks) as a replay. It collects `process` and `native-perf`: the
    bundle's `hotspots.json` holds the sampled hotspots with call paths, and the script renders
    the top ones to `bot-match/hotspots.md`. `native-perf` needs `perf` and
    `kernel.perf_event_paranoid` at 2 or lower (user-space cycles). `profiles/native-client.yaml` runs
