@@ -16,7 +16,7 @@ use crate::scene::METRES_PER_UNIT;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use shooter_sim::mechanics::placements;
 use shooter_sim::robot::{Assembly, BETA, CELL_MM, Kind, PartId};
-use shooter_sim::{TICK_HZ, Weapon};
+use shooter_sim::{Instance, TICK_HZ};
 
 /// glTF +X, +Y and +Z as the part's x, z and −y.
 pub const PART_FROM_GLTF: Mat4 = Mat4::from_cols(Vec4::X, Vec4::Z, Vec4::NEG_Y, Vec4::W);
@@ -172,7 +172,15 @@ impl Model {
                 entry,
                 damaged: kit.entry(drawn, "damaged"),
                 robot_from_local,
-                refire: weapon.map_or(0.0, |weapon| refire(build, weapon)),
+                refire: weapon.map_or(0.0, |weapon| {
+                    refire(
+                        build,
+                        Instance {
+                            part: part.id,
+                            weapon,
+                        },
+                    )
+                }),
                 roll,
             });
         }
@@ -237,9 +245,10 @@ impl Model {
     }
 }
 
-/// Seconds between two of `weapon`'s shots in `build` (its mod's tuning included).
-fn refire(build: &Assembly, weapon: Weapon) -> f32 {
+/// Seconds between two of the weapon copy `instance`'s shots in `build` (its own mod's tuning
+/// included).
+fn refire(build: &Assembly, instance: Instance) -> f32 {
     #[allow(clippy::cast_precision_loss)]
-    let ticks = BETA.tuning(build, weapon).refire_ticks(weapon) as f32;
+    let ticks = BETA.tuning(build, instance).refire_ticks(instance.weapon) as f32;
     ticks / f32::from(TICK_HZ)
 }

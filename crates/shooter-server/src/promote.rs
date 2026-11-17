@@ -224,6 +224,7 @@ fn effect(event: &Event) -> Option<String> {
             weapon,
             from,
             direction,
+            ..
         } => Some(format!(
             "{{\"kind\":\"fired\",\"slot\":{slot},\"weapon\":\"{weapon:?}\",\"from\":{},\"direction\":{}}}",
             floats(*from),
@@ -317,7 +318,7 @@ pub fn render(replay: &Replay, at: u64, source: &str) -> Result<String, Error> {
                         floats(f.position),
                         f.yaw,
                         f.pitch,
-                        f.held,
+                        f.held.weapon,
                         f.chassis_health()
                     )
                 })

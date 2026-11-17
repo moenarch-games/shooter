@@ -245,7 +245,7 @@ pub mod online {
     use shooter_sim::repair::Repair;
     use shooter_sim::scenery::PlaceableState;
     use shooter_sim::session::{body_of, slot_of};
-    use shooter_sim::weapons::Delivery;
+    use shooter_sim::weapons::{Delivery, Instance};
     use shooter_sim::wire::encode_input;
     use shooter_sim::{
         Assembly, Event, Intent, MapId, Rules, Session, Snapshot, StepReport, Weapon,
@@ -266,7 +266,7 @@ pub mod online {
         /// The charge in its energy pool (milli-units).
         energy: u32,
         /// The weapon it holds (the host may refuse a switch the prediction made).
-        held: Weapon,
+        held: Instance,
         /// Its field repair (the host may refuse an order, or pause it for a hit the
         /// prediction cannot see).
         repair: Option<Repair>,
@@ -448,12 +448,13 @@ pub mod online {
                         if weapon == Weapon::EnergyBlade => {}
                     Event::Fired {
                         weapon,
+                        part,
                         from,
                         mut direction,
                         ..
                     } => {
                         if let Delivery::Hitscan { range_units, .. } =
-                            me.tuning(weapon).delivery(weapon)
+                            me.tuning(Instance { part, weapon }).delivery(weapon)
                         {
                             let muzzle = aim::Muzzle {
                                 mount: from,
@@ -484,6 +485,7 @@ pub mod online {
                         shots.push(Event::Fired {
                             slot: local,
                             weapon,
+                            part,
                             from,
                             direction,
                         });
@@ -605,9 +607,9 @@ pub mod online {
             predictor.tick(intent).map_err(|error| error.to_string())
         }
 
-        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, u32, Weapon) {
+        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, u32, Instance) {
             self.live().map_or(
-                ([0.0; 3], Motion::default(), None, 0, Weapon::default()),
+                ([0.0; 3], Motion::default(), None, 0, Instance::default()),
                 |predictor| {
                     let local = predictor.local();
                     (

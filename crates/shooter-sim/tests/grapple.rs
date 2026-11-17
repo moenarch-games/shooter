@@ -74,7 +74,10 @@ fn a_robot_without_the_module_has_no_grapple() {
     let charge = session.fighters[0].energy;
     for _ in 0..90 {
         let report = session.tick(hook_intent()).unwrap();
-        assert_ne!(report.fired, Some(Weapon::Grapple));
+        assert_ne!(
+            report.fired.map(|fired| fired.weapon),
+            Some(Weapon::Grapple)
+        );
         assert!(session.local().hook.is_none());
         assert!(!session.events.iter().any(|event| matches!(
             event,
@@ -89,11 +92,11 @@ fn a_robot_without_the_module_has_no_grapple() {
     // And no select key makes it a held weapon.
     session
         .tick(Intent {
-            select: Some(Weapon::Grapple),
+            select: Some(Weapon::Grapple.into()),
             ..Intent::IDLE
         })
         .unwrap();
-    assert_eq!(session.local().arsenal.held, Weapon::EnergyRifle);
+    assert_eq!(session.local().arsenal.held.weapon, Weapon::EnergyRifle);
 }
 
 #[test]
@@ -106,7 +109,7 @@ fn the_hook_leaves_the_module_muzzle_on_its_own_key_whatever_gun_is_held() {
             ..hook_intent()
         })
         .unwrap();
-    assert_eq!(session.local().arsenal.held, Weapon::EnergyRifle);
+    assert_eq!(session.local().arsenal.held.weapon, Weapon::EnergyRifle);
     // The rifle and the hook both went out this tick: separate keys, separate cooldowns.
     let fired: Vec<(Weapon, [f32; 3])> = session
         .events
@@ -121,7 +124,10 @@ fn the_hook_leaves_the_module_muzzle_on_its_own_key_whatever_gun_is_held() {
             .iter()
             .any(|(weapon, _)| *weapon == Weapon::EnergyRifle)
     );
-    assert_eq!(report.fired, Some(Weapon::EnergyRifle));
+    assert_eq!(
+        report.fired.map(|fired| fired.weapon),
+        Some(Weapon::EnergyRifle)
+    );
     let hook = session.local().hook.expect("the hook set");
 
     // From its own muzzle, not the eye: where the module's anchor sits on the robot.
@@ -129,7 +135,10 @@ fn the_hook_leaves_the_module_muzzle_on_its_own_key_whatever_gun_is_held() {
     let muzzle = session.local().muzzle(Weapon::Grapple).unwrap();
     let eye = session.local().eye();
     let report = session.tick(hook_intent()).unwrap();
-    assert_eq!(report.fired, Some(Weapon::Grapple));
+    assert_eq!(
+        report.fired.map(|fired| fired.weapon),
+        Some(Weapon::Grapple)
+    );
     let from = session
         .events
         .iter()
@@ -322,7 +331,10 @@ fn losing_the_module_mid_pull_ends_the_grapple() {
     for _ in 0..90 {
         let report = session.tick(hook_intent()).unwrap();
         assert!(session.local().hook.is_none());
-        assert_ne!(report.fired, Some(Weapon::Grapple));
+        assert_ne!(
+            report.fired.map(|fired| fired.weapon),
+            Some(Weapon::Grapple)
+        );
     }
     assert!(session.fighters[0].energy >= charge);
 }

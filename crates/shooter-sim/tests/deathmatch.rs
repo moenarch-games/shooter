@@ -194,7 +194,7 @@ fn modded_duel_shot(seen_ticks_ago: u32, build: Assembly, weapon: Weapon) -> Opt
         session.step().unwrap();
     };
     let take = Intent {
-        select: Some(weapon),
+        select: Some(weapon.into()),
         ..Intent::IDLE
     };
     for _ in 0..10 {
@@ -416,7 +416,7 @@ fn shots_and_projectiles_leave_the_mounted_muzzle() {
         let aiming = Intent {
             yaw,
             pitch,
-            select: Some(weapon),
+            select: Some(weapon.into()),
             ..Intent::IDLE
         };
         for _ in 0..60 {
@@ -442,6 +442,7 @@ fn shots_and_projectiles_leave_the_mounted_muzzle() {
                 weapon: fired,
                 from,
                 direction,
+                ..
             } if fired == weapon => Some((from, direction)),
             _ => None,
         });
@@ -504,7 +505,7 @@ fn cover_beside_the_muzzle_blocks_what_the_camera_sees() {
     let aiming = Intent {
         yaw,
         pitch,
-        select: Some(Weapon::EnergyRifle),
+        select: Some(Weapon::EnergyRifle.into()),
         ..Intent::IDLE
     };
     for _ in 0..60 {
@@ -540,7 +541,7 @@ fn cover_beside_the_muzzle_blocks_what_the_camera_sees() {
     }
     // A rocket at B meets the cover at once.
     let rocket = Intent {
-        select: Some(Weapon::RocketLauncher),
+        select: Some(Weapon::RocketLauncher.into()),
         ..aiming
     };
     for _ in 0..60 {
@@ -700,7 +701,7 @@ fn the_blade_strikes_the_nearest_part_whatever_gun_is_held() {
         let swing = Intent {
             melee: true,
             forward: i8::from(gap > 150.0),
-            select: Some(Weapon::RocketLauncher),
+            select: Some(Weapon::RocketLauncher.into()),
             ..Intent::IDLE
         };
         session.queue(
@@ -744,7 +745,10 @@ fn the_blade_strikes_the_nearest_part_whatever_gun_is_held() {
         session.fighters[1].alive(),
         "four swings do not break the root chassis"
     );
-    assert_eq!(session.fighters[0].arsenal.held, Weapon::RocketLauncher);
+    assert_eq!(
+        session.fighters[0].arsenal.held.weapon,
+        Weapon::RocketLauncher
+    );
 }
 
 #[test]
@@ -790,7 +794,7 @@ fn rail_kills_score_and_the_round_ends_and_restarts() {
             fire: true,
             yaw,
             pitch,
-            select: Some(Weapon::RailGun),
+            select: Some(Weapon::RailGun.into()),
             ..Intent::IDLE
         };
         session.queue(
@@ -926,7 +930,7 @@ fn inputs_and_snapshots_round_trip() {
         fire: true,
         melee: true,
         grapple: true,
-        select: Some(Weapon::RocketLauncher),
+        select: Some(Weapon::RocketLauncher.into()),
         edit: true,
         repair: Some(shooter_sim::repair::Order::Start(
             shooter_sim::robot::PartId(5),
@@ -1003,7 +1007,7 @@ fn a_standing_input_backlog_is_trimmed_and_a_silent_person_stops() {
     send(
         &mut session,
         Intent {
-            select: Some(Weapon::RocketLauncher),
+            select: Some(Weapon::RocketLauncher.into()),
             ..forward
         },
     );
@@ -1015,7 +1019,10 @@ fn a_standing_input_backlog_is_trimmed_and_a_silent_person_stops() {
     }
     assert_eq!(most, 6);
     assert_eq!(session.fighters[slot].queued_inputs(), BACKLOG_KEEP - 1);
-    assert_eq!(session.fighters[slot].arsenal.held, Weapon::RocketLauncher);
+    assert_eq!(
+        session.fighters[slot].arsenal.held.weapon,
+        Weapon::RocketLauncher
+    );
     let acked = session.fighters[slot].ack;
     assert_eq!(acked, sequence - (BACKLOG_KEEP as u32 - 1));
 
@@ -1045,7 +1052,7 @@ fn the_flame_burns_other_fighters_never_its_owner() {
         let flame = Intent {
             forward: i8::from(gap > 300.0),
             fire: true,
-            select: Some(Weapon::Flamethrower),
+            select: Some(Weapon::Flamethrower.into()),
             ..Intent::IDLE
         };
         session.queue(
@@ -1111,7 +1118,7 @@ fn the_flame_ignites_before_it_burns_a_fighter() {
         // The trigger is let go once, on the 35th tick: the flame goes out and ignites anew.
         let intent = Intent {
             fire: sequence != 35,
-            select: Some(Weapon::Flamethrower),
+            select: Some(Weapon::Flamethrower.into()),
             ..Intent::IDLE
         };
         session.queue(
@@ -1166,7 +1173,7 @@ fn the_pyro_fires_its_laser_and_its_flamethrower() {
     session.join(1).unwrap();
     session.join(2).unwrap();
     equip(&mut session, 0, PYRO);
-    assert_eq!(session.fighters[0].arsenal.held, Weapon::Laser);
+    assert_eq!(session.fighters[0].arsenal.held.weapon, Weapon::Laser);
     let mut sequence = 0;
     // What A's hits on B dealt, while firing `weapon` for `ticks`.
     let mut fire = |session: &mut Session, weapon: Weapon, ticks: u32| {
@@ -1178,8 +1185,8 @@ fn the_pyro_fires_its_laser_and_its_flamethrower() {
             let intent = Intent {
                 yaw,
                 pitch,
-                fire: session.fighters[0].arsenal.held == weapon,
-                select: Some(weapon),
+                fire: session.fighters[0].arsenal.held.weapon == weapon,
+                select: Some(weapon.into()),
                 ..Intent::IDLE
             };
             session.queue(
@@ -1372,7 +1379,7 @@ fn rail_tick(session: &mut Session, b: Option<Intent>) {
         fire: session.fighters[1].alive(),
         yaw,
         pitch,
-        select: Some(Weapon::RailGun),
+        select: Some(Weapon::RailGun.into()),
         ..Intent::IDLE
     };
     for (id, intent) in [(1, Some(rail)), (2, b)] {
@@ -1493,7 +1500,7 @@ fn a_build_configured_before_playing_applies_at_once() {
     assert!(session.configure(2, PYRO));
     let b = &session.fighters[1];
     assert_eq!((b.build, b.configured), (PYRO, PYRO));
-    assert_eq!(b.arsenal.held, Weapon::Laser);
+    assert_eq!(b.arsenal.held.weapon, Weapon::Laser);
     assert_eq!(b.energy, b.pool().capacity);
     rail_tick(&mut session, Some(Intent::IDLE));
     assert!(session.configure(2, HEAVY));

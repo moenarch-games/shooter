@@ -13,7 +13,7 @@ use render_engine::glam::{Mat3, Mat4, Quat, Vec3};
 use shooter_sim::damage::PartDamage;
 use shooter_sim::mechanics::{DebrisState, placements};
 use shooter_sim::robot::PartId;
-use shooter_sim::{Assembly, Event, Weapon};
+use shooter_sim::{Assembly, Event, Instance};
 
 const SLOTS: usize = u8::MAX as usize + 1;
 /// How fast a lost part falls (metres a second squared).
@@ -76,14 +76,14 @@ pub struct Remains {
     pub center: Vec3,
     pub forward: Vec3,
     pub build: Assembly,
-    pub held: Weapon,
+    pub held: Instance,
     pub dead_for: f32,
 }
 
 #[derive(Clone, Debug)]
 pub struct Tracker {
     since_fired: Vec<f32>,
-    fired: Vec<(Weapon, u32)>,
+    fired: Vec<(Instance, u32)>,
     alive: Vec<Option<Remains>>,
     dead: Vec<Option<Remains>>,
     lost: Vec<Vec<Lost>>,
@@ -95,7 +95,7 @@ impl Default for Tracker {
     fn default() -> Self {
         Self {
             since_fired: vec![f32::INFINITY; SLOTS],
-            fired: vec![(Weapon::EnergyRifle, 0); SLOTS],
+            fired: vec![(Instance::default(), 0); SLOTS],
             alive: vec![None; SLOTS],
             dead: vec![None; SLOTS],
             lost: vec![Vec::new(); SLOTS],
@@ -111,7 +111,7 @@ impl Tracker {
         &mut self,
         events: &[Event],
         local: Option<u8>,
-        fired: Option<Weapon>,
+        fired: Option<Instance>,
         seconds: f32,
     ) {
         for since in &mut self.since_fired {
@@ -129,8 +129,10 @@ impl Tracker {
         for event in events {
             match *event {
                 // The local fighter's own shots count once, as predicted (`fired`).
-                Event::Fired { slot, weapon, .. } if Some(slot) != local => {
-                    self.shot(slot, weapon);
+                Event::Fired {
+                    slot, weapon, part, ..
+                } if Some(slot) != local => {
+                    self.shot(slot, Instance { part, weapon });
                 }
                 Event::Killed { victim, .. } => {
                     let slot = usize::from(victim);
@@ -146,7 +148,7 @@ impl Tracker {
     }
 
     /// `slot` is drawn alive this frame.
-    pub fn seen(&mut self, slot: u8, center: Vec3, forward: Vec3, build: Assembly, held: Weapon) {
+    pub fn seen(&mut self, slot: u8, center: Vec3, forward: Vec3, build: Assembly, held: Instance) {
         let slot = usize::from(slot);
         self.alive[slot] = Some(Remains {
             center,
@@ -229,11 +231,11 @@ impl Tracker {
             .collect()
     }
 
-    fn shot(&mut self, slot: u8, weapon: Weapon) {
+    fn shot(&mut self, slot: u8, instance: Instance) {
         let slot = usize::from(slot);
         self.since_fired[slot] = 0.0;
         let (_, shots) = self.fired[slot];
-        self.fired[slot] = (weapon, shots.wrapping_add(1));
+        self.fired[slot] = (instance, shots.wrapping_add(1));
     }
 
     #[must_use]
@@ -241,9 +243,9 @@ impl Tracker {
         self.since_fired[usize::from(slot)]
     }
 
-    /// The weapon of `slot`'s last shot and how many shots it has fired.
+    /// The weapon copy of `slot`'s last shot and how many shots it has fired.
     #[must_use]
-    pub fn fired(&self, slot: u8) -> (Weapon, u32) {
+    pub fn fired(&self, slot: u8) -> (Instance, u32) {
         self.fired[usize::from(slot)]
     }
 
@@ -259,11 +261,18 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shooter_sim::Weapon;
 
     #[test]
     fn a_fighter_lies_where_it_died_until_it_respawns() {
         let mut tracker = Tracker::default();
-        tracker.seen(3, Vec3::ONE, Vec3::Z, Assembly::default(), Weapon::Shotgun);
+        tracker.seen(
+            3,
+            Vec3::ONE,
+            Vec3::Z,
+            Assembly::default(),
+            Instance::new(10, Weapon::Shotgun),
+        );
         tracker.tick(
             &[Event::Killed {
                 victim: 3,
@@ -363,16 +372,18 @@ mod tests {
     #[test]
     fn shots_reset_the_fire_clock() {
         let mut tracker = Tracker::default();
-        tracker.tick(&[], Some(1), Some(Weapon::Laser), 0.1);
+        let laser = Instance::new(7, Weapon::Laser);
+        tracker.tick(&[], Some(1), Some(laser), 0.1);
         assert!(tracker.since_fired(1) < 1e-6);
         tracker.tick(&[], Some(1), None, 0.1);
         assert!((tracker.since_fired(1) - 0.1).abs() < 1e-6);
         assert!(tracker.since_fired(2).is_infinite());
-        assert_eq!(tracker.fired(1), (Weapon::Laser, 1));
+        assert_eq!(tracker.fired(1), (laser, 1));
         tracker.tick(
             &[Event::Fired {
                 slot: 2,
                 weapon: Weapon::RocketLauncher,
+                part: shooter_sim::robot::PartId(9),
                 from: [0.0; 3],
                 direction: [0.0, 0.0, 1.0],
             }],
@@ -380,7 +391,10 @@ mod tests {
             None,
             0.1,
         );
-        assert_eq!(tracker.fired(2), (Weapon::RocketLauncher, 1));
+        assert_eq!(
+            tracker.fired(2),
+            (Instance::new(9, Weapon::RocketLauncher), 1)
+        );
         assert!(tracker.since_fired(2) < 1e-6);
     }
 }

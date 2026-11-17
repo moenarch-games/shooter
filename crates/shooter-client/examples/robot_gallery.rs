@@ -25,7 +25,7 @@ use shooter_client::gpu::Gpu;
 use shooter_client::robots::{self, Frames, PartStates, RobotState, RobotView, Robots};
 use shooter_sim::mechanics::{Command, Controls, Layout, Mechanics, fixtures};
 use shooter_sim::robot::{HEAVY, MARKSMAN, PYRO, PartId, SKIRMISHER, STANDARD};
-use shooter_sim::{Assembly, MapId, Weapon};
+use shooter_sim::{Assembly, Instance, MapId, Weapon};
 
 const SIZE: (u32, u32) = (1600, 900);
 
@@ -110,9 +110,9 @@ fn standing(at: Vec3, forward: Vec3) -> RobotState {
         sliding: false,
         hook: None,
         since_fired: f32::INFINITY,
-        fired: Weapon::EnergyRifle,
+        fired: Instance::new(7, Weapon::EnergyRifle),
         shots: 0,
-        held: Weapon::EnergyRifle,
+        held: Instance::new(7, Weapon::EnergyRifle),
         energy: 1.0,
         swing: None,
         dead_for: None,
@@ -275,7 +275,7 @@ fn main() -> Result<(), String> {
         (
             RobotState {
                 swing: Some(0.5),
-                held: Weapon::EnergyBlade,
+                held: Instance::new(8, Weapon::EnergyBlade),
                 ..base(6)
             },
             Some(simulated(STANDARD, 0, 0, stand, &base(6))?),
@@ -345,8 +345,8 @@ fn main() -> Result<(), String> {
             (
                 HEAVY,
                 RobotState {
-                    held: Weapon::RocketLauncher,
-                    fired: Weapon::RocketLauncher,
+                    held: Instance::new(9, Weapon::RocketLauncher),
+                    fired: Instance::new(9, Weapon::RocketLauncher),
                     since_fired: 0.12,
                     shots: 1,
                     ..base(3)
@@ -355,8 +355,8 @@ fn main() -> Result<(), String> {
             (
                 HEAVY,
                 RobotState {
-                    held: Weapon::RailGun,
-                    fired: Weapon::RailGun,
+                    held: Instance::new(7, Weapon::RailGun),
+                    fired: Instance::new(7, Weapon::RailGun),
                     since_fired: 0.75,
                     energy: 0.4,
                     ..base(4)
@@ -365,7 +365,7 @@ fn main() -> Result<(), String> {
             (
                 SKIRMISHER,
                 RobotState {
-                    held: Weapon::Shotgun,
+                    held: Instance::new(10, Weapon::Shotgun),
                     hook: Some(base(5).center + Vec3::new(0.7, 1.6, -1.6)),
                     ..base(5)
                 },
@@ -373,8 +373,8 @@ fn main() -> Result<(), String> {
             (
                 MARKSMAN,
                 RobotState {
-                    held: Weapon::RailGun,
-                    fired: Weapon::RailGun,
+                    held: Instance::new(9, Weapon::RailGun),
+                    fired: Instance::new(9, Weapon::RailGun),
                     since_fired: 0.1,
                     ..base(6)
                 },
@@ -382,8 +382,8 @@ fn main() -> Result<(), String> {
             (
                 PYRO,
                 RobotState {
-                    held: Weapon::Flamethrower,
-                    fired: Weapon::Flamethrower,
+                    held: Instance::new(9, Weapon::Flamethrower),
+                    fired: Instance::new(9, Weapon::Flamethrower),
                     since_fired: 0.05,
                     ..base(7)
                 },
