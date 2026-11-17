@@ -28,6 +28,7 @@ cargo test -p shooter-sim --test deathmatch --locked                       # bot
 cargo test -p shooter-sim --test mechanics --locked                        # mechanical robots: fixtures, gaits, motor energy, exact restore
 cargo test -p shooter-sim --test match_robots --locked                     # robots in the match: slots, exact prediction (whole, one leg), replay, severed parts
 cargo test -p shooter-sim --test damage --locked                           # per-part damage: front/side hits, splash, plates, lost parts, core kill, battery blast
+cargo test -p shooter-sim --test destruction --locked                      # arena destruction (`scenery`): stable IDs, hitscan and blast breaks, overlapping cover, opened lines and routes, round restore, wire, predictor, replays (arena_views -- MAP DIR broken draws it)
 cargo test -p shooter-client --test online --locked                        # two clients through a real host on loopback
 scripts/fetch-robot-kit.sh                                                 # the pinned asset-tooling robot, weapons, locomotion and arena kits into target/robot-kit, target/weapon-kit, target/locomotion-kit, target/arena-kit (the client and its tests read them)
 scripts/gen-arena-kit.py                                                   # after an arena kit pin bump: rewrite the simulation's collision table from its descriptor

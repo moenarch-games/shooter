@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! scripts/fetch-robot-kit.sh
-//! cargo run -p shooter-client --release --example arena_views -- [<map> [<directory>]]
+//! cargo run -p shooter-client --release --example arena_views -- [<map> [<directory> [broken]]]
 //! ```
 //!
 //! writes `overview.ppm` and `view-1.ppm`, `view-2.ppm`, … (the map's [`views`]) into the
@@ -17,6 +17,7 @@ use shooter_client::arena_art::ArenaArt;
 use shooter_client::gpu::Gpu;
 use shooter_client::robots::{self, PartStates, RobotState, RobotView, Robots};
 use shooter_sim::robot::STANDARD;
+use shooter_sim::scenery::{PlaceableState, Scenery};
 use shooter_sim::{MapId, Weapon};
 
 const SIZE: (u32, u32) = (1600, 900);
@@ -60,6 +61,9 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
     }
 }
 
+/// Besides the overview and the map's [`views`] it writes close views of three of its damageable
+/// placeables (`placeable-<id>.ppm`, shooter#60); with `broken` every damageable placeable is
+/// drawn as the kit's broken variant, as a snapshot naming it broken has it drawn.
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let map: MapId = args
@@ -67,11 +71,27 @@ fn main() -> Result<(), String> {
         .map_or(Ok(MapId::AssemblyWorks), |id| id.parse())
         .map_err(|error| error.to_string())?;
     let out = std::path::PathBuf::from(args.next().unwrap_or_else(|| "target/arena-views".into()));
+    let broken = args.next().as_deref() == Some("broken");
     std::fs::create_dir_all(&out).map_err(|error| error.to_string())?;
     let mut gpu = Gpu::offscreen(SIZE.0, SIZE.1)?;
     let arena = map.arena();
     let art = ArenaArt::new(&mut gpu.world, robots::load::read_arena()?)?;
-    shooter_client::scene::build(&mut gpu.world, &arena, Some(&art));
+    let placed = shooter_client::scene::build(&mut gpu.world, &arena, Some(&art))
+        .ok_or("the map is not kit-built")?;
+    // `broken`: every damageable placeable drawn as the host draws it once it breaks.
+    let scenery = Scenery::of(&arena);
+    if broken {
+        let state: Vec<PlaceableState> = scenery
+            .placeables()
+            .iter()
+            .filter(|placeable| placeable.damageable())
+            .map(|placeable| PlaceableState {
+                id: placeable.id,
+                health: 0,
+            })
+            .collect();
+        art.show(&mut gpu.world, &placed, &state);
+    }
     let mut robots = Robots::new(&mut gpu.world, robots::load::read()?)?;
     let views_of: Vec<RobotView> = arena
         .spawn_points()
@@ -121,6 +141,30 @@ fn main() -> Result<(), String> {
             .enumerate()
             .map(|(index, view)| (format!("view-{}", index + 1), view)),
     );
+    // Close views of a few of its damageable placeables (shooter#60), spread through their ID
+    // order: what breaks, whole or (with `broken`) as the kit's broken variant.
+    let damageable: Vec<u16> = scenery
+        .placeables()
+        .iter()
+        .filter(|placeable| placeable.damageable())
+        .map(|placeable| placeable.id)
+        .collect();
+    let close = (0..3)
+        .filter_map(|third| damageable.get(third * damageable.len() / 3))
+        .map(|id| {
+            let [min, max] = arena.placements[usize::from(*id)].bounds();
+            #[allow(clippy::cast_precision_loss)]
+            let center = Vec3::new(
+                (min.x + max.x) as f32,
+                (min.y + max.y) as f32,
+                (min.z + max.z) as f32,
+            ) * 0.005;
+            (
+                format!("placeable-{id}"),
+                (center + Vec3::new(2.4, 1.8, 3.2), center),
+            )
+        });
+    let shots = shots.chain(close);
     for (name, (eye, target)) in shots {
         let scene = shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new());
         gpu.render(&scene, 0)?;

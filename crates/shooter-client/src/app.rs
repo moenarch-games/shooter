@@ -1,7 +1,7 @@
 //! The window, the fixed-tick loop and the frame: input in, the match ticks (in-process practice
 //! or a hosted match), render out.
 
-use crate::arena_art::ArenaArt;
+use crate::arena_art::{ArenaArt, Placed};
 use crate::audio::Sounds;
 use crate::builder::view::{Action, Builder, Stage, death_prompt};
 use crate::camera::{self, Follow};
@@ -99,6 +99,8 @@ pub struct App {
     game: Game,
     /// The map drawn in the GPU's world, once the game knows it and the GPU is up.
     drawn: Option<MapId>,
+    /// Its kit-built modules, drawn as the match's snapshots say they stand (broken or whole).
+    placed: Option<Placed>,
     controls: Controls,
     look: Look,
     pads: Option<gilrs::Gilrs>,
@@ -175,6 +177,7 @@ impl App {
             look: Look::new(radians(game.map().map_or(0, |map| map.arena().spawn_yaw))),
             game,
             drawn: None,
+            placed: None,
             controls: Controls::new(),
             pads: gilrs::Gilrs::new()
                 .inspect_err(|error| crate::log(&format!("gamepads unavailable: {error}")))
@@ -332,6 +335,7 @@ impl App {
             look: Look::new(radians(game.map().map_or(0, |map| map.arena().spawn_yaw))),
             game,
             drawn: None,
+            placed: None,
             controls: Controls::new(),
             pads: None,
             sounds: Sounds::new(),
@@ -486,8 +490,22 @@ impl App {
             return;
         }
         let art = self.arena_art.as_ref().and_then(|art| art.as_ref().ok());
-        scene::build(&mut gpu.world, &arena, art);
+        self.placed = scene::build(&mut gpu.world, &arena, art);
         self.drawn = Some(map);
+    }
+
+    /// The drawn arena's placeables as the match's latest snapshot has them (the host's word
+    /// online, the in-process match's in practice): the renderer keeps no damage of its own.
+    fn show_scenery(&mut self) {
+        let (Some(gpu), Some(placed), Some(Ok(art)), Some(snapshot)) = (
+            &mut self.gpu,
+            &self.placed,
+            &self.arena_art,
+            self.game.snapshot(),
+        ) else {
+            return;
+        };
+        art.show(&mut gpu.world, placed, &snapshot.scenery);
     }
 
     fn capture(&mut self, captured: bool) {
@@ -730,6 +748,7 @@ impl App {
         }
         let ticks = ticks.min(MAX_TICKS_PER_FRAME);
         self.draw_map();
+        self.show_scenery();
         #[cfg(target_arch = "wasm32")]
         if self.builder_shown != self.builder.is_some() {
             self.builder_shown = self.builder.is_some();

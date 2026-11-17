@@ -72,7 +72,7 @@ built from asset-tooling's arena kit; two interim greybox maps stay:
   by a jump pad at its foot that throws 15 m/s up, or by the grapple on its 3 m mast. 4 m deep
   charging bays in the side walls, the bay walls, the tower and the floor's 4 m pillars break
   the long lines; no spawn point is in sight of another, and none is a dead end. Its low cover,
-  barriers and crates are marked as destruction candidates for shooter#60 (nothing breaks yet)
+  barriers and crates are destruction candidates that break (shooter#60, below)
   and four repair anchors (under the mezzanines and in the bays) are data for shooter#61. Plan,
   views and frames: [docs/captures/52](docs/captures/52).
 - `proving-cell`, the small close-quarters arena (shooter#53; 2 to 6 players, 12 spawn points so
@@ -129,6 +129,32 @@ match, at most one per spawn point). The host picks each match's map
 so a joining client builds and predicts on that map; practice takes `--map <id>` natively or
 `?map=<id>` in the browser. Replays record their map and restore it; an unknown map ID is
 refused everywhere.
+
+**Arena destruction** (shooter#60). On a kit-built map the placements its map marks as
+destruction candidates (low cover, barriers, crates; doors once a map places one) are damageable
+placeables (`shooter_sim::scenery`), each with a stable ID, its placement's index in the map.
+The host alone damages them, through the hit queries that already hurt robots: a hitscan ray or
+a pellet that stops on one, the flame burning on one, a blade swing that meets one instead of a
+robot, a rocket's blast by the point of its pieces nearest the blast (the same falloff as on
+robot parts). At zero health it breaks: its placement turns to the kit's broken variant and its
+collision to that variant's proxies, at the end of the tick that broke it, so from the next
+tick on the physics world, the robots' world, every ray, projectile and flame, hooks (one set on
+it lets go) and the bots' sight and walks all meet the broken pieces. Only the candidates break:
+floors, decks, platforms, ramps, walls and the blast screens never do, and a candidate something
+else rests on (the lower crate of a stack) carries it and never breaks either. Each candidate
+keeps a run of body IDs of its own, so breaking one moves no other body. A broken placeable stays
+broken through deaths and respawns until the round restarts, which brings every one back whole.
+Health is provisional (Atlas Q2.i60.1): low cover 150, a barrier 250, a crate 60, a door 200.
+The snapshot carries the damaged placeables' health by ID (wire 17), so replays verify it tick
+for tick; a predicting client stands its arena as the host's last snapshot has it before every
+predicted tick, so what its own predicted shots do to the arena lasts one tick at most, and both clients draw each placeable as
+the kit's intact or broken mesh from the snapshot alone (no damage rule of their own, no rubble
+or placeholder art; the box fallback for a kit that cannot be read stays whole).
+`cargo test -p shooter-sim --test destruction` covers hitscan and blast destruction, overlapping
+cover, a shot and a jump blocked before and open after, restoration, the wire, a predictor and
+replays; `physics_ab` checks broken collision on the Rapier oracle;
+`cargo run -p shooter-client --release --example arena_views -- MAP DIR broken` draws a map with
+every placeable broken ([docs/captures/60](docs/captures/60)).
 
 ```sh
 scripts/fetch-robot-kit.sh                 # the pinned robot, weapons, locomotion and arena kits into target/*-kit
@@ -476,7 +502,7 @@ as tinted plates with the module floating over them while it is there. Values ar
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points
 and the map's waypoints (wall gaps, doorways, ramp ends, the decks, the platforms), taking only straight
-walks no wall or ramp side blocks,
+walks no wall or ramp side blocks (pressed against a wall, with no such walk, the nearest point),
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
 degrees of wandering error, strafing as they fire; the flamethrower inside 5 m, the rifle (even
 slots) or the shotgun (odd slots) up close, rockets or the laser at mid range, the rail gun far off,

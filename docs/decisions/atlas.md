@@ -498,3 +498,15 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
 - **Q2.i70.6**: Performance limits: parts per robot, articulated bodies and active debris per match,
   debris lifetime, and the representative multi-robot scenes they are measured on (D2.i70.1,
   D2.i70.5, D2.i70.10).
+- **Q2.i60.1**: Arena destruction balance: which placeables of each map break, their health, what
+  damages them and how much, and whether a broken one ever comes back within a round (D2.i46.11;
+  shooter#60 leaves pieces and thresholds to map and content balance).
+  Defaults in use until decided (shooter#60, `shooter_sim::scenery`): each kit-built map's marked
+  destruction candidates break (its low cover, barriers and crates; a door once a map places one),
+  except a candidate another module rests on (the lower crate of a stack), which carries it.
+  Health: low cover 150, a barrier 250, a crate 60, a door 200. Every weapon damages them as it
+  damages a robot part it meets first: hitscan and pellets that stop on one, the flame on the one
+  it stops on, a blade swing that strikes no robot, a rocket's blast by the nearest point of its
+  pieces with the robots' falloff (100 at the blast, nothing at 3 m); a battery's blast does
+  not. Broken is final for the round (deaths and respawns keep it); a new round restores every
+  placeable.
