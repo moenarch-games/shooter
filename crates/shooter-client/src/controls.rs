@@ -29,6 +29,9 @@ pub const MELEE: &str = "weapon.melee";
 pub const NEXT: &str = "weapon.next";
 /// ...and back: wheel up or Q.
 pub const PREVIOUS: &str = "weapon.previous";
+/// Field repair (shooter#61): R opens the quick repair menu and, pressed again, repairs the
+/// part chosen there (the wheel and Q/E move through it while it is open).
+pub const REPAIR: &str = "robot.repair";
 /// Select actions, in [`Weapon::ROTATION`] order.
 pub const SELECT: [&str; Weapon::ROTATION.len()] = [
     "weapon.energyRifle",
@@ -105,7 +108,7 @@ fn mouse_button(button: u16) -> InputStroke {
 pub fn action_registry() -> ActionRegistry {
     use AxisDirection::{Negative, Positive};
     use standard::{LEFT_X, LEFT_Y, SOUTH};
-    let actions: [(&str, &str, Vec<InputStroke>); 18] = [
+    let actions: [(&str, &str, Vec<InputStroke>); 19] = [
         (
             MOVE_FORWARD,
             "Move forward",
@@ -154,6 +157,11 @@ pub fn action_registry() -> ActionRegistry {
         (SELECT[4], "Shotgun", vec![key("Digit5")]),
         (SELECT[5], "Laser", vec![key("Digit6")]),
         (SELECT[6], "Flamethrower", vec![key("Digit7")]),
+        (
+            REPAIR,
+            "Repair menu / repair the chosen part",
+            vec![key("KeyR")],
+        ),
     ];
     ActionRegistry {
         actions: actions
@@ -165,6 +173,8 @@ pub fn action_registry() -> ActionRegistry {
                 category_path: vec![
                     if id.starts_with("weapon.") {
                         "Weapons"
+                    } else if id.starts_with("robot.") {
+                        "Robot"
                     } else {
                         "Movement"
                     }
@@ -240,6 +250,8 @@ pub struct Controls {
     keys: BTreeMap<KeyCode, InputStroke>,
     /// Weapon steps pressed since the last tick took them: + next, - previous.
     steps: i32,
+    /// Repair presses since the last tick took them.
+    repairs: u32,
     wheel: Notches,
 }
 
@@ -283,6 +295,7 @@ impl Controls {
             pad_strokes,
             keys: BTreeMap::new(),
             steps: 0,
+            repairs: 0,
             wheel: Notches::default(),
         }
     }
@@ -295,6 +308,7 @@ impl Controls {
                 match dispatch.action.as_str() {
                     NEXT => self.steps += 1,
                     PREVIOUS => self.steps -= 1,
+                    REPAIR => self.repairs += 1,
                     _ => {}
                 }
             }
@@ -317,6 +331,11 @@ impl Controls {
     /// The weapon steps pressed since the last call: + next, - previous.
     pub fn take_steps(&mut self) -> i32 {
         std::mem::take(&mut self.steps)
+    }
+
+    /// The repair presses since the last call.
+    pub fn take_repairs(&mut self) -> u32 {
+        std::mem::take(&mut self.repairs)
     }
 
     /// winit's `KeyCode` names are the W3C physical key codes.
@@ -361,6 +380,7 @@ impl Controls {
     pub fn release_all(&mut self) {
         self.keys.clear();
         self.steps = 0;
+        self.repairs = 0;
         self.wheel = Notches::default();
         for (_, down) in &mut self.pad_strokes {
             *down = false;

@@ -10,6 +10,7 @@
 //! choice comes from its own seeded stream (SplitMix64, `crate::rng`), so a match replays
 //! exactly.
 
+use crate::aim;
 use crate::arena::Arena;
 use crate::physics::{Vec3i, World};
 use crate::player::Intent;
@@ -93,12 +94,6 @@ const fn turn(from: u16, to: u16) -> i32 {
 
 const fn turned(from: u16, by: i32) -> u16 {
     from.wrapping_add(by as i16 as u16)
-}
-
-/// The pitch steps (`trig` angle, up positive) looking `rise` up over `run` across.
-fn pitch_of(rise: i32, run: i32) -> i16 {
-    let angle = trig::yaw_from_vector(rise, run.max(1)).unwrap_or(0);
-    (angle as i16).clamp(-MAX_PITCH, MAX_PITCH)
 }
 
 impl Bot {
@@ -194,7 +189,7 @@ impl Bot {
             .target
             .and_then(|target| sights[target].chassis.or(sights[target].center))
         {
-            Some(target) => self.fight(me, eye, target, held, sights[me].armed, tick),
+            Some(target) => self.fight(me, (eye, target), world, held, sights[me].armed, tick),
             None => self.wander(center, arena),
         };
         // Stuck against something while walking (within a few centimetres of where it last got
@@ -230,8 +225,8 @@ impl Bot {
     fn fight(
         &mut self,
         me: usize,
-        eye: Vec3i,
-        target: Vec3i,
+        (eye, target): (Vec3i, Vec3i),
+        world: &World,
         held: Weapon,
         armed: [bool; 8],
         tick: u32,
@@ -244,11 +239,12 @@ impl Bot {
             self.error = (self.signed(AIM_ERROR_YAW), self.signed(AIM_ERROR_PITCH));
             self.error_until = tick + AIM_ERROR_TICKS;
         }
-        let yaw = turned(
-            trig::yaw_from_vector(dx, dz).unwrap_or(self.yaw),
-            self.error.0,
-        );
-        let pitch = i16::try_from(i32::from(pitch_of(dy, run)) + self.error.1)
+        // It puts its reticle (the camera's centre ray, [`aim::at`]) on the target.
+        #[allow(clippy::cast_precision_loss)]
+        let units = |at: Vec3i| [at.x as f32, at.y as f32, at.z as f32];
+        let (aim_yaw, aim_pitch) = aim::at(Some(world), units(eye), units(target));
+        let yaw = turned(aim_yaw, self.error.0);
+        let pitch = i16::try_from(i32::from(aim_pitch) + self.error.1)
             .unwrap_or(0)
             .clamp(-MAX_PITCH, MAX_PITCH);
         self.face(yaw, pitch);
@@ -306,6 +302,7 @@ impl Bot {
                 && dy.abs() < crate::player::EYE_HEIGHT_UNITS,
             select: Some(weapon),
             edit: false,
+            repair: None,
         }
     }
 

@@ -102,7 +102,7 @@ const MARGIN: f32 = 16.0;
 const CATALOGUE_WIDTH: f32 = 248.0;
 const INSPECTOR_WIDTH: f32 = 272.0;
 const BAR_HEIGHT: f32 = 92.0;
-const ROW: f32 = 19.0;
+const ROW: f32 = 18.0;
 const CELL: f32 = 2.0;
 /// The font cell of the smaller text: a glyph cell snaps to whole pixels, so below 2 it reads no
 /// smaller at 720 lines; it stays one name for the lines that would shrink first.
@@ -728,6 +728,7 @@ impl Builder {
                 },
                 glow: 0.0,
                 parts: crate::robots::PartStates::default(),
+                highlight: None,
             };
             robots.update(world, &[view], seconds)
         });

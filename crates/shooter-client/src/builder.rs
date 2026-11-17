@@ -340,6 +340,7 @@ pub fn part_name(kind: &PartType) -> String {
         Kind::Joint(Joint::Rotor) => "Rotor".to_owned(),
         Kind::Battery => "Battery".to_owned(),
         Kind::Sensor => "Sensor".to_owned(),
+        Kind::Repair => "Repair module".to_owned(),
         Kind::Locomotion(Locomotion::Leg) => "Leg".to_owned(),
         Kind::Locomotion(Locomotion::Wheel) => "Wheel".to_owned(),
         Kind::Locomotion(Locomotion::Track) => "Track".to_owned(),

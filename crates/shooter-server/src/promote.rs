@@ -222,11 +222,11 @@ fn effect(event: &Event) -> Option<String> {
         Event::Fired {
             slot,
             weapon,
-            eye,
+            from,
             direction,
         } => Some(format!(
             "{{\"kind\":\"fired\",\"slot\":{slot},\"weapon\":\"{weapon:?}\",\"from\":{},\"direction\":{}}}",
-            floats(*eye),
+            floats(*from),
             floats(*direction)
         )),
         Event::Beam {

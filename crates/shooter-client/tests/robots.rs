@@ -12,7 +12,7 @@
 
 use render_engine::glam::{Mat4, Vec3};
 use shooter_client::robots::Frames;
-use shooter_client::robots::kit::{Bundle, KitData, MAX_TOTAL_BYTES, Plan};
+use shooter_client::robots::kit::{Bundle, KitData, MAX_TOTAL_BYTES, Plan, drawn_key};
 use shooter_client::robots::load;
 use shooter_client::robots::model::Model;
 use shooter_client::robots::pose::{
@@ -224,7 +224,7 @@ fn loadouts_and_fixtures_draw_every_part_from_the_kits() {
         assert_eq!(model.parts.len(), build.parts().len(), "{name}");
         for (part, drawn) in build.parts().iter().zip(&model.parts) {
             assert_eq!(part.id, drawn.id);
-            let kit_part = kit.entries[drawn.entry].key == drawn.key;
+            let kit_part = kit.entries[drawn.entry].key == drawn_key(drawn.key);
             assert!(kit_part, "{name}: {}", drawn.key);
         }
     }
@@ -851,6 +851,90 @@ fn every_weapon_has_its_states_channels_and_muzzle_in_the_kit() {
     }
 }
 
+/// The simulation's muzzle table ([`shooter_sim::aim::MUZZLE_ANCHORS_MM`]) is the pinned weapons
+/// kit's: each weapon's muzzle anchor (the rocket pod's first tube), and the long barrel's
+/// muzzle on the weapon's `mod-muzzle` anchor.
+#[test]
+fn the_simulations_muzzles_are_the_kits() {
+    let kit = kit();
+    let gear = |key: &str| {
+        kit.entries[kit.entry(key, "default").unwrap()]
+            .gear
+            .clone()
+            .unwrap()
+    };
+    let mm = |at: Vec3| (at * 1_000.0).round().to_array().map(|axis| axis as i32);
+    let barrel = gear("mod.long-barrel");
+    let barrel_muzzle = barrel.anchor("muzzle").unwrap();
+    for (weapon, modification, table) in shooter_sim::aim::MUZZLE_ANCHORS_MM {
+        let key = shooter_sim::robot::BETA
+            .parts
+            .iter()
+            .find(|p| p.kind == shooter_sim::robot::Kind::Weapon(weapon))
+            .unwrap()
+            .key;
+        let weapon_gear = gear(key);
+        let at = match modification {
+            None => {
+                let name = if weapon == Weapon::RocketLauncher {
+                    "muzzle-a"
+                } else {
+                    "muzzle"
+                };
+                weapon_gear.anchor(name).unwrap().position
+            }
+            Some(modification) => {
+                assert_eq!(modification, shooter_sim::robot::LONG_BARREL);
+                let mount = weapon_gear.anchor("mod-muzzle").unwrap();
+                mount.frame().transform_point3(barrel_muzzle.position)
+            }
+        };
+        assert_eq!(mm(at), table, "{key} {modification:?}");
+    }
+    // Every weapon but the blade has one, every long-barrel weapon its own.
+    for weapon in Weapon::ALL {
+        assert_eq!(
+            shooter_sim::aim::muzzle_anchor_mm(weapon, None).is_none(),
+            weapon == Weapon::EnergyBlade
+        );
+    }
+}
+
+/// Where the simulation fires from is where the client draws the muzzle at rest: every
+/// weapon of the armory and the marksman's long barrel (the rocket pod's first tube).
+#[test]
+fn the_simulations_muzzles_are_where_the_robot_draws_them() {
+    use shooter_sim::damage::{Hitboxes, PartDamage};
+    use shooter_sim::physics::articulated::Pose;
+    let kit = kit();
+    for build in [shooter_sim::robot::ARMORY, MARKSMAN] {
+        let model = Model::of(&build, kit).unwrap();
+        let idle = posed(&model, &standing(), &PartStates::default());
+        // The parts in the robot's own frame.
+        let frames: Vec<(PartId, Pose)> = build
+            .parts()
+            .iter()
+            .map(|part| (part.id, Pose::IDENTITY))
+            .collect();
+        let boxes = Hitboxes::posed(&build, &PartDamage::fresh(&build), &frames);
+        for drawn in &idle.muzzles {
+            if matches!(drawn.weapon, Weapon::RocketLauncher | Weapon::Grapple) {
+                continue;
+            }
+            let muzzle = shooter_sim::aim::muzzle(&build, &boxes, drawn.weapon).unwrap();
+            let at = idle
+                .world_from_robot
+                .transform_point3(Vec3::from(muzzle.at) * 0.01);
+            assert!(
+                (at - drawn.position).length() < 0.01,
+                "{:?}: simulation {at} drawn {}",
+                drawn.weapon,
+                drawn.position
+            );
+        }
+    }
+}
+
 #[test]
 fn shots_start_at_the_muzzles_and_mods_ride_their_weapons() {
     let kit = kit();
@@ -1126,7 +1210,7 @@ fn every_build_draws_its_wheels_and_tracks_from_the_locomotion_kit() {
     for (name, build) in builds() {
         let model = Model::of(&build, kit).expect(name);
         for drawn in &model.parts {
-            assert_eq!(kit.entries[drawn.entry].key, drawn.key, "{name}");
+            assert_eq!(kit.entries[drawn.entry].key, drawn_key(drawn.key), "{name}");
             assert_eq!(kit.entries[drawn.entry].variant, "default", "{name}");
             let rolls = matches!(drawn.key, "robot.wheel" | "robot.track");
             assert_eq!(drawn.roll.is_some(), rolls, "{name}: {}", drawn.key);

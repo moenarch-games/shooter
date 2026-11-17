@@ -237,11 +237,14 @@ pub mod online {
     use super::Tick;
     use crate::interpolation::{Interpolation, ONLINE_DELAY_TICKS};
     use crate::net::{Connection, NetEvent, Trust};
+    use shooter_sim::aim;
     use shooter_sim::damage::{Hitboxes, PartDamage};
     use shooter_sim::grapple::Hook;
     use shooter_sim::names;
     use shooter_sim::player::Motion;
+    use shooter_sim::repair::Repair;
     use shooter_sim::scenery::PlaceableState;
+    use shooter_sim::session::{body_of, slot_of};
     use shooter_sim::weapons::Delivery;
     use shooter_sim::wire::encode_input;
     use shooter_sim::{
@@ -264,6 +267,9 @@ pub mod online {
         energy: u32,
         /// The weapon it holds (the host may refuse a switch the prediction made).
         held: Weapon,
+        /// Its field repair (the host may refuse an order, or pause it for a hit the
+        /// prediction cannot see).
+        repair: Option<Repair>,
     }
 
     pub struct Online {
@@ -428,25 +434,90 @@ pub mod online {
                 })
                 .collect();
             let mut shots = Vec::new();
-            for event in self
-                .live()
-                .into_iter()
-                .flat_map(|predictor| &predictor.events)
-            {
+            let Some(predictor) = self.live() else {
+                return shots;
+            };
+            let me = predictor.local();
+            let owner = body_of(local);
+            // A hitscan shot aimed again as the host aims it ([`aim::aimed`]): the camera picks
+            // its target among the others as drawn too, the beam leaves the predicted muzzle.
+            let mut aimed: Option<(Weapon, aim::Sight)> = None;
+            for event in &predictor.events {
                 match *event {
                     Event::Fired { weapon, .. } | Event::Beam { weapon, .. }
                         if weapon == Weapon::EnergyBlade => {}
                     Event::Fired {
                         weapon,
-                        eye,
-                        direction,
+                        from,
+                        mut direction,
                         ..
-                    } => shots.push(Event::Fired {
-                        slot: local,
+                    } => {
+                        if let Delivery::Hitscan { range_units, .. } =
+                            me.tuning(weapon).delivery(weapon)
+                        {
+                            let muzzle = aim::Muzzle {
+                                mount: from,
+                                at: from,
+                            };
+                            let shot = aim::aimed(
+                                &predictor.world,
+                                me.eye(),
+                                Some(muzzle),
+                                me.intent.yaw,
+                                me.intent.pitch,
+                                owner,
+                                |body| slot_of(body).is_none(),
+                                others.iter().enumerate(),
+                            );
+                            let sight = aim::sight(
+                                &predictor.world,
+                                from,
+                                shot.direction(),
+                                range_units,
+                                owner,
+                                |body| slot_of(body).is_none(),
+                                others.iter().enumerate(),
+                            );
+                            direction = aim::unit(shot.direction());
+                            aimed = Some((weapon, sight));
+                        }
+                        shots.push(Event::Fired {
+                            slot: local,
+                            weapon,
+                            from,
+                            direction,
+                        });
+                    }
+                    Event::Beam {
                         weapon,
-                        eye,
-                        direction,
-                    }),
+                        from,
+                        end: _,
+                        normal: _,
+                        struck: _,
+                    } if aimed.is_some_and(|(fired, _)| fired == weapon) => {
+                        let Some((_, sight)) = aimed.take() else {
+                            continue;
+                        };
+                        let normal = sight.scenery.hit.map_or([0.0; 3], |hit| hit.normal);
+                        shots.push(Event::Beam {
+                            weapon,
+                            from,
+                            end: sight.end,
+                            normal: if sight.fighter.is_some() {
+                                let along = [0, 1, 2].map(|axis| sight.end[axis] - from[axis]);
+                                let length = along
+                                    .iter()
+                                    .map(|axis| axis * axis)
+                                    .sum::<f32>()
+                                    .sqrt()
+                                    .max(f32::EPSILON);
+                                along.map(|axis| -axis / length)
+                            } else {
+                                normal
+                            },
+                            struck: sight.met(),
+                        });
+                    }
                     Event::Beam {
                         weapon,
                         from,
@@ -549,6 +620,11 @@ pub mod online {
                 },
             )
         }
+        /// The predicted field repair.
+        fn repair(&self) -> Option<Repair> {
+            self.live()?.local().repair
+        }
+
         pub fn hook(&self) -> Option<[f32; 3]> {
             self.live()?.local().hook.map(|hook| hook.anchor_units())
         }
@@ -570,7 +646,8 @@ pub mod online {
                 return Ok(());
             }
             // Predicted shots fire at the host's pace for this life's build (its weapon mods)
-            // and module, and jumps leave as the host's do; the pads are as the host has them.
+            // and module, and jumps leave as the host's do; the pads and the dropped modules are
+            // as the host has them.
             // The energy pool is predicted like the body: reset to the host's charge with it. The
             // part damage is the host's: a lost weapon does not fire and a robot without
             // connected locomotion does not walk in the prediction either.
@@ -582,6 +659,7 @@ pub mod online {
                 for (pickup, host) in predictor.pickups.iter_mut().zip(&snapshot.pickups) {
                     pickup.ready_in = host.ready_in;
                 }
+                predictor.drops.clone_from(&snapshot.drops);
             }
             let place = |predictor: &mut Session| {
                 // Its robot resumes in the host's exact state (bodies, lost parts, gait clock).
@@ -592,7 +670,12 @@ pub mod online {
                 predictor
                     .place(0, robot, me.motion, me.held, me.hook)
                     .map_err(|error| error.to_string())?;
+                // Among the host's physical debris, exactly (shooter#75).
+                predictor
+                    .place_debris(&snapshot.debris)
+                    .map_err(|error| error.to_string())?;
                 predictor.fighters[0].energy = me.energy;
+                predictor.fighters[0].repair = me.repair;
                 Ok::<(), String>(())
             };
             if !self.predicting {
@@ -622,7 +705,8 @@ pub mod online {
                 || acked.motion != me.motion
                 || acked.hook != me.hook
                 || acked.energy != me.energy
-                || acked.held != me.held;
+                || acked.held != me.held
+                || acked.repair != me.repair;
             if off {
                 place(self.predictor_mut()?)?;
                 let replay: Vec<Pending> = self.pending.drain(..).collect();
@@ -635,6 +719,7 @@ pub mod online {
                         pending.energy,
                         pending.held,
                     ) = self.state();
+                    pending.repair = self.repair();
                     self.pending.push_back(pending);
                 }
             }
@@ -728,6 +813,7 @@ pub mod online {
                         hook,
                         energy,
                         held,
+                        repair: self.repair(),
                     });
                     while self.pending.len() > 120 {
                         self.pending.pop_front();
