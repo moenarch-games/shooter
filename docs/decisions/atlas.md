@@ -29,6 +29,9 @@ implemented yet.
   game-server, with bots filling empty slots. Bots also make it playable and testable alone.
 - **D2.3** (owner, 2026-11-11): Fast arena movement: sprint, slide, double jump, jump pads, rocket
   jumping and air control. No aim-down-sights; large health pools.
+  Superseded in intent (owner, 2026-11-17; shooter#123): the fast pacing by D2.i123.7, no
+  aim-down-sights by D2.i123.8, the universal (double) jump by D2.i123.9; jump pads stay. Shipped
+  movement remains D2.3's until those land.
 - **D2.4** (owner, 2026-11-11): Stylized sci-fi look: a clean modular arena (panels, ramps, jump
   pads, glowing trims), energy weapons (energy rifle, rail gun, rockets). No realistic gore.
   Styling superseded by D2.i46.2.
@@ -58,6 +61,7 @@ implemented yet.
   grind in the beta.
   Assembly rules superseded by D2.i70.1 and D2.i70.2; cooling superseded by D2.i70.4 (no heat or
   cooling in the beta), power by D2.i70.3 (shared energy).
+  Fast, acrobatic combat superseded in intent by D2.i123.7 (owner, 2026-11-17; tactical pacing).
 - **D2.i46.6** (owner, 2026-11-13): Limbs are targetable and detachable; losing one changes the
   robot's actual abilities and movement in physically believable, authored ways. Robots can be
   repaired during combat (how, Q2.i46.2); respawn restores the configured build. Fully emergent
@@ -81,6 +85,8 @@ implemented yet.
   playable until the builder. A fighter spawns holding its build's first weapon in the rotation
   that is not the grapple; the grapple, then the blade, only when it carries nothing else.
   Since shooter#57 the builder mounts any weapon on any build (D2.i70.11).
+  The cycle-only arsenal is superseded in intent by D2.i123.5 (owner, 2026-11-17): direct and
+  grouped concurrent fire, the cycle an optional convenience; it ships until shooter#127.
 - **D2.i46.9** (owner, 2026-11-13): Some powerful weapon and movement modules spawn as pickups at
   contested arena points. Any robot can use them, with no compatibility gate; a build may exploit
   one better (for example grapple plus a sniper position). Their lifetime is open (Q2.i46.3).
@@ -143,6 +149,11 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   (provisional).
   Superseded in part by D2.i89.1: the root chassis, not a core, holds the baseline capacity and
   regenerates it; batteries are unchanged.
+  Superseded in intent (owner, 2026-11-17; shooter#123): passive regeneration by D2.i123.1
+  (component-driven generation), motor and action costs by D2.i123.2, the single electrical pool
+  by D2.i123.3 (electric, combustion and hybrid powertrains), the empty pool's effect by
+  D2.i123.4, and the charging stations being later by D2.i123.6. Shipped as above until
+  shooter#128 to shooter#130 land.
 - **D2.i70.4** (owner, 2026-11-13; shooter#70; supersedes D2.i46.5's cooling constraint): The beta
   has no heat or cooling mechanic: weapons and parts are limited by energy (D2.i70.3) and
   cooldowns, not heat accumulation or cooling modules. The heat and cooling that ship today stay
@@ -317,6 +328,8 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   long as before (Q2.i70.1), and the build points fell by the core's 10 so every build keeps its
   headroom. The pinned robot kit still ships a `robot.core` model, which the client skips by name
   until a kit release drops it.
+  The root chassis' regeneration is superseded in intent by D2.i123.1 (owner, 2026-11-17;
+  component-driven recovery, shooter#128); the root chassis as the vital part stands.
 
 - **D2.i102.1** (owner, 2026-11-16; shooter#102, option B): **Camera-targeted, muzzle-authoritative shots.** The third-person camera establishes the intended aim point, but a damaging ranged weapon's actual hit ray or projectile originates at its mounted, connected weapon muzzle and travels toward that point. Geometry between the muzzle and the aim point blocks or intercepts the shot even if the camera sees the target: camera peeking does not enable shooting through cover. The authoritative origin and intersection are simulation/host rules shared with native and WebGPU prediction, reticle and visual effects; the client renderer may not supply independent combat truth. Preserve the existing weapon damage, energy, part-loss, lag-compensation and replay contracts, reconciling muzzle transforms with the real weapon/robot kit and articulation. This applies to mounted damaging ranged weapons, with the grapple's separate movement/rope contract reconciled rather than silently changed. **Shipped (shooter#102):** `shooter_sim::aim` owns the camera rig (behind and over the right shoulder of the eye, pulled in front of walls at once), the camera's centre ray from level with the eye picks the target (lag-compensated among the fighters), and the rifle, rail gun, rockets, shotgun pellets, laser and flame leave the held weapon part's muzzle (the pinned weapons kit's muzzle anchor, the long barrel's, as a checked-in table the client's robot tests hold against the kit; the rocket pod always fires from its first tube) toward it; a muzzle pushed into a wall fires from its near face, and a target not ahead of the muzzle is shot along the aim. Bots aim their reticle the same way. The clients draw the reticle on the target and a red blocked marker where the muzzle's shot stops short, draw flashes, beams and pellets from the simulation's muzzle, and online prediction re-aims its hitscan beams through the same functions. The grapple and the blade keep leaving the eye. Native visual capture only; the browser build is compiled, not captured. Draft PR #84 remains its previously defined battery/laser-visual change, without this gameplay redesign unless separately integrated.
 
@@ -358,6 +371,7 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   its connection, or dying ends it. Bots never grapple (D2.8). The map routes'
   grapple scenarios use the module's key. Native HUD capture only; no hooked
   gameplay capture on either client yet.
+  Its right mouse button default is to move to precision aim (D2.i123.8, shooter#132); F stays.
 
 - **D2.i45.1** (owner, 2026-11-16; shooter#45; answers Q3, option A):
   The **energy blade is the only quick-melee weapon for the first modular-robot
@@ -370,6 +384,91 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   playtesting, with any new part and art owned by their existing respective
   repositories (D5.i46.1). Existing blade reach, damage, timing and shove
   values remain provisional balancing, not separately approved numeric policy.
+
+The D2.i123 entries record the owner's steering of 2026-11-17 (decisions 1–11; shooter#123,
+tracker shooter#45). They are intent, not shipped behaviour: none of their mechanics ships yet,
+each names the issue that implements it, and the entries they supersede stay as written with a
+pointer here. What ships today is still described in the older entries' shipped notes and the
+README. Numeric balance and the builder's rotation UI stay open (Q2.i123.1, Q2.i123.2), as does
+whether resupply locks movement or firing (Q2.i123.3).
+
+- **D2.i123.1** (owner, 2026-11-17; shooter#123, decision 1, C; supersedes the passive
+  regeneration of D2.i70.3 and D2.i89.1): Energy recovery comes from installed components
+  (generators, solar or other suitable modules); arena recharge (D2.i123.6) is much faster. The
+  root chassis stays the vital part (D2.i89.1, unchanged); any baseline capacity it keeps and its
+  passive regeneration are reconciled with the #72/#89 pool, not kept as guaranteed free
+  recovery. Owner: shooter#128. Today the root chassis still stores 100 and regenerates 24 a
+  second (provisional, Q2.i70.1) until shooter#128 migrates it.
+- **D2.i123.2** (owner, 2026-11-17; shooter#123, decision 2, B): Locomotion motors consume
+  electricity or fuel according to their powertrain (D2.i123.3), with demand that follows load
+  and activity; weapons and abilities spend their own appropriate resources. No idle drain.
+  Owner: shooter#128. Today motors pay a flat provisional cost each commanded tick (D2.i70.3).
+- **D2.i123.3** (owner, 2026-11-17; shooter#123, decision 3, B): Electric and combustion chassis
+  have distinct native strengths; tanks, batteries, generators and converters enable hybrid
+  builds. Fuel propulsion needs fuel; electrical weapons on a fuel chassis need electrical
+  generation or conversion; a flamethrower on an electric chassis needs a fuel supply. Modular
+  construction (D2.i70.1) and one authoritative resource model stay: no free unmodelled
+  conversion and no second resource system beside the shared pool's owner. Owner: shooter#130,
+  with the resource model in shooter#128. Today there is one electrical pool and no fuel.
+- **D2.i123.4** (owner, 2026-11-17; shooter#123, decision 4, A): Depletion stops only the
+  components deprived of the resource they need; independent components keep working. No global
+  zero-energy death or limp mode. A stranded robot can self-destruct (D2.i123.10). Owner:
+  shooter#128.
+- **D2.i123.5** (owner, 2026-11-17; shooter#123, decision 5, B and C; supersedes the
+  weapon-cycle-only arsenal of shooter#92 in D2.i46.8): Any mounted weapon may be bound directly
+  to a key and optionally included in player-defined firing groups, and groups may fire
+  concurrently. No mandatory single active weapon and no timed or conditional attack macros
+  (D2.i70.7). The wheel and Q/E cycle (shooter#92) may stay as an optional convenience, not an
+  exclusive firing gate. A build may mount several copies of one weapon type within its objective
+  constraints, each an instance with its own mount, mod, health and muzzle (shooter#125; today
+  the validator still refuses a weapon mounted twice). Several launchers of one family must not
+  fire in the same instant: a tunable shared weapon-family salvo or rate limit (four rocket
+  launchers do not launch four rockets at once) bounds them without forbidding the mounts; its
+  cap and interval are open (Q2.i123.2). Owners: shooter#127 (direct and grouped concurrent fire,
+  salvo limit), shooter#125 (multiple copies), with the bindings in shooter#74.
+- **D2.i123.6** (owner, 2026-11-17; shooter#123, decision 6, B; supersedes D2.i70.3's arena
+  charging stations being later): Arenas carry distinct energy, ammunition and fuel resupply
+  stations. Refilling is a deliberate hold-to-interact action that takes time and leaves the robot
+  positionally exposed, not passive recharge on a pad. Whether the interaction itself blocks
+  movement or firing is open until assessed (Q2.i123.3). The module pickup pads (D2.i46.9) stay a
+  separate mechanic. Owner: shooter#129.
+- **D2.i123.7** (owner, 2026-11-17; shooter#123, decision 7, B; supersedes D2.3's fast movement
+  and D2.i46.5's fast, acrobatic combat): Moderately slower movement, acceleration and aerial
+  manoeuvring, with more deliberate aiming and weapon handling; controls stay responsive and
+  weapons lethal. Baseline measurement and playtests set the numbers: no guessed global slow
+  motion and no unapproved time-to-kill target (Q2.i123.2). Owner: shooter#133. Today's movement
+  is still D2.3's (README).
+- **D2.i123.8** (owner, 2026-11-17; shooter#123, decision 8, B; supersedes D2.3's no
+  aim-down-sights): Holding the right mouse button (rebindable through shooter#74) scopes or zooms
+  for precision aim. Controllable turrets and hinges aim physically within their range and
+  actuation; fixed guns keep their mount direction. Every shot still leaves its authoritative
+  muzzle (D2.i102.1); no fixed gun converges by visual pose alone. Owner: shooter#132.
+  Coordination: since shooter#104 (D2.i104.2) the grapple module's key is the right mouse button
+  or F; shooter#132 moves precision aim onto the right mouse button by default, so the grapple's
+  default binding changes with it (F stays), through shooter#74's layouts. No binding changes
+  until shooter#132 lands.
+- **D2.i123.9** (owner, 2026-11-17; shooter#123, decision 9, B; supersedes D2.3's universal
+  double jump): Operational leg modules suited to it give a robot a natural jump; wheels or tracks
+  alone do not. Dedicated jump jets, springs or other jump modules can grant a jump without legs,
+  depending on the actual build, mass and energy. Arena jump pads and the grapple (D2.i104.1,
+  D2.i104.2) stay as separate world and mobility mechanics. Owner: shooter#58, on the mechanics
+  of D2.i70.5. Today every robot with a connected locomotion part jumps and double jumps by the
+  interim movement drive's D2.3 rules. This bears on shooter#74's open question on the interim
+  drive (Q2.i74.1, proposed with shooter#74): whatever replaces the drive must derive the jump from
+  the build's legs or jump modules, not grant it to every robot, and a jump module's thrust is
+  the part's own force, not a fake chassis force (D2.i70.7).
+- **D2.i123.10** (owner, 2026-11-17; shooter#123, decision 10, C): Every robot can trigger a
+  self-destruct with a clear warning. Its blast depends on the connected components and the
+  volatile resources left (fuel, ammunition, dedicated explosive modules), resolved through the
+  existing authoritative damage, respawn and replay systems (D2.i70.8; no separate explosion or
+  chain-reaction simulator). Blast damage and balance are open (Q2.i123.2). Owner: shooter#131.
+- **D2.i123.11** (owner, 2026-11-17; shooter#123, decision 11, B; extends D2.i70.1): Mount rails,
+  adapters and structural extensions are ordinary parts on the universal socket tree that expose
+  further sockets and hardpoints, with mass, health, points and detachment like any part; precise
+  free three-axis orientation and its mechanical consequences stay. No parallel free-placement
+  authority. Owner: shooter#126. The builder must also make socket snapping reliable and part
+  rotation effective about all three axes (decided); how the rotation is presented is open
+  (Q2.i123.1). Owner: shooter#124, on shooter#57's workbench (D2.i70.11).
 
 ## 3. Platforms
 
@@ -608,3 +707,15 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   pieces with the robots' falloff (100 at the blast, nothing at 3 m); a battery's blast does
   not. Broken is final for the round (deaths and respawns keep it); a new round restores every
   placeable.
+- **Q2.i123.1**: The builder's rotation UI (the owner's Question 12 on shooter#123): a visible
+  three-axis gizmo, or a keyboard, numeric and auto-align workflow (D2.i123.11). That snapping
+  must be reliable and parts rotatable about all three axes is decided; the presentation is not.
+  The recommendation offered with the question (B) was not selected and is not an owner choice.
+  Until decided the shipped gestures stay (D2.i70.11). Implementation: shooter#124.
+- **Q2.i123.2**: The numbers behind D2.i123: energy and fuel capacities, generation and recovery
+  rates, the weapon-family salvo cap and interval (rockets), refill durations, self-destruct blast
+  damage, the pacing reductions and their balance (D2.i123.1–D2.i123.10). Measured baselines and
+  playtests set them (shooter#128 to shooter#133); implementations record provisional defaults
+  here, none owner-approved.
+- **Q2.i123.3**: Whether holding a resupply interaction locks the robot's ordinary movement or
+  firing (D2.i123.6). Not prescribed until assessed in shooter#129.
