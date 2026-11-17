@@ -6,8 +6,8 @@ use std::fmt;
 
 use physics_engine::BodyId as EngineId;
 use physics_engine::approximate::{
-    Body, CompoundChild, Config, JointId, Motor, PreparedCompound, Quaternion, QueryFilter,
-    RayCast, RevoluteJoint, Shape as EngineShape, Vector,
+    Body, CombineRule, CompoundChild, Config, JointId, Motor, PreparedCompound, Quaternion,
+    QueryFilter, RayCast, RevoluteJoint, Shape as EngineShape, Vector,
 };
 
 use super::super::engine::{UNITS_PER_METRE, array, engine_body, vector};
@@ -88,8 +88,9 @@ impl fmt::Debug for World {
 }
 
 impl World {
-    pub fn new(statics: &[RigidBody]) -> Result<Self, PhysicsError> {
+    pub fn new(statics: &[RigidBody], gravity: [f32; 3]) -> Result<Self, PhysicsError> {
         let mut engine = physics_engine::approximate::World::new(Config {
+            gravity: vector(gravity),
             length_unit: UNITS_PER_METRE,
             // Rapier's four substeps with four passes each, as the engine's robot oracles run.
             substeps: 4,
@@ -125,6 +126,9 @@ impl World {
         // Shape and mass are the compound's; `add_compound` replaces them.
         let mut body = Body::keyed(spec.id.0, EngineShape::Sphere(1.0), Vector::ZERO, 1.0);
         body.friction = spec.friction;
+        if spec.friction == 0.0 {
+            body.friction_combine = CombineRule::Min;
+        }
         body.sleep_allowed = false;
         place(&prepared, &mut body);
         let handle = self
@@ -234,6 +238,64 @@ impl World {
             position: array(position),
             orientation: quad(orientation),
         })
+    }
+
+    /// The linear velocity is set outright; the angular one through a couple of impulses
+    /// whose angular impulse is the world inertia (the compound's principal inertia in its
+    /// principal frame) times the change, so the step turns it into exactly that change.
+    pub fn set_velocity(
+        &mut self,
+        id: BodyId,
+        velocity: [f32; 3],
+        angular_velocity: [f32; 3],
+    ) -> Result<(), PhysicsError> {
+        let entry = self.entry(id)?;
+        let handle = entry.handle;
+        let inertia = entry.prepared.principal_inertia();
+        let body = self
+            .engine
+            .body(handle)
+            .ok_or_else(|| error(format!("articulated body {} is missing", id.0)))?;
+        let (position, orientation, current) =
+            (body.position, body.orientation, body.angular_velocity);
+        self.engine
+            .set_velocity(handle, vector(velocity))
+            .map_err(|failure| engine_error("set_velocity", failure))?;
+        let change = vector(angular_velocity) - current;
+        let local = orientation.inverse_rotate(change);
+        let momentum = orientation.rotate(Vector(
+            local.0 * inertia.0,
+            local.1 * inertia.1,
+            local.2 * inertia.2,
+        ));
+        let size = momentum.length();
+        if size == 0.0 {
+            return Ok(());
+        }
+        // A unit lever across the momentum, and the impulse that, applied there against its
+        // opposite at the centre, gives exactly that angular impulse.
+        let across = if momentum.0.abs() < 0.5 * size {
+            Vector(1.0, 0.0, 0.0)
+        } else {
+            Vector(0.0, 1.0, 0.0)
+        };
+        let lever = momentum.cross(across).unit();
+        let impulse = momentum.cross(lever);
+        for (impulse, at) in [
+            (impulse, position + lever),
+            (Vector::ZERO - impulse, position),
+        ] {
+            self.engine
+                .apply_impulse(handle, impulse, at)
+                .map_err(|failure| engine_error("apply_impulse", failure))?;
+        }
+        Ok(())
+    }
+
+    pub fn supported(&self, id: BodyId) -> bool {
+        self.bodies
+            .get(&id)
+            .is_some_and(|entry| self.engine.has_support(entry.handle))
     }
 
     pub fn hinge(&self, hinge: HingeId) -> Option<HingeState> {

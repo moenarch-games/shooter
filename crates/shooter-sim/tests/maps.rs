@@ -74,7 +74,7 @@ fn every_slot_starts_on_a_spawn_point_of_its_own() {
         let feet: Vec<[f32; 3]> = session
             .fighters
             .iter()
-            .map(|fighter| fighter.player.feet(&session.world))
+            .map(|fighter| fighter.feet())
             .collect();
         for (index, a) in feet.iter().enumerate() {
             for b in &feet[index + 1..] {
@@ -130,7 +130,7 @@ fn a_match_keeps_its_map_and_spawns_on_it_through_rounds() {
                 continue;
             };
             let fighter = &session.fighters[usize::from(slot)];
-            let feet = fighter.player.feet(&session.world);
+            let feet = fighter.feet();
             assert!(
                 points.iter().any(|point| {
                     point.yaw == yaw

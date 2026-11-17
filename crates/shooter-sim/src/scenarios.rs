@@ -655,7 +655,7 @@ pub const CELL_GRAPPLE: Scenario = Scenario {
             90,
         ),
         walk("let go onto the gallery", NORTH, 30),
-        stand("on the gallery", 30),
+        stand("on the gallery", 60),
     ],
 };
 

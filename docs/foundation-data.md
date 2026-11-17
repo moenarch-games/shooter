@@ -31,15 +31,16 @@ real players.
    | `--target` | Output | For |
    | --- | --- | --- |
    | `game-server` | The log in game-server's replay format, cut after `--to`, plus a `key=value` `.txt` manifest. It always starts at tick 0: the shooter's snapshot is not a restorable baseline | game-server's replay codec and runtime tests (`tests/fixtures/shooter/`) |
-   | `physics` | JSON: arena boxes and ramps, the character box with its contact offset and step-up, gravity, and for each tick `--from..=--to` every fighter's intent, the move its step handed the character controller (`move`: the displacement in units, gravity, ground settle and sliding around other fighters included; `null` without a body), and the position, velocity and ground contact after it | a physics-engine A/B scenario, driving each character with `move` |
+   | `physics` | JSON (`shooter/physics-window/v2`): arena boxes and ramps, gravity, and for each tick `--from..=--to` every fighter's intent, its mechanical robot's root body after the tick (`root`: centre of mass, principal frame, velocity and angular velocity, exact; `null` without a robot, shooter#73), and the position, velocity and ground contact after it | a physics-engine A/B scenario of the robots' root bodies |
    | `render` | JSON: one frame at `--to`. It has the camera at a person's eye, the arena, the fighters, rockets in flight, and the last 6 ticks of shots, beams, explosions and hits | a render-engine scene |
 
 4. **Hand it over:** open a PR on the foundation with the fixture and a test, or file an issue
    with the command when the foundation has no format for it yet.
 5. **Profile:** `scripts/profile.sh [OUT] [native|web|all]` captures runtime-profiler scenarios
    (default all). The native lane has two.
-   `profiles/bot-match.yaml` is about 5 1/2 minutes of match ticks without a window; the script
-   also records the same match as a replay. It collects `process` and `native-perf`: the
+   `profiles/bot-match.yaml` is the first 1200 ticks (20 s) of the match without a window
+   (shorter since the mechanical robots, #73, so native-perf's report stays within its limit); the script
+   also records the same match whole (20000 ticks) as a replay. It collects `process` and `native-perf`: the
    bundle's `hotspots.json` holds the sampled hotspots with call paths, and the script renders
    the top ones to `bot-match/hotspots.md`. `native-perf` needs `perf` and
    `kernel.perf_event_paranoid` at 2 or lower (user-space cycles). `profiles/native-client.yaml` runs

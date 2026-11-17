@@ -49,6 +49,8 @@ pub const MELEE_UNITS: i32 = crate::melee::REACH_UNITS - 30;
 pub const WAYPOINT_REACH_UNITS: i64 = 150;
 /// After 0.5 s barely moving while it wants to walk, it jumps and picks another waypoint.
 pub const STUCK_TICKS: u32 = 30;
+/// Barely moving: within 20 cm (on both axes together) of where it was when it last moved on.
+pub const STUCK_UNITS: i32 = 20;
 
 /// What a bot knows of one slot: where its fighter stands (units), if it is alive, where its
 /// root chassis is (what a bot aims at: destroying it is the kill, [`crate::damage`]) and which
@@ -195,11 +197,14 @@ impl Bot {
             Some(target) => self.fight(me, eye, target, held, sights[me].armed, tick),
             None => self.wander(center, arena),
         };
-        // Stuck against something while walking: hop and head elsewhere.
+        // Stuck against something while walking (within a few centimetres of where it last got
+        // stuck: a robot jostles against a wall): hop and head elsewhere.
         let moved = self
             .last
-            .is_some_and(|last| (last.x - center.x).abs() + (last.z - center.z).abs() > 1);
-        self.last = Some(center);
+            .is_none_or(|last| (last.x - center.x).abs() + (last.z - center.z).abs() > STUCK_UNITS);
+        if moved || intent.forward == 0 {
+            self.last = Some(center);
+        }
         if intent.forward != 0 && !moved {
             self.stuck += 1;
             if self.stuck >= STUCK_TICKS {

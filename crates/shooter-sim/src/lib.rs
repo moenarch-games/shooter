@@ -36,7 +36,7 @@ pub use arena::{Arena, JumpPad, Piece, Post, Spawn};
 pub use fixed::{SUBUNITS_PER_UNIT, TICK_HZ};
 pub use maps::{Capacity, MapId, UnknownMap};
 pub use pickups::{ArenaModule, Carried, ModulePad};
-pub use player::{Intent, Player};
+pub use player::Intent;
 pub use robot::{Assembly, AssemblyError, Candidate};
 pub use session::{Event, Fighter, Input, Phase, Pilot, Rules, Session, StepReport};
 pub use weapons::Weapon;

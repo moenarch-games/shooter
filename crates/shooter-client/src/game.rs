@@ -151,10 +151,9 @@ impl Game {
     #[must_use]
     pub fn local_center(&self) -> Option<[f32; 3]> {
         match self {
-            Self::Practice { session, .. } => session
-                .local()
-                .alive()
-                .then(|| session.local().player.center(&session.world)),
+            Self::Practice { session, .. } => {
+                session.local().alive().then(|| session.local().center())
+            }
             Self::Online(online) => online.local_center(),
         }
     }
@@ -176,7 +175,7 @@ impl Game {
     #[must_use]
     pub fn local_sliding(&self) -> bool {
         match self {
-            Self::Practice { session, .. } => session.local().player.motion.sliding,
+            Self::Practice { session, .. } => session.local().motion.sliding,
             Self::Online(online) => online.sliding(),
         }
     }
@@ -476,13 +475,12 @@ pub mod online {
         }
 
         pub fn local_center(&self) -> Option<[f32; 3]> {
-            self.live()
-                .map(|predictor| predictor.local().player.center(&predictor.world))
+            self.live().map(|predictor| predictor.local().center())
         }
 
         pub fn sliding(&self) -> bool {
             self.live()
-                .is_some_and(|predictor| predictor.local().player.motion.sliding)
+                .is_some_and(|predictor| predictor.local().motion.sliding)
         }
 
         fn predict(&mut self, intent: Intent) -> Result<StepReport, String> {
@@ -499,8 +497,8 @@ pub mod online {
                 |predictor| {
                     let local = predictor.local();
                     (
-                        local.player.center(&predictor.world),
-                        local.player.motion,
+                        local.center(),
+                        local.motion,
                         local.hook,
                         local.energy,
                         local.arsenal.held,
@@ -536,8 +534,13 @@ pub mod online {
                 }
             }
             let place = |predictor: &mut Session| {
+                // Its robot resumes in the host's exact state (bodies, lost parts, gait clock).
+                let robot = me
+                    .robot
+                    .as_ref()
+                    .ok_or("the host sent a living robot without its state")?;
                 predictor
-                    .place(0, me.position, me.velocity, me.motion, me.held, me.hook)
+                    .place(0, robot, me.motion, me.held, me.hook)
                     .map_err(|error| error.to_string())?;
                 predictor.fighters[0].energy = me.energy;
                 Ok::<(), String>(())
