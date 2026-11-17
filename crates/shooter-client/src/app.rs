@@ -211,13 +211,14 @@ impl Driver {
         whole.map(|counts| counts.clamp(-10_000.0, 10_000.0) as i32)
     }
 
-    /// This tick's commands for the robot `build` with parts `lost`, from what is `pressed`.
-    fn motors(
+    /// This tick's commands for the robot `build` with parts `lost`, and the guns it fires,
+    /// from what is `pressed`.
+    fn actions(
         &mut self,
         build: &shooter_sim::Assembly,
         lost: u32,
         pressed: shooter_sim::bindings::Pressed,
-    ) -> shooter_sim::bindings::Motors {
+    ) -> shooter_sim::bindings::Actions {
         let stale = self
             .resolved
             .as_ref()
@@ -231,9 +232,9 @@ impl Driver {
             self.resolved = Some((*build, lost, actuators, effective));
         }
         let Some((_, _, actuators, effective)) = &self.resolved else {
-            return shooter_sim::bindings::Motors::REST;
+            return shooter_sim::bindings::Actions::default();
         };
-        effective.resolve(actuators, &mut self.state, pressed)
+        effective.act(actuators, &mut self.state, pressed)
     }
 }
 
@@ -703,9 +704,11 @@ impl App {
                 }
             };
             // The robot's actuators through the person's control layout (shooter#74): the keys
-            // and buttons held and the mouse's movement while the game has it.
+            // and buttons held and the mouse's movement while the game has it, and the guns its
+            // direct weapon buttons and groups fire (shooter#127; only with the mouse captured,
+            // like the primary trigger).
             let mouse = self.driver.take_mouse();
-            let motors = match self.game.local_fighter() {
+            let actions = match self.game.local_fighter() {
                 Some((me, _)) => {
                     let pressed = self
                         .controls
@@ -719,14 +722,23 @@ impl App {
                             ..pressed
                         }
                     };
-                    self.driver.motors(&me.build, me.parts.lost(), pressed)
+                    let actions = self.driver.actions(&me.build, me.parts.lost(), pressed);
+                    shooter_sim::bindings::Actions {
+                        triggers: if self.captured {
+                            actions.triggers
+                        } else {
+                            shooter_sim::weapons::Triggers::NONE
+                        },
+                        ..actions
+                    }
                 }
-                None => shooter_sim::bindings::Motors::REST,
+                None => shooter_sim::bindings::Actions::default(),
             };
             Intent {
                 forward,
                 strafe,
-                motors,
+                motors: actions.motors,
+                triggers: actions.triggers,
                 yaw: self.look.sim_yaw(),
                 jump: self.controls.jump_held(),
                 sprint: self.controls.sprint_held(),
@@ -787,11 +799,13 @@ impl App {
         }
         self.local_swing += seconds;
         self.tracker
-            .tick(&tick.events, local, tick.report.fired, seconds);
+            .tick(&tick.events, local, tick.report.volley.shots(), seconds);
         if tick
             .report
-            .fired
-            .is_some_and(|fired| fired.weapon == Weapon::EnergyBlade)
+            .volley
+            .shots()
+            .iter()
+            .any(|fired| fired.weapon == Weapon::EnergyBlade)
         {
             self.local_swing = 0.0;
         }
@@ -992,6 +1006,7 @@ impl App {
                         since_fired: self.tracker.since_fired(me.slot),
                         fired,
                         shots,
+                        recent: self.tracker.recent(me.slot),
                         held: me.held,
                         energy: energy_share(me),
                         swing: view.swing,
@@ -1057,6 +1072,7 @@ impl App {
                         since_fired: self.tracker.since_fired(fighter.slot),
                         fired,
                         shots,
+                        recent: self.tracker.recent(fighter.slot),
                         held: fighter.held,
                         energy: energy_share(fighter),
                         swing: view.swing,
@@ -1082,6 +1098,7 @@ impl App {
                     since_fired: f32::INFINITY,
                     fired: remains.held,
                     shots: 0,
+                    recent: robots::pose::Recent::NONE,
                     held: remains.held,
                     energy: 0.0,
                     swing: None,

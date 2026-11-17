@@ -142,8 +142,10 @@ impl Sounds {
         }
         // The local swing sounds as it is predicted, not when the host confirms it.
         if report
-            .fired
-            .is_some_and(|fired| fired.weapon == Weapon::EnergyBlade)
+            .volley
+            .shots()
+            .iter()
+            .any(|fired| fired.weapon == Weapon::EnergyBlade)
         {
             self.cue(fire_cue(Weapon::EnergyBlade), None, now_ms);
         }

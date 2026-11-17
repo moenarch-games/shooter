@@ -1035,8 +1035,8 @@ pub const TWIN_RAIL: Assembly = with_weapons(
 );
 
 /// A fixture with four rocket launchers (shooter#125) filling the small chassis' front, two low
-/// and two high (IDs 7 to 10), and nothing else: 109 of the 110 build points. One launcher fires
-/// at a time, the one held. Valid in [`BETA`].
+/// and two high (IDs 7 to 10), and nothing else: 109 of the 110 build points. Its launchers
+/// share the rockets' salvo limit: never two rockets in one tick (shooter#127). Valid in [`BETA`].
 pub const ROCKET_POD: Assembly = with_weapons(
     frame(&CHASSIS_S),
     [

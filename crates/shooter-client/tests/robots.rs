@@ -44,6 +44,7 @@ fn standing() -> RobotState {
         since_fired: f32::INFINITY,
         fired: Instance::new(7, Weapon::EnergyRifle),
         shots: 0,
+        recent: shooter_client::robots::pose::Recent::NONE,
         held: Instance::new(7, Weapon::EnergyRifle),
         energy: 1.0,
         swing: None,
@@ -1553,6 +1554,18 @@ fn every_copy_of_a_weapon_is_drawn_at_its_mount_and_on_its_own() {
     let shot = posed(&model, &fired, &PartStates::default());
     assert_eq!(shot.parts[left].palette, idle.parts[left].palette);
     assert_ne!(shot.parts[right].palette, idle.parts[right].palette);
+    // Both fired together (shooter#127): each plays its own shot.
+    let mut recent = shooter_client::robots::pose::Recent::NONE;
+    recent.fired(PartId(7));
+    recent.fired(PartId(9));
+    recent.advance(0.05);
+    let together = posed(
+        &model,
+        &RobotState { recent, ..fired },
+        &PartStates::default(),
+    );
+    assert_eq!(together.parts[right].palette, shot.parts[right].palette);
+    assert_ne!(together.parts[left].palette, idle.parts[left].palette);
     // The left one lost: it comes off, the right one stays on with its muzzle.
     let away = Mat4::from_translation(Vec3::new(0.0, -1.0, 2.0));
     let detached = [(PartId(7), away)];

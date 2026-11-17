@@ -25,6 +25,13 @@
 //! most a quarter turn either way. Nothing is timed, sequenced or conditional: what a binding
 //! does follows from what is held this tick and the layout's own toggles and offsets.
 //!
+//! **Weapons** (shooter#127). A fire binding ([`Output::Fire`]) names guns instead of
+//! actuators: one gun is a direct weapon button, several a weapon group, and groups may overlap
+//! and be held together. While held (or toggled on) its guns ask to fire
+//! ([`crate::weapons::Triggers`], [`Bindings::act`]); the host fires each copy that is ready,
+//! within its family's salvo limit and with the energy for it
+//! ([`crate::weapons::Arsenal::trigger_tuned`]). A request is direct, never a timed sequence.
+//!
 //! **No chassis forces.** A binding reaches only actuators. Until the robots walk and roll on
 //! their own (see the Atlas: the interim movement drive), the match still moves a robot by the
 //! movement rules ([`crate::player::Motion::drive`]); the bindings drive its joints, legs,
@@ -32,6 +39,7 @@
 
 use crate::mechanics::{Actuator, Command, Controls, GaitChoice, Layout};
 use crate::robot::{Assembly, Joint, Locomotion, PartId};
+use crate::weapons::Triggers;
 use std::fmt;
 
 /// The most bindings in a layout.
@@ -42,6 +50,8 @@ pub const MAX_GROUP: usize = 8;
 pub const MAX_MOTORS: usize = 32;
 /// Full scale of a binding's value.
 pub const FULL: i32 = 1_000;
+/// The mouse button the presets fire every gun with: the middle one (W3C 1).
+pub const ALL_GUNS_BUTTON: u8 = 1;
 
 /// The keys a binding may name, by their W3C physical key codes (what winit's `KeyCode` and the
 /// browser's `KeyboardEvent.code` call them); a [`Source::Key`] is an index into this table.
@@ -147,6 +157,11 @@ pub enum Output {
     Rate,
     /// A servo's angle ([`Command::Angle`]), full scale a quarter turn.
     Angle,
+    /// Fire (shooter#127): while held (or toggled on) every gun in its group asks to fire
+    /// ([`crate::weapons::Triggers`]). One gun is a direct weapon button, several a weapon group;
+    /// groups may overlap, and a gun asked twice in a tick fires once. Keys and buttons only;
+    /// strength and inversion change nothing.
+    Fire,
 }
 
 /// One part of a binding's action group, and whether it takes the binding's value reversed.
@@ -196,6 +211,9 @@ pub enum BindingError {
     NotAnActuator(usize, PartId),
     /// A stride for a part that is no leg.
     NotALeg(usize, PartId),
+    /// A fire binding naming a part that is no gun of the build (the blade and the grapple
+    /// module act on their own keys).
+    NotAGun(usize, PartId),
 }
 
 impl fmt::Display for BindingError {
@@ -227,6 +245,9 @@ impl fmt::Display for BindingError {
                 at + 1,
                 part.0
             ),
+            Self::NotAGun(at, part) => {
+                write!(formatter, "binding {}: part {} is no gun", at + 1, part.0)
+            }
         }
     }
 }
@@ -388,6 +409,15 @@ impl Motors {
     }
 }
 
+/// One tick of a layout ([`Bindings::act`]): its actuators' commands and the guns it asks to
+/// fire, what an input carries ([`crate::player::Intent::motors`],
+/// [`crate::player::Intent::triggers`]).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct Actions {
+    pub motors: Motors,
+    pub triggers: Triggers,
+}
+
 /// What kind of actuator `part` is in `layout`, and its top rate (tenths of a radian a second).
 fn actuator_of(layout: &Layout, part: PartId) -> Option<(Actuator, u16)> {
     layout
@@ -408,6 +438,12 @@ impl Bindings {
         self.check_bounds()?;
         for (at, binding) in self.bindings.iter().enumerate() {
             for target in &binding.targets {
+                if binding.output == Output::Fire {
+                    if !layout.guns.contains(&target.part) {
+                        return Err(BindingError::NotAGun(at, target.part));
+                    }
+                    continue;
+                }
                 let Some((kind, _)) = actuator_of(layout, target.part) else {
                     return Err(BindingError::NotAnActuator(at, target.part));
                 };
@@ -451,7 +487,9 @@ impl Bindings {
                 return Err(BindingError::Source(at));
             }
             let axis_mode = matches!(binding.mode, Mode::Relative | Mode::Offset);
-            if binding.source.is_axis() != axis_mode {
+            if binding.source.is_axis() != axis_mode
+                || (binding.output == Output::Fire && binding.source.is_axis())
+            {
                 return Err(BindingError::Mode(at));
             }
             if !(1..=100).contains(&binding.strength) {
@@ -482,6 +520,9 @@ impl Bindings {
                     .iter()
                     .copied()
                     .filter(|target| {
+                        if binding.output == Output::Fire {
+                            return layout.guns.contains(&target.part);
+                        }
                         actuator_of(layout, target.part).is_some_and(|(kind, _)| {
                             binding.output != Output::Stride
                                 || kind == Actuator::Locomotion(Locomotion::Leg)
@@ -513,6 +554,9 @@ impl Bindings {
     /// - **Joints**: every rotor follows the mouse's horizontal offset and every hinge its
     ///   vertical offset (up raises), so two joint axes aim a turret; the offset stays when the
     ///   mouse stops.
+    ///
+    /// - **Guns** (shooter#127): the middle mouse button fires every gun at once, one weapon
+    ///   group; the left button's primary trigger fires the held copy as before.
     ///
     /// Groups larger than [`MAX_GROUP`] are split over several bindings on the same input.
     #[must_use]
@@ -644,6 +688,24 @@ impl Bindings {
                 &hinges,
             );
         }
+        // Every gun together on the middle mouse button (shooter#127); the primary trigger (the
+        // left button) stays the held copy's.
+        let guns: Vec<Target> = layout
+            .guns
+            .iter()
+            .map(|&part| Target {
+                part,
+                invert: false,
+            })
+            .collect();
+        add(
+            Source::Button(ALL_GUNS_BUTTON),
+            Mode::Hold,
+            Output::Fire,
+            false,
+            100,
+            &guns,
+        );
         bindings.truncate(MAX_BINDINGS);
         Self {
             gait: GaitChoice::Suggested,
@@ -662,8 +724,17 @@ impl Bindings {
     /// skipped; a binding whose kind a part does not take adds nothing to it.
     #[must_use]
     pub fn resolve(&self, layout: &Layout, state: &mut BindingState, pressed: Pressed) -> Motors {
+        self.act(layout, state, pressed).motors
+    }
+
+    /// [`Self::resolve`] with the guns its fire bindings ask to fire this tick too
+    /// (shooter#127): every gun of `layout` in the group of a fire binding that is held (or
+    /// toggled on), each once however many groups name it.
+    #[must_use]
+    pub fn act(&self, layout: &Layout, state: &mut BindingState, pressed: Pressed) -> Actions {
         // Each part's command kind and summed value, in the order parts are first named.
         let mut sums: Vec<(PartId, Output, i32)> = Vec::new();
+        let mut triggers = Triggers::NONE;
         let mut held = 0u32;
         for (at, binding) in self.bindings.iter().take(MAX_BINDINGS).enumerate() {
             let bit = 1u32 << at;
@@ -694,6 +765,16 @@ impl Bindings {
                     offset
                 }
             };
+            if binding.output == Output::Fire {
+                if value != 0 {
+                    for target in &binding.targets {
+                        if layout.guns.contains(&target.part) {
+                            triggers.press(target.part);
+                        }
+                    }
+                }
+                continue;
+            }
             let value = if binding.invert { -value } else { value };
             for target in &binding.targets {
                 let Some((kind, _)) = actuator_of(layout, target.part) else {
@@ -734,9 +815,11 @@ impl Bindings {
                         i16::try_from((sum * quarter / FULL).clamp(-32_767, 32_767)).unwrap_or(0),
                     )
                 }
+                // Fire bindings give no motor command.
+                Output::Fire => continue,
             };
             motors.push(part, command);
         }
-        motors
+        Actions { motors, triggers }
     }
 }
