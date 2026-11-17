@@ -30,6 +30,14 @@
 //! wheel or track on the ground is footing, and the wished speeds scale by the share of its
 //! locomotion it still has ([`crate::player::Traction`]).
 //!
+//! **Collisions and debris** (shooter#75, Atlas D2.i70.10). After the step, a robot that a hard
+//! impact (another robot, debris, the arena, a high fall) changed fast enough takes a blow on the
+//! part reaching furthest toward what it hit ([`crate::impact`]), nobody's (a collision kill
+//! costs a frag, as a fall does). A large part carried away whole stays a physical body for a
+//! while ([`Mechanics::break_off`], [`crate::mechanics::DebrisState`]); destroyed and small ones
+//! do not. Debris retires deterministically (lifetime, rest, budget, its robot's respawn) at the
+//! start of a tick and travels in snapshots, so a predicting client holds it exactly.
+//!
 //! Hitscan shots and blade swings are lag-compensated: a person's shot is checked against the
 //! fighters' parts where that person saw them (where their bodies carried them at the snapshot
 //! tick its command names, at most [`MAX_REWIND_TICKS`] back; the parts they have now), while
@@ -37,8 +45,9 @@
 //! they fly through the world as it is each tick and meet fighters' parts where they are then,
 //! like the flame.
 //!
-//! Module pickups lie on the map's pads; the host resolves who takes them, applies, expires and
-//! clears their effects and brings the pads back ([`crate::pickups`] has the rules).
+//! Module pickups lie on the map's pads and where their carriers died; the host resolves who takes
+//! them, applies, expires and clears their effects, drops a dead carrier's module, removes the
+//! drops and brings the pads back ([`crate::pickups`] has the rules).
 //!
 //! **Arena destruction** (shooter#60). A kit-built map's marked cover, barriers and crates are
 //! damageable placeables ([`Session::scenery`]): a ray, a pellet or the flame that stops on one,
@@ -51,6 +60,11 @@
 //! Every fighter has a shared energy pool from its build; its jumps, swings and shots ask it for
 //! energy first come, first served and it regenerates after them each tick ([`crate::energy`]).
 //! A lost battery takes its capacity and its share of the charge with it.
+//!
+//! A person whose build mounts a repair module may repair a damaged part in its reach while the
+//! match goes on ([`crate::repair`]): the host checks the order, the repair draws from the pool
+//! after the tick's shots and hits and before the motors, a blow on the part or the module
+//! pauses it, and death and respawn end it.
 
 use crate::aim;
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
@@ -64,11 +78,14 @@ use crate::mechanics::{self, Controls, Footing as RobotFooting, Mechanics, Robot
 use crate::melee;
 use crate::physics::articulated::Pose;
 use crate::physics::{BodyId, PhysicsError, RayHit, SUBUNITS_PER_UNIT, Vec3i, World};
-use crate::pickups::{self, ArenaModule, Carried, PAD_RESPAWN_TICKS, Pickup};
+use crate::pickups::{
+    self, ArenaModule, Carried, DROP_LIFETIME_TICKS, Drop, PAD_RESPAWN_TICKS, Pickup,
+};
 use crate::player::{
     Footing, GRAVITY, Intent, KILL_HEIGHT_UNITS, Motion, PLAYER_HALF_EXTENTS, STEP_UP, Traction,
     eye_height,
 };
+use crate::repair::{self, Order, Outcome, Repair};
 use crate::robot::{Assembly, BETA, Kind, PartId, Tuning};
 use crate::scenery::{PlaceableState, Scenery};
 use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
@@ -222,6 +239,8 @@ pub struct Fighter {
     /// Its build's part healths and lost parts this life ([`crate::damage`]); the root
     /// chassis' health is its life.
     pub parts: PartDamage,
+    /// The field repair under way this life, if any ([`crate::repair`]).
+    pub repair: Option<Repair>,
     /// While dead: the tick it comes back.
     pub respawn_at: Option<u32>,
     pub frags: i32,
@@ -255,6 +274,7 @@ impl Fighter {
             carried: None,
             energy: 0,
             parts: PartDamage::default(),
+            repair: None,
             respawn_at: None,
             frags: 0,
             deaths: 0,
@@ -277,7 +297,7 @@ impl Fighter {
 
     /// Tracks the input backlog over [`BACKLOG_WINDOW_TICKS`] and, at the end of a window in
     /// which more than [`BACKLOG_KEEP`] inputs always waited, drops the oldest down to it (a
-    /// dropped weapon switch carries over to the next input).
+    /// dropped weapon switch or repair order carries over to the next input).
     fn trim_backlog(&mut self) {
         self.backlog = self.backlog.min(self.inputs.len());
         self.backlog_ticks += 1;
@@ -290,6 +310,7 @@ impl Fighter {
             };
             if let Some(next) = self.inputs.front_mut() {
                 next.intent.select = next.intent.select.or(dropped.intent.select);
+                next.intent.repair = next.intent.repair.or(dropped.intent.repair);
             }
         }
         self.backlog = usize::MAX;
@@ -333,9 +354,21 @@ impl Fighter {
     fn rebuild(&mut self, build: Assembly) {
         self.build = build;
         self.parts = PartDamage::fresh(&build);
+        self.repair = None;
         if !self.parts.holdable(&build, self.arsenal.held) {
             self.arsenal = Arsenal::holding(self.first_weapon());
         }
+    }
+
+    /// The parts a field repair may start on now (bits by index, [`repair::eligible`]): damaged,
+    /// still connected and in reach of a working repair module where its robot carries them.
+    /// None while dead.
+    #[must_use]
+    pub fn repairable(&self) -> u32 {
+        if !self.alive() {
+            return 0;
+        }
+        repair::eligible(&self.build, &self.parts, &self.hitboxes())
     }
 
     /// The weapon it takes up at spawn: the first its build lets it hold that is not the grapple,
@@ -726,6 +759,14 @@ pub enum Event {
     },
     /// `slot` spent its module's last use.
     ModuleSpent { slot: u8, module: ArenaModule },
+    /// `slot` died carrying `carried`, and left it where its feet were.
+    ModuleDropped { slot: u8, carried: Carried },
+    /// `slot` took `carried` (the uses it had left) from where `from` dropped it.
+    DropTaken {
+        slot: u8,
+        from: u8,
+        carried: Carried,
+    },
 }
 
 /// What a hitscan ray struck.
@@ -756,12 +797,12 @@ struct Frame {
 }
 
 /// A destroyed battery's blast waiting to go off this tick: where, and who and what destroyed
-/// the battery.
+/// the battery (nobody and nothing: a collision, [`crate::impact`]).
 #[derive(Clone, Copy, Debug)]
 struct Blast {
     at: [f32; 3],
-    attacker: usize,
-    weapon: Weapon,
+    attacker: Option<usize>,
+    weapon: Option<Weapon>,
 }
 
 #[derive(Debug)]
@@ -788,6 +829,8 @@ pub struct Session {
     pub pellets: Vec<Pellet>,
     /// The module pads, in the map's order ([`Arena::module_pads`]).
     pub pickups: Vec<Pickup>,
+    /// The modules dead carriers dropped, oldest first.
+    pub drops: Vec<Drop>,
     /// What the last tick did, in order.
     pub events: Vec<Event>,
     tick: u32,
@@ -858,6 +901,7 @@ impl Session {
             rockets: Vec::new(),
             pellets: Vec::new(),
             pickups: Vec::new(),
+            drops: Vec::new(),
             events: Vec::new(),
             tick: 0,
             history: VecDeque::new(),
@@ -958,7 +1002,8 @@ impl Session {
     }
 
     /// The robots catch up with the fighters: the dead leave the world and the parts each has
-    /// lost come off its bodies ([`Mechanics::sever`]).
+    /// lost come off its bodies; the large ones carried away whole stay physical debris for a
+    /// while, destroyed ones shatter ([`Mechanics::break_off`], shooter#75).
     fn settle_robots(&mut self) -> Result<(), PhysicsError> {
         for slot in 0..self.fighters.len() {
             let id = u8::try_from(slot).unwrap_or(u8::MAX);
@@ -970,11 +1015,18 @@ impl Session {
                 continue;
             }
             let lost = fighter.parts.lost();
+            let intact = fighter
+                .parts
+                .health()
+                .iter()
+                .enumerate()
+                .filter(|(_, health)| **health > 0)
+                .fold(0u32, |mask, (index, _)| mask | (1 << index));
             if self
                 .mechanics
                 .robot(id)
                 .is_some_and(|robot| robot.lost != lost)
-                && self.mechanics.sever(id, lost)?
+                && self.mechanics.break_off(id, lost, intact)?
             {
                 self.refresh(slot)?;
             }
@@ -1030,8 +1082,9 @@ impl Session {
         fighter.build = fighter.configured;
         fighter.hook = None;
         fighter.carried = None;
-        // Respawn restores the configured build whole (D2.i70.8).
+        // Respawn restores the configured build whole (D2.i70.8), with no repair under way.
         fighter.parts = PartDamage::fresh(&fighter.build);
+        fighter.repair = None;
         fighter.arsenal = Arsenal::holding(fighter.first_weapon());
         fighter.energy = fighter.pool().capacity;
         fighter.respawn_at = None;
@@ -1046,6 +1099,9 @@ impl Session {
             slot: fighter.slot,
             yaw: at.yaw,
         });
+        // What its last life left lying about retires with it (shooter#75).
+        self.mechanics
+            .clear_debris(u8::try_from(slot).unwrap_or(u8::MAX))?;
         #[allow(clippy::cast_precision_loss)]
         let feet = [at.feet.x, at.feet.y, at.feet.z].map(|axis| axis as f32);
         self.spawn_robot(slot, feet, at.yaw)
@@ -1199,6 +1255,35 @@ impl Session {
         self.refresh(usize::from(slot))
     }
 
+    /// Puts the match's physical debris in the exact state `debris` (a snapshot's): a client
+    /// resuming its prediction among the pieces the host has.
+    ///
+    /// # Errors
+    ///
+    /// If there are more pieces than [`mechanics::MAX_DEBRIS`] or the world refuses one.
+    pub fn place_debris(&mut self, debris: &[mechanics::DebrisState]) -> Result<(), PhysicsError> {
+        self.mechanics.place_debris(debris)?;
+        for slot in 0..self.fighters.len() {
+            self.refresh(slot)?;
+        }
+        Ok(())
+    }
+
+    /// Sets `slot`'s living robot moving at `velocity` (units a second) as one whole, as a
+    /// launch would: scripts and tests staging a collision.
+    ///
+    /// # Errors
+    ///
+    /// If the physics world refuses the velocity.
+    pub fn launch(&mut self, slot: u8, velocity: [f32; 3]) -> Result<(), PhysicsError> {
+        let Some(root) = self.mechanics.root_motion(usize::from(slot)) else {
+            return Ok(());
+        };
+        self.mechanics
+            .drive(slot, velocity, root.angular_velocity)?;
+        self.refresh(usize::from(slot))
+    }
+
     /// Queues one tick of person `id`'s controls; the fighter applies one queued input per tick.
     /// Whether `id` holds a slot.
     pub fn queue(&mut self, id: u32, input: Input) -> bool {
@@ -1265,6 +1350,8 @@ impl Session {
     pub fn step(&mut self) -> Result<StepReport, PhysicsError> {
         self.events.clear();
         self.dealt.iter_mut().for_each(|dealt| *dealt = 0);
+        // Debris that retired last tick leaves before anything moves a body.
+        self.mechanics.retire_debris()?;
         if let Phase::Intermission { restarts_at, .. } = self.phase
             && self.tick >= restarts_at
         {
@@ -1286,6 +1373,13 @@ impl Session {
             }
         }
 
+        // How each robot moved after the last step, before this tick's drives: what collision
+        // damage measures against ([`crate::impact`]).
+        let before: Vec<Option<[f32; 3]>> = self
+            .fighters
+            .iter()
+            .map(|fighter| fighter.stance.as_ref().map(|stance| stance.velocity))
+            .collect();
         let mut moves = crate::player::Moves::default();
         // What each robot's motors are told this tick, by slot.
         let mut motors: Vec<Option<Controls>> = vec![None; self.fighters.len()];
@@ -1460,6 +1554,8 @@ impl Session {
             }
         }
         self.fly_pellets();
+        // Every hit of the tick is in: the repairs take their orders and work.
+        self.run_repairs(playing);
 
         // The robots step: each robot's motors ask its pool for their energy, the last requests
         // of the tick. A robot that died this tick, or lost parts, still steps as it was; it
@@ -1485,6 +1581,13 @@ impl Session {
                 robot.charge = energy;
             }
         }
+        // How the tick's drives, pulls and pushes set each robot moving.
+        let set: Vec<Option<[f32; 3]>> = (0..self.fighters.len())
+            .map(|slot| {
+                self.mechanics
+                    .velocity(u8::try_from(slot).unwrap_or(u8::MAX))
+            })
+            .collect();
         self.mechanics.step(&controls)?;
         for robot in self.mechanics.robots() {
             if let Some(fighter) = self.fighters.get_mut(usize::from(robot.slot)) {
@@ -1502,6 +1605,7 @@ impl Session {
         for slot in 0..self.fighters.len() {
             self.refresh(slot)?;
         }
+        self.collide(&before, &set);
         #[allow(clippy::cast_precision_loss)]
         for slot in 0..self.fighters.len() {
             let fighter = &self.fighters[slot];
@@ -1578,9 +1682,10 @@ impl Session {
                         fighter.starved = 0;
                     } else {
                         // No input this tick (a late packet): hold the last one, but
-                        // never repeat a weapon switch; after a while (a lost
-                        // connection), stand still looking the same way.
+                        // never repeat a weapon switch or repair order; after a while (a
+                        // lost connection), stand still looking the same way.
                         fighter.intent.select = None;
+                        fighter.intent.repair = None;
                         fighter.starved = fighter.starved.saturating_add(1);
                         if fighter.starved >= HOLD_INPUT_TICKS {
                             fighter.intent = Intent {
@@ -1608,6 +1713,42 @@ impl Session {
         }
     }
 
+    /// Each living fighter's repair order, then a tick of its repair ([`crate::repair`]), in slot
+    /// order: after its jump, swing and shot have asked its pool and every hit of the tick has
+    /// landed (a blow on the part or the module has paused it), before its motors ask. An order
+    /// the host refuses (the part not eligible now) changes nothing; asking again for the part
+    /// under repair keeps the work done. Repairs work only while the round is played.
+    fn run_repairs(&mut self, playing: bool) {
+        for fighter in &mut self.fighters {
+            if !fighter.alive() {
+                continue;
+            }
+            let build = fighter.build;
+            let boxes = fighter.hitboxes();
+            match fighter.intent.repair.filter(|_| playing) {
+                Some(Order::Stop) => fighter.repair = None,
+                Some(Order::Start(part))
+                    if fighter.repair.is_none_or(|repair| repair.target != part) =>
+                {
+                    if let Some(started) = repair::start(&build, &fighter.parts, &boxes, part) {
+                        fighter.repair = Some(started);
+                    }
+                }
+                _ => {}
+            }
+            if !playing {
+                continue;
+            }
+            let Some(work) = fighter.repair.as_mut() else {
+                continue;
+            };
+            match work.tick(&build, &mut fighter.parts, &boxes, &mut fighter.energy) {
+                Outcome::Done | Outcome::Stopped => fighter.repair = None,
+                Outcome::Worked | Outcome::Paused | Outcome::Starved => {}
+            }
+        }
+    }
+
     fn check_round_end(&mut self) {
         let Phase::Playing { ends_at } = self.phase else {
             return;
@@ -1631,6 +1772,8 @@ impl Session {
             winner,
             restarts_at: self.tick + self.rules.intermission_ticks,
         };
+        // The round's drops end with it.
+        self.drops.clear();
         self.events.push(Event::RoundOver { winner });
     }
 
@@ -1656,8 +1799,9 @@ impl Session {
         self.spawn_everyone()
     }
 
-    /// Every pad of the map ready again, as at the start of a round.
+    /// Every pad of the map ready again and nothing dropped, as at the start of a round.
     fn reset_pickups(&mut self) {
+        self.drops.clear();
         self.pickups = self
             .arena
             .module_pads
@@ -1694,6 +1838,33 @@ impl Session {
                 pad: index as u8,
                 module: pad.module,
             });
+        }
+        // Then the drops, oldest first, by the same rule; one not taken lies a tick less.
+        let mut index = 0;
+        while index < self.drops.len() {
+            let drop = self.drops[index];
+            let taker = self
+                .fighters
+                .iter()
+                .filter(|fighter| fighter.alive())
+                .filter_map(|fighter| Some((drop.reach(whole(fighter.feet()))?, fighter.slot)))
+                .min();
+            if let Some((_, slot)) = taker {
+                self.drops.remove(index);
+                self.fighters[usize::from(slot)].carried = Some(drop.carried);
+                self.events.push(Event::DropTaken {
+                    slot,
+                    from: drop.from,
+                    carried: drop.carried,
+                });
+                continue;
+            }
+            self.drops[index].expires_in -= 1;
+            if self.drops[index].expires_in == 0 {
+                self.drops.remove(index);
+            } else {
+                index += 1;
+            }
         }
     }
 
@@ -1793,17 +1964,24 @@ impl Session {
     /// every battery blast they set off.
     fn strike(&mut self, victim: usize, attacker: usize, blows: &[Blow], weapon: Weapon) {
         for blow in blows {
-            self.hurt_part(victim, attacker, *blow, weapon);
+            self.hurt_part(victim, Some(attacker), *blow, Some(weapon));
         }
         self.settle_blasts();
     }
 
-    /// One blow on one of `victim`'s parts ([`crate::damage`]): its health goes down; at zero
+    /// One blow on one of `victim`'s parts ([`crate::damage`]) by `attacker`'s `weapon`
+    /// (nobody's and none: a collision, [`crate::impact`]): its health goes down; at zero
     /// it comes off with what hung from it, a lost battery takes its capacity and its share of
     /// the charge, a destroyed one queues its blast, and a destroyed root chassis
     /// kills.
     #[allow(clippy::cast_possible_truncation)]
-    fn hurt_part(&mut self, victim: usize, attacker: usize, blow: Blow, weapon: Weapon) {
+    fn hurt_part(
+        &mut self,
+        victim: usize,
+        attacker: Option<usize>,
+        blow: Blow,
+        weapon: Option<Weapon>,
+    ) {
         if !self.fighters[victim].alive() {
             return;
         }
@@ -1820,19 +1998,23 @@ impl Session {
             return;
         };
         fighter.energy = before.shrink(fighter.pool(), fighter.energy);
+        // A direct hit on the part under repair, or on the module repairing it, pauses it.
+        if let Some(repair) = fighter.repair.as_mut() {
+            repair.struck(build.parts()[blow.index].id);
+        }
         let vital = fighter.chassis_health() == 0;
-        if attacker != victim {
+        if let Some(attacker) = attacker.filter(|attacker| *attacker != victim) {
             self.dealt[attacker] += blow.damage;
         }
         self.events.push(Event::Hit {
             victim: victim as u8,
-            attacker: Some(attacker as u8),
+            attacker: attacker.map(|attacker| attacker as u8),
             part: build.parts()[blow.index].id,
             damage: blow.damage,
             at: blow.at,
         });
         if vital {
-            self.kill(victim, Some(attacker), Some(weapon));
+            self.kill(victim, attacker, weapon);
             return;
         }
         let destroyed = change.destroyed.then_some(blow.index);
@@ -1862,6 +2044,37 @@ impl Session {
         }
     }
 
+    /// Collision damage ([`crate::impact`]), in slot order: each living robot's impact this
+    /// step, measured from how it moved `before` the tick's drives, how they `set` it moving and
+    /// how it moves now, strikes its part reaching furthest toward what it hit. Nobody is the
+    /// attacker: a robot that dies of it loses a frag, as for a fall.
+    fn collide(&mut self, before: &[Option<[f32; 3]>], set: &[Option<[f32; 3]>]) {
+        let gravity = self
+            .mechanics
+            .gravity()
+            // m/s² to units (centimetres) a second, one step's worth.
+            .map(|axis| axis * 100.0 / f32::from(crate::TICK_HZ));
+        for slot in 0..self.fighters.len() {
+            let fighter = &self.fighters[slot];
+            let (Some(before), Some(set), Some(stance)) = (
+                before.get(slot).copied().flatten(),
+                set.get(slot).copied().flatten(),
+                fighter.stance.as_ref().filter(|_| fighter.alive()),
+            ) else {
+                continue;
+            };
+            let Some(impact) = crate::impact::measure(before, set, stance.velocity, gravity) else {
+                continue;
+            };
+            let damage = crate::impact::damage(impact.speed);
+            let blows = crate::impact::strike(&stance.hitboxes, impact.direction, damage);
+            for blow in blows {
+                self.hurt_part(slot, None, blow, None);
+            }
+            self.settle_blasts();
+        }
+    }
+
     /// The queued battery blasts, in order: each damages every connected part within its
     /// small radius through the same resolution as a rocket's splash, and a battery it
     /// destroys queues its own (each battery blasts at most once a life).
@@ -1887,8 +2100,26 @@ impl Session {
         // Its robot leaves the world once this tick's step is done ([`Session::settle_robots`]).
         let fighter = &mut self.fighters[victim];
         fighter.hook = None;
-        // A carried module ends with its carrier; nothing is dropped.
-        fighter.carried = None;
+        fighter.repair = None;
+        // A carried module's effect ends with its carrier, and the module (its uses left) lies
+        // where its feet were, while a round is played and unless it fell out of the arena.
+        #[allow(clippy::cast_precision_loss)]
+        if let Some(carried) = fighter.carried.take()
+            && matches!(self.phase, Phase::Playing { .. })
+            && fighter.feet()[1] >= KILL_HEIGHT_UNITS as f32
+        {
+            self.drops.push(Drop {
+                center: whole(fighter.feet()),
+                carried,
+                from: fighter.slot,
+                expires_in: DROP_LIFETIME_TICKS,
+            });
+            self.events.push(Event::ModuleDropped {
+                slot: fighter.slot,
+                carried,
+            });
+        }
+        let fighter = &mut self.fighters[victim];
         fighter.respawn_at = Some(self.tick + self.rules.respawn_ticks);
         fighter.deaths += 1;
         match killer.filter(|killer| *killer != victim) {

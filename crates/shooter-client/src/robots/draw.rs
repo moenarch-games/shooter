@@ -11,7 +11,7 @@ use render_engine::material::{AlphaMode, StandardMaterial};
 use render_engine::mesh::{MeshData, Shape};
 use render_engine::world::{Instance, InstanceId, MaterialId, MeshId, SkinId, TextureId, World};
 use shooter_sim::Assembly;
-use shooter_sim::robot::LOADOUTS;
+use shooter_sim::robot::{LOADOUTS, PartId};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -22,6 +22,8 @@ const KIT_EMISSIVE_NITS: f32 = 3_000.0;
 const HIDDEN: Mat4 = Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::Z, Vec4::new(0.0, -100.0, 0.0, 1.0));
 /// The missing-animation marker's edge (metres).
 const MARKER_SIZE: f32 = 0.14;
+/// How bright a part lit for field repair glows (nits).
+const HIGHLIGHT_NITS: f32 = 8_000.0;
 
 /// One fighter this frame, as the match says.
 #[derive(Clone, Copy, Debug)]
@@ -32,6 +34,8 @@ pub struct RobotView<'a> {
     /// Hit glow, 1 just hit and fading to 0.
     pub glow: f32,
     pub parts: PartStates<'a>,
+    /// The part lit for field repair (the local robot's, [`crate::repair_menu`]).
+    pub highlight: Option<PartId>,
 }
 
 /// What was drawn for a fighter.
@@ -70,6 +74,8 @@ pub struct Robots {
     materials: Vec<StandardMaterial>,
     marker_mesh: MeshId,
     marker_material: MaterialId,
+    /// The glow a part lit for field repair is drawn in.
+    highlight_material: MaterialId,
     models: HashMap<Assembly, Rc<Model>>,
     slots: Vec<Option<SlotRobot>>,
     clock: f32,
@@ -139,6 +145,9 @@ impl Robots {
             materials,
             marker_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::splat(MARKER_SIZE)))),
             marker_material: world.add_material(&glowing(Vec4::new(1.0, 0.0, 0.8, 1.0), 20_000.0)),
+            // The HUD's repair teal (0x4FD1A5), lit well above the arena's exposure.
+            highlight_material: world
+                .add_material(&glowing(Vec4::new(0.08, 0.64, 0.38, 1.0), HIGHLIGHT_NITS)),
             kit,
             models,
             slots: Vec::new(),
@@ -290,10 +299,12 @@ impl Robots {
                     (true, Some(damaged)) => damaged,
                     _ => part.entry,
                 };
-                let (mesh, material) = (
-                    self.meshes[entry],
-                    robot.materials[self.kit.entries[entry].material],
-                );
+                let material = if view.highlight == Some(part.id) {
+                    self.highlight_material
+                } else {
+                    robot.materials[self.kit.entries[entry].material]
+                };
+                let mesh = self.meshes[entry];
                 if let (Some(skin), Some(palette)) = (skin, &posed_part.palette) {
                     world.set_skin(*skin, palette);
                 }

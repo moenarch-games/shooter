@@ -200,6 +200,7 @@ fn main() -> Result<(), String> {
             build: *build,
             state: standing(at(index, 2.0), toward),
             glow: 0.0,
+            highlight: None,
             parts: PartStates {
                 frames: Some(frames),
                 ..PartStates::default()
@@ -303,6 +304,7 @@ fn main() -> Result<(), String> {
             build: STANDARD,
             state: *state,
             glow: 0.0,
+            highlight: None,
             parts: PartStates {
                 frames: frames.as_ref(),
                 detached,
@@ -396,6 +398,7 @@ fn main() -> Result<(), String> {
             build: *build,
             state: *state,
             glow: 0.0,
+            highlight: None,
             parts: PartStates::default(),
         })
         .collect();
@@ -415,6 +418,7 @@ fn main() -> Result<(), String> {
             build: SKIRMISHER,
             state: standing(origin, Vec3::new(-0.5, 0.0, -1.0)),
             glow: 0.0,
+            highlight: None,
             parts: PartStates::default(),
         },
         RobotView {
@@ -422,6 +426,7 @@ fn main() -> Result<(), String> {
             build: MARKSMAN,
             state: standing(origin - Vec3::X * 1.6, Vec3::new(-0.5, 0.0, -1.0)),
             glow: 0.0,
+            highlight: None,
             parts: PartStates::default(),
         },
     ];
@@ -440,6 +445,7 @@ fn main() -> Result<(), String> {
         build: HEAVY,
         state: standing(origin, Vec3::new(-0.6, 0.0, -1.0)),
         glow: 0.0,
+        highlight: None,
         parts: PartStates::default(),
     }];
     let middle = origin + Vec3::Y * 1.1;
@@ -577,6 +583,7 @@ fn locomotion(
             build: *build,
             state: state(index),
             glow: 0.0,
+            highlight: None,
             parts: PartStates {
                 frames: Some(frames),
                 ..*parts

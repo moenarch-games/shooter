@@ -302,6 +302,7 @@ impl Bot {
                 && dy.abs() < crate::player::EYE_HEIGHT_UNITS,
             select: Some(weapon),
             edit: false,
+            repair: None,
         }
     }
 

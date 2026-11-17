@@ -510,6 +510,8 @@ impl Effects {
                 | Event::RoundOver { .. }
                 | Event::ModuleTaken { .. }
                 | Event::ModuleSpent { .. }
+                | Event::ModuleDropped { .. }
+                | Event::DropTaken { .. }
                 | Event::Detached { .. } => {}
             }
         }

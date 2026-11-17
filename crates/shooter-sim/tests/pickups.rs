@@ -1,21 +1,24 @@
 //! Contested module pickups on the host (`shooter_sim::pickups`): who takes a pad when several
-//! reach it, the pad's respawn, a module lasting the life until its uses are spent and its end at
-//! death, the round and map
-//! transitions, the rail capacitor's lag-compensated hits and frags, thrusters, fighters of
-//! different builds, and the wire.
+//! reach it, the pad's respawn, a module lasting the life until its uses are spent, its drop at
+//! death with its uses left, who takes a drop when several reach it, a drop's lifetime, the round
+//! and map transitions, the rail capacitor's lag-compensated hits and frags, thrusters, fighters
+//! of different builds, a client predicting a drop's pickup, and the wire.
 
 use shooter_sim::aim;
 use shooter_sim::damage::PartDamage;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::pickups::{
-    PAD_RESPAWN_TICKS, RAIL_CAPACITOR_DAMAGE_PERCENT, RAIL_CAPACITOR_SHOTS,
-    THRUSTER_JUMP_SUBUNITS_PER_TICK, THRUSTER_JUMPS,
+    DROP_LIFETIME_TICKS, Drop, PAD_RESPAWN_TICKS, RAIL_CAPACITOR_DAMAGE_PERCENT,
+    RAIL_CAPACITOR_SHOTS, THRUSTER_JUMP_SUBUNITS_PER_TICK, THRUSTER_JUMPS,
 };
-use shooter_sim::player::{JUMP_VELOCITY_SUBUNITS_PER_TICK, PLAYER_HALF_EXTENTS};
+use shooter_sim::player::{
+    JUMP_VELOCITY_SUBUNITS_PER_TICK, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS,
+};
 use shooter_sim::robot::parts::CHASSIS_S;
 use shooter_sim::robot::{ARMORY, BETA, HEAVY, MARKSMAN, SKIRMISHER};
 use shooter_sim::scenarios;
 use shooter_sim::tour::{end_of, run_legs};
+use shooter_sim::wire::Snapshot;
 use shooter_sim::wire::{decode_snapshot, encode_snapshot};
 use shooter_sim::{
     Arena, ArenaModule, Assembly, Carried, Event, Input, Intent, MapId, ModulePad, Phase, Rules,
@@ -32,9 +35,9 @@ fn pad(at: [i32; 3], module: ArenaModule) -> ModulePad {
     }
 }
 
-/// A faces B 12 m apart on an open floor with `pads`; both people, no bots.
-fn duel(pads: Vec<ModulePad>) -> Session {
-    let arena = Arena {
+/// An open floor with `pads`, A's spawn point 6 m south of its centre and B's 6 m north.
+fn duel_arena(pads: Vec<ModulePad>) -> Arena {
+    Arena {
         half_size: 2_000,
         pieces: Vec::new(),
         pads: Vec::new(),
@@ -49,7 +52,11 @@ fn duel(pads: Vec<ModulePad>) -> Session {
         waypoints: Vec::new(),
         placements: Vec::new(),
         repair_anchors: Vec::new(),
-    };
+    }
+}
+
+/// A faces B 12 m apart on an open floor with `pads`; both people, no bots.
+fn duel(pads: Vec<ModulePad>) -> Session {
     let rules = Rules {
         slots: 2,
         bots: false,
@@ -60,7 +67,7 @@ fn duel(pads: Vec<ModulePad>) -> Session {
         intermission_ticks: 60,
         respawn_ticks: 30,
     };
-    let mut session = Session::with_rules(arena, rules).unwrap();
+    let mut session = Session::with_rules(duel_arena(pads), rules).unwrap();
     assert_eq!(session.join(A).unwrap(), Some(0));
     assert_eq!(session.join(B).unwrap(), Some(1));
     session
@@ -226,27 +233,20 @@ fn a_module_lasts_the_life_until_its_uses_are_spent() {
     assert!(plain < thruster - 100.0, "{plain} {thruster}");
 }
 
-/// Death ends a module at once and drops nothing: the pad keeps its own clock.
-#[test]
-fn a_module_ends_with_its_carrier() {
-    let mut session = duel(vec![pad([0, 0, -600], ArenaModule::Thrusters)]);
-    // B fires the heavy build's rockets.
-    equip(&mut session, 1, HEAVY);
-    session.step().unwrap();
-    assert!(session.fighters[0].carried.is_some());
-    let taken_at = session.ticks();
-    // A's root chassis is down to its last point; B's rocket at A's feet finishes it.
+/// B (built heavy, 12 m off) rockets A, whose root chassis it first takes down to its last
+/// point, until A dies; `sequence` is B's last input.
+fn rocket_a(session: &mut Session, sequence: &mut u32) {
     let a = &mut session.fighters[0];
     let chassis = PartDamage::root(&a.build).unwrap();
     let build = a.build;
     a.parts
         .hurt(&build, chassis, i32::from(CHASSIS_S.health) - 1);
-    let mut killed = false;
-    for sequence in 1..120 {
+    for _ in 0..120 {
+        *sequence += 1;
         session.queue(
             B,
             Input {
-                sequence,
+                sequence: *sequence,
                 intent: Intent {
                     yaw: 32_768,
                     pitch: -1_500,
@@ -263,24 +263,337 @@ fn a_module_ends_with_its_carrier() {
             killer: Some(1),
             weapon: Some(Weapon::RocketLauncher),
         }) {
-            killed = true;
-            break;
+            return;
         }
     }
-    assert!(killed);
+    panic!("B's rockets never killed A");
+}
+
+fn dropped(session: &Session) -> Vec<(u8, Carried)> {
+    session
+        .events
+        .iter()
+        .filter_map(|event| match *event {
+            Event::ModuleDropped { slot, carried } => Some((slot, carried)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn retaken(session: &Session) -> Vec<(u8, u8, Carried)> {
+    session
+        .events
+        .iter()
+        .filter_map(|event| match *event {
+            Event::DropTaken {
+                slot,
+                from,
+                carried,
+            } => Some((slot, from, carried)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn feet_of(center: Vec3i) -> [f32; 3] {
+    [center.x as f32, center.y as f32, center.z as f32]
+}
+
+/// A dying carrier loses the effect and leaves its module where it fell with the uses it had
+/// left; another robot of another build takes it with those uses and uses it; the pad keeps its
+/// own clock throughout.
+#[test]
+fn death_drops_the_module_with_its_uses_left_for_any_robot_to_take() {
+    let mut session = duel(vec![pad([0, 0, -600], ArenaModule::Thrusters)]);
+    // B fires the heavy build's rockets.
+    equip(&mut session, 1, HEAVY);
+    session.step().unwrap();
+    assert_eq!(taken(&session), [(0, 0, ArenaModule::Thrusters)]);
+    let taken_at = session.ticks();
+    // Two of its jumps spent.
+    let four = Carried {
+        module: ArenaModule::Thrusters,
+        uses_left: THRUSTER_JUMPS - 2,
+    };
+    session.fighters[0].carried = Some(four);
+    let mut sequence = 0;
+    rocket_a(&mut session, &mut sequence);
     assert!(!session.fighters[0].alive());
     assert_eq!(session.fighters[0].carried, None);
-    assert_eq!(session.pickups.len(), 1);
+    assert_eq!(dropped(&session), [(0, four)]);
+    assert_eq!(session.drops.len(), 1);
+    let drop = session.drops[0];
+    assert_eq!((drop.carried, drop.from), (four, 0));
+    assert!(drop.expires_in >= DROP_LIFETIME_TICKS - 1, "{drop:?}");
+    // Where A fell: its spawn point, give or take the blast's shove.
+    assert!(
+        drop.center.x.abs() < 100 && (drop.center.z + 600).abs() < 100,
+        "{drop:?}"
+    );
+    // The pad keeps its own clock.
     assert_eq!(
         session.pickups[0].ready_in,
         PAD_RESPAWN_TICKS - (session.ticks() - taken_at)
     );
-    // Respawned, it carries nothing until it takes a pad again.
-    for _ in 0..40 {
+    // B, the heavy build, takes it with its uses left, not a fresh module.
+    stand_at(&mut session, 1, feet_of(drop.center));
+    session.step().unwrap();
+    assert_eq!(retaken(&session), [(1, 0, four)]);
+    assert_eq!(session.fighters[1].carried, Some(four));
+    assert!(session.drops.is_empty());
+    assert_eq!(
+        session.pickups[0].ready_in,
+        PAD_RESPAWN_TICKS - (session.ticks() - taken_at)
+    );
+    // And jumps on it.
+    for _ in 0..30 {
         session.step().unwrap();
     }
+    sequence += 1;
+    send(
+        &mut session,
+        B,
+        sequence,
+        Intent {
+            jump: true,
+            ..Intent::IDLE
+        },
+    );
+    session.step().unwrap();
+    assert_eq!(
+        session.fighters[1].carried.map(|c| c.uses_left),
+        Some(THRUSTER_JUMPS - 3)
+    );
+    // A respawned carrying nothing: the drop went to B, and the pad is not back.
     assert!(session.fighters[0].alive());
     assert_eq!(session.fighters[0].carried, None);
+}
+
+/// A carrier that spent its module, or that falls out of the arena, drops nothing.
+#[test]
+fn a_spent_module_or_a_fall_drops_nothing() {
+    let mut session = duel(Vec::new());
+    equip(&mut session, 1, HEAVY);
+    // Its last use spent: nothing left to drop.
+    session.fighters[0].carried = Carried {
+        module: ArenaModule::RailCapacitor,
+        uses_left: 1,
+    }
+    .spend();
+    assert_eq!(session.fighters[0].carried, None);
+    let mut sequence = 0;
+    rocket_a(&mut session, &mut sequence);
+    assert!(dropped(&session).is_empty());
+    assert!(session.drops.is_empty());
+
+    let mut session = duel(Vec::new());
+    session.fighters[0].carried = Some(Carried::fresh(ArenaModule::Thrusters));
+    #[allow(clippy::cast_precision_loss)]
+    stand_at(
+        &mut session,
+        0,
+        [0.0, (KILL_HEIGHT_UNITS - 100) as f32, 0.0],
+    );
+    session.step().unwrap();
+    assert!(session.events.contains(&Event::Killed {
+        victim: 0,
+        killer: None,
+        weapon: None,
+    }));
+    assert_eq!(session.fighters[0].carried, None);
+    assert!(dropped(&session).is_empty());
+    assert!(session.drops.is_empty());
+}
+
+fn lying(at: [i32; 3], carried: Carried, from: u8) -> Drop {
+    Drop {
+        center: Vec3i::new(at[0], at[1], at[2]),
+        carried,
+        from,
+        expires_in: DROP_LIFETIME_TICKS,
+    }
+}
+
+#[test]
+fn a_contested_drop_goes_to_the_nearest_fighter_then_the_lowest_slot() {
+    let two = Carried {
+        module: ArenaModule::RailCapacitor,
+        uses_left: 2,
+    };
+    // Equally near: the lowest slot.
+    let mut session = duel(Vec::new());
+    session.drops.push(lying([0, 0, 0], two, 1));
+    stand_at(&mut session, 0, [40.0, 0.0, 0.0]);
+    stand_at(&mut session, 1, [-40.0, 0.0, 0.0]);
+    session.step().unwrap();
+    assert_eq!(retaken(&session), [(0, 1, two)]);
+    assert_eq!(session.fighters[0].carried, Some(two));
+    assert_eq!(session.fighters[1].carried, None);
+    assert!(session.drops.is_empty());
+
+    // Nearer wins whatever the slot, and replaces the module it carried.
+    let mut session = duel(Vec::new());
+    session.drops.push(lying([0, 0, 0], two, 0));
+    session.fighters[1].carried = Some(Carried::fresh(ArenaModule::Thrusters));
+    stand_at(&mut session, 0, [55.0, 0.0, 0.0]);
+    stand_at(&mut session, 1, [-20.0, 0.0, 30.0]);
+    session.step().unwrap();
+    assert_eq!(retaken(&session), [(1, 0, two)]);
+    assert_eq!(session.fighters[0].carried, None);
+    assert_eq!(session.fighters[1].carried, Some(two));
+
+    // Two drops in one tick: each to its own nearest fighter, oldest first.
+    let mut session = duel(Vec::new());
+    let thrusters = Carried::fresh(ArenaModule::Thrusters);
+    session.drops.push(lying([0, 0, 0], two, 1));
+    session.drops.push(lying([500, 0, 0], thrusters, 0));
+    stand_at(&mut session, 0, [500.0, 0.0, 0.0]);
+    stand_at(&mut session, 1, [0.0, 0.0, 0.0]);
+    session.step().unwrap();
+    assert_eq!(retaken(&session), [(1, 1, two), (0, 0, thrusters)]);
+}
+
+/// An untaken drop lies its lifetime, then is gone; so are the round's drops at its end.
+#[test]
+fn drops_are_gone_after_their_lifetime_and_at_the_round_end() {
+    let thrusters = Carried::fresh(ArenaModule::Thrusters);
+    let mut session = duel(Vec::new());
+    session.drops.push(lying([1_000, 0, 0], thrusters, 1));
+    for _ in 1..DROP_LIFETIME_TICKS {
+        session.step().unwrap();
+    }
+    assert_eq!(session.drops.len(), 1);
+    assert_eq!(session.drops[0].expires_in, 1);
+    session.step().unwrap();
+    assert!(session.drops.is_empty());
+
+    let mut session = duel(Vec::new());
+    session.drops.push(lying([1_000, 0, 0], thrusters, 1));
+    session.phase = Phase::Playing {
+        ends_at: Some(session.ticks() + 1),
+    };
+    session.step().unwrap();
+    assert!(
+        session
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::RoundOver { .. }))
+    );
+    assert!(session.drops.is_empty());
+    for _ in 0..61 {
+        session.step().unwrap();
+    }
+    assert!(matches!(session.phase, Phase::Playing { .. }));
+    assert!(session.drops.is_empty());
+}
+
+/// A rocket kill dropping a module, and B taking it: the snapshots from the kill on.
+fn drop_scenario() -> Vec<Snapshot> {
+    let mut session = duel(Vec::new());
+    equip(&mut session, 1, HEAVY);
+    session.fighters[0].carried = Some(Carried {
+        module: ArenaModule::RailCapacitor,
+        uses_left: 3,
+    });
+    let mut sequence = 0;
+    rocket_a(&mut session, &mut sequence);
+    let mut snapshots = vec![session.snapshot()];
+    let center = session.drops[0].center;
+    for _ in 0..10 {
+        session.step().unwrap();
+        snapshots.push(session.snapshot());
+    }
+    stand_at(&mut session, 1, feet_of(center));
+    session.step().unwrap();
+    snapshots.push(session.snapshot());
+    snapshots
+}
+
+#[test]
+fn drops_round_trip_on_the_wire_and_replay_exactly() {
+    let snapshots = drop_scenario();
+    assert_eq!(snapshots, drop_scenario());
+    let events: Vec<&Event> = snapshots.iter().flat_map(|s| &s.events).collect();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::ModuleDropped { slot: 0, .. }))
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::DropTaken {
+            slot: 1,
+            from: 0,
+            carried: Carried { uses_left: 3, .. }
+        }
+    )));
+    assert_eq!(snapshots[1].drops.len(), 1);
+    assert!(snapshots.last().unwrap().drops.is_empty());
+    for snapshot in &snapshots {
+        assert_eq!(
+            decode_snapshot(&encode_snapshot(snapshot)).unwrap(),
+            *snapshot
+        );
+    }
+    // A drop out of range is malformed.
+    let mut bad = snapshots[1].clone();
+    bad.drops[0].carried.uses_left = 0;
+    assert!(decode_snapshot(&encode_snapshot(&bad)).is_err());
+    let mut bad = snapshots[1].clone();
+    bad.drops[0].expires_in = DROP_LIFETIME_TICKS + 1;
+    assert!(decode_snapshot(&encode_snapshot(&bad)).is_err());
+}
+
+/// A client predicting from the host's snapshot (its drops included) takes a drop on the tick
+/// the host does, with the same uses.
+#[test]
+fn a_client_predicts_taking_a_drop_as_the_host_does() {
+    let three = Carried {
+        module: ArenaModule::Thrusters,
+        uses_left: 3,
+    };
+    let mut host = duel(Vec::new());
+    // Three metres ahead of A, B's dropped thrusters.
+    host.drops.push(lying([0, 0, -300], three, 1));
+    host.step().unwrap();
+    let snapshot = decode_snapshot(&encode_snapshot(&host.snapshot())).unwrap();
+    let me = snapshot.of_player(A).unwrap().clone();
+    let mut predictor = Session::new(duel_arena(Vec::new())).unwrap();
+    predictor.fighters[0].parts = me.parts;
+    predictor
+        .place(0, me.robot.as_ref().unwrap(), me.motion, me.held, me.hook)
+        .unwrap();
+    predictor.fighters[0].energy = me.energy;
+    predictor.fighters[0].carried = me.carried;
+    predictor.drops.clone_from(&snapshot.drops);
+    let walk = Intent {
+        forward: 1,
+        ..Intent::IDLE
+    };
+    let mut taken_at = (None, None);
+    for sequence in 1..120 {
+        send(&mut host, A, sequence, walk);
+        host.step().unwrap();
+        predictor.tick(walk).unwrap();
+        let tick = host.ticks();
+        if !retaken(&host).is_empty() {
+            assert_eq!(retaken(&host), [(0, 1, three)]);
+            taken_at.0 = Some(tick);
+        }
+        if !retaken(&predictor).is_empty() {
+            assert_eq!(retaken(&predictor), [(0, 1, three)]);
+            taken_at.1 = Some(tick);
+        }
+        assert_eq!(
+            predictor.local().carried,
+            host.fighters[0].carried,
+            "tick {tick}"
+        );
+        assert_eq!(predictor.drops, host.drops, "tick {tick}");
+    }
+    assert!(taken_at.0.is_some(), "A never reached the drop");
+    assert_eq!(taken_at.0, taken_at.1);
 }
 
 #[test]
@@ -330,6 +643,8 @@ fn a_fresh_round_clears_the_modules_and_readies_every_pad() {
     );
 }
 
+/// Every map starts with its own pads ready and nothing dropped (a match moving to another map
+/// starts there afresh: no carried module or drop crosses over).
 #[test]
 fn every_map_starts_with_its_own_pads_ready() {
     for map in MapId::ALL {
@@ -338,6 +653,8 @@ fn every_map_starts_with_its_own_pads_ready() {
         let pads: Vec<ModulePad> = session.pickups.iter().map(|p| p.pad).collect();
         assert_eq!(pads, arena.module_pads, "{map}");
         assert!(session.pickups.iter().all(|p| p.ready()), "{map}");
+        assert!(session.drops.is_empty(), "{map}");
+        assert!(session.snapshot().drops.is_empty(), "{map}");
         assert!(
             session.fighters.iter().all(|f| f.carried.is_none()),
             "{map}"
