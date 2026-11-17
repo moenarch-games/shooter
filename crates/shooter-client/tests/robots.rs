@@ -12,7 +12,7 @@
 
 use render_engine::glam::{Mat4, Vec3};
 use shooter_client::robots::Frames;
-use shooter_client::robots::kit::{Bundle, KitData, MAX_TOTAL_BYTES, Plan};
+use shooter_client::robots::kit::{Bundle, KitData, MAX_TOTAL_BYTES, Plan, drawn_key};
 use shooter_client::robots::load;
 use shooter_client::robots::model::Model;
 use shooter_client::robots::pose::{
@@ -224,7 +224,7 @@ fn loadouts_and_fixtures_draw_every_part_from_the_kits() {
         assert_eq!(model.parts.len(), build.parts().len(), "{name}");
         for (part, drawn) in build.parts().iter().zip(&model.parts) {
             assert_eq!(part.id, drawn.id);
-            let kit_part = kit.entries[drawn.entry].key == drawn.key;
+            let kit_part = kit.entries[drawn.entry].key == drawn_key(drawn.key);
             assert!(kit_part, "{name}: {}", drawn.key);
         }
     }
@@ -1126,7 +1126,7 @@ fn every_build_draws_its_wheels_and_tracks_from_the_locomotion_kit() {
     for (name, build) in builds() {
         let model = Model::of(&build, kit).expect(name);
         for drawn in &model.parts {
-            assert_eq!(kit.entries[drawn.entry].key, drawn.key, "{name}");
+            assert_eq!(kit.entries[drawn.entry].key, drawn_key(drawn.key), "{name}");
             assert_eq!(kit.entries[drawn.entry].variant, "default", "{name}");
             let rolls = matches!(drawn.key, "robot.wheel" | "robot.track");
             assert_eq!(drawn.roll.is_some(), rolls, "{name}: {}", drawn.key);

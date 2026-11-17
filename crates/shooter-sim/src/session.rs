@@ -43,6 +43,11 @@
 //! Every fighter has a shared energy pool from its build; its jumps, swings and shots ask it for
 //! energy first come, first served and it regenerates after them each tick ([`crate::energy`]).
 //! A lost battery takes its capacity and its share of the charge with it.
+//!
+//! A person whose build mounts a repair module may repair a damaged part in its reach while the
+//! match goes on ([`crate::repair`]): the host checks the order, the repair draws from the pool
+//! after the tick's shots and hits and before the motors, a blow on the part or the module
+//! pauses it, and death and respawn end it.
 
 use crate::aim;
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
@@ -61,6 +66,7 @@ use crate::player::{
     Footing, GRAVITY, Intent, KILL_HEIGHT_UNITS, Motion, PLAYER_HALF_EXTENTS, STEP_UP, Traction,
     eye_height,
 };
+use crate::repair::{self, Order, Outcome, Repair};
 use crate::robot::{Assembly, BETA, Kind, PartId, Tuning};
 use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
 use std::collections::VecDeque;
@@ -213,6 +219,8 @@ pub struct Fighter {
     /// Its build's part healths and lost parts this life ([`crate::damage`]); the root
     /// chassis' health is its life.
     pub parts: PartDamage,
+    /// The field repair under way this life, if any ([`crate::repair`]).
+    pub repair: Option<Repair>,
     /// While dead: the tick it comes back.
     pub respawn_at: Option<u32>,
     pub frags: i32,
@@ -246,6 +254,7 @@ impl Fighter {
             carried: None,
             energy: 0,
             parts: PartDamage::default(),
+            repair: None,
             respawn_at: None,
             frags: 0,
             deaths: 0,
@@ -268,7 +277,7 @@ impl Fighter {
 
     /// Tracks the input backlog over [`BACKLOG_WINDOW_TICKS`] and, at the end of a window in
     /// which more than [`BACKLOG_KEEP`] inputs always waited, drops the oldest down to it (a
-    /// dropped weapon switch carries over to the next input).
+    /// dropped weapon switch or repair order carries over to the next input).
     fn trim_backlog(&mut self) {
         self.backlog = self.backlog.min(self.inputs.len());
         self.backlog_ticks += 1;
@@ -281,6 +290,7 @@ impl Fighter {
             };
             if let Some(next) = self.inputs.front_mut() {
                 next.intent.select = next.intent.select.or(dropped.intent.select);
+                next.intent.repair = next.intent.repair.or(dropped.intent.repair);
             }
         }
         self.backlog = usize::MAX;
@@ -324,9 +334,21 @@ impl Fighter {
     fn rebuild(&mut self, build: Assembly) {
         self.build = build;
         self.parts = PartDamage::fresh(&build);
+        self.repair = None;
         if !self.parts.holdable(&build, self.arsenal.held) {
             self.arsenal = Arsenal::holding(self.first_weapon());
         }
+    }
+
+    /// The parts a field repair may start on now (bits by index, [`repair::eligible`]): damaged,
+    /// still connected and in reach of a working repair module where its robot carries them.
+    /// None while dead.
+    #[must_use]
+    pub fn repairable(&self) -> u32 {
+        if !self.alive() {
+            return 0;
+        }
+        repair::eligible(&self.build, &self.parts, &self.hitboxes())
     }
 
     /// The weapon it takes up at spawn: the first its build lets it hold that is not the grapple,
@@ -959,8 +981,9 @@ impl Session {
         fighter.build = fighter.configured;
         fighter.hook = None;
         fighter.carried = None;
-        // Respawn restores the configured build whole (D2.i70.8).
+        // Respawn restores the configured build whole (D2.i70.8), with no repair under way.
         fighter.parts = PartDamage::fresh(&fighter.build);
+        fighter.repair = None;
         fighter.arsenal = Arsenal::holding(fighter.first_weapon());
         fighter.energy = fighter.pool().capacity;
         fighter.respawn_at = None;
@@ -1389,6 +1412,8 @@ impl Session {
             }
         }
         self.fly_pellets();
+        // Every hit of the tick is in: the repairs take their orders and work.
+        self.run_repairs(playing);
 
         // The robots step: each robot's motors ask its pool for their energy, the last requests
         // of the tick. A robot that died this tick, or lost parts, still steps as it was; it
@@ -1506,9 +1531,10 @@ impl Session {
                         fighter.starved = 0;
                     } else {
                         // No input this tick (a late packet): hold the last one, but
-                        // never repeat a weapon switch; after a while (a lost
-                        // connection), stand still looking the same way.
+                        // never repeat a weapon switch or repair order; after a while (a
+                        // lost connection), stand still looking the same way.
                         fighter.intent.select = None;
+                        fighter.intent.repair = None;
                         fighter.starved = fighter.starved.saturating_add(1);
                         if fighter.starved >= HOLD_INPUT_TICKS {
                             fighter.intent = Intent {
@@ -1532,6 +1558,42 @@ impl Session {
                         fighter.view_tick = tick;
                     }
                 }
+            }
+        }
+    }
+
+    /// Each living fighter's repair order, then a tick of its repair ([`crate::repair`]), in slot
+    /// order: after its jump, swing and shot have asked its pool and every hit of the tick has
+    /// landed (a blow on the part or the module has paused it), before its motors ask. An order
+    /// the host refuses (the part not eligible now) changes nothing; asking again for the part
+    /// under repair keeps the work done. Repairs work only while the round is played.
+    fn run_repairs(&mut self, playing: bool) {
+        for fighter in &mut self.fighters {
+            if !fighter.alive() {
+                continue;
+            }
+            let build = fighter.build;
+            let boxes = fighter.hitboxes();
+            match fighter.intent.repair.filter(|_| playing) {
+                Some(Order::Stop) => fighter.repair = None,
+                Some(Order::Start(part))
+                    if fighter.repair.is_none_or(|repair| repair.target != part) =>
+                {
+                    if let Some(started) = repair::start(&build, &fighter.parts, &boxes, part) {
+                        fighter.repair = Some(started);
+                    }
+                }
+                _ => {}
+            }
+            if !playing {
+                continue;
+            }
+            let Some(work) = fighter.repair.as_mut() else {
+                continue;
+            };
+            match work.tick(&build, &mut fighter.parts, &boxes, &mut fighter.energy) {
+                Outcome::Done | Outcome::Stopped => fighter.repair = None,
+                Outcome::Worked | Outcome::Paused | Outcome::Starved => {}
             }
         }
     }
@@ -1733,6 +1795,10 @@ impl Session {
             return;
         };
         fighter.energy = before.shrink(fighter.pool(), fighter.energy);
+        // A direct hit on the part under repair, or on the module repairing it, pauses it.
+        if let Some(repair) = fighter.repair.as_mut() {
+            repair.struck(build.parts()[blow.index].id);
+        }
         let vital = fighter.chassis_health() == 0;
         if attacker != victim {
             self.dealt[attacker] += blow.damage;
@@ -1802,6 +1868,7 @@ impl Session {
         fighter.hook = None;
         // A carried module ends with its carrier; nothing is dropped.
         fighter.carried = None;
+        fighter.repair = None;
         fighter.respawn_at = Some(self.tick + self.rules.respawn_ticks);
         fighter.deaths += 1;
         match killer.filter(|killer| *killer != victim) {

@@ -672,6 +672,9 @@ fn inputs_and_snapshots_round_trip() {
         melee: true,
         select: Some(Weapon::RocketLauncher),
         edit: true,
+        repair: Some(shooter_sim::repair::Order::Start(
+            shooter_sim::robot::PartId(5),
+        )),
     };
     let command = decode_input(&encode_input(intent, 77, None, None)).unwrap();
     assert_eq!((command.intent, command.view_tick), (intent, 77));

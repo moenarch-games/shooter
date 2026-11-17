@@ -80,7 +80,7 @@
 use crate::weapons::{Delivery, Weapon};
 use parts::{
     BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, FLAMETHROWER, GRAPPLE,
-    LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    LASER, LEG, RAIL_GUN, REPAIR_MODULE, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
 
@@ -168,6 +168,9 @@ pub enum Kind {
     /// A battery: stored energy capacity only (D2.i70.3).
     Battery,
     Sensor,
+    /// A repair module (D2.i70.9): when the player activates it, it restores a damaged part
+    /// still connected within its radius of where it is mounted ([`crate::repair`]).
+    Repair,
     /// Legs, wheels or tracks: optional (D2.i70.1), driven as they are mounted
     /// ([`crate::mechanics`]).
     Locomotion(Locomotion),
@@ -525,6 +528,11 @@ pub mod parts {
     /// component health for per-part damage (shooter#56).
     #[rustfmt::skip]
     pub const BATTERY: PartType = tough(part(32, "robot.battery", Kind::Battery, [1, 2, 1], Faces::NONE, [20, 60, 0, 5]), 60);
+    /// A 20 × 20 × 20 cm field repair module (D2.i70.9, shooter#61): it restores a chosen
+    /// damaged part within its radius ([`crate::repair`]), with 40 component health like a
+    /// light weapon.
+    #[rustfmt::skip]
+    pub const REPAIR_MODULE: PartType = tough(part(33, "robot.repair-module", Kind::Repair, [1, 1, 1], Faces::NONE, [12, 0, 0, 8]), 40);
     #[rustfmt::skip]
     pub const SENSOR: PartType = tough(part(31, "robot.sensor", Kind::Sensor, [1, 1, 1], Faces::NONE, [10, 0, 0, 5]), 30);
     /// One self-contained leg, 80 cm long: a hip and a knee servo, each with this drive.
@@ -606,8 +614,8 @@ pub const LONG_BARREL: ModId = ModId(3);
 // old build naming it is an unknown mod.
 pub const EFFICIENCY_COIL: ModId = ModId(5);
 
-/// The beta's catalog: three chassis sizes, two beams, two joints, a battery, a sensor,
-/// legs, wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
+/// The beta's catalog: three chassis sizes, two beams, two joints, a battery, a sensor, a
+/// repair module, legs, wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
 /// Provisional values (Q2.i70.1, Q2.i70.2).
 #[rustfmt::skip]
 pub const BETA: Catalog = Catalog {
@@ -615,7 +623,7 @@ pub const BETA: Catalog = Catalog {
         parts::CHASSIS_S, parts::CHASSIS_M, parts::CHASSIS_L,
         parts::BEAM_SHORT, parts::BEAM_LONG,
         parts::HINGE, parts::ROTOR,
-        parts::BATTERY, parts::SENSOR,
+        parts::BATTERY, parts::SENSOR, parts::REPAIR_MODULE,
         parts::LEG, parts::WHEEL, parts::TRACK,
         parts::ARMOR_PLATE,
         parts::ENERGY_RIFLE, parts::RAIL_GUN, parts::ROCKET_LAUNCHER, parts::GRAPPLE,
@@ -932,6 +940,28 @@ pub const PYRO: Assembly = with_weapons(
     None,
 );
 
+/// A field-repair loadout (shooter#61): the standard build with a repair module (ID 11) on the
+/// small chassis' back, its second cell up, whose radius reaches every other part
+/// ([`crate::repair::RADIUS_UNITS`]). Valid in [`BETA`].
+pub const MECHANIC: Assembly = with_weapons(
+    frame(&CHASSIS_S),
+    [
+        forward(7, &ENERGY_RIFLE, &CHASSIS_S, 1, 2),
+        forward(8, &ENERGY_BLADE, &CHASSIS_S, 0, 2),
+        forward(9, &GRAPPLE, &CHASSIS_S, 0, 3),
+        forward(10, &SHOTGUN, &CHASSIS_S, 1, 3),
+    ],
+    Some(Part::on(
+        11,
+        &REPAIR_MODULE,
+        0,
+        &CHASSIS_S,
+        Face::NegX,
+        1,
+        0,
+    )),
+);
+
 /// The test ranges' build: every weapon, unmodded, on the front of the large chassis (the
 /// light ones in the bottom two rows, the rail gun and the rocket launcher above), on the shared
 /// frame. A fighter fires only what its build carries (shooter#92), so the scripted weapon
@@ -954,13 +984,15 @@ pub const ARMORY: Assembly = authored(&[
 
 /// The named loadouts a person picks from until the builder (shooter#57): the unmodified
 /// standard and heavy builds, the two contrasting modded ones and the pyro (the laser and the
-/// flamethrower, shooter#96), all component trees.
-pub const LOADOUTS: [(&str, Assembly); 5] = [
+/// flamethrower, shooter#96) and the mechanic (a field repair module, shooter#61), all
+/// component trees.
+pub const LOADOUTS: [(&str, Assembly); 6] = [
     ("standard", STANDARD),
     ("heavy", HEAVY),
     ("skirmisher", SKIRMISHER),
     ("marksman", MARKSMAN),
     ("pyro", PYRO),
+    ("mechanic", MECHANIC),
 ];
 
 /// The loadout called `name` in [`LOADOUTS`] (any case).

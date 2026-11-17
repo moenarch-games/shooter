@@ -25,12 +25,13 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
-/// 9: the logged commands are wire-14 inputs and the digests cover wire-14 snapshots (builds
+/// 10: the logged commands are wire-17 inputs (a repair order) and the digests cover wire-17
+/// snapshots (each fighter's repair and repairable parts, shooter#61); 9 carried wire 14 (builds
 /// without the retired control core, the root chassis the vital part); 8 carried wire 13 (each
 /// robot's part healths, part hits and detachments); 7 carried wire 12 (shared energy charge,
 /// batteries, no heat), 6 wire 11 (robot builds as socket-grid component trees), 5 wire 10
 /// (module pickups), 4 wire 9 (robot builds with weapon mods).
-const FORMAT: u8 = 9;
+const FORMAT: u8 = 10;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 

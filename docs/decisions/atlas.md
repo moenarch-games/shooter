@@ -220,6 +220,20 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   with motors and weapons for the same energy (2026-11-14, A). No passive regeneration,
   reconstruction of destroyed parts, salvage from opponents or build change while alive. Owner:
   shooter#61.
+  A hit on the component being repaired, or on the module repairing it, pauses the repair for a
+  bounded time, keeping its progress, and it resumes by itself if still eligible; hits elsewhere
+  do not pause it (2026-11-14, B). The player picks the part from a quick-selection menu of the
+  eligible parts in reach of a working module, highlighted on the robot, while the match keeps
+  running; the host validates the part and module (2026-11-14, B).
+  Since shooter#61 it ships (`shooter_sim::repair`): the repair module (`robot.repair-module`, a
+  one-cell part, 12 kg, 8 points, 40 health; drawn as the robot kit's sensor until the kit has a
+  model, asset-tooling#742) and the `mechanic` loadout carrying one. The client sends a one-shot
+  order (start a part, or stop) through the input-bindings path (R, the wheel or Q/E in the menu);
+  the host refuses a part not eligible now. The first module by part ID that reaches the part
+  does the work; a module does not repair itself. Reach is measured from the module's centre to
+  the part's box where the robot's bodies carry them each tick. Snapshots carry each fighter's
+  repair (part, module, progress, pause) and its repairable parts; the client predicts its own;
+  bots do not repair. Tuning is provisional (Q2.i70.3).
 - **D2.i70.10** (owner, 2026-11-13; shooter#70): High-energy collisions between robots or objects,
   and high falls, damage the components actually hit, from relative impact speed, effective mass or
   impulse and contact geometry, under the same health and detachment rules as weapon hits
@@ -494,6 +508,13 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
 - **Q2.i70.3**: Repair targeting and range: the module's radius, the target-selection gesture, the
   repair rate, energy cost and cooldown, and whether incoming damage interrupts a repair
   (D2.i70.9).
+  The gesture (a quick-selection menu) and the interruption (direct hits pause it) were decided
+  2026-11-14 (D2.i70.9). Provisional defaults in use until tuned (shooter#61): a 60-unit (0.6 m)
+  radius from the module's centre to the part's box; one health point every 6 granted ticks
+  (10 a second); 250 milli-units a tick of work (15 energy a second), asked whole each tick, no
+  separate cooldown; a 45-tick (0.75 s) pause on a direct hit, started over by each further hit.
+  The menu's default binding is R (the wheel or Q/E move through it while open; no gamepad
+  default yet).
 - **Q2.i70.4**: The details of first-come-first-served energy requests: how requests in the same
   tick are ordered, how continuous motor draws and one-off activations share a tick, and whether
   a request can be granted in part (D2.i70.3).
@@ -503,6 +524,9 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   turn); regeneration follows every request of the tick. A request is granted whole or refused,
   never in part, and a refused one costs nothing and spends no cooldown. Motor draw (shooter#73)
   and repairs (shooter#61) are not ordered yet.
+  Since shooter#61 a repair asks after the gun and after every hit of the tick has landed (a
+  rocket or pellet that pauses it lands first), then the motors ask, then the pool regenerates;
+  a refused repair tick does no work and waits for the next.
 - **Q2.i70.5**: Impact thresholds: the speed, impulse and fall heights at which collisions start to
   damage, how damage scales above them, and the battery blast's radius and damage (D2.i70.3,
   D2.i70.10).

@@ -10,7 +10,8 @@ use crate::effects::Effects;
 use crate::game::Game;
 use crate::gpu::Gpu;
 use crate::hud::{Hud, HudText};
-use crate::overlay::{Overlay, Vitals};
+use crate::overlay::{Overlay, Vitals, repair_panel};
+use crate::repair_menu::RepairMenu;
 use crate::robots::{self, RobotState, RobotView, Robots, track::Tracker};
 use crate::scene::{self, Actors, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT, SWING_SECONDS};
 use render_engine::glam::{Mat4, Vec3};
@@ -108,6 +109,7 @@ pub struct App {
     overlay: Overlay,
     /// The weapon the controls ask for (a select key, or the next and previous steps).
     selection: Selection,
+    repair_menu: RepairMenu,
     shown: HudText,
     /// Tab held: the scoreboard shows.
     board: bool,
@@ -183,6 +185,7 @@ impl App {
             hud: Hud::default(),
             overlay: Overlay::default(),
             selection: Selection::default(),
+            repair_menu: RepairMenu::default(),
             shown: HudText::default(),
             board: false,
             effects: None,
@@ -338,6 +341,7 @@ impl App {
             hud: Hud::default(),
             overlay: Overlay::default(),
             selection: Selection::default(),
+            repair_menu: RepairMenu::default(),
             shown: HudText::default(),
             board: false,
             effects: None,
@@ -562,6 +566,7 @@ impl App {
     /// One local tick: the controls become an intent, the match ticks, and its events play.
     fn tick(&mut self, now: Instant) -> bool {
         let (forward, strafe) = self.controls.movement();
+        let repairs = self.controls.take_repairs();
         let intent = if let Some(tick) = &mut self.scripted {
             let intent = scripted_intent(0, *tick);
             *tick += 1;
@@ -569,6 +574,7 @@ impl App {
             intent
         } else if self.builder.is_some() {
             // In the builder: Edit Robot held, the robot dead and waiting (D2.i70.11).
+            self.repair_menu = RepairMenu::default();
             Intent {
                 yaw: self.look.sim_yaw(),
                 pitch: self.look.sim_pitch(),
@@ -577,8 +583,14 @@ impl App {
             }
         } else {
             // The wheel and Q/E step through the weapons the robot still has, from the one it
-            // holds as predicted; the host decides.
-            let steps = self.controls.take_steps();
+            // holds as predicted; the host decides. While the repair menu is open they move
+            // through it instead, and R there repairs the part chosen (the host decides too).
+            let mut steps = self.controls.take_steps();
+            let repair = self.repair_menu.tick(
+                self.game.local_fighter().map(|(me, _)| me),
+                repairs,
+                &mut steps,
+            );
             let select = match self.game.local_fighter() {
                 Some((me, _)) => self.selection.intent(
                     self.controls.selected(),
@@ -604,6 +616,7 @@ impl App {
                 melee: self.captured && self.controls.melee_held(),
                 select,
                 edit: false,
+                repair,
             }
         };
         let tick = match self.game.tick(intent) {
@@ -842,6 +855,11 @@ impl App {
                     },
                     glow: view.glow,
                     parts: robots::PartStates::default(),
+                    // The part the repair menu points at, or the one under repair.
+                    highlight: self
+                        .game
+                        .local_fighter()
+                        .and_then(|(fighter, _)| self.repair_menu.highlight(fighter)),
                 });
             }
         }
@@ -902,6 +920,7 @@ impl App {
                     },
                     glow: view.glow,
                     parts: robots::PartStates::default(),
+                    highlight: None,
                 });
             }
             fighters.push(view);
@@ -926,6 +945,7 @@ impl App {
                 },
                 glow: 0.0,
                 parts: robots::PartStates::default(),
+                highlight: None,
             });
         }
         // The reticle covers what a shot fired now meets: from the eye along the aim the
@@ -1057,11 +1077,19 @@ impl App {
             .game
             .local_fighter()
             .map(|(me, tick)| Vitals::of(me, tick));
+        // And field repair: the quick menu, the repair under way or what there is to repair.
+        let repair = self
+            .game
+            .local_fighter()
+            .map(|(me, _)| self.repair_menu.view(me));
         let Some(gpu) = &mut self.gpu else {
             return true;
         };
         let (width, height) = gpu.size();
         scene.overlay = self.overlay.draw(vitals.as_ref(), width, height, seconds);
+        if let Some(repair) = &repair {
+            scene.overlay.extend(repair_panel(repair, height));
+        }
         if let Some(ticks) = respawn_in {
             scene.overlay.extend(death_prompt(
                 f32::from(u16::try_from(ticks).unwrap_or(u16::MAX)) / f32::from(TICK_HZ),
