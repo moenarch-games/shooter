@@ -13,7 +13,7 @@ publish = false
 shooter-sim = { path = "crates/shooter-sim" }
 # Physics (`shooter_sim::physics` adapts it); Rapier is the A/B oracle under `physics-ab` only and
 # never ships in a client.
-physics-engine = { git = "https://github.com/moritzbrantner/physics-engine", rev = "034bccfcfdfefd2c37be415b52ee4fa7b433084a" }
+physics-engine = { git = "https://github.com/moritzbrantner/physics-engine", rev = "302416a98cf9d06ca84520e5b217834fef66c479" }
 rapier3d = "=0.36.1"
 # The simulation's transcendental functions (`shooter_sim::physics`): pure Rust, so native and
 # `wasm32` builds compute them bit for bit alike (std's go to each platform's C library; shooter#120).

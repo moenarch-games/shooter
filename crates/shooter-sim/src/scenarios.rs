@@ -138,7 +138,7 @@ pub const THRUSTER_JUMP: Scenario = Scenario {
         walk("run up", SOUTH, 6),
         jump_toward("jump", SOUTH),
         walk("climb", SOUTH, 50),
-        stand("on the ledge", 30),
+        stand("on the ledge", 45),
     ],
 };
 
@@ -751,7 +751,7 @@ pub const DOCK_GRAPPLE: Scenario = Scenario {
             },
             95,
         ),
-        walk("let go onto the foredeck", WEST, 10),
+        walk("let go onto the foredeck", WEST, 4),
         stand("on the foredeck", 90),
     ],
 };

@@ -2229,10 +2229,11 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "physics-engine"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/physics-engine?rev=034bccfcfdfefd2c37be415b52ee4fa7b433084a#034bccfcfdfefd2c37be415b52ee4fa7b433084a"
+source = "git+https://github.com/moritzbrantner/physics-engine?rev=302416a98cf9d06ca84520e5b217834fef66c479#302416a98cf9d06ca84520e5b217834fef66c479"
 dependencies = [
  "bvh-kernels",
  "geometry-kernels",
+ "libm",
  "spatial-kernels",
 ]
 

@@ -51,7 +51,7 @@ scripts/profile.sh [OUT] [native|web|all]                                  # run
 
 CI (`.github/workflows/validate.yml`) runs fmt, Clippy, the kits' fetch and the full test suite with `physics-ab`, the
 native build, a `wasm32` check and the native-vs-`wasm32` state hash comparison
-(`scripts/cross-build-hashes.sh`; a warning only until moritzbrantner/physics-engine#576 is fixed and pinned); `pages.yml` builds and deploys `web/dist` from `main`;
+(`scripts/cross-build-hashes.sh`, 1800 ticks on every map); `pages.yml` builds and deploys `web/dist` from `main`;
 `profile.yml` uploads the bot-match and native-client (lavapipe) profiles, and in a second job the
 browser client's (headless Chromium, SwiftShader WebGPU), as artifacts (no thresholds).
 
