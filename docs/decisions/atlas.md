@@ -174,7 +174,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   keeps it upright facing the aim, its legs stride and wheels roll along, its bodies slide
   frictionless (the drive carries them) and its legs bend within the gaits' range; a lost part
   leaves the bodies; snapshots, prediction and replays carry the exact state. The drive is a
-  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it.
+  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it. Both
+  clients draw every part where those bodies are (the legs' hip and knee, the wheels' and tracks'
+  roll and the joints' turn included; shooter#54), not from the kit's leg clips.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
   humanoids and other bipeds, four-leg robo-dogs on built-in quadruped walking presets, wheels and
   tracks, stationary platforms and grappling-only machines, all from the same part types and rules.
@@ -312,6 +314,18 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   use interval and reach remain implementation tuning, not new product policy.
   The legacy gun remains current shipped behavior until #104 migrates both
   clients and the host, with replay, prediction and live visual acceptance.
+
+- **D2.i45.1** (owner, 2026-11-16; shooter#45; answers Q3, option A):
+  The **energy blade is the only quick-melee weapon for the first modular-robot
+  beta**. It remains a mounted, functional part of the robot's build, available
+  by its own quick-melee binding (V or mouse back by default) while a gun is
+  selected, rather than joining the ordinary gun rotation; retain the shipped
+  last-weapon selection fallback where it applies (D2.i46.8). No separate
+  heavy hammer or additional melee roster is a beta prerequisite. Reconsider
+  meaningfully distinct melee modules after actual native/browser match
+  playtesting, with any new part and art owned by their existing respective
+  repositories (D5.i46.1). Existing blade reach, damage, timing and shove
+  values remain provisional balancing, not separately approved numeric policy.
 
 ## 3. Platforms
 
