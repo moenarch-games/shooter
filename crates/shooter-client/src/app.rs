@@ -963,14 +963,31 @@ impl App {
                 (self.tracker.detached(view.slot), damaged)
             })
             .collect();
+        // Each living robot's bodies where the simulation has them (the local one predicted, the
+        // others between their snapshots), drawn around its fighter's drawn centre.
+        let frames: Vec<Option<robots::Frames>> = robot_views
+            .iter()
+            .map(|view| {
+                if view.state.dead_for.is_some() {
+                    return None;
+                }
+                let exact = if Some(view.slot) == local {
+                    self.game.local_frames()
+                } else {
+                    self.game.other_frames(view.slot, blend)
+                };
+                exact.map(|frames| frames.at(view.state.center))
+            })
+            .collect();
         let robot_views: Vec<RobotView> = robot_views
             .iter()
             .zip(&part_states)
-            .map(|(view, (detached, damaged))| RobotView {
+            .zip(&frames)
+            .map(|((view, (detached, damaged)), frames)| RobotView {
                 parts: robots::PartStates {
+                    frames: frames.as_ref(),
                     detached,
                     damaged,
-                    ..view.parts
                 },
                 ..*view
             })

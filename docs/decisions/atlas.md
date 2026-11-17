@@ -174,7 +174,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   keeps it upright facing the aim, its legs stride and wheels roll along, its bodies slide
   frictionless (the drive carries them) and its legs bend within the gaits' range; a lost part
   leaves the bodies; snapshots, prediction and replays carry the exact state. The drive is a
-  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it.
+  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it. Both
+  clients draw every part where those bodies are (the legs' hip and knee, the wheels' and tracks'
+  roll and the joints' turn included; shooter#54), not from the kit's leg clips.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
   humanoids and other bipeds, four-leg robo-dogs on built-in quadruped walking presets, wheels and
   tracks, stationary platforms and grappling-only machines, all from the same part types and rules.
