@@ -360,7 +360,11 @@ impl Scenery {
                 [0, 1, 2].map(|axis| point[axis].clamp(c[axis] - h[axis], c[axis] + h[axis]))
             })
             .min_by(|a, b| {
-                let d = |p: &[f32; 3]| (0..3).map(|i| (p[i] - point[i]).powi(2)).sum::<f32>();
+                let d = |p: &[f32; 3]| {
+                    (0..3)
+                        .map(|i| (p[i] - point[i]) * (p[i] - point[i]))
+                        .sum::<f32>()
+                };
                 d(a).total_cmp(&d(b))
             })
     }

@@ -28,6 +28,7 @@ cargo test -p shooter-sim --test deathmatch --locked                       # bot
 cargo test -p shooter-sim --test mechanics --locked                        # mechanical robots: fixtures, gaits, motor energy, exact restore
 cargo test -p shooter-sim --test match_robots --locked                     # robots in the match: slots, exact prediction (whole, one leg), replay, severed parts
 cargo test -p shooter-sim --test damage --locked                           # per-part damage: front/side hits, splash, plates, lost parts, core kill, battery blast
+scripts/cross-build-hashes.sh [MAP|all [TICKS]]                            # native vs wasm32 (wasm32-wasip1 under Node) per-tick state hashes of the scripted match; first divergent tick
 cargo test -p shooter-sim --test collisions --locked                       # collision damage and debris: rams, glancing, falls, resting contact, plates, debris fall/retire/budget, wire
 cargo test -p shooter-sim --test repair --locked                           # field repair: legs and weapons repaired, pauses on direct hits, refusals, shared pool, respawn, wire, prediction, replay
 cargo test -p shooter-sim --test destruction --locked                      # arena destruction (`scenery`): stable IDs, hitscan and blast breaks, overlapping cover, opened lines and routes, round restore, wire, predictor, replays (arena_views -- MAP DIR broken draws it)
@@ -49,7 +50,8 @@ scripts/profile.sh [OUT] [native|web|all]                                  # run
 ```
 
 CI (`.github/workflows/validate.yml`) runs fmt, Clippy, the kits' fetch and the full test suite with `physics-ab`, the
-native build and a `wasm32` check; `pages.yml` builds and deploys `web/dist` from `main`;
+native build, a `wasm32` check and the native-vs-`wasm32` state hash comparison
+(`scripts/cross-build-hashes.sh`; a warning only until moritzbrantner/physics-engine#576 is fixed and pinned); `pages.yml` builds and deploys `web/dist` from `main`;
 `profile.yml` uploads the bot-match and native-client (lavapipe) profiles, and in a second job the
 browser client's (headless Chromium, SwiftShader WebGPU), as artifacts (no thresholds).
 
@@ -69,5 +71,7 @@ browser client's (headless Chromium, SwiftShader WebGPU), as artifacts (no thres
 
 - Happy path first; run focused tests and fmt locally, CI runs the rest.
 - Simulation code stays deterministic: integer yaw and fixed-point velocities, fixed 60 Hz ticks,
-  no wall clock or ambient randomness.
+  no wall clock or ambient randomness, and no platform float functions (`sin`, `atan2`, `hypot`…:
+  the `libm` crate's, which Clippy enforces in `crates/shooter-sim/clippy.toml`), so native and
+  `wasm32` builds agree bit for bit (`scripts/cross-build-hashes.sh`).
 - One issue, one branch, one PR. Pick the simplest option for open choices and list it in the PR.

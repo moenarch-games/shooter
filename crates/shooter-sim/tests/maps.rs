@@ -1,6 +1,8 @@
 //! The map catalog: stable IDs and wire tags, unknown maps rejected, a match keeping its map
 //! and spawning on it through respawns and round restarts, and the slot count left to the
 //! rules.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::physics::Vec3i;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, GRAVITY};

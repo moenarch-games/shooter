@@ -1,4 +1,6 @@
 //! The fast moves on physics-engine: each scripted scenario does what a player expects.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::player::{PLAYER_HALF_EXTENTS, SLIDE_SPEED_UNITS_PER_SECOND};
 use shooter_sim::scenarios::{self, Scenario};

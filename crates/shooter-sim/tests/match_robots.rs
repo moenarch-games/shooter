@@ -3,6 +3,8 @@
 //! its exact state travels in snapshots, and a client predicting from one, or a replay, continues
 //! bit for bit like the host, whole and after losing a leg; strikes meet its parts where its
 //! bodies carry them; and a part shot off leaves its bodies, mass and motors.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::mechanics::{BODIES_PER_ROBOT, FIRST_ROBOT_BODY, Layout};
 use shooter_sim::physics::Vec3i;

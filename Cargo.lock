@@ -2946,6 +2946,7 @@ dependencies = [
 name = "shooter-sim"
 version = "0.1.0"
 dependencies = [
+ "libm",
  "physics-engine",
  "rapier3d",
 ]

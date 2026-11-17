@@ -1,6 +1,8 @@
 //! The deathmatch on physics-engine: bots fight and score deterministically, people take slots
 //! from bots, lag-compensated hitscan, the round's end and restart, rocket self-damage, and the
 //! wire round trip.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::aim;
 use shooter_sim::damage::PartDamage;

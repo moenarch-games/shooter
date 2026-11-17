@@ -10,6 +10,8 @@
 //!
 //! `cargo test -p shooter-sim --test collisions`; the scene:
 //! `cargo test --release -p shooter-sim --test collisions -- --ignored --nocapture`
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::damage::{Hitboxes, PartDamage};
 use shooter_sim::impact::{self, IMPACT_SPEED};

@@ -29,6 +29,10 @@ jobs:
       build_command: |
         cargo build --workspace --locked
         cargo check -p shooter-client --lib --target wasm32-unknown-unknown --locked
+        # Native and wasm32 must simulate the same match bit for bit (shooter#120). A warning
+        # until moritzbrantner/physics-engine#576 (its atan2 goes through the platform libm) is
+        # fixed and pinned; then drop the `||` so a divergence fails the build.
+        scripts/cross-build-hashes.sh all 600 || echo "::warning title=native and wasm32 diverge::scripts/cross-build-hashes.sh failed (moritzbrantner/physics-engine#576)"
       artifact_paths: ""
 
   merge-ready:

@@ -2424,7 +2424,7 @@ impl Session {
             .collect();
         let strike = |at: [f32; 3]| {
             let normal = [eye[0] - at[0], 0.0, eye[2] - at[2]];
-            let length = normal[0].hypot(normal[2]).max(f32::EPSILON);
+            let length = libm::hypotf(normal[0], normal[2]).max(f32::EPSILON);
             Event::Beam {
                 weapon: Weapon::EnergyBlade,
                 from: eye,
