@@ -80,6 +80,7 @@ implemented yet.
   long barrel) and the flamethrower beside the blade and the grapple, so every weapon stays
   playable until the builder. A fighter spawns holding its build's first weapon in the rotation
   that is not the grapple; the grapple, then the blade, only when it carries nothing else.
+  Since shooter#57 the builder mounts any weapon on any build (D2.i70.11).
 - **D2.i46.9** (owner, 2026-11-13): Some powerful weapon and movement modules spawn as pickups at
   contested arena points. Any robot can use them, with no compatibility gate; a build may exploit
   one better (for example grapple plus a sniper position). Their lifetime is open (Q2.i46.3).
@@ -223,6 +224,21 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   valid build after the normal countdown unless the player chooses Edit Robot; the builder then
   suspends respawn, with no time limit, until the player presses Ready with a host-accepted build
   (2026-11-14, A). Owner: shooter#57.
+  Ships since shooter#57 (`shooter_client::builder`), with the simplest options for what was
+  open (the gestures and the plumbing, the owner's to revisit): both clients open on the builder
+  before the match, nothing playing and online nothing connecting until Ready; a robot that has
+  applied no input since its person joined is still being set up, so a build configured then
+  applies at once (`Session::configure`), every later one at the next spawn. Parts are dragged
+  from the catalogue onto a socket, or clicked and then placed on sockets; R, T and F turn a part
+  an eighth of a turn about its socket's axes (Shift back, Ctrl about a degree), M cycles a
+  weapon's mods, X/Delete removes a part with its subtree (never the root chassis; a new frame
+  starts from a chassis), right drag turns the view. The bench checks every edit through
+  `Catalog::validate` with the build-point ceiling lifted, refusing structural breaks with the
+  rule's reason and showing the beta catalog's verdict; Ready takes only a valid build. Edit
+  Robot is B while dead, carried as an input flag (`Intent::edit`, wire 15) that holds the dead
+  robot out of its respawn and out of a round's start; the builder closes when a snapshot shows
+  the readied build configured, and a person whose inputs stop (a lost connection) lets go of it
+  after the input hold. Not yet: action-group bindings (shooter#74) and typed exact angles.
 - **D2.i70.12** (owner, 2026-11-13; shooter#70): What ships today is the baseline, not the beta
   contract: `shooter_sim::robot` (shooter#47) with its anatomical torso, head, arm and locomotion
   sockets, hand and shoulder hardpoints, named loadouts and its mass, power, heat and cooling
@@ -362,6 +378,7 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   weapon heavy) and heat sink. Every mod that changes the fire gives up damage, refire or range.
   Until the builder (shooter#57), people pick a named loadout (`robot::LOADOUTS`: standard,
   heavy, skirmisher, marksman; pyro since shooter#96), sent through the existing build request.
+  Since shooter#57 they are where the builder starts from (D2.i70.11).
   Attachment rules answered by D2.i70.1 and D2.i70.2, cooling superseded by D2.i70.4; the numbers
   remain open as Q2.i70.1 and Q2.i70.2. The defaults above stay shipped until migrated
   (D2.i70.12). The sockets, hardpoints and load budget were migrated by shooter#71; the power and

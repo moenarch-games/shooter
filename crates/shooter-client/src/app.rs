@@ -3,6 +3,7 @@
 
 use crate::arena_art::ArenaArt;
 use crate::audio::Sounds;
+use crate::builder::view::{Action, Builder, Stage, death_prompt};
 use crate::camera::{self, Follow};
 use crate::controls::{Controls, Look, PRIMARY_BUTTON, PadState, Selection, WheelDelta, standard};
 use crate::effects::Effects;
@@ -148,6 +149,12 @@ pub struct App {
     eye: f32,
     /// The third-person camera following the local fighter.
     follow: Follow,
+    /// The robot builder while it is open: before the match (nothing plays) or between lives
+    /// (the robot dead, its respawn held until Ready).
+    builder: Option<Builder>,
+    /// Whether the page shows the builder (the browser hides its own overlays then).
+    #[cfg(target_arch = "wasm32")]
+    builder_shown: bool,
     /// The pointer is locked to the game (native: grabbed; web: Pointer Lock).
     captured: bool,
     /// The browser profile run (`?frames=<n>`), timing each animation frame.
@@ -200,9 +207,76 @@ impl App {
             previous_eye: EYE,
             eye: EYE,
             follow: Follow::default(),
+            builder: None,
+            #[cfg(target_arch = "wasm32")]
+            builder_shown: false,
             captured: false,
             #[cfg(target_arch = "wasm32")]
             profile: None,
+        }
+    }
+
+    /// Opens the builder before the match on `build` (shooter#57): nothing plays, and online
+    /// nothing connects, until Ready.
+    #[must_use]
+    pub fn with_builder(mut self, build: shooter_sim::Assembly) -> Self {
+        self.builder = Some(Builder::new(build, Stage::Setup));
+        self
+    }
+
+    /// Opens the builder between lives on the build the robot comes back as: its respawn waits
+    /// until Ready.
+    fn edit_robot(&mut self) {
+        if self.builder.is_some() {
+            return;
+        }
+        let build = self.game.configured().unwrap_or_default();
+        self.builder = Some(Builder::new(build, Stage::BetweenLives));
+        self.capture(false);
+        self.controls.release_all();
+    }
+
+    /// Whether the local robot is dead in the match (its respawn counting down).
+    fn local_dead(&self) -> bool {
+        let Some(slot) = self.game.local_slot() else {
+            return false;
+        };
+        self.game
+            .snapshot()
+            .and_then(|snapshot| snapshot.slot(slot))
+            .is_some_and(|me| !me.alive)
+    }
+
+    /// What the builder asked: Ready sends the build. Before the match the match starts; between
+    /// lives the builder waits until the match shows the build configured.
+    fn builder_action(&mut self, action: Option<Action>) {
+        let Some(Action::Ready(build)) = action else {
+            return;
+        };
+        self.game.configure(build);
+        if self
+            .builder
+            .as_ref()
+            .is_some_and(|builder| builder.stage == Stage::Setup)
+        {
+            self.builder = None;
+            self.last_frame = Instant::now();
+        }
+    }
+
+    /// Between lives, the builder closes once the host shows the readied build configured (the
+    /// next tick lets go of Edit Robot and the robot comes back), or if the robot is alive
+    /// again anyway (a new session after a reconnect).
+    fn follow_builder(&mut self) {
+        let Some(builder) = &self.builder else {
+            return;
+        };
+        if builder.stage != Stage::BetweenLives {
+            return;
+        }
+        let accepted = builder.ready.is_some() && builder.ready == self.game.configured();
+        if accepted || self.game.local_fighter().is_some() {
+            self.builder = None;
         }
     }
 
@@ -284,6 +358,9 @@ impl App {
             previous_eye: EYE,
             eye: EYE,
             follow: Follow::default(),
+            builder: None,
+            #[cfg(target_arch = "wasm32")]
+            builder_shown: false,
             captured: false,
         };
         app.attach(gpu);
@@ -490,6 +567,14 @@ impl App {
             *tick += 1;
             self.look = Look::new(radians(intent.yaw));
             intent
+        } else if self.builder.is_some() {
+            // In the builder: Edit Robot held, the robot dead and waiting (D2.i70.11).
+            Intent {
+                yaw: self.look.sim_yaw(),
+                pitch: self.look.sim_pitch(),
+                edit: true,
+                ..Intent::IDLE
+            }
         } else {
             // The wheel and Q/E step through the weapons the robot still has, from the one it
             // holds as predicted; the host decides.
@@ -518,6 +603,7 @@ impl App {
                 fire: self.captured && self.controls.fire_held(),
                 melee: self.captured && self.controls.melee_held(),
                 select,
+                edit: false,
             }
         };
         let tick = match self.game.tick(intent) {
@@ -527,6 +613,7 @@ impl App {
                 return false;
             }
         };
+        self.follow_builder();
         let local = self.game.local_slot();
         self.previous_eye = self.eye;
         let target = if self.game.local_sliding() {
@@ -619,7 +706,16 @@ impl App {
         self.look.stick(&pads, seconds);
 
         let tick = 1.0 / f32::from(TICK_HZ);
-        self.accumulator += seconds;
+        // Before the match nothing plays: the match starts at Ready.
+        let setup = self
+            .builder
+            .as_ref()
+            .is_some_and(|builder| builder.stage == Stage::Setup);
+        self.accumulator = if setup {
+            0.0
+        } else {
+            self.accumulator + seconds
+        };
         let mut ticks = 0;
         while self.accumulator >= tick {
             self.accumulator -= tick;
@@ -634,6 +730,25 @@ impl App {
         }
         let ticks = ticks.min(MAX_TICKS_PER_FRAME);
         self.draw_map();
+        #[cfg(target_arch = "wasm32")]
+        if self.builder_shown != self.builder.is_some() {
+            self.builder_shown = self.builder.is_some();
+            crate::web::show_builder(self.builder_shown);
+        }
+        if let Some(builder) = &mut self.builder {
+            // The bench instead of the match: its effects are not shown.
+            self.pending.clear();
+            let Some(gpu) = &mut self.gpu else {
+                return true;
+            };
+            let (width, height) = gpu.size();
+            let robots = self.robots.as_mut().map(|robots| (&mut gpu.world, robots));
+            let scene = builder.frame(robots, width, height, seconds);
+            if let Err(error) = gpu.render(&scene, ticks) {
+                crate::log(&error);
+            }
+            return true;
+        }
 
         let blend = self.accumulator / tick;
         let center = Vec3::from(self.previous_center).lerp(Vec3::from(self.center), blend);
@@ -673,6 +788,8 @@ impl App {
             })
             .collect();
         let me = local.and_then(|slot| snapshot.and_then(|snapshot| snapshot.slot(slot)));
+        // Dead: the countdown, and Edit Robot (B) to suspend it.
+        let respawn_in = me.filter(|me| !me.alive).map(|me| me.respawn_in);
         let alive = me.filter(|me| me.alive && self.game.local_center().is_some());
         // The robots' poses: each fighter shown alive, and the dead where they fell.
         let mut robot_views: Vec<RobotView> = Vec::new();
@@ -928,6 +1045,13 @@ impl App {
         };
         let (width, height) = gpu.size();
         scene.overlay = self.overlay.draw(vitals.as_ref(), width, height, seconds);
+        if let Some(ticks) = respawn_in {
+            scene.overlay.extend(death_prompt(
+                f32::from(u16::try_from(ticks).unwrap_or(u16::MAX)) / f32::from(TICK_HZ),
+                width,
+                height,
+            ));
+        }
         if let Some(actors) = &mut self.actors {
             actors.update(&mut gpu.world, &fighters, &rockets, &modules, reticle);
         }
@@ -1035,6 +1159,47 @@ impl ApplicationHandler<GpuReady> for App {
                 self.controls.release_all();
                 self.board = false;
             }
+            // The builder has the pointer and the keys while it is open.
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(builder) = &mut self.builder {
+                    #[allow(clippy::cast_possible_truncation)]
+                    builder.cursor_moved(position.x as f32, position.y as f32);
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                if let Some(builder) = &mut self.builder {
+                    let state = modifiers.state();
+                    builder.modifiers(state.shift_key(), state.control_key());
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } if self.builder.is_some() => {
+                let pressed = state == ElementState::Pressed;
+                let action = match (button, &mut self.builder) {
+                    (MouseButton::Left | MouseButton::Right, Some(builder)) => {
+                        builder.mouse(button == MouseButton::Right, pressed)
+                    }
+                    _ => None,
+                };
+                self.builder_action(action);
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.builder.is_some() => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => lines,
+                    #[allow(clippy::cast_possible_truncation)]
+                    MouseScrollDelta::PixelDelta(pixels) => pixels.y as f32 / 100.0,
+                };
+                if let Some(builder) = &mut self.builder {
+                    builder.wheel(lines);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } if self.builder.is_some() => {
+                if let (PhysicalKey::Code(code), ElementState::Pressed, Some(builder)) =
+                    (event.physical_key, event.state, &mut self.builder)
+                {
+                    let action = builder.key(code);
+                    self.builder_action(action);
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -1076,6 +1241,14 @@ impl ApplicationHandler<GpuReady> for App {
                 }
                 if code == KeyCode::Tab {
                     self.board = event.state == ElementState::Pressed;
+                    return;
+                }
+                // Dead: Edit Robot instead of the automatic respawn.
+                if code == KeyCode::KeyB
+                    && event.state == ElementState::Pressed
+                    && self.local_dead()
+                {
+                    self.edit_robot();
                     return;
                 }
                 if event.state == ElementState::Pressed {

@@ -29,7 +29,7 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 14;
+pub const WIRE_VERSION: u8 = 15;
 const NONE: u8 = u8::MAX;
 
 /// A build part's flags: it has a parent, it is turned, it carries a mod.
@@ -440,6 +440,7 @@ const SPRINT: u8 = 2;
 const CROUCH: u8 = 4;
 const FIRE: u8 = 8;
 const MELEE: u8 = 16;
+const EDIT: u8 = 32;
 
 /// A person's command as the host decoded it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -475,6 +476,7 @@ pub fn encode_input(
         (intent.crouch, CROUCH),
         (intent.fire, FIRE),
         (intent.melee, MELEE),
+        (intent.edit, EDIT),
     ]
     .iter()
     .filter(|(held, _)| *held)
@@ -533,6 +535,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
         crouch: flags & CROUCH != 0,
         fire: flags & FIRE != 0,
         melee: flags & MELEE != 0,
+        edit: flags & EDIT != 0,
         select,
     };
     Ok(Command {
