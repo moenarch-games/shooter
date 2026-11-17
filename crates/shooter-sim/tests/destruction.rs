@@ -4,6 +4,8 @@
 //! after, the world, the robots' world and the snapshot changing at the same tick, a round's
 //! restart restoring every placeable, the wire, a predictor adopting the host's word, and
 //! matches that replay exactly.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::aim;
 use shooter_sim::arena::FIRST_PLAYER_BODY;
