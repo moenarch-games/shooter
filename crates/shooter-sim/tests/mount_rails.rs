@@ -531,8 +531,9 @@ fn a_rail_shot_off_in_a_match_takes_its_weapons_and_the_rest_still_fire() {
             session.fighters[0].eye(),
             part_center(&session, 1, PartId(3)),
         );
-        // Both settle first: B turned, A's rail gun up and its pool full.
-        let ready = tick >= 90 && session.fighters[0].energy == session.fighters[0].pool().capacity;
+        // Both settle first: B turned, A's rail gun up and a shot paid for (the fixture has no
+        // generation, shooter#128: its battery only drains).
+        let ready = tick >= 90 && session.fighters[0].energy >= Weapon::RailGun.energy();
         let fire = Intent {
             yaw,
             pitch,

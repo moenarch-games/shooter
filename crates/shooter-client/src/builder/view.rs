@@ -133,8 +133,8 @@ const INSPECTOR_WIDTH: f32 = 272.0;
 const BAR_HEIGHT: f32 = 92.0;
 const ROW: f32 = 18.0;
 /// A catalogue or loadout row: tighter than [`ROW`], so every catalogue part and loadout fits
-/// above the bar at 720 lines.
-const CATALOGUE_ROW: f32 = 16.0;
+/// above the bar at 720 lines (14.5 since the resource modules, shooter#128: a row is its text).
+const CATALOGUE_ROW: f32 = 14.5;
 const CELL: f32 = 2.0;
 /// The font cell of the smaller text: a glyph cell snaps to whole pixels, so below 2 it reads no
 /// smaller at 720 lines; it stays one name for the lines that would shrink first.
@@ -1103,11 +1103,22 @@ impl Builder {
             ];
             if kind.capacity > 0 || kind.kind == Kind::Chassis {
                 let root = selected.is_some_and(|part| part.mount.is_none());
-                let (capacity, regen) = selected.map_or((kind.capacity, kind.regen), |part| {
-                    shooter_sim::robot::energy(part, kind)
+                let capacity = selected.map_or(kind.capacity, |part| {
+                    shooter_sim::robot::supply(part, kind).capacity
                 });
                 let root = if root { " (ROOT)" } else { "" };
-                rows.push(("ENERGY", format!("{capacity} +{regen}/S{root}")));
+                rows.push(("STORES", format!("{capacity}{root}")));
+            }
+            if kind.fuel > 0 {
+                rows.push(("FUEL", kind.fuel.to_string()));
+            }
+            if kind.output > 0 {
+                let input = if kind.burn > 0 {
+                    format!(" FOR {} FUEL", kind.burn)
+                } else {
+                    String::new()
+                };
+                rows.push(("MAKES", format!("{}/S{input}", kind.output)));
             }
             if kind.drive.torque > 0 {
                 rows.push((
@@ -1118,7 +1129,14 @@ impl Builder {
             if let Some(weapon) = weapon_of(kind) {
                 rows.push((
                     "SHOT",
-                    format!("{} ENERGY", weapon.energy() / shooter_sim::energy::MILLI),
+                    format!(
+                        "{} {}",
+                        weapon.energy() / shooter_sim::energy::MILLI,
+                        match weapon.resource() {
+                            shooter_sim::energy::Resource::Electricity => "ENERGY",
+                            shooter_sim::energy::Resource::Fuel => "FUEL",
+                        }
+                    ),
                 ));
             }
             let turn = selected
@@ -1346,8 +1364,8 @@ impl Builder {
             bar.y + 66.0,
             SMALL,
             &format!(
-                "MASS {} KG   ENERGY {} +{}/S",
-                budget.mass, budget.capacity, budget.regen
+                "MASS {} KG   ENERGY {} +{}/S   FUEL {}",
+                budget.mass, budget.capacity, budget.output, budget.fuel
             ),
             srgb(PALE, 1.0),
         );

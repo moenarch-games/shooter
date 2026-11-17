@@ -22,9 +22,10 @@
 //! simulation's arena modules, `shooter_sim::arena_kit::Module`); anything else fails the load
 //! loudly ([`complete`]). Some catalog parts have no model of their own yet: the repair module
 //! (`robot.repair-module`, shooter#61) is drawn as the robot kit's sensor until the robot kit
-//! ships one (moritzbrantner/asset-tooling#742), and the mount rails and the adapter
-//! (shooter#126) as its beams fitted to their cuboids (moritzbrantner/asset-tooling#743):
-//! [`drawn_key`], [`stand_in`].
+//! ships one (moritzbrantner/asset-tooling#742), the mount rails and the adapter (shooter#126)
+//! as its beams fitted to their cuboids (moritzbrantner/asset-tooling#743), and the generator,
+//! the fuel tank and the solar panel (shooter#128) as its sensor, battery and armor plate, the
+//! parts of their cuboids: [`drawn_key`], [`stand_in`].
 
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::material::{Sampler, TextureData};
@@ -140,14 +141,19 @@ impl Bundle {
 /// no model for yet: the repair module draws as the sensor (the nearest small utility module,
 /// moritzbrantner/asset-tooling#742), the mount rails as the beams of their length and the
 /// adapter as the short beam (the nearest structural parts, moritzbrantner/asset-tooling#743),
-/// fitted to their cuboids by [`stand_in`].
+/// fitted to their cuboids by [`stand_in`]; and the resource modules (shooter#128) as the parts
+/// of their cuboids: the generator as the sensor, the fuel tank as the battery, the solar panel
+/// as the armor plate, until the robot kit ships their own models.
 #[must_use]
 pub fn drawn_key(key: &str) -> &str {
     use shooter_sim::robot::parts::{
-        ADAPTER, BEAM_LONG, BEAM_SHORT, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, REPAIR_MODULE, SENSOR,
+        ADAPTER, ARMOR_PLATE, BATTERY, BEAM_LONG, BEAM_SHORT, FUEL_TANK, GENERATOR,
+        MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, REPAIR_MODULE, SENSOR, SOLAR_PANEL,
     };
     match key {
-        _ if key == REPAIR_MODULE.key => SENSOR.key,
+        _ if key == REPAIR_MODULE.key || key == GENERATOR.key => SENSOR.key,
+        _ if key == FUEL_TANK.key => BATTERY.key,
+        _ if key == SOLAR_PANEL.key => ARMOR_PLATE.key,
         _ if key == MOUNT_RAIL_SHORT.key || key == ADAPTER.key => BEAM_SHORT.key,
         _ if key == MOUNT_RAIL_LONG.key => BEAM_LONG.key,
         _ => key,

@@ -253,9 +253,11 @@ fn a_partially_damaged_leg_and_weapon_are_repaired_for_time_and_energy() {
                 health(&session, 1, part),
                 whole - u16::try_from(worn).unwrap() + repair.healed
             );
+            // What it spent besides its motors (which pay for their own load, shooter#128).
+            let motors = session.fighters[1].flow.motors;
             assert_eq!(
-                control.fighters[1].energy - session.fighters[1].energy,
-                worked * ENERGY_PER_TICK,
+                session.fighters[1].flow.spent - motors,
+                ENERGY_PER_TICK,
                 "each tick of work costs its energy"
             );
         }
@@ -301,7 +303,7 @@ fn a_paused_repair_heals_nothing_spends_nothing_keeps_its_work_and_resumes() {
     for _ in 0..20 {
         step(&mut session, Intent::IDLE, facing(TOWARD));
     }
-    // Low on energy (but enough to work), so a spend shows against the regeneration alone.
+    // Low on energy (but enough to work), so a spend shows in what it used.
     session.fighters[1].energy = 10_000;
     assert_eq!(shoot(&mut session, TOWARD, LEG), [LEG]);
     let hit = session.fighters[1].repair.unwrap();
@@ -311,9 +313,7 @@ fn a_paused_repair_heals_nothing_spends_nothing_keeps_its_work_and_resumes() {
         "the hit's tick is the pause's first"
     );
     let leg = health(&session, 1, LEG);
-    let regen = session.fighters[1].pool().regen;
     for tick in 1..PAUSE_TICKS {
-        let charge = session.fighters[1].energy;
         step(&mut session, Intent::IDLE, facing(TOWARD));
         let repair = session.fighters[1].repair.unwrap();
         assert_eq!(repair.paused, PAUSE_TICKS - 1 - tick);
@@ -323,8 +323,8 @@ fn a_paused_repair_heals_nothing_spends_nothing_keeps_its_work_and_resumes() {
             "work kept"
         );
         assert_eq!(health(&session, 1, LEG), leg, "no health while paused");
-        // Only regeneration (less the legs' motors standing still) moves the charge.
-        let drawn = charge + regen - session.fighters[1].energy;
+        // Only the legs' motors standing still spend (and the generator refills).
+        let drawn = session.fighters[1].flow.spent;
         assert!(
             drawn < ENERGY_PER_TICK,
             "no repair energy while paused ({drawn})"
@@ -332,14 +332,13 @@ fn a_paused_repair_heals_nothing_spends_nothing_keeps_its_work_and_resumes() {
     }
     assert_eq!(session.fighters[1].repair.unwrap().paused, 0);
     // It resumes by itself.
-    let charge = session.fighters[1].energy;
     step(&mut session, Intent::IDLE, facing(TOWARD));
     let repair = session.fighters[1].repair.unwrap();
     assert_eq!(
         u32::from(repair.healed) * u32::from(TICKS_PER_HEALTH) + u32::from(repair.progress),
         u32::from(hit.healed) * u32::from(TICKS_PER_HEALTH) + u32::from(hit.progress) + 1
     );
-    assert!(charge + regen - session.fighters[1].energy >= ENERGY_PER_TICK);
+    assert!(session.fighters[1].flow.spent >= ENERGY_PER_TICK);
     for _ in 0..600 {
         step(&mut session, Intent::IDLE, facing(TOWARD));
     }
@@ -545,7 +544,7 @@ fn repair_moving_and_firing_share_the_pool_first_come_first_served() {
 }
 
 #[test]
-fn an_empty_pool_holds_the_repair_until_regeneration_pays() {
+fn an_empty_battery_holds_the_repair_until_generation_pays() {
     let mut session = repairing_leg(TOWARD);
     let before = session.fighters[1].repair.unwrap();
     session.fighters[1].energy = 0;
@@ -555,7 +554,7 @@ fn an_empty_pool_holds_the_repair_until_regeneration_pays() {
         before,
         "nothing to pay with"
     );
-    // A tick of regeneration later it pays and works.
+    // A tick of its generator later it pays and works.
     step(&mut session, Intent::IDLE, facing(TOWARD));
     let repair = session.fighters[1].repair.unwrap();
     assert_eq!(

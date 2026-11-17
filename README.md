@@ -224,14 +224,16 @@ same keys and the mouse drive the robot's actuators through its control layout (
 **HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser:
 render-engine's screen-overlay quads in the robot kits' palette (pale grey on graphite, olive, an
 orange accent), in the bottom corners clear of the reticle, laid out for 720 lines and scaled with
-the window. Bottom right, the held weapon: its silhouette, name and mod, the energy a shot costs
+the window. Bottom right, the held weapon: its silhouette, name and mod, the electricity or fuel a shot costs
 (a second, for the laser and the flamethrower), whether it is ready, recharging (a bar filling to
-its next shot), short of energy or lost, and above it a slot for every weapon copy the build
+its next shot), short of its resource ("low energy", "no fuel") or lost, and above it a slot for every weapon copy the build
 carries with its key (lost ones red and struck out), each with its own readiness bar along its
 foot whether held or not (olive ready, filling orange while it recharges or waits out its
-family's salvo spacing, red when the pool cannot pay it, #127); a switch flashes the panel and
-sweeps a highlight across it. Bottom left, the root chassis' health and the energy pool, with the share one shot of
-the held weapon takes marked in orange, and above them, in teal, the field repair panel (the
+family's salvo spacing, red when its own store cannot pay it, #127, #128); a switch flashes the panel and
+sweeps a highlight across it. Bottom left, the root chassis' health, the electricity and fuel bars (#128), with the share one shot of
+the held weapon takes marked in orange on its own store, what they spend and make a second, and in red what cannot
+operate for want of either (motors without power, a generator without fuel, no generation, a weapon whose store is short),
+and above them, in teal, the field repair panel (the
 quick repair menu while it is open, else the repair under way, else how many parts may be
 repaired). render-engine's overlay draws solid rectangles only, so
 the text is a 5×7 bitmap font and the weapons are pixel silhouettes, both drawn as quads in the
@@ -324,7 +326,7 @@ is drawn and heard as soon as you press; the host decides what it strikes.
 sockets, one per 20 cm surface cell (a 20 × 40 × 80 cm chassis has 28). Each part has a stable ID,
 one parent socket and an exact orientation (binary angles, stored in one canonical form); a larger
 part reserves its footprint of neighbouring cells on its parent's face, and no two parts may
-claim one cell. The catalog has three chassis sizes, beams, mount rails, an adapter, hinge and rotor joints, a battery, a sensor, a repair module, legs, wheels, tracks, an armor plate and the eight
+claim one cell. The catalog has three chassis sizes, beams, mount rails, an adapter, hinge and rotor joints, a battery, a sensor, a repair module, a fuel tank, a generator, a solar panel, legs, wheels, tracks, an armor plate and the eight
 shipped weapons. Beams, mount rails and the adapter extend the attachment space (Atlas D2.i123.11,
 #126): they are ordinary parts on the same tree, with mass, health and build points, whose
 sockets are further hardpoints. A mount rail (20 × 40 or 20 × 80 cm, 1 or 2 points) lies flat
@@ -361,9 +363,9 @@ blueprint workbench before the match: nothing plays (and online nothing connects
 Ready. The robot stands in the middle, drawn from the kits as in the match, with its sockets
 marked; the part catalogue (every part and weapon with its build points) and the five named
 loadouts to start from are on the left, the component inspector on the right (the selected part,
-or the part in hand: cells, mass, health, points, energy, motor, the energy a shot costs, its
+or the part in hand: cells, mass, health, points, stores, fuel and generation, motor, what a shot costs, its
 turn in degrees and its mod), and the budget along the bottom: build points and parts against
-their limits, mass, energy and regeneration, and whether the build is valid (or the rule it
+their limits, mass, electricity, generation and fuel, and whether the build is valid (or the rule it
 breaks). Drag a part from the catalogue onto a socket, or click it and click sockets to place
 copies; the sockets it fits light up, and hovering one previews the part there with its real
 geometry, its box and the cells its footprint takes. Click a part to select it. R, T and F turn
@@ -387,28 +389,38 @@ and a testing chamber (post-beta).
 (before the match, a part being placed, a selected weapon, the controls panel, an over-budget build, a build between
 lives) offscreen; [captures](docs/captures/57-builder/).
 
-**Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
-D2.i70.4, D2.i89.1): the root chassis stores 100 and regenerates 24 a second (other chassis
-sections nothing), and each battery (a
-20 × 40 × 20 cm part, 5 build points, 20 kg) adds 60 stored energy and nothing else. A robot
-spawns with its pool full. Every activation pays from it: a rifle bolt 2, a rail shot 30, a
-rocket 20, a grapple hook 10, a blade swing 5, a shotgun blast 12, and the laser and the
-flamethrower 0.6 and 0.5 every tick they burn (36 and 30 a second, more than the root
-chassis regenerates). A request is granted whole or not at all: with too little energy the shot, swing or
-hook simply does not happen (no cooldown is spent) and works again once regeneration has paid for
-it; the charge never goes below zero. Within a tick a robot's requests go first come, first
-served in a fixed order: a thruster jump, then the grapple module's hook, then the blade swing,
-then the gun (provisional, Atlas Q2.i70.4). There is no heat or cooling. The host owns the pool; snapshots carry each robot's
-charge, the client predicts its own, replays reproduce it, and the HUD's energy bar shows it. Values are provisional (Atlas Q2.i70.1). A lost battery (destroyed, or carried off
-with a part it hung from) takes its capacity and its share of the charge with it, once; a
-destroyed one also blasts its neighbours (below, **Part damage**). Motors draw from the same
-pool (below).
+**Energy and fuel** (`shooter_sim::energy`, Atlas D2.i70.3, D2.i89.1, D2.i123.1–.4, #72, #128).
+Every robot has two shared stores, electricity and fuel. The root chassis stores 100 electricity
+and generates none; a battery (20 × 40 × 20 cm, 5 build points, 20 kg) adds 60 stored
+electricity, a fuel tank (20 × 40 × 20 cm, 3 points, 8 kg) 100 fuel. Nothing refills a store for
+free: a generator (20 cm, 5 points, 10 kg, with 100 fuel of its own) burns 2 fuel a second for 20
+electricity a second, only while there is room for it (10 electricity for a unit of fuel, never
+more), and a solar panel (40 × 40 cm, 4 points, 6 kg) gives 3 a second for nothing. Every named
+loadout carries a generator on its roof (where the sensor sat, the same cell and mass), the pyro
+a second fuel tank on its side. A robot spawns with both stores full. Every activation pays from
+its own store: a rifle bolt 2 electricity, a rail shot 30, a rocket 20, a grapple hook 10, a blade
+swing 5, a shotgun blast 12, the laser 0.6 every tick it burns (36 a second, more than a
+generator makes), and the flamethrower 0.25 fuel every tick (15 a second). A request is granted
+whole or not at all: with too little the shot, swing or hook simply does not happen (no cooldown
+is spent) and works again once generation has paid for it; nothing goes below zero. Depletion
+stops only what depends on the store that ran dry: an empty tank stops the flamethrower and the
+generator while the electric guns and motors work on, an empty battery the reverse, and the robot
+never dies of it. Within a tick a robot's requests go first come, first served in one fixed
+order: a thruster jump, the grapple module's hook, the blade swing, the guns by part, a field
+repair, the motors by part, then generation (provisional, Atlas Q2.i70.4). There is no heat or
+cooling. The host owns the stores; snapshots carry each robot's electricity and fuel, the client
+predicts its own, replays reproduce them, and the HUD shows both bars, what they spend and make a
+second and, in red, what cannot operate for want of either. A lost battery or tank (destroyed,
+or carried off with a part it hung from) takes its capacity and its share of what it held with
+it, once, and a lost generator or panel stops generating; a destroyed battery also blasts its
+neighbours (below, **Part damage**). Motors draw electricity by their load (below). Values are
+provisional (Atlas Q2.i123.2).
 
 **Part damage** (`shooter_sim::damage`, Atlas D2.i89.1, D2.i70.8, #56, #89). Every part of a
 build has its own health (provisional, Atlas Q2.i70.1: chassis 270, 290 and 310 by size, so a front
 rail kill still takes four hits, or three overcharged; beams 50 and 60, mount rails 45 and 55,
 adapter 40, hinge and rotor 40,
-battery 60, sensor 30, leg 70, wheel 50, track 90, armor plate
+battery 60, sensor and generator 30, fuel tank 50, solar panel 30, leg 70, wheel 50, track 90, armor plate
 120, light weapons 40, heavy ones 60). The host places each fighter's parts as boxes where its
 mechanical robot's bodies carry them (below, **Mechanical robots in the match**), and resolves every strike
 onto them, deterministically, each part at most once a strike: a hitscan beam, a pellet or a
@@ -463,8 +475,8 @@ where the robot's bodies carry them (a module does not repair itself). The wheel
 through it, R again repairs the chosen part (or stops the repair under way) and closes it; the
 part is lit teal on the robot, and the robot keeps walking, aiming and firing. The order goes to
 the host, which refuses a part that is not eligible (stale, out of reach, whole, destroyed). A
-repair restores one health every 0.1 s for 15 energy a second from the shared pool, after the
-tick's jump, swing and shot and before the motors, so an empty pool holds it until regeneration
+repair restores one health every 0.1 s for 15 electricity a second, after the
+tick's jump, swing and shot and before the motors, so an empty battery holds it until generation
 pays; it ends when the part is whole and stops when the part or its module is lost or out of
 reach. A hit on the part under repair or on its module pauses it for 0.75 s (a further hit starts
 the pause over): no health and no energy meanwhile, the work done is kept and it resumes by
@@ -526,8 +538,10 @@ motorised joint for what sits on a hinge (a servo within a quarter turn either w
 (a continuous motor), for each wheel (a sphere: physics-engine has no cylinders), each of a
 track's two road wheels and each leg (one self-contained module: a thigh on a hip servo and a
 shin with a flat foot on a knee servo). Each tick a robot's actuators take one command each (a
-rate, an angle, a leg's stride or idle) and ask the shared pool for their draw, first come,
-first served in part-ID order (a flat cost a commanded tick, provisional); a refused motor is off
+rate, an angle, a leg's stride or idle) and ask the robot's electricity for their full draw, first come,
+first served in part-ID order, and after the step pay only the share their torque and speed used
+(`(t + s + t·s) / 3` of the draw, the rest refunded; provisional, #128): an idle motor costs nothing, a faster
+or more loaded one more. A refused motor is off
 that tick. Mounting orientation is authoritative: a wheel turns about its own mount normal, so
 the same command spins a car in place, wheels on its front and back strafe it, and lopsided mass
 tips it over. Legs walk through a gait preset suggested from the attached legs (two: a biped
@@ -548,8 +562,8 @@ a replay hold the same world. The fast-movement rules (sprint, slide, double jum
 control, the grapple's rope) give the velocity a movement drive sets on the whole robot's centre
 of mass, which also keeps it upright and turns it to face the aim (at most 16 rad/s); its legs
 stride and its wheels and tracks roll as its control layout tells them (above, **Control layouts**; until #74 at the rate its speed gave them), and
-every motor draws from the pool after the tick's jumps, swings and shots (two legs: 8 a second
-against the chassis' 24, so weapons recharge a third slower; provisional). The simplest mapping
+every motor draws electricity after the tick's jumps, swings and shots by its load (two legs at most 8 a second,
+a fraction of that while they only stride; provisional). The simplest mapping
 while the bindings do not carry a robot, with what it costs: the robot's bodies slide frictionless where the
 drive takes them (its feet do not drag it), its legs bend only within the gaits' range (±0.4 rad
 at the hip, 0.8 at the knee) so bumps cannot fold them, it walks only with a leg, wheel or track
@@ -634,10 +648,10 @@ with `--loadout <name>` natively or `&loadout=<name>` in the browser (the join o
 field): `standard`, `heavy` (with a battery: 160 energy), `skirmisher` (rapid-cycler rifle,
 efficiency-coiled shotgun), `marksman` (long-barrel rifle, overcharged rail gun: three hits a
 front kill instead of four, on the root chassis) or `pyro` (long-barrel laser reaching 45 m,
-flamethrower, blade and grapple on the small chassis: 180 kg, 79 of 110 points, the root
+flamethrower, blade and grapple on the small chassis with a second fuel tank: 188 kg, 82 of 110 points, the root
 chassis' 100 energy; it spawns holding the laser) or `mechanic` (the standard build with a
 repair module on the chassis' back, **Field repair**),
-each a two-legged component tree with a sensor
+each a two-legged component tree with a generator
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads
 them too. The weapon panel shows the held

@@ -384,34 +384,36 @@ mod tests {
         assert!(Replay::decode(&bytes[..HEADER_BYTES + 3]).is_err());
     }
 
-    /// Every robot's energy charge is part of the replayed match: two replays of the same log
-    /// spend and regenerate it alike, the robots do spend it, and the heavy build's battery
-    /// shows in its capacity.
+    /// Every robot's electricity and fuel are part of the replayed match (shooter#128): two
+    /// replays of the same log spend and generate them alike, the robots do spend them, and the
+    /// heavy build's battery shows in its capacity.
     #[test]
     fn a_replay_reproduces_every_energy_pool() {
         let replay = record(Script::DEFAULT).unwrap();
         let pools = || {
             let mut charges = Vec::new();
-            let (mut spent, mut battery) = (false, false);
+            let (mut spent, mut burned, mut battery) = (false, false, false);
             replay
                 .play(u64::MAX, |session| {
                     for fighter in session.fighters.iter().filter(|f| f.alive()) {
                         let pool = fighter.pool();
-                        assert!(fighter.energy <= pool.capacity);
+                        assert!(fighter.energy <= pool.capacity && fighter.fuel <= pool.fuel);
                         spent |= fighter.energy < pool.capacity;
+                        burned |= fighter.fuel < pool.fuel;
                         battery |= fighter.build == HEAVY && pool.capacity == 160_000;
                     }
                     charges.push(
                         session
                             .fighters
                             .iter()
-                            .map(|f| f.energy)
+                            .map(|f| (f.energy, f.fuel))
                             .collect::<Vec<_>>(),
                     );
                     Ok(())
                 })
                 .unwrap();
             assert!(spent, "the match spends energy");
+            assert!(burned, "and the generators burn fuel to refill it");
             assert!(battery, "the heavy person comes back with its battery");
             charges
         };

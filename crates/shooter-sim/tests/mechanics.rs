@@ -8,12 +8,13 @@
 
 use shooter_sim::energy::MILLI;
 use shooter_sim::mechanics::fixtures::{
-    self, BARREL, HINGE_PART, ROTOR_PART, WHEELS, binary, floor, walled, wheels,
+    self, BARREL, HINGE_PART, ROTOR_PART, WHEELS, binary, floor, slope, walled, wheels,
 };
 use shooter_sim::mechanics::{Command, Controls, Gait, GaitChoice, Layout, Mechanics, State};
 use shooter_sim::physics::RigidBody;
 use shooter_sim::physics::articulated::Pose;
-use shooter_sim::robot::{Assembly, PartId};
+use shooter_sim::robot::parts::{CHASSIS_L, SOLAR_PANEL};
+use shooter_sim::robot::{Assembly, BETA, Face, PartId, RawMount, RawPart};
 use shooter_sim::wire::{decode_controls, decode_mechanics, encode_controls, encode_mechanics};
 
 /// The car's wheel speed at 6 rad/s on its 18 cm wheel spheres, in units a second.
@@ -309,31 +310,77 @@ fn badly_configured_legs_stay_physically_constrained() {
     );
 }
 
+/// The car with a solar panel on its roof: the one generation a fixture carries.
+fn solar_car() -> Assembly {
+    let mut candidate = fixtures::car().candidate();
+    candidate.parts.push(RawPart {
+        id: 20,
+        kind: SOLAR_PANEL.id.0,
+        mount: Some(RawMount {
+            parent: 0,
+            socket: CHASSIS_L.socket(Face::PosZ, 0, 1).unwrap().0,
+            yaw: 0,
+            pitch: 0,
+            roll: 0,
+        }),
+        modification: None,
+    });
+    BETA.validate(&candidate).unwrap()
+}
+
+/// The electricity `robot` 0's motors use over `ticks` of `controls` on `statics`.
+fn motor_energy(statics: &[RigidBody], ticks: u32, controls: Controls) -> u32 {
+    let mut car = world(statics, &[fixtures::car()]);
+    let mut used = 0;
+    for _ in 0..ticks {
+        let before = car.robots()[0].charge;
+        car.step(&[controls]).unwrap();
+        let robot = &car.robots()[0];
+        assert_eq!(before - robot.charge, robot.motors_spent, "no generation");
+        used += robot.motors_spent;
+    }
+    used
+}
+
 #[test]
-fn motors_draw_from_the_shared_pool_first_come_first_served() {
+fn motors_draw_by_their_load_and_speed_first_come_first_served() {
     let car = world(&floor(), &[fixtures::car()]);
     let capacity = car.robots()[0].pool.capacity;
-    let regen = car.robots()[0].pool.regen;
-    // A wheel draws 2 energy a second: 33 milli-units a tick.
+    assert_eq!(car.robots()[0].pool.solar + car.robots()[0].pool.output, 0);
+    // A wheel draws at most 2 electricity a second: 33 milli-units a tick.
     let draw = 2 * MILLI / 60;
     let with_charge = |charge: u32| {
         let mut state = car.state();
         state.robots[0].charge = charge;
         Mechanics::restore(&floor(), &state).unwrap()
     };
-    // Idle motors draw nothing; driven ones draw, and regeneration follows.
+    // Idle motors ask nothing: resting costs nothing, however long.
     let mut idle = with_charge(capacity - 1_000);
-    idle.step(&[Controls::IDLE]).unwrap();
-    assert_eq!(idle.robots()[0].charge, capacity - 1_000 + regen);
+    for _ in 0..120 {
+        idle.step(&[Controls::IDLE]).unwrap();
+        assert_eq!(idle.robots()[0].motors_spent, 0);
+    }
+    assert_eq!(idle.robots()[0].charge, capacity - 1_000);
+    // Driven ones ask for their full draw, use their share and are refunded the rest; the car
+    // generates nothing, so that is all that moves the charge.
     let mut driven = with_charge(capacity - 1_000);
     driven.step(&[wheels(RATE, -RATE)]).unwrap();
-    assert_eq!(
-        driven.robots()[0].charge,
-        capacity - 1_000 - 4 * draw + regen
-    );
+    let used = driven.robots()[0].motors_spent;
+    assert!(used > 0 && used <= 4 * draw, "{used}");
+    assert_eq!(driven.robots()[0].charge, capacity - 1_000 - used);
 
-    // With enough for one wheel, the first in part-ID order is powered and the rest are off
-    // that tick.
+    // Faster costs more than slower over the same ground and time, and climbing a slope more
+    // than the flat at the same command: demand follows speed and load.
+    let fast = motor_energy(&floor(), 240, wheels(RATE, -RATE));
+    let slow = motor_energy(&floor(), 240, wheels(RATE / 3, -RATE / 3));
+    assert!(fast > slow + slow / 4, "fast {fast}, slow {slow}");
+    let flat = motor_energy(&floor(), 240, wheels(RATE / 3, -RATE / 3));
+    let uphill = motor_energy(&slope(40, 1_600, 160), 240, wheels(RATE / 3, -RATE / 3));
+    assert_eq!(flat, slow, "deterministic");
+    assert!(uphill > flat, "uphill {uphill}, flat {flat}");
+
+    // With enough for one wheel's full draw, the first in part-ID order is powered and the rest
+    // are off that tick; the powered one is refunded what it did not use.
     let mut short = with_charge(draw + 5);
     short.step(&[wheels(RATE, -RATE)]).unwrap();
     let powered: Vec<bool> = short.robots()[0]
@@ -342,13 +389,29 @@ fn motors_draw_from_the_shared_pool_first_come_first_served() {
         .map(|actuator| actuator.powered)
         .collect();
     assert_eq!(powered, [true, false, false, false]);
-    assert_eq!(short.robots()[0].charge, 5 + regen);
-    // An empty pool powers nothing until regeneration refills it.
+    assert!(short.robots()[0].starved);
+    let used = short.robots()[0].motors_spent;
+    assert_eq!(short.robots()[0].charge, draw + 5 - used);
+    // An empty battery powers nothing, and with no generation it stays so.
     let mut drained = with_charge(0);
-    drained.step(&[wheels(RATE, -RATE)]).unwrap();
-    assert!(drained.robots()[0].actuators.iter().all(|a| !a.powered));
-    drained.step(&[wheels(RATE, -RATE)]).unwrap();
-    assert!(drained.robots()[0].actuators.iter().all(|a| a.powered));
+    for _ in 0..60 {
+        drained.step(&[wheels(RATE, -RATE)]).unwrap();
+        assert!(drained.robots()[0].actuators.iter().all(|a| !a.powered));
+    }
+    // A solar panel refills it, a little a tick, and the wheels turn again.
+    let sunny = world(&floor(), &[solar_car()]);
+    let mut state = sunny.state();
+    state.robots[0].charge = 0;
+    let mut sunny = Mechanics::restore(&floor(), &state).unwrap();
+    sunny.step(&[wheels(RATE, -RATE)]).unwrap();
+    assert!(sunny.robots()[0].actuators.iter().all(|a| !a.powered));
+    assert_eq!(sunny.robots()[0].charge, 50, "3 a second");
+    let mut turned = false;
+    for _ in 0..10 {
+        sunny.step(&[wheels(RATE, -RATE)]).unwrap();
+        turned |= sunny.robots()[0].actuators.iter().any(|a| a.powered);
+    }
+    assert!(turned);
 }
 
 #[test]

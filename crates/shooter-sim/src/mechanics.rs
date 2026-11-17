@@ -36,9 +36,12 @@
 //! knee servos along the gait's cycle, so legs move the robot only through their contacts, can
 //! push it over and never place it.
 //!
-//! **Energy** (D2.i70.3): every commanded actuator asks the pool for its part's draw each tick
-//! (a flat cost a tick while commanded: simplest, provisional), actuators in part-ID order;
-//! one that is refused is off that tick. Regeneration follows the requests.
+//! **Energy** (D2.i70.3, D2.i123.2; shooter#128): every commanded actuator asks the robot's
+//! electricity for its part's full draw each tick ([`Drive::draw`], actuators in part-ID order);
+//! one that is refused is off that tick, and only it. After the step it pays for what it did:
+//! its share of the draw follows its motors' torque and speed ([`motor_share`]), and the rest is
+//! refunded. An idle actuator asks nothing, so resting motors cost nothing; a robot driven faster
+//! or carrying more load pays more. Generation follows every request ([`crate::energy`]).
 //!
 //! **Stalls.** After the step each actuator reports its joint's angle, rate and motor torque;
 //! it stalls when its motor gives its most torque yet the rate stays far from the command (or
@@ -946,6 +949,52 @@ impl Controls {
     }
 }
 
+/// The share (0 to 1) of its full draw a motor used over one step (D2.i123.2, shooter#128): with
+/// `t` its joints' mean torque and `s` their mean speed, each as a share of the most it gives,
+/// `(t + s + t·s) / 3`. Its torque under load (holding, accelerating, carrying weight) and its
+/// speed (the work it turns out) each cost, the product being the mechanical work; a motor
+/// that neither strains nor turns uses nothing, and one at full torque and speed all of it.
+/// Provisional curve (Atlas Q2.i123.2), not a motor model.
+#[must_use]
+pub fn motor_share(states: &[HingeState], max_torque: f32, max_rate: f32) -> f32 {
+    if states.is_empty() {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let count = states.len() as f32;
+    let share = |value: f32, most: f32| {
+        if most > 0.0 {
+            (value.abs() / most).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    let torque = states
+        .iter()
+        .map(|state| share(state.torque, max_torque))
+        .sum::<f32>()
+        / count;
+    let speed = states
+        .iter()
+        .map(|state| share(state.rate, max_rate))
+        .sum::<f32>()
+        / count;
+    ((torque + speed + torque * speed) / 3.0).clamp(0.0, 1.0)
+}
+
+/// What a motor granted `granted` milli-units pays for a step at `share` of its draw
+/// ([`motor_share`]): rounded up, never more than it was granted.
+#[must_use]
+pub fn motor_use(granted: u32, share: f32) -> u32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let used = (granted as f32 * share).ceil() as u32;
+    used.min(granted)
+}
+
 /// A binary angle in radians.
 fn radians(angle: i16) -> f32 {
     f32::from(angle) * (PI / 32_768.0)
@@ -1045,8 +1094,15 @@ pub struct Robot {
     pub lost: u32,
     pub layout: Layout,
     pub pool: Pool,
-    /// Milli-units ([`crate::energy`]).
+    /// Its electricity, milli-units ([`crate::energy`]).
     pub charge: u32,
+    /// Its fuel, milli-units ([`crate::energy`]): only its own generation burns it here (the
+    /// match generates for its fighters itself).
+    pub fuel: u32,
+    /// The electricity its motors used last step, after the refunds (milli-units).
+    pub motors_spent: u32,
+    /// Whether a commanded motor went unpowered last step (its electricity ran out).
+    pub starved: bool,
     /// Ticks since it spawned: the gait's clock.
     pub clock: u32,
     /// The first body id.
@@ -1056,6 +1112,9 @@ pub struct Robot {
     pub actuators: Vec<ActuatorState>,
     /// What each actuator was told last tick (for stall detection).
     commanded: Vec<MotorDrive>,
+    /// What each actuator was granted before this step (milli-units), refunded after it as far as
+    /// its load and speed did not use it.
+    drawn: Vec<u32>,
 }
 
 impl Robot {
@@ -1073,6 +1132,7 @@ pub struct RobotState {
     pub build: Assembly,
     pub lost: u32,
     pub charge: u32,
+    pub fuel: u32,
     pub clock: u32,
     /// Every body's motion, in [`Layout::bodies`] order (of [`Layout::connected`]).
     pub bodies: Vec<Motion>,
@@ -1370,6 +1430,7 @@ impl Mechanics {
             build,
             lost: 0,
             charge: Pool::of(&build).capacity,
+            fuel: Pool::of(&build).fuel,
             clock: 0,
             bodies,
         });
@@ -1711,6 +1772,7 @@ impl Mechanics {
             build,
             lost,
             charge,
+            fuel,
             clock,
             ..
         } = *robot;
@@ -1757,6 +1819,7 @@ impl Mechanics {
             })
             .collect();
         let commanded = vec![MotorDrive::Off; layout.actuators.len()];
+        let drawn = vec![0; layout.actuators.len()];
         self.robots.push(Robot {
             slot,
             pool: Pool::of(&build),
@@ -1764,6 +1827,10 @@ impl Mechanics {
             lost,
             layout,
             charge,
+            fuel,
+            motors_spent: 0,
+            starved: false,
+            drawn,
             clock,
             base,
             hinges,
@@ -1890,6 +1957,7 @@ impl Mechanics {
                     build: robot.build,
                     lost: robot.lost,
                     charge: robot.charge,
+                    fuel: robot.fuel,
                     clock: robot.clock,
                     bodies: (0..robot.layout.bodies.len())
                         .map(|index| {
@@ -1904,15 +1972,18 @@ impl Mechanics {
         }
     }
 
-    /// One tick: each robot's actuators ask its pool for energy and set their motors from
-    /// `controls` (one per robot, in order; missing ones idle), the pools regenerate, the
-    /// world steps, and every actuator's state is read back.
+    /// One tick: each robot's commanded actuators ask its store for their full draw and set
+    /// their motors from `controls` (one per robot, in order; missing ones idle), the world
+    /// steps, every actuator's state is read back and refunded what its load and speed did not
+    /// use, and (outside the match) the robots generate ([`Pool::generate`]).
     ///
     /// # Errors
     ///
     /// If the physics world fails.
     pub fn step(&mut self, controls: &[Controls]) -> Result<(), PhysicsError> {
         for (index, robot) in self.robots.iter_mut().enumerate() {
+            robot.motors_spent = 0;
+            robot.starved = false;
             let controls = controls.get(index).copied().unwrap_or(Controls::IDLE);
             let gait = match controls.gait {
                 GaitChoice::Suggested => robot.layout.suggested_gait(),
@@ -1980,9 +2051,8 @@ impl Mechanics {
                 }
                 robot.commanded[at] = drives.first().copied().unwrap_or_default();
                 robot.actuators[at].powered = powered;
-            }
-            if self.regenerate {
-                robot.pool.regenerate(&mut robot.charge);
+                robot.drawn[at] = if powered { draw } else { 0 };
+                robot.starved |= active && !powered;
             }
             robot.clock = robot.clock.wrapping_add(1);
         }
@@ -2015,6 +2085,19 @@ impl Mechanics {
                     saturated,
                     stalled,
                 };
+                // What it used of its grant: its load and speed ([`motor_share`]); the rest goes
+                // back to the store it came from, which it never overfills (it was in it).
+                let granted = std::mem::take(&mut robot.drawn[at]);
+                if granted > 0 {
+                    let max_torque = f32::from(actuator.drive.torque);
+                    let max_rate = f32::from(actuator.drive.rate) / 10.0;
+                    let used = motor_use(granted, motor_share(&states, max_torque, max_rate));
+                    robot.charge = robot.charge.saturating_add(granted - used);
+                    robot.motors_spent += used;
+                }
+            }
+            if self.regenerate {
+                robot.pool.generate(&mut robot.charge, &mut robot.fuel);
             }
         }
         self.age_debris();

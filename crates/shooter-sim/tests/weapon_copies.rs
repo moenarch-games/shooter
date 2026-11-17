@@ -136,7 +136,6 @@ fn fire_once(session: &mut Session, select: Select) -> (Instance, [f32; 3], [f32
             break;
         }
     }
-    let before = session.fighters[0].energy;
     let muzzle = session.fighters[0]
         .muzzle(session.fighters[0].arsenal.held)
         .unwrap()
@@ -150,7 +149,14 @@ fn fire_once(session: &mut Session, select: Select) -> (Instance, [f32; 3], [f32
     let shots = fired(&session.events, 0);
     assert_eq!(shots.len(), 1, "{select:?}: {shots:?}");
     let (instance, from) = shots[0];
-    (instance, from, muzzle, before - session.fighters[0].energy)
+    // What the shot cost: what it spent besides its motors (shooter#128).
+    let motors = session.fighters[0].flow.motors;
+    (
+        instance,
+        from,
+        muzzle,
+        session.fighters[0].flow.spent - motors,
+    )
 }
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {

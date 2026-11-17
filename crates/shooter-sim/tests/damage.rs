@@ -518,10 +518,19 @@ fn a_destroyed_battery_takes_its_energy_once_and_blasts_its_neighbours() {
     let b = &session.fighters[1];
     assert!(b.alive());
     assert_eq!(b.chassis_health(), 290 - u16::try_from(chassis.1).unwrap());
-    // Its capacity and its share of the charge are gone: 160 full, 100 left.
-    assert_eq!(b.pool().capacity, 100_000);
-    assert_eq!(b.energy, 100_000);
-    // Once: the battery stays gone, nothing blasts again and the capacity holds.
+    // Its capacity and its share of the charge are gone: 160 full, 100 left. The blast also
+    // destroyed the generator on its roof (ID 2, 30 health), and with it its fuel and its
+    // generation (shooter#128): what its legs' servos drew this tick is not refilled.
+    assert!(detached(&events).contains(&(PartId(2), true)));
+    assert_eq!(
+        (b.pool().capacity, b.pool().fuel, b.pool().output),
+        (100_000, 0, 0)
+    );
+    assert_eq!(b.fuel, 0);
+    assert!((99_000..=100_000).contains(&b.energy), "{}", b.energy);
+    // Once: the battery stays gone, nothing blasts again and the capacity holds; nothing
+    // refills the battery now.
+    let mut charge = b.energy;
     for _ in 0..120 {
         step(&mut session, Intent::IDLE, facing(0));
         assert!(
@@ -530,10 +539,80 @@ fn a_destroyed_battery_takes_its_energy_once_and_blasts_its_neighbours() {
                 .iter()
                 .any(|event| matches!(event, Event::Exploded { .. }))
         );
+        assert!(session.fighters[1].energy <= charge);
+        charge = session.fighters[1].energy;
     }
     let b = &session.fighters[1];
     assert_eq!(b.pool().capacity, 100_000);
-    assert_eq!(b.energy, 100_000);
+    assert!(b.alive(), "an empty-handed robot lives on");
+}
+
+/// A destroyed generator (shooter#128) takes its own fuel and its generation, once, and nothing
+/// else: the battery keeps what it holds and the electric guns still fire from it, but nothing
+/// refills it any more.
+#[test]
+fn a_lost_generator_stops_only_the_generation() {
+    let mut session = duel();
+    let generator = PartId(2);
+    let events = shoot(&mut session, Weapon::RailGun, 32_768, |session| {
+        part_center(session, 1, generator)
+    });
+    assert_eq!(struck(&events)[0], (generator, 85));
+    assert!(detached(&events).contains(&(generator, true)));
+    let b = &session.fighters[1];
+    assert!(b.alive());
+    assert_eq!(
+        (b.pool().capacity, b.pool().fuel, b.pool().output),
+        (100_000, 0, 0)
+    );
+    assert_eq!(b.fuel, 0, "its own fuel went with it");
+    // B fires its rifle from what the battery holds; nothing refills it.
+    session.fighters[1].energy = 10_000;
+    let fire = Intent {
+        yaw: 32_768,
+        fire: true,
+        ..Intent::IDLE
+    };
+    let mut shots = 0;
+    for _ in 0..120 {
+        step(&mut session, Intent::IDLE, fire);
+        shots += session
+            .events
+            .iter()
+            .filter(|event| matches!(event, Event::Fired { slot: 1, .. }))
+            .count();
+        assert!(session.fighters[1].flow.generated.electricity == 0);
+    }
+    assert!((1..=5).contains(&shots), "{shots}");
+    assert!(session.fighters[1].energy < Weapon::EnergyRifle.energy());
+    assert!(session.fighters[1].alive());
+}
+
+/// A destroyed fuel tank takes its fuel capacity and its share of the fuel, once: the pyro's
+/// side tank gone, its generator's own fuel still burns the flamethrower and refills the battery.
+#[test]
+fn a_lost_tank_takes_its_share_of_the_fuel_once() {
+    let mut session = duel();
+    rebuild(&mut session, 1, shooter_sim::robot::PYRO);
+    session.fighters[1].fuel = session.fighters[1].pool().fuel;
+    let tank = PartId(11);
+    assert_eq!(session.fighters[1].pool().fuel, 200_000);
+    // B turns its side, where the tank stands, to A.
+    let events = shoot(&mut session, Weapon::RailGun, 16_384, |session| {
+        part_center(session, 1, tank)
+    });
+    assert_eq!(struck(&events)[0], (tank, 85));
+    assert!(detached(&events).contains(&(tank, true)));
+    let b = &session.fighters[1];
+    assert_eq!(b.pool().fuel, 100_000);
+    // Half the fuel went with the tank; the generator burned a little of the rest.
+    assert!((99_000..=100_000).contains(&b.fuel), "{}", b.fuel);
+    let fuel = b.fuel;
+    for _ in 0..60 {
+        step(&mut session, Intent::IDLE, facing(16_384));
+    }
+    assert_eq!(session.fighters[1].pool().fuel, 100_000, "once");
+    assert!(session.fighters[1].fuel <= fuel);
 }
 
 #[test]

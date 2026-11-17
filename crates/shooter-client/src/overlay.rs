@@ -1,4 +1,4 @@
-//! The drawn HUD: the weapon panel and the chassis and energy bars, as render-engine screen
+//! The drawn HUD: the weapon panel and the chassis, electricity and fuel bars, as render-engine screen
 //! overlay quads ([`render_engine::scene::Scene::overlay`]), the same natively and in the browser.
 //!
 //! render-engine's overlay draws solid rectangles only, so the text is a 5×7 bitmap font and the
@@ -8,19 +8,21 @@
 //! sits in the bottom corners, clear of the reticle; the layout is for 720 lines and scales with
 //! the frame's height.
 //!
-//! The bottom right shows the held weapon (its silhouette, name and mod, the energy one shot
-//! costs, and whether it is ready, recharging, short of energy or lost) over a row of slots for
+//! The bottom right shows the held weapon (its silhouette, name and mod, the electricity or fuel
+//! one shot costs, and whether it is ready, recharging, short of its resource or lost) over a row of slots for
 //! every weapon copy the build carries (its select key, the blade's V; lost ones struck out red),
 //! each with its own readiness bar (ready, recharging, short of energy: every copy may fire,
 //! shooter#127); a switch flashes the panel and sweeps a highlight across it. The bottom left
-//! shows the root chassis' health and the energy pool, the share one shot of the held weapon
-//! takes marked on it, and above them, in teal, field repair ([`repair_panel`],
-//! [`crate::repair_menu`]): the quick repair menu while it is open, else the repair under way,
-//! else how many parts may be repaired.
+//! shows the root chassis' health and the two stores (shooter#128): electricity and fuel, the
+//! share one shot of the held weapon takes marked on its own store, what they spend and make a
+//! second, and in red what cannot operate for want of either (motors without power, a generator
+//! without fuel, a robot with no generation, the weapons whose own store is short); above them,
+//! in teal, field repair ([`repair_panel`], [`crate::repair_menu`]): the quick repair menu while
+//! it is open, else the repair under way, else how many parts may be repaired.
 
 use render_engine::glam::{Vec2, Vec4};
 use render_engine::scene::OverlayQuad;
-use shooter_sim::energy::MILLI;
+use shooter_sim::energy::{Flow, MILLI, Resource};
 use shooter_sim::robot::{BETA, ModId};
 use shooter_sim::session::Fighter;
 use shooter_sim::{Assembly, Instance, TICK_HZ, Weapon};
@@ -386,8 +388,11 @@ pub struct Mounted {
     pub cooldown: u32,
     /// Ticks between its shots in this build (its mod's).
     pub refire: u32,
-    /// Milli-units one activation costs (a tick, for the continuous ones).
+    /// Milli-units one activation costs (a tick, for the continuous ones) from its resource's
+    /// store.
     pub cost: u32,
+    /// What it runs on (shooter#128): fuel for the flamethrower, electricity for the rest.
+    pub resource: Resource,
 }
 
 impl Mounted {
@@ -398,13 +403,15 @@ impl Mounted {
         (of > 1).then(|| format!("{number}/{of}"))
     }
 
-    /// How ready it is to fire with `energy` in the pool: lost, short of energy, recovering
-    /// (with the share of its refire already over) or ready.
+    /// How ready it is to fire with `stores` (electricity, fuel) on the robot: lost, unable to
+    /// operate for want of its own resource, recovering (with the share of its refire already
+    /// over) or ready. Only its own store counts (D2.i123.4): an empty fuel tank starves the
+    /// flamethrower, not the electric guns.
     #[must_use]
-    pub fn readiness(&self, energy: u32) -> Readiness {
+    pub fn readiness(&self, stores: [u32; 2]) -> Readiness {
         if !self.armed {
             Readiness::Lost
-        } else if energy < self.cost {
+        } else if store(stores, self.resource) < self.cost {
             Readiness::LowEnergy
         } else if self.cooldown > 0 {
             #[allow(clippy::cast_precision_loss)]
@@ -420,6 +427,7 @@ impl Mounted {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Readiness {
     Lost,
+    /// Short of its resource: unable to operate until its store pays (shooter#128).
     LowEnergy,
     /// The share of its refire already over (0..1).
     Recharging(f32),
@@ -438,12 +446,30 @@ pub struct Vitals {
     pub held_mod: Option<ModId>,
     /// Milli-units one activation of the held weapon costs (a tick, for the continuous ones).
     pub cost: u32,
+    /// What the held weapon runs on.
+    pub resource: Resource,
     /// Whether the held weapon fires every tick the trigger is held (laser, flamethrower).
     pub continuous: bool,
+    /// The electricity stored and its capacity (milli-units).
     pub energy: u32,
     pub capacity: u32,
+    /// The fuel stored and its capacity (milli-units).
+    pub fuel: u32,
+    pub fuel_capacity: u32,
+    /// Whether it has a connected generator or solar panel (shooter#128).
+    pub generates: bool,
+    /// What its resources did lately: consumption, generation and what could not operate.
+    pub flow: Flow,
     pub chassis: u16,
     pub chassis_whole: u16,
+}
+
+/// What `stores` (electricity, fuel) hold of `resource`.
+const fn store(stores: [u32; 2], resource: Resource) -> u32 {
+    match resource {
+        Resource::Electricity => stores[0],
+        Resource::Fuel => stores[1],
+    }
 }
 
 impl Vitals {
@@ -470,18 +496,25 @@ impl Vitals {
                     },
                     refire: tuning.refire_ticks(instance.weapon),
                     cost: tuning.energy(instance.weapon),
+                    resource: instance.weapon.resource(),
                 }
             })
             .collect();
+        let pool = fighter.pool();
         Self {
             held,
             cooldown: fighter.arsenal.cooldown(tick),
             carried,
             held_mod: BETA.mod_at(build, held.part),
             cost: tuning.energy(held.weapon),
+            resource: held.weapon.resource(),
             continuous: tuning.refire_ticks(held.weapon) <= 1,
             energy: fighter.energy,
-            capacity: fighter.pool().capacity,
+            capacity: pool.capacity,
+            fuel: fighter.fuel,
+            fuel_capacity: pool.fuel,
+            generates: pool.solar > 0 || pool.output > 0,
+            flow: fighter.flow,
             chassis: fighter.chassis_health(),
             chassis_whole: shooter_sim::damage::PartDamage::fresh(build).chassis_health(build),
         }
@@ -496,6 +529,47 @@ impl Vitals {
 
     fn armed(&self) -> bool {
         self.held().is_some_and(|mounted| mounted.armed)
+    }
+
+    /// Its stores: electricity and fuel (milli-units).
+    #[must_use]
+    pub const fn stores(&self) -> [u32; 2] {
+        [self.energy, self.fuel]
+    }
+
+    /// The held weapon's store cannot pay its next activation: it cannot operate.
+    #[must_use]
+    pub const fn short(&self) -> bool {
+        store(self.stores(), self.resource) < self.cost
+    }
+
+    /// What cannot operate for want of a resource now (shooter#128, D2.i123.4), for the HUD's
+    /// markers: the motors that went unpowered, a generator out of fuel, and the weapon copies
+    /// whose own store cannot pay them (by name, once each).
+    #[must_use]
+    pub fn unable(&self) -> Vec<String> {
+        let mut unable = Vec::new();
+        if self.flow.motors_starved {
+            unable.push("motors: no power".to_owned());
+        }
+        if self.flow.generated.starved {
+            unable.push("generator: no fuel".to_owned());
+        } else if !self.generates {
+            unable.push("no generation".to_owned());
+        }
+        for mounted in &self.carried {
+            if mounted.readiness(self.stores()) == Readiness::LowEnergy {
+                let what = match mounted.resource {
+                    Resource::Electricity => "no power",
+                    Resource::Fuel => "no fuel",
+                };
+                let line = format!("{}: {what}", weapon_name(mounted.instance.weapon));
+                if !unable.contains(&line) {
+                    unable.push(line);
+                }
+            }
+        }
+        unable
     }
 
     /// The held weapon's name, with its copy's number when the build mounts it more than once:
@@ -531,7 +605,7 @@ const SLOT_WIDTH: f32 = 54.0;
 const SLOT_HEIGHT: f32 = 38.0;
 const SLOT_GAP: f32 = 6.0;
 const VITALS_WIDTH: f32 = 272.0;
-const VITALS_HEIGHT: f32 = 84.0;
+const VITALS_HEIGHT: f32 = 160.0;
 
 impl Overlay {
     /// The quads for a `width`×`height` frame `seconds` after the last; nothing while the local
@@ -641,11 +715,17 @@ impl Overlay {
         };
         painter.text(text_x, y + 62.0, 2.0, &cost, srgb(ORANGE, 1.0));
         // Ready, recharging, starved or lost: a label and the refire bar under it all.
-        let short = vitals.energy < vitals.cost;
+        let short = vitals.short();
         let (label, color) = if !armed {
             ("lost", RED)
         } else if short {
-            ("low energy", RED)
+            (
+                match vitals.resource {
+                    Resource::Electricity => "low energy",
+                    Resource::Fuel => "no fuel",
+                },
+                RED,
+            )
         } else if vitals.cooldown > 0 {
             ("recharging", MUTED)
         } else {
@@ -742,7 +822,7 @@ fn slots(painter: &mut Painter, vitals: &Vitals, right: f32, y: f32, flash: f32)
         // Its own readiness along its foot (shooter#127: every copy may fire, held or not):
         // olive when ready, the refire filling orange, red when the pool cannot pay it.
         let (bar_x, bar_y, bar_width) = (x + 4.0, y + SLOT_HEIGHT - 5.0, SLOT_WIDTH - 8.0);
-        match mounted.readiness(vitals.energy) {
+        match mounted.readiness(vitals.stores()) {
             Readiness::Lost => {}
             Readiness::LowEnergy => {
                 painter.rect(bar_x, bar_y, bar_width, 3.0, srgb(RED, 0.9));
@@ -864,7 +944,11 @@ pub fn repair_panel(view: &RepairView, height: u32) -> Vec<OverlayQuad> {
     painter.quads
 }
 
-/// The root chassis' health and the energy pool, at `x`, `y`.
+/// The most unable-to-operate markers the vitals panel lists ([`Vitals::unable`]).
+const MARKERS: usize = 3;
+
+/// The root chassis' health, the electricity and the fuel stores, what they spend and make a
+/// second, and what cannot operate for want of either (shooter#128), at `x`, `y`.
 fn bars(painter: &mut Painter, vitals: &Vitals, x: f32, y: f32) {
     painter.rect(x, y, VITALS_WIDTH, VITALS_HEIGHT, srgb(GRAPHITE, 0.82));
     painter.rect(x, y, VITALS_WIDTH, 2.0, srgb(STEEL, 1.0));
@@ -887,33 +971,76 @@ fn bars(painter: &mut Painter, vitals: &Vitals, x: f32, y: f32) {
     painter.rect(x + 14.0, y + 29.0, inner, 7.0, srgb(STEEL, 1.0));
     let tone = if health < 1.0 / 3.0 { ORANGE } else { OLIVE };
     painter.rect(x + 14.0, y + 29.0, inner * health, 7.0, srgb(tone, 1.0));
-    // The energy, with the share one shot of the held weapon takes marked at its end.
-    let charge = share(vitals.energy, vitals.capacity);
+    // Each store, with the share one shot of the held weapon takes from it marked at its end,
+    // framed red when the held weapon cannot be paid from it.
     let shot = if vitals.continuous {
         vitals.cost.saturating_mul(u32::from(TICK_HZ))
     } else {
         vitals.cost
     };
-    let cost = share(shot.min(vitals.energy), vitals.capacity);
-    painter.text(x + 14.0, y + 46.0, 2.0, "energy", srgb(MUTED, 1.0));
-    painter.text_right(
-        x + VITALS_WIDTH - 14.0,
-        y + 46.0,
-        2.0,
-        &format!("{}/{}", vitals.energy / MILLI, vitals.capacity / MILLI),
-        srgb(PALE, 1.0),
+    for (row, name, resource, (stored, whole), tone) in [
+        (
+            46.0,
+            "energy",
+            Resource::Electricity,
+            (vitals.energy, vitals.capacity),
+            PALE,
+        ),
+        (
+            80.0,
+            "fuel",
+            Resource::Fuel,
+            (vitals.fuel, vitals.fuel_capacity),
+            OLIVE,
+        ),
+    ] {
+        let level = share(stored, whole);
+        let cost = if vitals.resource == resource {
+            share(shot.min(stored), whole)
+        } else {
+            0.0
+        };
+        painter.text(x + 14.0, y + row, 2.0, name, srgb(MUTED, 1.0));
+        painter.text_right(
+            x + VITALS_WIDTH - 14.0,
+            y + row,
+            2.0,
+            &format!("{}/{}", stored / MILLI, whole / MILLI),
+            srgb(PALE, 1.0),
+        );
+        let bar = y + row + 17.0;
+        painter.rect(x + 14.0, bar, inner, 7.0, srgb(STEEL, 1.0));
+        painter.rect(x + 14.0, bar, inner * level, 7.0, srgb(tone, 0.85));
+        painter.rect(
+            x + 14.0 + inner * (level - cost),
+            bar,
+            inner * cost,
+            7.0,
+            srgb(ORANGE, 1.0),
+        );
+        if vitals.resource == resource && vitals.short() {
+            painter.frame(x + 13.0, bar - 1.0, inner + 2.0, 9.0, 1.0, srgb(RED, 1.0));
+        }
+    }
+    // The flow: electricity spent and made, fuel burned, a second (smoothed).
+    let [spent, burned, made] = vitals.flow.rates;
+    painter.text(
+        x + 14.0,
+        y + 116.0,
+        1.0,
+        &format!(
+            "power -{}/s +{}/s   fuel -{}/s",
+            units(spent),
+            units(made),
+            units(burned)
+        ),
+        srgb(MUTED, 1.0),
     );
-    painter.rect(x + 14.0, y + 63.0, inner, 7.0, srgb(STEEL, 1.0));
-    painter.rect(x + 14.0, y + 63.0, inner * charge, 7.0, srgb(PALE, 0.85));
-    painter.rect(
-        x + 14.0 + inner * (charge - cost),
-        y + 63.0,
-        inner * cost,
-        7.0,
-        srgb(ORANGE, 1.0),
-    );
-    if vitals.energy < vitals.cost {
-        painter.frame(x + 13.0, y + 62.0, inner + 2.0, 9.0, 1.0, srgb(RED, 1.0));
+    // What cannot operate now, in red.
+    for (line, marker) in vitals.unable().iter().take(MARKERS).enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let at = y + 128.0 + 10.0 * line as f32;
+        painter.text(x + 14.0, at, 1.0, marker, srgb(RED, 1.0));
     }
 }
 
@@ -1009,7 +1136,7 @@ mod tests {
             .carried
             .iter()
             .filter(|mounted| mounted.instance.weapon == Weapon::RailGun)
-            .map(|mounted| mounted.readiness(vitals.energy))
+            .map(|mounted| mounted.readiness(vitals.stores()))
             .collect();
         assert!(
             rails
@@ -1025,7 +1152,7 @@ mod tests {
                 .carried
                 .iter()
                 .filter(|mounted| mounted.instance.weapon == Weapon::RailGun)
-                .all(|mounted| mounted.readiness(vitals.energy) == Readiness::LowEnergy)
+                .all(|mounted| mounted.readiness(vitals.stores()) == Readiness::LowEnergy)
         );
 
         let mut session = Session::new(shooter_sim::Arena::greybox()).unwrap();
@@ -1037,7 +1164,7 @@ mod tests {
         let pods: Vec<(u32, Readiness)> = vitals
             .carried
             .iter()
-            .map(|mounted| (mounted.cooldown, mounted.readiness(vitals.energy)))
+            .map(|mounted| (mounted.cooldown, mounted.readiness(vitals.stores())))
             .collect();
         let spacing = Weapon::RocketLauncher.salvo().unwrap().spacing;
         // The first launched; the others wait for the family, not their own refire.
@@ -1083,5 +1210,57 @@ mod tests {
         let settled = overlay.draw(Some(&vitals), 1280, 720, 1.0);
         // The flash over the panel and the sweeping band, then neither.
         assert_eq!(switched.len(), settled.len() + 2);
+    }
+
+    /// The pyro's two stores (shooter#128): an empty fuel tank marks only the flamethrower and
+    /// the generator unable to operate, an empty battery only the electric weapons; the flow
+    /// line shows what they spend and make.
+    #[test]
+    fn each_store_marks_only_what_depends_on_it() {
+        use shooter_sim::robot::PYRO;
+        let mut session = Session::new(shooter_sim::Arena::greybox()).unwrap();
+        session.rebuild(0, PYRO).unwrap();
+        let pool = session.fighters[0].pool();
+        session.fighters[0].energy = pool.capacity;
+        session.fighters[0].fuel = 0;
+        session.tick(shooter_sim::Intent::IDLE).unwrap();
+        let vitals = Vitals::of(session.local(), session.ticks());
+        assert_eq!((vitals.fuel, vitals.fuel_capacity), (0, 200 * MILLI));
+        assert!(vitals.generates);
+        let short: Vec<Weapon> = vitals
+            .carried
+            .iter()
+            .filter(|mounted| mounted.readiness(vitals.stores()) == Readiness::LowEnergy)
+            .map(|mounted| mounted.instance.weapon)
+            .collect();
+        assert_eq!(short, [Weapon::Flamethrower]);
+        let unable = vitals.unable();
+        assert!(
+            unable.contains(&"generator: no fuel".to_owned()),
+            "{unable:?}"
+        );
+        assert!(
+            unable.contains(&"Flamethrower: no fuel".to_owned()),
+            "{unable:?}"
+        );
+        assert!(
+            !unable.iter().any(|line| line.contains("Laser")),
+            "{unable:?}"
+        );
+
+        session.fighters[0].energy = 0;
+        session.fighters[0].fuel = pool.fuel;
+        let vitals = Vitals::of(session.local(), session.ticks());
+        let short: Vec<Weapon> = vitals
+            .carried
+            .iter()
+            .filter(|mounted| mounted.readiness(vitals.stores()) == Readiness::LowEnergy)
+            .map(|mounted| mounted.instance.weapon)
+            .collect();
+        assert!(!short.contains(&Weapon::Flamethrower), "{short:?}");
+        assert!(short.contains(&Weapon::Laser), "{short:?}");
+        // Both bars and the markers are drawn.
+        let quads = Overlay::default().draw(Some(&vitals), 1280, 720, 0.016);
+        assert!(!quads.is_empty());
     }
 }

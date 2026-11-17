@@ -12,14 +12,14 @@ use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{
     ARMOR_PLATE, BATTERY, BEAM_LONG, BEAM_SHORT, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE,
-    ENERGY_RIFLE, GRAPPLE, HINGE, LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER, ROTOR, SENSOR, SHOTGUN,
-    TRACK, WHEEL,
+    ENERGY_RIFLE, FUEL_TANK, GENERATOR, GRAPPLE, HINGE, LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER,
+    ROTOR, SENSOR, SHOTGUN, SOLAR_PANEL, TRACK, WHEEL,
 };
 use shooter_sim::robot::{
     ARMORY, AssemblyError, BETA, Candidate, Catalog, EFFICIENCY_COIL, Face, HEAVY, Kind, LOADOUTS,
     LONG_BARREL, MARKSMAN, MAX_PARTS, ModId, OVERCHARGER, Orientation, PYRO, PartId, PartType,
-    PartTypeId, RAPID_CYCLER, ROOT_CAPACITY, ROOT_REGEN, RawMount, RawPart, SKIRMISHER, STANDARD,
-    SocketId, Tuning, loadout,
+    PartTypeId, RAPID_CYCLER, ROOT_CAPACITY, RawMount, RawPart, SKIRMISHER, STANDARD, SocketId,
+    Tuning, loadout,
 };
 
 use shooter_sim::aim;
@@ -674,15 +674,25 @@ fn every_mod_trades_something_away() {
 }
 
 #[test]
-fn the_root_chassis_and_batteries_make_the_energy_pool() {
-    // The root chassis alone: 100 stored, 24 a second, whatever its size; a battery adds 60
-    // stored and nothing else.
+fn the_root_chassis_batteries_tanks_and_generators_make_the_resources() {
+    // The root chassis alone: 100 electricity stored, whatever its size, and no generation
+    // (shooter#128, D2.i123.1). The named loadouts' power pack: a 100-fuel tank and a generator
+    // giving 20 electricity a second for 2 fuel; a battery adds 60 stored and nothing else.
     let standard = BETA.budget(&STANDARD);
-    assert_eq!((standard.capacity, standard.regen), (100, 24));
+    assert_eq!(
+        (
+            standard.capacity,
+            standard.fuel,
+            standard.output,
+            standard.burn
+        ),
+        (100, 100, 20, 2)
+    );
     let heavy = BETA.budget(&HEAVY);
-    assert_eq!((heavy.capacity, heavy.regen), (160, 24));
-    assert_eq!((ROOT_CAPACITY, ROOT_REGEN), (100, 24));
-    // Another chassis section is ordinary structure: no baseline of its own.
+    assert_eq!((heavy.capacity, heavy.output), (160, 20));
+    assert_eq!(ROOT_CAPACITY, 100);
+    // Another chassis section is ordinary structure: no baseline of its own; and nothing
+    // generates without a generator or a panel.
     let stacked = BETA
         .validate(&build(vec![
             root(0, &CHASSIS_L),
@@ -690,13 +700,16 @@ fn the_root_chassis_and_batteries_make_the_energy_pool() {
         ]))
         .unwrap();
     let budget = BETA.budget(&stacked);
-    assert_eq!((budget.capacity, budget.regen), (100, 24));
+    assert_eq!(
+        (budget.capacity, budget.fuel, budget.output, budget.burn),
+        (100, 0, 0, 0)
+    );
     assert_eq!(BATTERY.key, "robot.battery");
     assert_eq!(BATTERY.kind, Kind::Battery);
     assert_eq!(
         (
             BATTERY.capacity,
-            BATTERY.regen,
+            BATTERY.output,
             BATTERY.points,
             BATTERY.mass
         ),
@@ -704,6 +717,29 @@ fn the_root_chassis_and_batteries_make_the_energy_pool() {
     );
     assert_eq!(BATTERY.health, 60, "a battery is a damageable component");
     assert_eq!(BATTERY.cells, [1, 2, 1], "a two-cell footprint");
+    assert_eq!(
+        (
+            FUEL_TANK.kind,
+            FUEL_TANK.fuel,
+            FUEL_TANK.points,
+            FUEL_TANK.health
+        ),
+        (Kind::FuelTank, 100, 3, 50)
+    );
+    assert_eq!(
+        (
+            GENERATOR.kind,
+            GENERATOR.output,
+            GENERATOR.burn,
+            GENERATOR.points
+        ),
+        (Kind::Generator, 20, 2, 5)
+    );
+    assert_eq!(
+        (SOLAR_PANEL.kind, SOLAR_PANEL.output, SOLAR_PANEL.burn),
+        (Kind::Solar, 3, 0),
+        "a panel needs no input"
+    );
     // Batteries stack; each one takes its footprint and build points.
     let mut charged = MARKSMAN.candidate();
     charged
@@ -723,14 +759,14 @@ fn the_root_chassis_and_batteries_make_the_energy_pool() {
     let mut second = charged.candidate();
     second
         .parts
-        .push(on(12, &BATTERY, 0, &CHASSIS_M, Face::NegX, 0, 0));
+        .push(on(12, &BATTERY, 0, &CHASSIS_M, Face::NegX, 2, 0));
     let second = BETA.validate(&second).unwrap();
     assert_eq!(BETA.budget(&second).capacity, 220);
     assert_eq!(BETA.budget(&second).points, 109);
     let mut third = second.candidate();
     third
         .parts
-        .push(on(13, &BATTERY, 0, &CHASSIS_M, Face::NegX, 1, 0));
+        .push(on(13, &BATTERY, 0, &CHASSIS_M, Face::PosY, 0, 0));
     assert_eq!(
         BETA.validate(&third),
         Err(AssemblyError::OverBudget {
@@ -744,12 +780,17 @@ fn the_root_chassis_and_batteries_make_the_energy_pool() {
     };
     let third = roomy.validate(&third).unwrap();
     assert_eq!(roomy.budget(&third).capacity, 280);
-    // Every part type's own capacity and regeneration: none regenerates and only the battery
-    // stores (the root chassis' baseline is the root's, not its type's).
+    // Every part type's own stores and generation: only the battery stores electricity, only
+    // the tanks and the generator's own fuel, only the generator burns and only it and the panel generate (the root
+    // chassis' baseline is the root's, not its type's).
     for part in BETA.parts {
+        let supply = (part.capacity, part.fuel, part.output, part.burn);
         match part.kind {
-            Kind::Battery => assert_eq!(part.regen, 0),
-            _ => assert_eq!((part.capacity, part.regen), (0, 0), "{}", part.key),
+            Kind::Battery => assert_eq!(supply, (60, 0, 0, 0)),
+            Kind::FuelTank => assert_eq!(supply, (0, 100, 0, 0)),
+            Kind::Generator => assert_eq!(supply, (0, 100, 20, 2)),
+            Kind::Solar => assert_eq!(supply, (0, 0, 3, 0)),
+            _ => assert_eq!(supply, (0, 0, 0, 0), "{}", part.key),
         }
     }
 }
@@ -813,7 +854,11 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         assert_eq!(BETA.validate(&build.candidate()), Ok(build), "{name}");
         assert_eq!(loadout(name), Some(build));
         let budget = BETA.budget(&build);
-        assert!(budget.capacity >= 100 && budget.regen == 24, "{name}");
+        // Every one generates from its own fuel (shooter#128).
+        assert!(
+            budget.capacity >= 100 && budget.output == 20 && budget.fuel >= 100,
+            "{name}"
+        );
         assert!(budget.points <= budget.build_points);
         // Four weapons each.
         let weapons: Vec<Weapon> = BETA
@@ -824,15 +869,18 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
     }
     assert_eq!(loadout(" Marksman "), Some(MARKSMAN));
     assert_eq!(loadout("sniper"), None);
-    // A chassis, a sensor, two legs and four weapons (no arms since shooter#91).
+    // A chassis, a generator (the sensor's place, shooter#128), two legs and four weapons (no
+    // arms since shooter#91).
     assert_eq!(STANDARD.parts().len(), 8);
     assert_eq!(BETA.budget(&STANDARD).points, 69);
     assert_eq!(BETA.budget(&SKIRMISHER).points, 84);
     assert_eq!(BETA.budget(&MARKSMAN).points, 99);
     // The pyro: the laser (long-barrelled), the flamethrower, the blade and the grapple on the
-    // small chassis, 180 kg and 79 points on the root chassis' 100 energy (shooter#96).
+    // small chassis, 188 kg and 82 points on the root chassis' 100 electricity, with a second
+    // fuel tank for the flamethrower (shooter#96, shooter#128).
     let pyro = BETA.budget(&PYRO);
-    assert_eq!((pyro.mass, pyro.capacity, pyro.points), (180, 100, 79));
+    assert_eq!((pyro.mass, pyro.capacity, pyro.points), (188, 100, 82));
+    assert_eq!(pyro.fuel, 200);
     assert_eq!(loadout("PYRO"), Some(PYRO));
     assert_eq!(
         BETA.weapons(&PYRO)
@@ -1032,7 +1080,7 @@ fn builds_from_untrusted_bytes_are_validated() {
     );
     // The second part (the sensor, 5 bytes from the 4th on) named as the retired control core.
     let mut cored = standard.clone();
-    assert_eq!(&cored[4..7], &[2, SENSOR.id.0, 1]);
+    assert_eq!(&cored[4..7], &[2, GENERATOR.id.0, 1]);
     cored[5] = 30;
     assert_eq!(
         forged(&cored),
@@ -1201,8 +1249,9 @@ fn a_configured_build_applies_at_the_next_spawn_and_travels_in_snapshots() {
     }
     assert_eq!(session.fighters[1].build, tank);
     assert_eq!(session.fighters[0].build, STANDARD);
-    // Back with the new build's energy pool full.
-    assert_eq!(session.fighters[1].energy, Pool::of(&tank).capacity);
+    // Back with the new build's stores full (its legs' servos draw a little on its first tick).
+    assert!(session.fighters[1].energy + 100 >= Pool::of(&tank).capacity);
+    assert!(session.fighters[1].energy <= Pool::of(&tank).capacity);
     let snapshot = session.snapshot();
     assert_eq!(snapshot.slot(1).unwrap().build, tank);
     assert_eq!(
@@ -1290,8 +1339,8 @@ fn the_overcharged_rail_gun_kills_in_fewer_hits_and_fires_slower() {
     // Overcharged (106): 94 ticks apart, three hits a kill, as before (two for the chassis, then
     // one for the core). The marksman fires the moment it takes the rail gun up (no switch
     // delay since shooter#127), so like the heavy's its shot on tick 0 goes wide of B still
-    // settling; its fourth waits for the pool (45 a shot).
-    assert_eq!(rail_record(MARKSMAN, 300), (vec![0, 94, 188, 299], 1));
+    // settling; its fourth waits for the generator to refill the battery (45 a shot).
+    assert_eq!(rail_record(MARKSMAN, 300), (vec![0, 94, 188, 282], 1));
 }
 
 #[test]

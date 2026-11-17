@@ -1,8 +1,8 @@
 //! The match on the wire, inside game-server's command and snapshot frames: a person's input
 //! (one per tick) and the shared snapshot every client gets each tick (the match's map, the
 //! fighters with their mechanical robots' exact state (every body's motion, the parts that came
-//! off, the gait clock: what a client resumes prediction from), their robot builds, the charge in each
-//! one's energy pool, every part's health (what it has lost follows from them,
+//! off, the gait clock: what a client resumes prediction from), their robot builds, the electricity
+//! and fuel each one stores, every part's health (what it has lost follows from them,
 //! [`crate::damage`]) and the module each carries, the rockets, the shotgun pellets, the module
 //! pads, the modules dropped at deaths, the arena placeables' health ([`crate::scenery`]: the
 //! damaged ones, by stable ID) and the tick's events), each fighter's field repair under way
@@ -10,7 +10,7 @@
 //! motion ([`crate::mechanics::DebrisState`]). Robot builds travel as raw codes and are
 //! decoded
 //! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored; a
-//! part health above its catalog health, or a charge above the capacity of the parts still
+//! part health above its catalog health, or electricity or fuel above the capacity of the parts still
 //! connected, or a repair naming a part the build lacks or a module that is none, is malformed.
 //! Little-endian; positions and velocities travel as exact `f32` bits.
 //!
@@ -41,7 +41,9 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::{Instance, Select, Triggers, Weapon};
 use std::fmt;
 
-/// 24: inputs carry per-copy fire requests (shooter#127, [`Triggers`]: the guns the person's
+/// 25: snapshots carry each fighter's fuel and each robot's state its fuel beside its electricity
+/// (shooter#128); the catalog adds the fuel tank, the generator and the solar panel (codes 34 to
+/// 36); 24: inputs carry per-copy fire requests (shooter#127, [`Triggers`]: the guns the person's
 /// direct weapon bindings and groups ask to fire) and a layout's binding may fire guns; 23:
 /// weapons are addressed by mounted copy (shooter#125): an input's switch names a weapon or
 /// an exact weapon part, a fighter's held weapon and a shot's `Fired` event carry the part;
@@ -50,7 +52,7 @@ use std::fmt;
 /// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
 /// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
 /// the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 24;
+pub const WIRE_VERSION: u8 = 25;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -103,7 +105,7 @@ pub struct FighterState {
     pub motion: Motion,
     /// Its mechanical robot's exact state, while it is alive: every body's motion, the parts
     /// that came off and the gait clock ([`crate::mechanics::RobotState`]; the charge is
-    /// `energy`). A client resumes its prediction from it and draws the parts from it
+    /// `energy`, the fuel `fuel`). A client resumes its prediction from it and draws the parts from it
     /// ([`RobotState::part_frames`]).
     pub robot: Option<RobotState>,
     /// Its grapple hook while set (exact, for prediction and the cable).
@@ -118,9 +120,11 @@ pub struct FighterState {
     pub configured: Assembly,
     /// The module pickup it carries and the uses it has left.
     pub carried: Option<Carried>,
-    /// The charge in its shared energy pool, milli-units ([`crate::energy`]); the pool of its
-    /// build's connected parts ([`crate::energy::Pool::attached`]) has the capacity.
+    /// The electricity it stores, milli-units ([`crate::energy`]); the pool of its build's
+    /// connected parts ([`crate::energy::Pool::attached`]) has the capacity.
     pub energy: u32,
+    /// The fuel it stores, milli-units, within the same pool's fuel capacity.
+    pub fuel: u32,
     /// Its part healths this life and, following from them, the parts it has lost
     /// ([`crate::damage`]); the root chassis' health is its life.
     pub parts: PartDamage,
@@ -227,6 +231,7 @@ fn state_of(session: &Session, robots: &[RobotState], fighter: &Fighter) -> Opti
         .filter(|_| fighter.alive())
         .map(|robot| RobotState {
             charge: fighter.energy,
+            fuel: fighter.fuel,
             ..robot.clone()
         });
     #[allow(clippy::cast_precision_loss)]
@@ -257,6 +262,7 @@ fn state_of(session: &Session, robots: &[RobotState], fighter: &Fighter) -> Opti
         configured: fighter.configured,
         carried: fighter.carried,
         energy: fighter.energy,
+        fuel: fighter.fuel,
         parts: fighter.parts,
         repair: fighter.repair,
         repairable: fighter.repairable(),
@@ -1047,6 +1053,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
             None => out.u8(0),
         }
         out.u32(fighter.energy);
+        out.u32(fighter.fuel);
         for health in fighter.parts.health() {
             out.u16(*health);
         }
@@ -1171,6 +1178,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 configured: Assembly::default(),
                 carried: None,
                 energy: 0,
+                fuel: 0,
                 parts: PartDamage::default(),
                 repair: None,
                 repairable: 0,
@@ -1187,13 +1195,18 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 _ => return Err(WireError::Malformed("unknown module state")),
             };
             fighter.energy = input.u32()?;
+            fighter.fuel = input.u32()?;
             let health = (0..fighter.build.parts().len())
                 .map(|_| input.u16())
                 .collect::<Result<Vec<_>, _>>()?;
             fighter.parts =
                 PartDamage::from_health(&fighter.build, &health).map_err(WireError::Malformed)?;
-            if fighter.energy > Pool::attached(&fighter.build, &fighter.parts).capacity {
+            let pool = Pool::attached(&fighter.build, &fighter.parts);
+            if fighter.energy > pool.capacity {
                 return Err(WireError::Malformed("energy above the build's capacity"));
+            }
+            if fighter.fuel > pool.fuel {
+                return Err(WireError::Malformed("fuel above the build's capacity"));
             }
             fighter.repair = match input.u8()? {
                 0 => None,
@@ -1514,6 +1527,7 @@ impl Out {
     fn robot(&mut self, robot: &RobotState) {
         self.u32(robot.lost);
         self.u32(robot.charge);
+        self.u32(robot.fuel);
         self.u32(robot.clock);
         self.u8(count(robot.bodies.len()));
         for body in &robot.bodies {
@@ -1533,9 +1547,10 @@ impl In<'_> {
     fn robot(&mut self, slot: u8, build: Assembly) -> Result<RobotState, WireError> {
         let lost = self.u32()?;
         let charge = self.u32()?;
+        let fuel = self.u32()?;
         let clock = self.u32()?;
-        if charge > Pool::of(&build).capacity {
-            return Err(WireError::Malformed("charge above capacity"));
+        if charge > Pool::of(&build).capacity || fuel > Pool::of(&build).fuel {
+            return Err(WireError::Malformed("a store above its capacity"));
         }
         if build.parts().len() < 32 && lost >> build.parts().len() != 0 {
             return Err(WireError::Malformed("a lost part the build does not have"));
@@ -1580,6 +1595,7 @@ impl In<'_> {
             build,
             lost,
             charge,
+            fuel,
             clock,
             bodies,
         })

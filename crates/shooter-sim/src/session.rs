@@ -26,7 +26,7 @@
 //! ([`Mechanics::drive`]), which also keeps it upright and turns it to face the aim: an interim
 //! chassis drive (Atlas D2.i70.5) until robots walk and roll on their actuators alone. Its
 //! actuators take what its person's control layout resolved ([`crate::bindings`]; a bot's, its
-//! build's preset from its movement keys), drawing their motors' energy from its pool after its
+//! build's preset from its movement keys), drawing their motors' electricity after its
 //! jumps, swings and shots, and its legs, wheels and tracks slide where the drive takes them. It walks on its feet: only a connected leg,
 //! wheel or track on the ground is footing, and the wished speeds scale by the share of its
 //! locomotion it still has ([`crate::player::Traction`]).
@@ -58,9 +58,11 @@
 //! the next tick meets the broken pieces; a new round restores every placeable
 //! ([`crate::scenery`] has the rules).
 //!
-//! Every fighter has a shared energy pool from its build; its jumps, swings and shots ask it for
-//! energy first come, first served and it regenerates after them each tick ([`crate::energy`]).
-//! A lost battery takes its capacity and its share of the charge with it.
+//! Every fighter has two stores from its build, electricity and fuel; its jumps, hooks, swings,
+//! shots, repairs and motors ask them first come, first served, in one order a tick, and its
+//! installed generation (generators burning fuel, solar panels) refills after them
+//! ([`crate::energy`]); nothing regenerates for free. A lost battery or tank takes its capacity
+//! and its share of what it held with it; a lost generator or panel stops generating.
 //!
 //! A person whose build mounts a repair module may repair a damaged part in its reach while the
 //! match goes on ([`crate::repair`]): the host checks the order, the repair draws from the pool
@@ -73,7 +75,7 @@ use crate::bindings::{BindingState, Bindings, Pressed};
 use crate::bots::{Bot, Sight};
 use crate::damage::{BATTERY_BLAST_DAMAGE, BATTERY_BLAST_RADIUS_UNITS, Blow, Hitboxes, PartDamage};
 use crate::dummies::Dummy;
-use crate::energy::{self, Pool};
+use crate::energy::{self, Flow, Pool};
 use crate::grapple::Hook;
 use crate::maps::MapId;
 use crate::mechanics::{self, Controls, Footing as RobotFooting, Mechanics, RobotState};
@@ -237,9 +239,18 @@ pub struct Fighter {
     pub hook: Option<Hook>,
     /// The module pickup it carries this life, if any ([`crate::pickups`]).
     pub carried: Option<Carried>,
-    /// The charge in its shared energy pool, milli-units ([`crate::energy`]; its build's
-    /// [`Fighter::pool`] bounds it).
+    /// The electricity it stores, milli-units ([`crate::energy`]; its build's [`Fighter::pool`]
+    /// bounds it).
     pub energy: u32,
+    /// The fuel it stores, milli-units ([`crate::energy`]; its build's [`Fighter::pool`] bounds
+    /// it).
+    pub fuel: u32,
+    /// What its resources did last tick, for the HUD ([`crate::energy::Flow`]; display only).
+    pub flow: Flow,
+    /// Its stores as the tick's requests began, and what lost parts took from them since: what
+    /// [`Flow`] measures its consumption against.
+    opening: [u32; 2],
+    shed: [u32; 2],
     /// Its build's part healths and lost parts this life ([`crate::damage`]); the root
     /// chassis' health is its life.
     pub parts: PartDamage,
@@ -277,6 +288,10 @@ impl Fighter {
             hook: None,
             carried: None,
             energy: 0,
+            fuel: 0,
+            flow: Flow::default(),
+            opening: [0; 2],
+            shed: [0; 2],
             parts: PartDamage::default(),
             repair: None,
             respawn_at: None,
@@ -354,10 +369,18 @@ impl Fighter {
         self.parts.instances(&self.build).collect()
     }
 
-    /// Its shared energy pool: its build's capacity and regeneration ([`crate::energy`]).
+    /// Its stores and generation: its connected parts' ([`crate::energy`]).
     #[must_use]
     pub fn pool(&self) -> Pool {
         Pool::attached(&self.build, &self.parts)
+    }
+
+    /// Both its stores full (a new life, a new build).
+    fn fill(&mut self) {
+        let pool = self.pool();
+        self.energy = pool.capacity;
+        self.fuel = pool.fuel;
+        self.flow = Flow::default();
     }
 
     /// It is `build` this life, whole: its parts and arsenal ([`Session::rebuild`] puts its
@@ -1156,7 +1179,7 @@ impl Session {
         fighter.parts = PartDamage::fresh(&fighter.build);
         fighter.repair = None;
         fighter.arsenal = Arsenal::holding(fighter.first_weapon());
-        fighter.energy = fighter.pool().capacity;
+        fighter.fill();
         fighter.respawn_at = None;
         fighter.intent = Intent {
             yaw: at.yaw,
@@ -1398,7 +1421,7 @@ impl Session {
             }
             let fighter = &mut self.fighters[usize::from(slot)];
             fighter.arsenal = Arsenal::holding(fighter.first_weapon());
-            fighter.energy = fighter.pool().capacity;
+            fighter.fill();
         }
         true
     }
@@ -1456,6 +1479,12 @@ impl Session {
                 let point = self.spawn_point_for(slot);
                 self.spawn(slot, point)?;
             }
+        }
+        // Every request of the tick from here on is granted from these stores, in one order
+        // ([`crate::energy`]); what they hold now is what the HUD's consumption counts from.
+        for fighter in &mut self.fighters {
+            fighter.opening = [fighter.energy, fighter.fuel];
+            fighter.shed = [0; 2];
         }
 
         // How each robot moved after the last step, before this tick's drives: what collision
@@ -1576,8 +1605,10 @@ impl Session {
                         self.tick,
                         tuning_of(&build, carried, grapple).refire_ticks(Weapon::Grapple),
                         || {
-                            energy::spend(
+                            energy::request(
                                 &mut fighter.energy,
+                                &mut fighter.fuel,
+                                Weapon::Grapple.resource(),
                                 tuning_of(&build, carried, grapple).energy(Weapon::Grapple),
                             )
                         },
@@ -1596,7 +1627,9 @@ impl Session {
             // may not hold is refused ([`weapons::resolve`]): the host decides, the prediction
             // and replays alike. Every copy of a weapon is its own instance (shooter#125): its
             // own mod, refire and muzzle; the melee key swings the first blade still connected.
-            let charge = &mut fighter.energy;
+            // Each asks the store of its own resource ([`Weapon::resource`]): an empty fuel
+            // tank stops the flamethrower, not the electric guns (D2.i123.4).
+            let (charge, fuel) = (&mut fighter.energy, &mut fighter.fuel);
             let held = fighter.arsenal.held;
             let select = intent
                 .select
@@ -1625,8 +1658,10 @@ impl Session {
                 |instance| tuning_of(&build, carried, instance).refire_ticks(instance.weapon),
                 |instance| {
                     armed.contains(&instance)
-                        && energy::spend(
+                        && energy::request(
                             charge,
+                            fuel,
+                            instance.weapon.resource(),
                             tuning_of(&build, carried, instance).energy(instance.weapon),
                         )
                 },
@@ -1711,12 +1746,13 @@ impl Session {
             );
         }
         for slot in 0..self.fighters.len() {
-            let energy = self.fighters[slot].energy;
+            let (energy, fuel) = (self.fighters[slot].energy, self.fighters[slot].fuel);
             if let Some(robot) = self
                 .mechanics
                 .robot_mut(u8::try_from(slot).unwrap_or(u8::MAX))
             {
                 robot.charge = energy;
+                robot.fuel = fuel;
             }
         }
         // How the tick's drives, pulls and pushes set each robot moving.
@@ -1727,16 +1763,29 @@ impl Session {
             })
             .collect();
         self.mechanics.step(&controls)?;
+        // Each robot's motors: whether one starved, and what they used.
+        let mut motored = vec![(false, 0); self.fighters.len()];
         for robot in self.mechanics.robots() {
             if let Some(fighter) = self.fighters.get_mut(usize::from(robot.slot)) {
                 fighter.energy = robot.charge;
+                motored[usize::from(robot.slot)] = (robot.starved, robot.motors_spent);
             }
         }
-        // Every request of the tick is in: the pools regenerate.
-        for fighter in &mut self.fighters {
-            if fighter.alive() {
-                fighter.pool().regenerate(&mut fighter.energy);
+        // Every request of the tick is in: each living robot's installed generation refills
+        // what it can ([`Pool::generate`]); nothing else does.
+        for (fighter, (starved, motors)) in self.fighters.iter_mut().zip(motored) {
+            if !fighter.alive() {
+                continue;
             }
+            let [charge, fuel] = fighter.opening;
+            let spent = charge.saturating_sub(fighter.energy + fighter.shed[0]);
+            let fuel_spent = fuel.saturating_sub(fighter.fuel + fighter.shed[1]);
+            let generated = fighter
+                .pool()
+                .generate(&mut fighter.energy, &mut fighter.fuel);
+            fighter
+                .flow
+                .close(spent, fuel_spent, generated, (starved, motors));
         }
         self.world.step()?;
         self.tick += 1;
@@ -2138,7 +2187,14 @@ impl Session {
         let Some(change) = fighter.parts.hurt(&build, blow.index, blow.damage) else {
             return;
         };
-        fighter.energy = before.shrink(fighter.pool(), fighter.energy);
+        // A lost battery or tank takes its share of what is stored, once; a lost generator or
+        // solar panel generates no more.
+        let after = fighter.pool();
+        let (charge, fuel) = (fighter.energy, fighter.fuel);
+        fighter.energy = before.shrink(after, charge);
+        fighter.fuel = before.shrink_fuel(after, fuel);
+        fighter.shed[0] += charge - fighter.energy;
+        fighter.shed[1] += fuel - fighter.fuel;
         // A direct hit on the part under repair, or on the module repairing it, pauses it.
         if let Some(repair) = fighter.repair.as_mut() {
             repair.struck(build.parts()[blow.index].id);

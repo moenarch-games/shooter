@@ -855,10 +855,10 @@ fn rail_capacitor_kills_score() {
     }
     assert_eq!(kills, 1);
     assert_eq!(shots.len(), 3, "{shots:?}");
-    // 72 ticks shipped, 54 with the capacitor; the third waits for the pool to pay its 45 (the
-    // legs' servos draw on it too, shooter#73).
+    // 72 ticks shipped, 54 with the capacitor; the third waits for the generator to refill its 45
+    // (the legs' servos draw on it too, shooter#73, by their load since shooter#128).
     assert_eq!(shots[1] - shots[0], 54);
-    assert_eq!(shots[2] - shots[1], 77);
+    assert_eq!(shots[2] - shots[1], 56);
     assert_eq!(session.fighters[0].frags, 1);
     assert_eq!(session.fighters[1].deaths, 1);
     assert_eq!(
@@ -918,17 +918,18 @@ fn the_rail_capacitor_is_spent_by_its_rail_shots() {
     assert_eq!(spent_at, Some(shots[boosted - 1]));
     assert_eq!(session.fighters[0].carried, None);
     let gaps: Vec<u32> = shots.windows(2).map(|pair| pair[1] - pair[0]).collect();
-    // The boosted shots recharge in 54 ticks, but each costs 45 energy (150 % of the rail
-    // shot's 30) from the root chassis' 100, which regenerates 0.4 a tick less the legs' servos
-    // (0.132 a tick, shooter#73): the second goes out at the boosted pace, then a shot waits for the pool
-    // to hold 45 again (92 ticks: the first went out straight after the rifle, no switch delay
-    // since shooter#127; then 168). Unboosted, a shot costs 30 and the pool pays it
-    // every 112 ticks, slower than the rail gun's own 72.
-    assert_eq!(gaps[..boosted - 1], [54, 92, 168, 168], "{gaps:?}");
+    // The boosted shots recharge in 54 ticks, but each costs 45 electricity (150 % of the rail
+    // shot's 30) from the root chassis' 100, which the generator refills at 0.333 a tick from
+    // its fuel after the legs' servos take their share (shooter#128): the second goes out at the
+    // boosted pace, then a shot waits for the battery to hold 45 again (59 ticks: the first went
+    // out straight after the rifle, no switch delay since shooter#127; then 140 or so).
+    // Unboosted, a shot costs 30 and the generator pays it every 93 or 94 ticks, slower than the
+    // rail gun's own 72.
+    assert_eq!(gaps[..boosted - 1], [54, 59, 140, 141], "{gaps:?}");
     assert!(
         gaps[boosted - 1..]
             .iter()
-            .all(|gap| (111..=112).contains(gap)),
+            .all(|gap| (93..=94).contains(gap)),
         "{gaps:?}"
     );
 }

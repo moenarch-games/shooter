@@ -136,11 +136,12 @@ impl Weapon {
         }
     }
 
-    /// The energy one activation costs from the robot's shared pool, in milli-units
-    /// ([`crate::energy`]): a shot, a swing, a hook, or one tick of a continuous weapon.
-    /// Provisional (Atlas Q2.i70.1). With the root chassis regenerating 24 a second the rifle (20
-    /// a second), rockets (25), rail gun (25) and shotgun (13) can almost or fully keep firing;
-    /// the laser (36) and flamethrower (30) drain the pool.
+    /// What one activation costs from the robot's store of its [`Weapon::resource`], in
+    /// milli-units ([`crate::energy`]): a shot, a swing, a hook, or one tick of a continuous
+    /// weapon. Provisional (Atlas Q2.i123.2). With a generator giving 20 electricity a second
+    /// the rifle (20 a second), rockets (25), rail gun (25) and shotgun (13) can almost or fully
+    /// keep firing while its fuel lasts; the laser (36) drains the store. The flamethrower burns
+    /// 15 fuel a second from the tanks.
     #[must_use]
     pub const fn energy(self) -> u32 {
         match self {
@@ -151,7 +152,17 @@ impl Weapon {
             Self::EnergyBlade => 5_000,
             Self::Shotgun => 12_000,
             Self::Laser => 600,
-            Self::Flamethrower => 500,
+            Self::Flamethrower => 250,
+        }
+    }
+
+    /// The resource it runs on (D2.i123.3, shooter#128): the flamethrower burns fuel, every other
+    /// weapon and the grapple module are electric.
+    #[must_use]
+    pub const fn resource(self) -> crate::energy::Resource {
+        match self {
+            Self::Flamethrower => crate::energy::Resource::Fuel,
+            _ => crate::energy::Resource::Electricity,
         }
     }
 

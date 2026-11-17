@@ -158,8 +158,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   Superseded in intent (owner, 2026-11-17; shooter#123): passive regeneration by D2.i123.1
   (component-driven generation), motor and action costs by D2.i123.2, the single electrical pool
   by D2.i123.3 (electric, combustion and hybrid powertrains), the empty pool's effect by
-  D2.i123.4, and the charging stations being later by D2.i123.6. Shipped as above until
-  shooter#128 to shooter#130 land.
+  D2.i123.4, and the charging stations being later by D2.i123.6. Migrated in place by
+  shooter#128 (D2.i123.1, D2.i123.2, D2.i123.4 shipped; the resource model of D2.i123.3): the
+  root chassis no longer regenerates, motors pay by their load, and fuel is a second store.
 - **D2.i70.4** (owner, 2026-11-13; shooter#70; supersedes D2.i46.5's cooling constraint): The beta
   has no heat or cooling mechanic: weapons and parts are limited by energy (D2.i70.3) and
   cooldowns, not heat accumulation or cooling modules. The heat and cooling that ship today stay
@@ -362,7 +363,8 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   headroom. The pinned robot kit still ships a `robot.core` model, which the client skips by name
   until a kit release drops it.
   The root chassis' regeneration is superseded in intent by D2.i123.1 (owner, 2026-11-17;
-  component-driven recovery, shooter#128); the root chassis as the vital part stands.
+  component-driven recovery, shooter#128); the root chassis as the vital part stands. Migrated
+  by shooter#128: the root chassis stores its 100 and generates nothing.
 
 - **D2.i102.1** (owner, 2026-11-16; shooter#102, option B): **Camera-targeted, muzzle-authoritative shots.** The third-person camera establishes the intended aim point, but a damaging ranged weapon's actual hit ray or projectile originates at its mounted, connected weapon muzzle and travels toward that point. Geometry between the muzzle and the aim point blocks or intercepts the shot even if the camera sees the target: camera peeking does not enable shooting through cover. The authoritative origin and intersection are simulation/host rules shared with native and WebGPU prediction, reticle and visual effects; the client renderer may not supply independent combat truth. Preserve the existing weapon damage, energy, part-loss, lag-compensation and replay contracts, reconciling muzzle transforms with the real weapon/robot kit and articulation. This applies to mounted damaging ranged weapons, with the grapple's separate movement/rope contract reconciled rather than silently changed. **Shipped (shooter#102):** `shooter_sim::aim` owns the camera rig (behind and over the right shoulder of the eye, pulled in front of walls at once), the camera's centre ray from level with the eye picks the target (lag-compensated among the fighters), and the rifle, rail gun, rockets, shotgun pellets, laser and flame leave the held weapon part's muzzle (the pinned weapons kit's muzzle anchor, the long barrel's, as a checked-in table the client's robot tests hold against the kit; the rocket pod always fires from its first tube) toward it; a muzzle pushed into a wall fires from its near face, and a target not ahead of the muzzle is shot along the aim. Bots aim their reticle the same way. The clients draw the reticle on the target and a red blocked marker where the muzzle's shot stops short, draw flashes, beams and pellets from the simulation's muzzle, and online prediction re-aims its hitscan beams through the same functions. The grapple and the blade keep leaving the eye. Native visual capture only; the browser build is compiled, not captured. Draft PR #84 remains its previously defined battery/laser-visual change, without this gameplay redesign unless separately integrated.
 
@@ -430,23 +432,48 @@ whether resupply locks movement or firing (Q2.i123.3).
   (generators, solar or other suitable modules); arena recharge (D2.i123.6) is much faster. The
   root chassis stays the vital part (D2.i89.1, unchanged); any baseline capacity it keeps and its
   passive regeneration are reconciled with the #72/#89 pool, not kept as guaranteed free
-  recovery. Owner: shooter#128. Today the root chassis still stores 100 and regenerates 24 a
-  second (provisional, Q2.i70.1) until shooter#128 migrates it.
+  recovery. Owner: shooter#128.
+  Shipped with shooter#128 (`shooter_sim::energy`): a robot has two stores, electricity and fuel;
+  the root chassis keeps its 100 electricity and generates none (the simplest honest baseline:
+  stored capacity, no free regeneration). Recovery comes only from installed parts: a generator
+  burns fuel (its own small reserve and the fuel tanks') for a bounded electric output while
+  there is room for it, never more electricity than its fuel buys, and stops without fuel; a
+  solar panel gives a little for no input. Every named loadout carries a generator on its roof,
+  in the sensor's place (same cell, mass, points and health), so matches flow while its fuel
+  lasts; a robot without generation keeps what it stores until it spends it. A lost generator,
+  panel, tank or battery changes what the robot stores and makes, once. A respawn is a new robot
+  with full stores. Arena resupply stays shooter#129's. Numbers: Q2.i123.2.
 - **D2.i123.2** (owner, 2026-11-17; shooter#123, decision 2, B): Locomotion motors consume
   electricity or fuel according to their powertrain (D2.i123.3), with demand that follows load
   and activity; weapons and abilities spend their own appropriate resources. No idle drain.
-  Owner: shooter#128. Today motors pay a flat provisional cost each commanded tick (D2.i70.3).
+  Owner: shooter#128.
+  Shipped with shooter#128: a commanded motor asks for its full draw (electricity) before the
+  physics step and after it pays the share its torque and speed used, `(t + s + t·s) / 3` with
+  `t` and `s` its joints' mean torque and speed as shares of their most, the rest refunded: an
+  idle motor asks nothing, a faster or more loaded one pays more (provisional curve,
+  Q2.i123.2). Weapons, the grapple, repairs and thruster jumps pay their own resource; the
+  flamethrower burns fuel. Fuel-driven propulsion (combustion chassis) is shooter#130's: every
+  motor is electric today.
 - **D2.i123.3** (owner, 2026-11-17; shooter#123, decision 3, B): Electric and combustion chassis
   have distinct native strengths; tanks, batteries, generators and converters enable hybrid
   builds. Fuel propulsion needs fuel; electrical weapons on a fuel chassis need electrical
   generation or conversion; a flamethrower on an electric chassis needs a fuel supply. Modular
   construction (D2.i70.1) and one authoritative resource model stay: no free unmodelled
   conversion and no second resource system beside the shared pool's owner. Owner: shooter#130,
-  with the resource model in shooter#128. Today there is one electrical pool and no fuel.
+  with the resource model in shooter#128.
+  Since shooter#128 the resource model has electricity and fuel (`Resource` in
+  `shooter_sim::energy`), batteries and fuel tanks, generators converting fuel to electricity and
+  solar panels; the flamethrower burns fuel and needs a connected supply. Chassis power types,
+  combustion engines and converters on that model stay shooter#130's.
 - **D2.i123.4** (owner, 2026-11-17; shooter#123, decision 4, A): Depletion stops only the
   components deprived of the resource they need; independent components keep working. No global
   zero-energy death or limp mode. A stranded robot can self-destruct (D2.i123.10). Owner:
   shooter#128.
+  Shipped with shooter#128: every request asks only the store of its own resource, granted whole
+  or refused, so an empty fuel store stops the flamethrower and the generators while the electric
+  guns and motors work on, and an empty battery the reverse; nothing kills, limps or recharges a
+  robot for running dry. One ordered allocator a tick per robot: thruster jump, hook, swing, guns
+  by part, repair, motors by part, then generation. The HUD marks what cannot operate.
 - **D2.i123.5** (owner, 2026-11-17; shooter#123, decision 5, B and C; supersedes the
   weapon-cycle-only arsenal of shooter#92 in D2.i46.8): Any mounted weapon may be bound directly
   to a key and optionally included in player-defined firing groups, and groups may fire
@@ -776,5 +803,15 @@ whether resupply locks movement or firing (Q2.i123.3).
   here, none owner-approved. Provisional (shooter#127): the rocket launchers' family salvo limit
   is at most 1 launch per tick per robot and 6 ticks (0.1 s) between launches, so a pod of four
   staggers over 18 ticks (`Weapon::salvo`); every other family has none.
+  Provisional (shooter#128): the root chassis stores 100 electricity and generates none; a
+  battery 60 (5 points, 20 kg, 60 health); a fuel tank 100 fuel (20 × 40 × 20 cm, 3 points,
+  8 kg, 50 health); a generator (20 cm, 5 points, 10 kg, 30 health: the sensor's values, so it
+  replaces the sensor on the named loadouts without changing them physically) carries 100 fuel
+  of its own and makes 20 electricity a second for 2 fuel a second at full output, 10 for a
+  unit of fuel, the burn rounded up; a solar panel (40 × 40 cm, 4 points, 6 kg, 30 health) 3 a
+  second for nothing. The flamethrower burns 0.25 fuel a tick (15 a second); every other
+  weapon keeps its electricity cost. A motor's `draw` is its most at full torque and speed and
+  it pays `(t + s + t·s) / 3` of it. The pyro carries a second tank (200 fuel). Build points
+  stay 110.
 - **Q2.i123.3**: Whether holding a resupply interaction locks the robot's ordinary movement or
   firing (D2.i123.6). Not prescribed until assessed in shooter#129.
