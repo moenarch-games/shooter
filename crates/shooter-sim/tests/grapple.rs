@@ -57,7 +57,7 @@ fn module_index(session: &Session) -> usize {
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     (0..3)
-        .map(|axis| (a[axis] - b[axis]).powi(2))
+        .map(|axis| (a[axis] - b[axis]) * (a[axis] - b[axis]))
         .sum::<f32>()
         .sqrt()
 }
