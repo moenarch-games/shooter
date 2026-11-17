@@ -5,10 +5,12 @@
 //! one's energy pool, every part's health (what it has lost follows from them,
 //! [`crate::damage`]) and the module each carries, the rockets, the shotgun pellets, the module
 //! pads, the modules dropped at deaths, the arena placeables' health ([`crate::scenery`]: the
-//! damaged ones, by stable ID) and the tick's events). Robot builds travel as raw codes and are decoded
+//! damaged ones, by stable ID) and the tick's events), and each fighter's field repair under way
+//! and the parts it may repair now ([`crate::repair`]). Robot builds travel as raw codes and are
+//! decoded
 //! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored; a
 //! part health above its catalog health, or a charge above the capacity of the parts still
-//! connected, is malformed.
+//! connected, or a repair naming a part the build lacks or a module that is none, is malformed.
 //! Little-endian; positions and velocities travel as exact `f32` bits.
 //!
 //! The in-process practice match builds the same [`Snapshot`], so both modes draw through one
@@ -25,14 +27,19 @@ use crate::physics::Vec3i;
 use crate::physics::articulated::{Motion as BodyMotion, Pose};
 use crate::pickups::{ArenaModule, Carried, DROP_LIFETIME_TICKS, Drop};
 use crate::player::{Intent, Motion};
+use crate::repair::{self, Order, Repair};
 use crate::robot::{Assembly, AssemblyError, BETA, Candidate, PartId, RawMount, RawPart};
 use crate::scenery::PlaceableState;
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 18;
+/// 19: inputs carry a repair order, snapshots each fighter's repair and repairable parts
+/// (shooter#61); 18 added the dropped modules (shooter#62), 17 the placeables (shooter#60).
+pub const WIRE_VERSION: u8 = 19;
 const NONE: u8 = u8::MAX;
+/// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
+const REPAIR_STOP: u8 = u8::MAX - 1;
 
 /// A build part's flags: it has a parent, it is turned, it carries a mod.
 const MOUNTED: u8 = 1;
@@ -103,6 +110,12 @@ pub struct FighterState {
     /// Its part healths this life and, following from them, the parts it has lost
     /// ([`crate::damage`]); the root chassis' health is its life.
     pub parts: PartDamage,
+    /// Its field repair under way ([`crate::repair`]): the part, the module, the progress and
+    /// any pause, for the HUD and a predicting client.
+    pub repair: Option<Repair>,
+    /// The parts it may start a repair on now (bits by index, [`Fighter::repairable`]): what
+    /// its repair menu lists.
+    pub repairable: u32,
 }
 
 impl FighterState {
@@ -228,6 +241,8 @@ fn state_of(session: &Session, robots: &[RobotState], fighter: &Fighter) -> Opti
         carried: fighter.carried,
         energy: fighter.energy,
         parts: fighter.parts,
+        repair: fighter.repair,
+        repairable: fighter.repairable(),
     })
 }
 
@@ -521,6 +536,12 @@ pub fn encode_input(
     .filter(|(held, _)| *held)
     .fold(0, |flags, (_, flag)| flags | flag));
     out.option(intent.select.map(Weapon::index));
+    out.u8(match intent.repair {
+        None => NONE,
+        Some(Order::Stop) => REPAIR_STOP,
+        // A part ID is below MAX_PARTS in any valid build; the host refuses any other.
+        Some(Order::Start(part)) => part.0.min(REPAIR_STOP - 1),
+    });
     out.u32(view_tick);
     out.text(name.unwrap_or_default());
     match build {
@@ -556,6 +577,11 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
         }
         None => None,
     };
+    let repair = match input.u8()? {
+        NONE => None,
+        REPAIR_STOP => Some(Order::Stop),
+        part => Some(Order::Start(PartId(part))),
+    };
     let view_tick = input.u32()?;
     let name = Some(input.text()?).filter(|name| !name.is_empty());
     let build = match input.u8()? {
@@ -576,6 +602,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
         melee: flags & MELEE != 0,
         edit: flags & EDIT != 0,
         select,
+        repair,
     };
     Ok(Command {
         intent,
@@ -865,6 +892,18 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         for health in fighter.parts.health() {
             out.u16(*health);
         }
+        match fighter.repair {
+            Some(repair) => {
+                out.u8(1);
+                out.u8(repair.target.0);
+                out.u8(repair.module.0);
+                out.u16(repair.progress);
+                out.u16(repair.healed);
+                out.u16(repair.paused);
+            }
+            None => out.u8(0),
+        }
+        out.u32(fighter.repairable);
         match &fighter.robot {
             Some(robot) => {
                 out.u8(1);
@@ -974,6 +1013,8 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 carried: None,
                 energy: 0,
                 parts: PartDamage::default(),
+                repair: None,
+                repairable: 0,
                 robot: None,
             };
             fighter.configured = match input.u8()? {
@@ -994,6 +1035,32 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 PartDamage::from_health(&fighter.build, &health).map_err(WireError::Malformed)?;
             if fighter.energy > Pool::attached(&fighter.build, &fighter.parts).capacity {
                 return Err(WireError::Malformed("energy above the build's capacity"));
+            }
+            fighter.repair = match input.u8()? {
+                0 => None,
+                1 => Some(Repair {
+                    target: PartId(input.u8()?),
+                    module: PartId(input.u8()?),
+                    progress: input.u16()?,
+                    healed: input.u16()?,
+                    paused: input.u16()?,
+                }),
+                _ => return Err(WireError::Malformed("unknown repair state")),
+            };
+            if let Some(repair) = fighter.repair {
+                let parts = fighter.build.parts();
+                let module = parts.iter().position(|part| part.id == repair.module);
+                if parts.iter().all(|part| part.id != repair.target)
+                    || !module.is_some_and(|module| repair::is_module(&fighter.build, module))
+                    || repair.progress >= repair::TICKS_PER_HEALTH
+                    || repair.paused > repair::PAUSE_TICKS
+                {
+                    return Err(WireError::Malformed("a repair the build cannot do"));
+                }
+            }
+            fighter.repairable = input.u32()?;
+            if fighter.repairable & !fighter.parts.everything() != 0 {
+                return Err(WireError::Malformed("a repairable part the build lacks"));
             }
             fighter.robot = match input.u8()? {
                 0 => None,

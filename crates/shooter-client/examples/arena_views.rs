@@ -140,6 +140,7 @@ fn main() -> Result<(), String> {
                     dead_for: None,
                 },
                 glow: 0.0,
+                highlight: None,
                 parts: PartStates::default(),
             }
         })

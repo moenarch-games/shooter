@@ -84,6 +84,9 @@ pub struct Intent {
     /// and it does not come back until this is released (Ready). It does nothing while the
     /// robot is alive: a living robot is never rebuilt (D2.i46.7).
     pub edit: bool,
+    /// Start or stop a field repair ([`crate::repair`]): sent once, like a weapon switch; the
+    /// host checks it and refuses a part that is not eligible.
+    pub repair: Option<crate::repair::Order>,
 }
 
 impl Intent {
@@ -100,6 +103,7 @@ impl Intent {
         melee: false,
         select: None,
         edit: false,
+        repair: None,
     };
 }
 

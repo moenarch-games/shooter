@@ -12,7 +12,9 @@
 //! costs, and whether it is ready, recharging, short of energy or lost) over a row of slots for
 //! every weapon the build carries (its select key, the blade's V; lost ones struck out red); a
 //! switch flashes the panel and sweeps a highlight across it. The bottom left shows the root
-//! chassis' health and the energy pool, the share one shot of the held weapon takes marked on it.
+//! chassis' health and the energy pool, the share one shot of the held weapon takes marked on it,
+//! and above them, in teal, field repair ([`repair_panel`], [`crate::repair_menu`]): the quick
+//! repair menu while it is open, else the repair under way, else how many parts may be repaired.
 
 use render_engine::glam::{Vec2, Vec4};
 use render_engine::scene::OverlayQuad;
@@ -44,8 +46,11 @@ pub(crate) mod palette {
     pub const OLIVE: u32 = 0x9C_AA_5C;
     pub const ORANGE: u32 = 0xFF_8A_1F;
     pub const RED: u32 = 0xE0_4A_2F;
+    /// Field repair: the menu, the part under repair and its glow on the robot.
+    pub const TEAL: u32 = 0x4F_D1_A5;
 }
-use palette::{GRAPHITE, MUTED, OLIVE, ORANGE, PALE, RED, STEEL};
+use crate::repair_menu::{Entry, RepairView};
+use palette::{GRAPHITE, MUTED, OLIVE, ORANGE, PALE, RED, STEEL, TEAL};
 
 /// The 5×7 glyphs, rows top down, the leftmost column the highest of five bits.
 fn glyph(character: char) -> [u8; 7] {
@@ -627,6 +632,113 @@ fn slots(painter: &mut Painter, vitals: &Vitals, right: f32, y: f32, flash: f32)
         }
         x += SLOT_WIDTH + SLOT_GAP;
     }
+}
+
+/// The field repair panel's width, a line's height and its padding (layout units).
+const REPAIR_WIDTH: f32 = 340.0;
+const REPAIR_LINE: f32 = 20.0;
+const REPAIR_PAD: f32 = 10.0;
+
+/// The field repair panel (shooter#61) for a frame `height` pixels high, bottom left above the
+/// chassis and energy: the open quick repair menu (only the parts the robot may repair now, the
+/// cursor's line in the accent), else the repair under way (its part's health, paused by a hit
+/// in red), else a hint that the repair action has something to repair. Nothing when there is
+/// none of these.
+#[must_use]
+pub fn repair_panel(view: &RepairView, height: u32) -> Vec<OverlayQuad> {
+    #[allow(clippy::cast_precision_loss)]
+    let scale = height as f32 / 720.0;
+    let mut painter = Painter {
+        quads: Vec::with_capacity(256),
+        scale,
+    };
+    let x = MARGIN;
+    let bottom = 720.0 - MARGIN - VITALS_HEIGHT - SLOT_GAP;
+    let line = |painter: &mut Painter, y: f32, entry: &Entry, color: Vec4| match entry {
+        Entry::Part {
+            name,
+            health,
+            whole,
+            ..
+        } => {
+            painter.text(x + REPAIR_PAD, y + 3.0, 2.0, name, color);
+            painter.text_right(
+                x + REPAIR_WIDTH - REPAIR_PAD,
+                y + 3.0,
+                2.0,
+                &format!("{health}/{whole}"),
+                color,
+            );
+        }
+        Entry::Stop => {
+            painter.text(x + REPAIR_PAD, y + 3.0, 2.0, "stop repair", color);
+        }
+    };
+    if let Some((entries, cursor)) = &view.menu {
+        #[allow(clippy::cast_precision_loss)]
+        let panel = REPAIR_LINE * (entries.len() + 1) as f32 + REPAIR_PAD;
+        let top = bottom - panel;
+        painter.rect(x, top, REPAIR_WIDTH, panel, srgb(GRAPHITE, 0.88));
+        painter.rect(x, top, REPAIR_WIDTH, 2.0, srgb(TEAL, 1.0));
+        painter.text(x + REPAIR_PAD, top + 8.0, 2.0, "repair", srgb(TEAL, 1.0));
+        painter.text_right(
+            x + REPAIR_WIDTH - REPAIR_PAD,
+            top + 8.0,
+            2.0,
+            "wheel  r",
+            srgb(MUTED, 1.0),
+        );
+        for (row, entry) in entries.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let y = top + REPAIR_LINE * (row + 1) as f32 + 4.0;
+            let chosen = row == *cursor;
+            if chosen {
+                painter.rect(x, y, REPAIR_WIDTH, REPAIR_LINE, srgb(ORANGE, 0.22));
+                painter.rect(x, y, 4.0, REPAIR_LINE, srgb(ORANGE, 1.0));
+            }
+            let color = if chosen { PALE } else { MUTED };
+            line(&mut painter, y, entry, srgb(color, 1.0));
+        }
+    } else if let Some((repair, entry)) = &view.active {
+        let panel = 2.0 * REPAIR_LINE + REPAIR_PAD;
+        let top = bottom - panel;
+        painter.rect(x, top, REPAIR_WIDTH, panel, srgb(GRAPHITE, 0.82));
+        painter.rect(x, top, 4.0, panel, srgb(TEAL, 1.0));
+        let paused = repair.paused > 0;
+        painter.text(
+            x + REPAIR_PAD,
+            top + 8.0,
+            2.0,
+            if paused { "repair paused" } else { "repairing" },
+            srgb(if paused { RED } else { TEAL }, 1.0),
+        );
+        line(
+            &mut painter,
+            top + REPAIR_LINE + 2.0,
+            entry,
+            srgb(PALE, 1.0),
+        );
+        if let Entry::Part { health, whole, .. } = entry {
+            #[allow(clippy::cast_precision_loss)]
+            let share = (f32::from(*health) / f32::from((*whole).max(1))).clamp(0.0, 1.0);
+            let inner = REPAIR_WIDTH - 2.0 * REPAIR_PAD;
+            let y = top + panel - 6.0;
+            painter.rect(x + REPAIR_PAD, y, inner, 3.0, srgb(STEEL, 1.0));
+            painter.rect(x + REPAIR_PAD, y, inner * share, 3.0, srgb(TEAL, 1.0));
+        }
+    } else if view.repairable > 0 {
+        let top = bottom - REPAIR_LINE - 4.0;
+        painter.rect(x, top, REPAIR_WIDTH, REPAIR_LINE + 4.0, srgb(GRAPHITE, 0.7));
+        painter.rect(x, top, 4.0, REPAIR_LINE + 4.0, srgb(TEAL, 1.0));
+        painter.text(
+            x + REPAIR_PAD,
+            top + 5.0,
+            2.0,
+            &format!("r  repair ({})", view.repairable),
+            srgb(TEAL, 1.0),
+        );
+    }
+    painter.quads
 }
 
 /// The root chassis' health and the energy pool, at `x`, `y`.

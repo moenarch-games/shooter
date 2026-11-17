@@ -241,6 +241,7 @@ pub mod online {
     use shooter_sim::grapple::Hook;
     use shooter_sim::names;
     use shooter_sim::player::Motion;
+    use shooter_sim::repair::Repair;
     use shooter_sim::scenery::PlaceableState;
     use shooter_sim::weapons::Delivery;
     use shooter_sim::wire::encode_input;
@@ -264,6 +265,9 @@ pub mod online {
         energy: u32,
         /// The weapon it holds (the host may refuse a switch the prediction made).
         held: Weapon,
+        /// Its field repair (the host may refuse an order, or pause it for a hit the
+        /// prediction cannot see).
+        repair: Option<Repair>,
     }
 
     pub struct Online {
@@ -549,6 +553,11 @@ pub mod online {
                 },
             )
         }
+        /// The predicted field repair.
+        fn repair(&self) -> Option<Repair> {
+            self.live()?.local().repair
+        }
+
         pub fn hook(&self) -> Option<[f32; 3]> {
             self.live()?.local().hook.map(|hook| hook.anchor_units())
         }
@@ -595,6 +604,7 @@ pub mod online {
                     .place(0, robot, me.motion, me.held, me.hook)
                     .map_err(|error| error.to_string())?;
                 predictor.fighters[0].energy = me.energy;
+                predictor.fighters[0].repair = me.repair;
                 Ok::<(), String>(())
             };
             if !self.predicting {
@@ -624,7 +634,8 @@ pub mod online {
                 || acked.motion != me.motion
                 || acked.hook != me.hook
                 || acked.energy != me.energy
-                || acked.held != me.held;
+                || acked.held != me.held
+                || acked.repair != me.repair;
             if off {
                 place(self.predictor_mut()?)?;
                 let replay: Vec<Pending> = self.pending.drain(..).collect();
@@ -637,6 +648,7 @@ pub mod online {
                         pending.energy,
                         pending.held,
                     ) = self.state();
+                    pending.repair = self.repair();
                     self.pending.push_back(pending);
                 }
             }
@@ -730,6 +742,7 @@ pub mod online {
                         hook,
                         energy,
                         held,
+                        repair: self.repair(),
                     });
                     while self.pending.len() > 120 {
                         self.pending.pop_front();

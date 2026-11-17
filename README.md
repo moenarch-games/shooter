@@ -217,7 +217,7 @@ the host's reconnect grace. A public host is described in [docs/hosting.md](docs
 
 Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
-mouse. Steer in the air with WASD.
+mouse. Steer in the air with WASD. R opens the quick repair menu (below, **Field repair**).
 
 **HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser:
 render-engine's screen-overlay quads in the robot kits' palette (pale grey on graphite, olive, an
@@ -227,7 +227,9 @@ the window. Bottom right, the held weapon: its silhouette, name and mod, the ene
 its next shot), short of energy or lost, and above it a slot for every weapon the build carries
 with its key (lost ones red and struck out); a switch flashes the panel and sweeps a highlight
 across it. Bottom left, the root chassis' health and the energy pool, with the share one shot of
-the held weapon takes marked in orange. render-engine's overlay draws solid rectangles only, so
+the held weapon takes marked in orange, and above them, in teal, the field repair panel (the
+quick repair menu while it is open, else the repair under way, else how many parts may be
+repaired). render-engine's overlay draws solid rectangles only, so
 the text is a 5×7 bitmap font and the weapons are pixel silhouettes, both drawn as quads in the
 client. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
 the carried module and its uses left, the kill and pickup feed, banners and the scoreboard) is
@@ -286,7 +288,7 @@ is drawn and heard as soon as you press; the host decides what it strikes.
 sockets, one per 20 cm surface cell (a 20 × 40 × 80 cm chassis has 28). Each part has a stable ID,
 one parent socket and an exact orientation (binary angles, stored in one canonical form); a larger
 part reserves its footprint of neighbouring cells on its parent's face, and no two parts may
-claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints, a battery, a sensor, legs, wheels, tracks, an armor plate and the eight
+claim one cell. The catalog has three chassis sizes, beams, hinge and rotor joints, a battery, a sensor, a repair module, legs, wheels, tracks, an armor plate and the eight
 shipped weapons. A build is valid with one chassis root, no cycles, each weapon at most once, at
 most 32 parts and at most 110 build points; there is no power, heat or cooling budget. The root
 chassis is the robot's vital part (Atlas D2.i89.1, #89): there is no separate control core, and a
@@ -382,6 +384,27 @@ one of two legs).
 Snapshots carry every part's health (the lost parts follow from it), with a hit's part and each
 detachment as events; the client's prediction takes the host's part state, replays reproduce it
 and bots aim at their target's root chassis and switch off a lost gun.
+
+**Field repair** (`shooter_sim::repair`, Atlas D2.i70.9, #61). A build may mount repair modules
+(`robot.repair-module`: 20 × 20 × 20 cm, 12 kg, 8 points, 40 health; the `mechanic` loadout has
+one on its chassis' back). R opens a quick menu over the running match listing only the parts the
+robot may repair now: damaged, still connected, and within 0.6 m of a working module's centre
+where the robot's bodies carry them (a module does not repair itself). The wheel or Q/E moves
+through it, R again repairs the chosen part (or stops the repair under way) and closes it; the
+part is lit teal on the robot, and the robot keeps walking, aiming and firing. The order goes to
+the host, which refuses a part that is not eligible (stale, out of reach, whole, destroyed). A
+repair restores one health every 0.1 s for 15 energy a second from the shared pool, after the
+tick's jump, swing and shot and before the motors, so an empty pool holds it until regeneration
+pays; it ends when the part is whole and stops when the part or its module is lost or out of
+reach. A hit on the part under repair or on its module pauses it for 0.75 s (a further hit starts
+the pause over): no health and no energy meanwhile, the work done is kept and it resumes by
+itself; hits elsewhere do not pause it. Destroyed parts stay gone; death ends a repair and
+respawn restores the build. Snapshots carry each fighter's repair (part, module, progress,
+pause) and the parts it may repair; the client predicts its own, replays reproduce it, and bots
+do not repair. The radius, rate, energy and pause are provisional (Atlas Q2.i70.3). The robot kit
+has no repair module model yet (moritzbrantner/asset-tooling#742): it is drawn as the sensor.
+Views (the menu with the leg lit, repairing, paused; `--example repair_views`):
+[docs/captures/61](docs/captures/61).
 
 **Mechanics** (`shooter_sim::mechanics`, Atlas D2.i70.5, #73). The simulation
 builds any valid robot as a mechanical one in a dynamic world of its own
@@ -498,7 +521,8 @@ field): `standard`, `heavy` (with a battery: 160 energy), `skirmisher` (rapid-cy
 efficiency-coiled shotgun), `marksman` (long-barrel rifle, overcharged rail gun: three hits a
 front kill instead of four, on the root chassis) or `pyro` (long-barrel laser reaching 45 m,
 flamethrower, blade and grapple on the small chassis: 180 kg, 79 of 110 points, the root
-chassis' 100 energy; it spawns holding the laser),
+chassis' 100 energy; it spawns holding the laser) or `mechanic` (the standard build with a
+repair module on the chassis' back, **Field repair**),
 each a two-legged component tree with a sensor
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads
