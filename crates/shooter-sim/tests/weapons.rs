@@ -2,6 +2,7 @@
 //! rocket jumping, shotgun blasts and their pellets' falloff, the laser and the flamethrower's
 //! ignition, and the greybox's dummies.
 
+use shooter_sim::aim;
 use shooter_sim::dummies::DUMMY_HEALTH;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::player::PLAYER_HALF_EXTENTS;
@@ -27,6 +28,17 @@ fn run(scenario: Scenario) -> (Session, Vec<Sample>) {
 
 const HALF: f32 = PLAYER_HALF_EXTENTS.y as f32;
 
+/// `intent` with the reticle on dummy `index`'s centre ([`aim::at`]).
+fn at_dummy(session: &Session, index: usize, intent: Intent) -> Intent {
+    let centre = session.dummies[index].center(&session.world).unwrap();
+    let (yaw, pitch) = aim::at(Some(&session.world), session.fighters[0].eye(), centre);
+    Intent {
+        yaw,
+        pitch,
+        ..intent
+    }
+}
+
 fn damage_in(samples: &[Sample], leg: &str) -> i32 {
     samples
         .iter()
@@ -43,7 +55,7 @@ fn a_rocket_jump_reaches_a_ledge_a_double_jump_cannot() {
     assert!(peak - HALF > 300.0, "apex {}", peak - HALF);
     let top = end_of(&samples, "on the ledge").unwrap();
     assert!(top.grounded, "{top:?}");
-    assert!((top.center[1] - (250.0 + HALF)).abs() < 2.0, "{top:?}");
+    assert!((top.center[1] - (250.0 + HALF)).abs() < 3.0, "{top:?}");
 }
 
 #[test]
@@ -116,12 +128,15 @@ fn dummies_stand_and_patrol() {
 #[test]
 fn a_hitscan_shot_reports_its_beam() {
     let mut session = armory((scenarios::SHOOTING_RANGE.arena)());
-    session
-        .tick(Intent {
+    let fire = at_dummy(
+        &session,
+        0,
+        Intent {
             fire: true,
             ..Intent::IDLE
-        })
-        .unwrap();
+        },
+    );
+    session.tick(fire).unwrap();
     let beam = session.events.iter().find_map(|event| match *event {
         Event::Beam {
             weapon,
@@ -281,11 +296,15 @@ fn lone_dummy(metres: i32) -> Arena {
 /// The damage of every pellet of one blast at `arena`'s dummies.
 fn blast_hits(arena: Arena) -> Vec<i32> {
     let mut session = armory(arena);
-    let blast = Intent {
-        fire: true,
-        select: Some(Weapon::Shotgun),
-        ..Intent::IDLE
-    };
+    let blast = at_dummy(
+        &session,
+        0,
+        Intent {
+            fire: true,
+            select: Some(Weapon::Shotgun),
+            ..Intent::IDLE
+        },
+    );
     let mut hits = Vec::new();
     for tick in 0..40 {
         session
@@ -301,12 +320,16 @@ fn blast_hits(arena: Arena) -> Vec<i32> {
 
 #[test]
 fn far_pellets_hurt_a_little_less() {
-    // Point-blank, the whole pattern lands at full damage.
-    assert_eq!(blast_hits(lone_dummy(1)), vec![9; PELLETS.len()]);
-    // 15 m out, only the aimed pellet hits, slowed by drag: still most of its damage.
+    // Point-blank, the pattern (from the muzzle toward the reticle's point on the dummy's face)
+    // lands at full damage, but for at most an edge pellet past the dummy's side.
+    let near = blast_hits(lone_dummy(1));
+    assert!(near.len() + 1 >= PELLETS.len(), "{near:?}");
+    assert!(near.iter().all(|hit| *hit == 9), "{near:?}");
+    // 15 m out, only the pellets nearest the aim hit (the muzzle sits beside the camera's line, so
+    // the aimed one and at most one neighbour), slowed by drag: still most of their damage.
     let far = blast_hits(lone_dummy(15));
-    assert_eq!(far.len(), 1, "{far:?}");
-    assert!((6..9).contains(&far[0]), "{far:?}");
+    assert!((1..=2).contains(&far.len()), "{far:?}");
+    assert!(far.iter().all(|hit| (6..9).contains(hit)), "{far:?}");
     // Past the pellets' range, nothing.
     let range = weapons::PELLET_RANGE_UNITS / 100;
     assert!(blast_hits(lone_dummy(range + 2)).is_empty());

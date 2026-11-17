@@ -4,6 +4,7 @@
 //! transitions, the rail capacitor's lag-compensated hits and frags, thrusters, fighters of
 //! different builds, and the wire.
 
+use shooter_sim::aim;
 use shooter_sim::damage::PartDamage;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::pickups::{
@@ -15,7 +16,6 @@ use shooter_sim::robot::parts::CHASSIS_S;
 use shooter_sim::robot::{ARMORY, BETA, HEAVY, MARKSMAN, SKIRMISHER};
 use shooter_sim::scenarios;
 use shooter_sim::tour::{end_of, run_legs};
-use shooter_sim::trig;
 use shooter_sim::wire::{decode_snapshot, encode_snapshot};
 use shooter_sim::{
     Arena, ArenaModule, Assembly, Carried, Event, Input, Intent, MapId, ModulePad, Phase, Rules,
@@ -417,19 +417,24 @@ fn rail_duel(seen_ticks_ago: u32, build: Assembly, capacitor: bool) -> Option<i3
         session.fighters[0].carried.map(|c| c.module),
         capacitor.then_some(ArenaModule::RailCapacitor)
     );
+    // The reticle on B's chassis where it stands before it strafes.
+    let (yaw, pitch) = at_chassis(&session);
+    let aiming = Intent {
+        yaw,
+        pitch,
+        ..Intent::IDLE
+    };
     let strafe = Intent {
         strafe: 1,
         ..Intent::IDLE
     };
     for _ in 0..12 {
         let now = session.ticks();
-        step(&mut session, Intent::IDLE, strafe, now);
+        step(&mut session, aiming, strafe, now);
     }
-    // Level with the middle of B's chassis (120 units above its feet; the eye is at 165).
     let fire = Intent {
         fire: true,
-        pitch: trig::yaw_from_vector(-45, 1_190).unwrap() as i16,
-        ..Intent::IDLE
+        ..aiming
     };
     let seen = session.ticks() - seen_ticks_ago;
     step(&mut session, fire, strafe, seen);
@@ -464,9 +469,8 @@ fn the_rail_capacitor_hits_harder_through_lag_compensation_on_any_build() {
     assert_eq!(shot(SKIRMISHER, true), (None, Some(9)));
 }
 
-/// The yaw and pitch from A's eye to B's root chassis below the weapons on its chest, where the
-/// host places it.
-#[allow(clippy::cast_possible_truncation)]
+/// The yaw and pitch that put A's reticle ([`aim::at`]) on B's root chassis below the weapons on
+/// its chest, where the host places it.
 fn at_chassis(session: &Session) -> (u16, i16) {
     let eye = session.fighters[0].eye();
     let b = &session.fighters[1];
@@ -477,11 +481,7 @@ fn at_chassis(session: &Session) -> (u16, i16) {
         .center;
     // Below the weapons on its chest.
     chassis[1] -= 20.0;
-    let d = [0, 1, 2].map(|axis| chassis[axis] - eye[axis]);
-    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
-    let run = d[0].hypot(d[2]).round() as i32;
-    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
-    (yaw, pitch)
+    aim::at(Some(&session.world), eye, chassis)
 }
 
 /// With the capacitor three rail hits (127 each) kill and score on B's root chassis (270; two

@@ -377,6 +377,7 @@ struct FighterInstances {
 
 /// The moving things drawn over the arena: every fighter (the local one too, seen from the
 /// third-person camera) with its gun, swung blade and grapple cable, the rockets, the modules lying on their pads, the reticle
+/// and its blocked marker
 /// (the HUD is screen overlay, [`crate::overlay`]). Placeholder primitives: a fighter drawn as
 /// its robot ([`crate::robots`]) shows no box body or held gun box here (its weapons are the
 /// weapons kit's); the swung blade's sweep still shows the simulation's arc for every fighter.
@@ -400,6 +401,8 @@ pub struct Actors {
     /// Modules on their pads, reused frame to frame (hidden when unused).
     modules: Vec<InstanceId>,
     reticle: InstanceId,
+    /// Where the muzzle's shot really stops when cover beside the robot blocks it.
+    blocked: InstanceId,
 }
 
 fn glowing(rgb: Vec3, nits: f32) -> StandardMaterial {
@@ -439,20 +442,23 @@ impl Actors {
             BLADE_LENGTH,
         ))));
         let blade_material = world.add_material(&glowing(tint(Weapon::EnergyBlade), 8_000.0));
-        let reticle = {
-            let mesh = world.add_mesh(&MeshData::shape(Shape::Sphere {
-                radius: RETICLE_RADIUS,
-                sectors: 8,
-                stacks: 6,
-            }));
-            let material = world.add_material(&glowing(Vec3::ONE, 40_000.0));
+        let marker_mesh = world.add_mesh(&MeshData::shape(Shape::Sphere {
+            radius: RETICLE_RADIUS,
+            sectors: 8,
+            stacks: 6,
+        }));
+        let mut marker = |rgb: Vec3| {
+            let material = world.add_material(&glowing(rgb, 40_000.0));
             world.add_instance(Instance {
-                mesh,
+                mesh: marker_mesh,
                 material,
                 world_from_local: HIDDEN,
                 skin: None,
             })
         };
+        // White on the camera's target, red where cover beside the robot stops the shot.
+        let reticle = marker(Vec3::ONE);
+        let blocked = marker(Vec3::new(1.0, 0.1, 0.05));
         Self {
             fighters: Vec::new(),
             fighter_mesh,
@@ -475,6 +481,7 @@ impl Actors {
                 .map(|module| world.add_material(&glowing(module_tint(module), 4_000.0))),
             modules: Vec::new(),
             reticle,
+            blocked,
         }
     }
 
@@ -496,8 +503,8 @@ impl Actors {
         );
     }
 
-    /// Places everything for this frame. `reticle` is where the reticle is drawn
-    /// ([`camera::reticle`]), while the local fighter is alive; `modules` the modules lying on
+    /// Places everything for this frame. `reticle` is the reticle and its blocked marker
+    /// ([`camera::Reticle`]), while the local fighter is alive; `modules` the modules lying on
     /// their pads (each pad's centre, metres).
     pub fn update(
         &mut self,
@@ -505,7 +512,7 @@ impl Actors {
         fighters: &[FighterView],
         rockets: &[Vec3],
         modules: &[(Vec3, ArenaModule)],
-        reticle: Option<Vec3>,
+        reticle: Option<camera::Reticle>,
     ) {
         let cables: Vec<(Vec3, Vec3)> = fighters
             .iter()
@@ -647,9 +654,14 @@ impl Actors {
                     });
             Self::place(world, *instance, self.module_mesh, material, at);
         }
-        let mut instance = world.instance(self.reticle);
-        instance.world_from_local = reticle.map_or(HIDDEN, Mat4::from_translation);
-        world.set_instance(self.reticle, instance);
+        for (instance, at) in [
+            (self.reticle, reticle.map(|reticle| reticle.at)),
+            (self.blocked, reticle.and_then(|reticle| reticle.blocked)),
+        ] {
+            let mut placed = world.instance(instance);
+            placed.world_from_local = at.map_or(HIDDEN, Mat4::from_translation);
+            world.set_instance(instance, placed);
+        }
     }
 }
 

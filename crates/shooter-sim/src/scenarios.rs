@@ -214,11 +214,13 @@ pub const STEP: Scenario = Scenario {
 /// Straight down.
 const DOWN: i16 = -MAX_PITCH;
 
-/// A 2.5 m ledge 3.3 m south: out of reach of a double jump (about 2 m), in reach of a rocket
-/// jump. Jump, fire a rocket at the feet, then steer onto the ledge.
+/// A 2.5 m ledge 3.3 m south, 12 m wide: out of reach of a double jump (about 2 m), in reach of
+/// a rocket jump. Jump, fire a rocket down at the reticle (the camera looks down from over the
+/// right shoulder, so the blast lands beside the feet and shoves the robot sideways too), then
+/// steer onto the ledge.
 pub const ROCKET_JUMP: Scenario = Scenario {
     name: "rocket jump onto a ledge",
-    arena: || open([0, 0, -330], vec![block([0, 125, 600], [300, 125, 600])]),
+    arena: || open([0, 0, -330], vec![block([0, 125, 600], [600, 125, 600])]),
     legs: &[
         hold(
             "take the launcher",

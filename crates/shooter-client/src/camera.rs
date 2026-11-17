@@ -1,37 +1,30 @@
 //! The third-person follow camera and its reticle, the same on native and in the browser.
 //!
 //! The camera sits behind and over the right shoulder of the local fighter's eye and looks
-//! along the aim, so the whole fighter stays in view. It never passes through the arena: a
-//! bundle of rays from the eye toward the camera (its centre and four points around it) pulls
-//! it in front of the first wall, floor or ceiling, at once, and it eases back out when the
-//! way clears. Fighters never push it.
+//! along the aim, so the whole fighter stays in view. Its rig is the simulation's
+//! ([`shooter_sim::aim::desired_camera`], [`shooter_sim::aim::clear_reach`]): it never passes
+//! through the arena, a bundle of rays from the eye toward the camera pulls it in front of the
+//! first wall, floor or ceiling at once, and here it eases back out when the way clears.
+//! Fighters never push it.
 //!
-//! Shots still leave the fighter's eye along its aim, never the camera
-//! ([`shooter_sim::aim`]), so the camera cannot shoot past cover the fighter cannot. The
-//! reticle is drawn where [`shooter_sim::aim::sight`] ends for the eye and the aim the
-//! simulation gets: on the first fighter or wall the shot meets. Seen from over the shoulder it
-//! sits a little off the screen's centre, further the closer that point is, and lands on any
-//! cover in front of the fighter that the camera sees past.
+//! The camera picks the target, the weapon's muzzle fires ([`shooter_sim::aim`], Atlas
+//! D2.i102.1): the reticle is drawn on what the camera's centre ray meets, and a shot leaves the
+//! held weapon's muzzle toward it. When the muzzle's own line meets cover short of that point
+//! (cover beside the robot the camera sees past), a second, blocked marker is drawn where the
+//! shot will really land: the camera cannot shoot past cover the muzzle cannot.
 //!
-//! The rig's tuning lives here, in one place.
+//! The rig's client-side tuning lives here, in one place.
 
 use render_engine::glam::Vec3;
-use shooter_sim::arena::FIRST_PLAYER_BODY;
+use shooter_sim::aim;
 use shooter_sim::physics::World;
 
 use crate::scene::METRES_PER_UNIT;
 
 /// Vertical field of view (radians).
 pub const FOV_Y: f32 = 1.2;
-/// How far behind the eye the camera sits (metres, along the aim).
-pub const DISTANCE: f32 = 3.5;
-/// How far right of the eye (metres).
-pub const SHOULDER: f32 = 0.6;
-/// How far above the eye (metres).
-pub const LIFT: f32 = 0.3;
-/// How far the camera stays from anything it is pulled in by (metres), and how far apart the
-/// rays that find it run.
-pub const CLEARANCE: f32 = 0.2;
+/// How far the camera stays from anything it is pulled in by (metres).
+pub const CLEARANCE: f32 = aim::CAMERA_CLEARANCE_UNITS * METRES_PER_UNIT;
 /// How fast the camera eases back out once the way clears (metres per second).
 pub const RECOVER: f32 = 6.0;
 /// Closer than this (metres) to the eye, the local fighter is not drawn: the camera would be
@@ -44,48 +37,25 @@ pub const RETICLE_DISTANCE: f32 = 0.3;
 /// and up.
 #[must_use]
 pub fn basis(forward: Vec3) -> (Vec3, Vec3, Vec3) {
-    let forward = forward.normalize_or(Vec3::Z);
-    let right = forward.cross(Vec3::Y).normalize_or(Vec3::NEG_X);
-    (forward, right, right.cross(forward))
-}
-
-/// Where the camera wants to be for an eye and view direction (metres), nothing in the way.
-#[must_use]
-pub fn desired(eye: Vec3, forward: Vec3) -> Vec3 {
-    let (forward, right, _) = basis(forward);
-    eye - forward * DISTANCE + right * SHOULDER + Vec3::Y * LIFT
+    let [forward, right, up] = aim::basis(forward.to_array());
+    (Vec3::from(forward), Vec3::from(right), Vec3::from(up))
 }
 
 fn units(metres: Vec3) -> [f32; 3] {
     (metres / METRES_PER_UNIT).to_array()
 }
 
+/// Where the camera wants to be for an eye and view direction (metres), nothing in the way.
+#[must_use]
+pub fn desired(eye: Vec3, forward: Vec3) -> Vec3 {
+    Vec3::from(aim::desired_camera(units(eye), forward.to_array())) * METRES_PER_UNIT
+}
+
 /// How far (metres) from `eye` toward `to` the camera can go and keep [`CLEARANCE`] from the
 /// arena (fighters ignored).
 #[must_use]
 pub fn clear_reach(world: &World, eye: Vec3, to: Vec3) -> f32 {
-    let span = to - eye;
-    let length = span.length();
-    if length <= f32::EPSILON {
-        return 0.0;
-    }
-    let (_, right, up) = basis(span);
-    let fraction = [Vec3::ZERO, right, -right, up, -up]
-        .into_iter()
-        .filter_map(|offset| {
-            let translation = span + offset * CLEARANCE;
-            world
-                .cast_ray(units(eye), units(translation), |body| {
-                    body.0 < FIRST_PLAYER_BODY
-                })
-                .map(|hit| hit.fraction)
-        })
-        .fold(1.0_f32, f32::min);
-    if fraction >= 1.0 {
-        length
-    } else {
-        (fraction * length - CLEARANCE).max(0.0)
-    }
+    aim::clear_reach(world, units(eye), units(to)) * METRES_PER_UNIT
 }
 
 /// The follow camera: how far along its boom it is, easing out after being pulled in.
@@ -129,19 +99,42 @@ impl Follow {
     }
 }
 
-/// Where the reticle is drawn (metres) for a camera and the point its aim meets: on the line
-/// between them, so it covers that point on screen.
+/// Where a marker is drawn (metres) for a camera and the point it marks: on the line between
+/// them, so it covers that point on screen.
 #[must_use]
-pub fn reticle(camera: Vec3, aim_end: Vec3, forward: Vec3) -> Vec3 {
-    camera + (aim_end - camera).normalize_or(forward) * RETICLE_DISTANCE
+pub fn reticle(camera: Vec3, at: Vec3, forward: Vec3) -> Vec3 {
+    camera + (at - camera).normalize_or(forward) * RETICLE_DISTANCE
+}
+
+/// This frame's reticle (metres): on the camera's target, and the blocked marker where the
+/// muzzle's shot stops short of it, if it does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reticle {
+    pub at: Vec3,
+    pub blocked: Option<Vec3>,
+}
+
+impl Reticle {
+    /// The reticle for `shot` ([`aim::aimed`]) and its own ray from the muzzle (`actual`), seen
+    /// from `camera` looking along `forward`.
+    #[must_use]
+    pub fn of(camera: Vec3, forward: Vec3, shot: &aim::Shot, actual: &aim::Sight) -> Self {
+        let metres = |units: [f32; 3]| Vec3::from(units) * METRES_PER_UNIT;
+        Self {
+            at: reticle(camera, metres(shot.target.end), forward),
+            blocked: shot
+                .blocked(actual)
+                .map(|at| reticle(camera, metres(at), forward)),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shooter_sim::aim::{RETICLE_RANGE_UNITS, sight};
+    use shooter_sim::aim::{Muzzle, RETICLE_RANGE_UNITS, aimed, sight};
+    use shooter_sim::arena::FIRST_PLAYER_BODY;
     use shooter_sim::physics::{BodyId, RigidBody, Vec3i};
-    use shooter_sim::weapons::aim;
     use shooter_sim::{Arena, Piece};
 
     const OWNER: BodyId = BodyId(FIRST_PLAYER_BODY);
@@ -194,6 +187,9 @@ mod tests {
             camera.z < -3.0 && camera.x < 0.0 && camera.y > eye.y,
             "{camera}"
         );
+        // Where the simulation has it.
+        let sim = aim::camera(&world, units(eye), shooter_sim::weapons::aim(0, 0));
+        assert!((camera - metres(sim)).length() < 1e-4);
     }
 
     #[test]
@@ -237,38 +233,44 @@ mod tests {
     }
 
     #[test]
-    fn the_reticle_covers_where_the_authoritative_ray_ends() {
+    fn the_reticle_sits_on_the_cameras_target_at_the_screens_centre() {
         // A wall 4 m ahead of the eye, the aim straight at it.
         let world = world(&[([0, 200, 450], [500, 200, 50])]);
         let eye = [0.0, 165.0, 0.0];
-        let direction = aim(0, 0);
-        let end = sight(
+        let shot = aimed(&world, eye, None, 0, 0, OWNER, |_| true, []);
+        let actual = sight(
             &world,
-            eye,
-            direction,
+            shot.from,
+            shot.direction(),
             RETICLE_RANGE_UNITS,
             OWNER,
             |_| true,
             [],
-        )
-        .end;
-        let (eye, end) = (metres(eye), metres(end));
-        let camera = Follow::default().place(Some(&world), eye, Vec3::Z, 1.0 / 60.0);
-        let reticle = reticle(camera, end, Vec3::Z);
+        );
+        let camera = Follow::default().place(Some(&world), metres(eye), Vec3::Z, 1.0 / 60.0);
+        let reticle = Reticle::of(camera, Vec3::Z, &shot, &actual);
+        assert_eq!(reticle.blocked, None);
         let (a, b) = (
-            screen(camera, Vec3::Z, reticle),
-            screen(camera, Vec3::Z, end),
+            screen(camera, Vec3::Z, reticle.at),
+            screen(camera, Vec3::Z, metres(shot.target.end)),
         );
         assert!((a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5);
+        assert!(a.0.abs() < 1e-4 && a.1.abs() < 1e-4, "{a:?}");
+        assert!((shot.target.end[2] - 400.0).abs() < 1.0);
     }
 
     #[test]
-    fn cover_beside_the_fighter_takes_the_reticle_though_the_camera_sees_past_it() {
-        // A pillar right in front of the eye's aim, left of the camera's line of sight. A
-        // fighter 10 m ahead is in plain view of the camera, but the shot meets the pillar.
-        let world = world(&[([0, 200, 120], [20, 200, 20])]);
+    fn cover_beside_the_muzzle_shows_a_blocked_marker_though_the_camera_sees_past_it() {
+        // A pillar right in front of a muzzle on the robot's chest, left of and below the
+        // camera's line of sight. A fighter 10 m ahead is in plain view of the camera, but the
+        // shot meets the pillar.
+        let world = world(&[([0, 110, 50], [10, 10, 10])]);
         let eye = [0.0, 165.0, 0.0];
-        let enemy = [0.0, 165.0 - 75.0, 1_000.0];
+        let muzzle = Muzzle {
+            mount: [0.0, 110.0, 10.0],
+            at: [0.0, 110.0, 25.0],
+        };
+        let enemy = [0.0, 90.0, 1_000.0];
         let build = shooter_sim::Assembly::default();
         let parts = shooter_sim::damage::Hitboxes::place(
             &build,
@@ -276,30 +278,41 @@ mod tests {
             enemy,
             32_768,
         );
-        let shot = sight(
+        // The reticle on it.
+        let (yaw, pitch) = aim::at(Some(&world), eye, enemy);
+        let forward = Vec3::from(aim::unit(shooter_sim::weapons::aim(yaw, pitch)));
+        let shot = aimed(
             &world,
             eye,
-            aim(0, 0),
+            Some(muzzle),
+            yaw,
+            pitch,
+            OWNER,
+            |_| true,
+            [(1, &parts)],
+        );
+        assert!(shot.target.fighter.is_some(), "the camera sees the fighter");
+        let actual = sight(
+            &world,
+            shot.from,
+            shot.direction(),
             RETICLE_RANGE_UNITS,
             OWNER,
             |_| true,
             [(1, &parts)],
         );
-        assert_eq!(shot.fighter, None, "the pillar stops the shot");
-        assert!((shot.end[2] - 100.0).abs() < 1.0, "{:?}", shot.end);
-        let camera = Follow::default().place(Some(&world), metres(eye), Vec3::Z, 1.0 / 60.0);
-        let seen = world.cast_ray(units(camera), units(metres(enemy) - camera), |body| {
-            body.0 < FIRST_PLAYER_BODY
-        });
-        assert_eq!(seen, None, "the camera sees the fighter past the pillar");
-        let reticle = reticle(camera, metres(shot.end), Vec3::Z);
-        let on_screen = screen(camera, Vec3::Z, reticle);
-        let pillar = screen(camera, Vec3::Z, metres(shot.end));
-        let fighter = screen(camera, Vec3::Z, metres(enemy));
-        assert!((on_screen.0 - pillar.0).abs() < 1e-5);
+        assert_eq!(actual.fighter, None, "the pillar stops the shot");
+        assert!((actual.end[2] - 40.0).abs() < 1.0, "{:?}", actual.end);
+        let camera = Follow::default().place(Some(&world), metres(eye), forward, 1.0 / 60.0);
+        let reticle = Reticle::of(camera, forward, &shot, &actual);
+        let blocked = reticle.blocked.expect("a blocked marker");
+        let on_target = screen(camera, forward, reticle.at);
+        let on_pillar = screen(camera, forward, blocked);
+        let pillar = screen(camera, forward, metres(actual.end));
+        assert!((on_pillar.0 - pillar.0).abs() < 1e-5 && (on_pillar.1 - pillar.1).abs() < 1e-5);
         assert!(
-            (on_screen.0 - fighter.0).abs() > 0.05,
-            "{on_screen:?} {fighter:?}"
+            (on_target.0 - on_pillar.0).abs() > 0.05,
+            "{on_target:?} {on_pillar:?}"
         );
     }
 }

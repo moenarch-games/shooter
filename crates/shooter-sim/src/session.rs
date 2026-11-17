@@ -360,6 +360,13 @@ impl Fighter {
             .unwrap_or_default()
     }
 
+    /// Where `weapon`'s shots leave its robot now ([`aim::muzzle`]): `None` while dead, or when
+    /// it has no such weapon part still connected or the weapon has no muzzle (the blade).
+    #[must_use]
+    pub fn muzzle(&self, weapon: Weapon) -> Option<aim::Muzzle> {
+        aim::muzzle(&self.build, &self.hitboxes(), weapon)
+    }
+
     /// Its feet (units): its robot's frame origin less the reach of its build standing whole
     /// ([`mechanics::stance`]); the origin while dead.
     #[must_use]
@@ -652,14 +659,15 @@ pub struct StepReport {
 /// Something a tick did that the clients show or sound.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
-    /// A shot left `slot`'s eye (units) along `direction` (unit vector).
+    /// A shot left `from` (units: its weapon's muzzle, the eye for the grapple and the blade,
+    /// [`aim`]) along `direction` (unit vector).
     Fired {
         slot: u8,
         weapon: Weapon,
-        eye: [f32; 3],
+        from: [f32; 3],
         direction: [f32; 3],
     },
-    /// A hitscan beam from the eye to `end`; `struck` when it met a body there.
+    /// A hitscan beam (or the grapple's line) from `from` to `end`; `struck` when it met a body there.
     Beam {
         weapon: Weapon,
         from: [f32; 3],
@@ -670,7 +678,7 @@ pub enum Event {
     /// A rocket blew up at `at`.
     Exploded { at: [f32; 3] },
     /// A shotgun pellet's last stretch, from `from` to where it struck a body at `at`;
-    /// `launched` when it was fired this tick (`from` is the shooter's eye).
+    /// `launched` when it was fired this tick (`from` is the shooter's muzzle).
     Pellet {
         from: [f32; 3],
         at: [f32; 3],
@@ -1894,30 +1902,46 @@ impl Session {
         });
     }
 
-    /// Fires `weapon` from `slot`'s eye: a hitscan beam resolves now (lag-compensated), a rocket
-    /// or a shotgun blast's pellets start flying, a flame burns what it touches now once it has
-    /// ignited.
+    /// Fires `weapon` from `slot` ([`aim`]): the camera picks the intended target among the
+    /// arena and the fighters where the shooter saw them, and a mounted ranged weapon's shot
+    /// leaves its muzzle toward it. A hitscan beam resolves now (lag-compensated), a rocket or a
+    /// shotgun blast's pellets start flying, a flame burns what it touches now once it has
+    /// ignited. The grapple and the blade leave the eye along the aim.
     fn fire(&mut self, slot: usize, weapon: Weapon, intent: Intent) -> Result<(), PhysicsError> {
         let shooter = &self.fighters[slot];
-        // The robot is no body in the scenery's world: rays leave its eye and meet the other
+        // The robot is no body in the scenery's world: rays leave its muzzle and meet the other
         // robots' part boxes.
         let body = body_of(shooter.slot);
         let eye = shooter.eye();
-        let direction = weapons::aim(intent.yaw, intent.pitch);
-        #[allow(clippy::cast_precision_loss)]
-        let unit = direction.map(|axis| axis as f32 / crate::trig::TRIG_ONE as f32);
+        let delivery = shooter.tuning(weapon).delivery(weapon);
+        let muzzle = match delivery {
+            Delivery::Grapple | Delivery::Melee => None,
+            _ => shooter.muzzle(weapon),
+        };
+        let seen = self.seen_by(slot);
+        let shot = aim::aimed(
+            &self.world,
+            eye,
+            muzzle,
+            intent.yaw,
+            intent.pitch,
+            body,
+            |hit| slot_of(hit).is_none(),
+            seen.iter().map(|(other, _, parts)| (*other, parts)),
+        );
+        let (from, direction) = (shot.from, shot.direction());
         #[allow(clippy::cast_possible_truncation)]
         self.events.push(Event::Fired {
             slot: slot as u8,
             weapon,
-            eye,
-            direction: unit,
+            from,
+            direction: aim::unit(direction),
         });
         // The weapon's mod in the shooter's build, if any, and the module it carries decide its
         // damage and range.
-        match shooter.tuning(weapon).delivery(weapon) {
+        match delivery {
             Delivery::Rocket => {
-                self.rockets.push(Rocket::launch(body, eye, direction));
+                self.rockets.push(Rocket::launch(body, from, direction));
             }
             Delivery::Grapple => {
                 let (hook, trace) = Hook::fire(&self.world, eye, direction, body);
@@ -1935,47 +1959,46 @@ impl Session {
                 damage,
                 range_units,
             } => {
-                let shot = self.hitscan(slot, weapon, eye, direction, range_units, damage);
+                let shot =
+                    self.hitscan(slot, &seen, weapon, (from, direction), range_units, damage);
                 self.land(slot, weapon, damage, shot);
             }
             Delivery::Pellets { damage } => {
                 self.pellets.extend(
-                    weapons::pellets(intent.yaw, intent.pitch)
-                        .map(|pellet| Pellet::launch(body, eye, pellet, damage)),
+                    weapons::pellets(shot.yaw, shot.pitch)
+                        .map(|pellet| Pellet::launch(body, from, pellet, damage)),
                 );
             }
             // Still igniting: the muzzle glows, nothing burns yet.
             Delivery::Flame { .. } if !self.fighters[slot].arsenal.ignited() => {}
-            Delivery::Flame { damage } => self.burn(slot, weapon, eye, direction, damage)?,
+            Delivery::Flame { damage } => self.burn(slot, weapon, from, direction, damage)?,
         }
         Ok(())
     }
 
-    /// Where one hitscan ray from `slot`'s `eye` along the Q16 `direction` ends and what it
+    /// Where one hitscan ray from `from` (the muzzle) along the Q16 `direction` ends and what it
     /// strikes: the arena (and the dummies) as they are now, fighters' parts where the shooter
-    /// saw them, `damage` shared among the parts it meets ([`Hitboxes::pierce`]).
+    /// saw them (`seen`, [`Session::seen_by`]), `damage` shared among the parts it meets
+    /// ([`Hitboxes::pierce`]).
     fn hitscan(
         &self,
         slot: usize,
+        seen: &[(usize, [f32; 3], Hitboxes)],
         weapon: Weapon,
-        eye: [f32; 3],
-        direction: [i32; 3],
+        (from, direction): ([f32; 3], [i32; 3]),
         range_units: i32,
         damage: i32,
     ) -> Shot {
-        let shooter = &self.fighters[slot];
-        let seen = self.seen_by(slot);
         let sight = aim::sight(
             &self.world,
-            eye,
+            from,
             direction,
             range_units,
-            body_of(shooter.slot),
+            body_of(self.fighters[slot].slot),
             |hit| slot_of(hit).is_none(),
             seen.iter().map(|(other, _, parts)| (*other, parts)),
         );
-        #[allow(clippy::cast_precision_loss)]
-        let unit = direction.map(|axis| axis as f32 / crate::trig::TRIG_ONE as f32);
+        let unit = aim::unit(direction);
         if let Some((victim, _)) = sight.fighter
             && let Some((_, _, parts)) = seen.iter().find(|(other, _, _)| *other == victim)
         {
@@ -1983,11 +2006,11 @@ impl Session {
             let reach = sight.scenery.hit.map_or(1.0, |hit| hit.fraction);
             #[allow(clippy::cast_precision_loss)]
             let translation = unit.map(|axis| axis * range_units as f32 * reach);
-            let blows = parts.pierce(eye, translation, damage, weapon.penetration());
+            let blows = parts.pierce(from, translation, damage, weapon.penetration());
             return Shot {
                 beam: Event::Beam {
                     weapon,
-                    from: eye,
+                    from,
                     end: sight.end,
                     normal: unit.map(|axis| -axis),
                     struck: true,
@@ -2000,7 +2023,7 @@ impl Session {
         Shot {
             beam: Event::Beam {
                 weapon,
-                from: eye,
+                from,
                 end: scenery.end,
                 normal: scenery.hit.map_or([0.0; 3], |hit| hit.normal),
                 struck: scenery.hit.is_some(),

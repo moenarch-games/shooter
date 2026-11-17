@@ -5,12 +5,12 @@
 //! restart restoring every placeable, the wire, a predictor adopting the host's word, and
 //! matches that replay exactly.
 
+use shooter_sim::aim;
 use shooter_sim::arena::FIRST_PLAYER_BODY;
 use shooter_sim::arena_kit::{self, Module, Placement, Turn, Variant};
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::ARMORY;
 use shooter_sim::scenery::{PlaceableState, Scenery, max_health};
-use shooter_sim::trig;
 use shooter_sim::wire::{WireError, decode_snapshot, encode_snapshot};
 use shooter_sim::{Arena, Event, Input, Intent, MapId, Phase, Rules, Session, Spawn, Weapon};
 
@@ -86,15 +86,9 @@ fn step(session: &mut Session, a: Intent) {
     session.step().unwrap();
 }
 
-/// The yaw and pitch from A's eye to `point`.
-#[allow(clippy::cast_possible_truncation)]
+/// The yaw and pitch that put A's reticle on `point` ([`aim::at`]).
 fn aim_at(session: &Session, point: [f32; 3]) -> (u16, i16) {
-    let eye = session.fighters[0].eye();
-    let d = [0, 1, 2].map(|axis| point[axis] - eye[axis]);
-    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
-    let run = d[0].hypot(d[2]).round() as i32;
-    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
-    (yaw, pitch)
+    aim::at(Some(&session.world), session.fighters[0].eye(), point)
 }
 
 /// A takes up `weapon`, waits for a full pool, then fires it once at `point`: the tick's
