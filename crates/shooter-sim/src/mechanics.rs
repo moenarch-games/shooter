@@ -24,7 +24,7 @@
 //!
 //! **Orientation is authoritative.** Nothing about a part's direction is corrected: a wheel
 //! turns about its own mount normal, so wheels on a robot's two sides turn opposite ways for the
-//! same command (a binding inverts one side, shooter#74), a wheel mounted on the front drives
+//! same command (a binding inverts one side, [`crate::bindings`]), a wheel mounted on the front drives
 //! the robot sideways, a mismatched drive spins it and lopsided mass tips it.
 //!
 //! **Commands** ([`Controls`]): one [`Command`] an actuator (joint or locomotion part) a tick,
@@ -56,9 +56,11 @@
 //! A part shot off leaves the bodies ([`Layout::connected`], [`Mechanics::sever`]): it no longer
 //! weighs, touches or drives anything, and the bodies that stay keep their pose and motion
 //! ([`crate::physics::articulated::rebase`]). The match's movement drive ([`Mechanics::drive`])
-//! sets the whole robot's velocity and turns it; its legs stride and its wheels roll along
-//! ([`Controls::carried`]), its bodies slide frictionless over the arena (the drive is what
-//! carries it) and its legs bend only within their gaits' range ([`Mechanics::for_match`]).
+//! sets the whole robot's velocity and turns it (an interim chassis drive: the bindings do not
+//! carry a robot yet, see [`crate::bindings`]); its actuators take the commands its person's
+//! control layout resolved ([`crate::bindings::Motors::controls`]), its bodies slide frictionless
+//! over the arena (the drive is what carries it) and its legs bend only within their gaits'
+//! range ([`Mechanics::for_match`]).
 //!
 //! **Debris** (shooter#75, Atlas D2.i70.10). In the match a part carried away whole (its parent
 //! broke) and at least [`DEBRIS_MIN_MASS_KG`] heavy becomes a body of its own where its robot
@@ -914,9 +916,9 @@ impl Controls {
         self
     }
 
-    /// The fixed walking mapping of the fixtures (bindings are shooter#74): every leg strides
-    /// `forward` percent, plus `turn` on the robot's left side and minus it on its right
-    /// (positive turns right).
+    /// The fixtures' fixed walking mapping (the presets bind the same, [`crate::bindings`]):
+    /// every leg strides `forward` percent, plus `turn` on the robot's left side and minus it on
+    /// its right (positive turns right).
     #[must_use]
     pub fn walk(mut self, layout: &Layout, forward: i8, turn: i8) -> Self {
         for leg in layout.legs() {
@@ -931,50 +933,6 @@ impl Controls {
             );
         }
         self
-    }
-
-    /// The match's fixed mapping (bindings are shooter#74) for a robot whose root's frame is
-    /// turned `orientation` and moving at `velocity` (units a second): every leg strides
-    /// `stride` percent on the suggested gait, every wheel and track turns at the rate that
-    /// rolls it along that velocity without slipping (about its own axle, as mounted), and
-    /// every joint holds its authored angle.
-    #[must_use]
-    pub fn carried(layout: &Layout, orientation: [f32; 4], velocity: [f32; 3], stride: i8) -> Self {
-        let turn = rotation_of(orientation);
-        let mut controls = Self::IDLE.walk(layout, stride, 0);
-        for actuator in &layout.actuators {
-            let command = match actuator.kind {
-                Actuator::Joint(_) => Command::Angle(0),
-                Actuator::Locomotion(Locomotion::Leg) => continue,
-                Actuator::Locomotion(_) => {
-                    let Some(hinge) = actuator.hinges.first().map(|&at| layout.hinges[at]) else {
-                        continue;
-                    };
-                    let radius = layout.bodies[hinge.b]
-                        .children
-                        .first()
-                        .map_or(0.0, |child| match child.shape {
-                            Shape::Sphere(radius) => radius,
-                            _ => 0.0,
-                        });
-                    // No slip: the velocity is the spin times the radius along axle × up.
-                    let axle = turn.apply(hinge.axis);
-                    let along = [-axle[2], 0.0, axle[0]];
-                    let reach = along[0] * along[0] + along[2] * along[2];
-                    if radius <= 0.0 || reach < 1e-4 {
-                        Command::Rate(0)
-                    } else {
-                        let spin =
-                            (velocity[0] * along[0] + velocity[2] * along[2]) / (radius * reach);
-                        #[allow(clippy::cast_possible_truncation)]
-                        let milli = (spin * 1000.0).clamp(-32_000.0, 32_000.0) as i16;
-                        Command::Rate(milli)
-                    }
-                }
-            };
-            controls = controls.with(actuator.part, command);
-        }
-        controls
     }
 }
 
@@ -1262,7 +1220,7 @@ pub struct Mechanics {
     /// limits): the movement drive ([`Mechanics::drive`]) is what carries a robot over the ground,
     /// so its feet and wheels slide where it drives them instead of dragging it over, and it
     /// slides along walls as the capsule did (Atlas D2.3's fast movement on mechanical robots,
-    /// until shooter#74's bindings drive the actuators).
+    /// until the robots walk and roll on their actuators alone: Atlas D2.i70.5).
     traction: Option<f32>,
     /// The physical debris, in the order it came off; motions as of the last step or rebuild.
     debris: Vec<DebrisState>,

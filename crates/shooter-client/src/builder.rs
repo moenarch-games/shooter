@@ -19,6 +19,7 @@
 //! about each of the socket's axes ([`Axis`]), in the canonical form the wire carries. The bench
 //! never turns a part into a conventional orientation by itself.
 
+pub mod controls;
 pub mod view;
 
 use shooter_sim::Weapon;
@@ -60,6 +61,10 @@ pub enum Refusal {
     Nothing,
     /// The selected part takes no mods.
     NoMods,
+    /// The control layout edit breaks a binding rule ([`controls`]).
+    Binding(shooter_sim::bindings::BindingError),
+    /// A key no binding may name.
+    UnboundKey,
 }
 
 impl fmt::Display for Refusal {
@@ -69,6 +74,8 @@ impl fmt::Display for Refusal {
             Self::Root => formatter.write_str("the root chassis stays: start a new frame"),
             Self::Nothing => formatter.write_str("select a part first"),
             Self::NoMods => formatter.write_str("no mod fits this part"),
+            Self::Binding(error) => error.fmt(formatter),
+            Self::UnboundKey => formatter.write_str("that key cannot be bound"),
         }
     }
 }

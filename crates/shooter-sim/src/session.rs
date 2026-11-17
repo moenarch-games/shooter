@@ -23,10 +23,11 @@
 //! world from its exact state, so the host, a predicting client and a replay continue alike.
 //! Each tick the movement rules ([`crate::player::Motion::drive`]: walk, sprint, slide, jumps,
 //! pads, air control, the rope) give the velocity the movement drive sets on the whole robot
-//! ([`Mechanics::drive`]), which also keeps it upright and turns it to face the aim; its legs
-//! stride and its wheels roll along with it ([`crate::mechanics::Controls::carried`]), drawing
-//! their motors' energy from its pool after its jumps, swings and shots, and its legs, wheels
-//! and tracks slide where the drive takes them. It walks on its feet: only a connected leg,
+//! ([`Mechanics::drive`]), which also keeps it upright and turns it to face the aim: an interim
+//! chassis drive (Atlas D2.i70.5) until robots walk and roll on their actuators alone. Its
+//! actuators take what its person's control layout resolved ([`crate::bindings`]; a bot's, its
+//! build's preset from its movement keys), drawing their motors' energy from its pool after its
+//! jumps, swings and shots, and its legs, wheels and tracks slide where the drive takes them. It walks on its feet: only a connected leg,
 //! wheel or track on the ground is footing, and the wished speeds scale by the share of its
 //! locomotion it still has ([`crate::player::Traction`]).
 //!
@@ -68,6 +69,7 @@
 
 use crate::aim;
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
+use crate::bindings::{BindingState, Bindings, Pressed};
 use crate::bots::{Bot, Sight};
 use crate::damage::{BATTERY_BLAST_DAMAGE, BATTERY_BLAST_RADIUS_UNITS, Blow, Hitboxes, PartDamage};
 use crate::dummies::Dummy;
@@ -618,6 +620,21 @@ fn step_up(world: &World, intent: Intent, feet: [f32; 3], velocity: Vec3i) -> Ve
         * u64::from(SUBUNITS_PER_UNIT.unsigned_abs());
     let hop = i32::try_from(crate::trig::isqrt(lift)).unwrap_or(i32::MAX);
     Vec3i::new(velocity.x, velocity.y.max(hop), velocity.z)
+}
+
+/// The commands the preset layout of the robot in `slot` ([`Bindings::preset`], from its
+/// connected actuators) gives for the keys `intent`'s movement presses ([`Pressed::wasd`]): what
+/// a bot sends, and a script or test that plays the default layout. Rest without a robot.
+fn preset_motors(mechanics: &Mechanics, slot: u8, intent: Intent) -> crate::bindings::Motors {
+    mechanics
+        .robot(slot)
+        .map_or(crate::bindings::Motors::REST, |robot| {
+            Bindings::preset(&robot.layout).resolve(
+                &robot.layout,
+                &mut BindingState::default(),
+                Pressed::wasd(intent.forward, intent.strafe),
+            )
+        })
 }
 
 fn tuning_of(build: &Assembly, carried: Option<Carried>, weapon: Weapon) -> Tuning {
@@ -1360,6 +1377,21 @@ impl Session {
     }
 
     /// One tick for the local person (slot 0) holding `intent`, seeing the others as they are now.
+    /// `intent` as the default layout would send it for the robot in `slot`: unless it already
+    /// commands motors, its movement keys through the robot's preset layout
+    /// ([`crate::bindings::Bindings::preset`]), as bots do. For scripts and tests that play
+    /// the default layout.
+    #[must_use]
+    pub fn with_preset(&self, slot: u8, intent: Intent) -> Intent {
+        if intent.motors != crate::bindings::Motors::REST {
+            return intent;
+        }
+        Intent {
+            motors: preset_motors(&self.mechanics, slot, intent),
+            ..intent
+        }
+    }
+
     pub fn tick(&mut self, intent: Intent) -> Result<StepReport, PhysicsError> {
         let input = Input {
             sequence: self.fighters[0].ack.wrapping_add(1),
@@ -1465,20 +1497,16 @@ impl Session {
             self.mechanics
                 .drive(id, velocity, steer(origin.orientation, intent.yaw))?;
             if let Some(robot) = self.mechanics.robot(id) {
-                let walking = footing.grounded
-                    && !fighter.motion.sliding
-                    && crate::player::wish_direction(intent).is_some();
-                let stride = match (walking, intent.forward < 0) {
-                    (false, _) => 0,
-                    (true, false) => 100,
-                    (true, true) => -100,
+                // Its actuators take what its control layout resolved (shooter#74), as far as
+                // they can: the host's word on the input ([`crate::bindings::Motors::controls`]).
+                // A robot whose locomotion is gone still turns its joints; between rounds
+                // everything rests.
+                let commanded = if playing {
+                    fighter.intent.motors
+                } else {
+                    crate::bindings::Motors::REST
                 };
-                motors[slot] = Some(Controls::carried(
-                    &robot.layout,
-                    origin.orientation,
-                    velocity,
-                    stride,
-                ));
+                motors[slot] = Some(commanded.controls(&robot.layout));
             }
             if moved.jumped
                 && boosted
@@ -1755,6 +1783,11 @@ impl Session {
                             fighter.arsenal.held,
                             tick,
                         );
+                        // Its robot's actuators through its build's preset layout, from the
+                        // keys its movement would press: the same commands a person's layout
+                        // sends ([`crate::bindings`]).
+                        fighter.intent.motors =
+                            preset_motors(&self.mechanics, fighter.slot, fighter.intent);
                         fighter.view_tick = tick;
                     }
                 }
