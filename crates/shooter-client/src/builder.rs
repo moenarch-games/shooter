@@ -598,6 +598,8 @@ pub fn part_name(kind: &PartType) -> String {
             u16::from(kind.cells[2]) * 20
         ),
         Kind::Beam => format!("Beam {} cm", u16::from(kind.cells[2]) * 20),
+        Kind::Rail => format!("Mount rail {} cm", u16::from(kind.cells[1]) * 20),
+        Kind::Adapter => "Adapter".to_owned(),
         Kind::Joint(Joint::Hinge) => "Hinge".to_owned(),
         Kind::Joint(Joint::Rotor) => "Rotor".to_owned(),
         Kind::Battery => "Battery".to_owned(),
@@ -641,6 +643,43 @@ mod tests {
         Workbench {
             hand: Some(kind.id),
             ..Workbench::new(STANDARD)
+        }
+    }
+
+    /// The extension fixtures (shooter#126) built on the bench a part at a time, the turned rails
+    /// turned with the bench's own yaw: the same build as authored, socket for socket, and its
+    /// preview of each placement is what the placement makes.
+    #[test]
+    fn the_bench_builds_rails_and_adapters_socket_for_socket() {
+        use shooter_sim::mechanics::sockets;
+        use shooter_sim::robot::{ADAPTER_MAST, CROSS_RAIL, RAIL_RACK};
+        for build in [RAIL_RACK, CROSS_RAIL, ADAPTER_MAST] {
+            let mut bench = Workbench::new(STANDARD);
+            bench.new_frame(build.parts()[0].kind).unwrap();
+            for part in &build.parts()[1..] {
+                let mount = part.mount.unwrap();
+                bench.selected = None;
+                bench.hand = Some(part.kind);
+                bench.turn = Orientation::IDENTITY;
+                let (yaw, _, _) = mount.orientation.raw();
+                bench.rotate(Axis::Yaw, i32::from(yaw)).unwrap();
+                assert_eq!(bench.turn, mount.orientation);
+                let preview = bench.placed(part.kind, mount.parent, mount.socket, bench.turn);
+                let id = bench.place(mount.parent, mount.socket).unwrap();
+                assert_eq!(id, part.id);
+                assert_eq!(preview, Ok((*bench.draft(), id)));
+            }
+            assert_eq!(*bench.draft(), build);
+            assert_eq!(bench.check(), Ok(build));
+            assert_eq!(sockets(bench.draft()), sockets(&build));
+            // Removing a rail takes what it carries.
+            bench.selected = Some(PartId(3));
+            bench.remove().unwrap();
+            assert!(bench.draft().part(PartId(3)).is_none());
+            assert_eq!(
+                bench.draft().parts().len(),
+                build.parts().len() - subtree(&build, PartId(3)).len()
+            );
         }
     }
 

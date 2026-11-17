@@ -26,6 +26,16 @@
 //! socket only. Footprints are checked per face; whether parts on different faces or parents
 //! intersect in space is not (that needs the parts' real geometry, shooter#73).
 //!
+//! **Extensions** (D2.i123.11, shooter#126). Beams ([`Kind::Beam`]), mount rails ([`Kind::Rail`])
+//! and adapters ([`Kind::Adapter`]) are ordinary parts that add sockets: a rail lies flat on its
+//! parent's face (its footprint is its whole length) and offers a row of hardpoints on its top,
+//! one a cell, so one support carries several weapons; an adapter is one cell with a socket on
+//! each free face; a beam has sockets on every face. They have mass, health and build points,
+//! are mounted, turned, footprinted, hit and lost like any part, and their children are placed,
+//! weighed and struck where the extension carries them: losing the support loses everything on
+//! it ([`crate::damage`]). There is no second placement authority: a part on a rail is a child of
+//! the rail in the same single-parent tree, through the same validation.
+//!
 //! **Orientation** is exact and canonical: three binary angles (65 536 a turn, like the
 //! fighters' yaw), applied in the socket's frame as yaw about the face's outward normal, then
 //! pitch, then roll (intrinsic Z-Y-X). [`Orientation::canonical`] folds any triple into the one
@@ -81,8 +91,9 @@
 
 use crate::weapons::{Delivery, Instance, Weapon};
 use parts::{
-    BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, FLAMETHROWER, GRAPPLE,
-    LASER, LEG, RAIL_GUN, REPAIR_MODULE, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    ADAPTER, BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, FLAMETHROWER,
+    GRAPPLE, LASER, LEG, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, RAIL_GUN, REPAIR_MODULE,
+    ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
 
@@ -147,8 +158,10 @@ pub struct Faces(u8);
 impl Faces {
     pub const NONE: Self = Self(0);
     pub const ALL: Self = Self(0b11_1111);
-    /// Only the face opposite the mount (a joint's moving side).
+    /// Only the face opposite the mount (a joint's moving side, a mount rail's hardpoints).
     pub const TOP: Self = Self(Face::PosZ.bit());
+    /// Every face but the mount face, which rests on the parent (an adapter's five).
+    pub const EXPOSED: Self = Self(Self::ALL.0 & !Face::NegZ.bit());
 
     #[must_use]
     pub const fn contains(self, face: Face) -> bool {
@@ -162,8 +175,16 @@ pub enum Kind {
     /// A cuboid chassis section; a build's root is one, and the root is the robot's vital part
     /// and its baseline energy (D2.i89.1).
     Chassis,
-    /// A structural beam extending the tree.
+    /// A structural beam extending the tree: sockets on every face.
     Beam,
+    /// A mounting rail (shooter#126, D2.i123.11): a flat strip lying on its parent's face whose
+    /// top carries a row of hardpoints, one a cell, so several weapons or modules ride on one
+    /// support. Not the rail gun ([`Weapon::RailGun`]).
+    Rail,
+    /// An adapter (shooter#126, D2.i123.11): one cell exposing a socket on each of its five free
+    /// faces, so what is mounted on it faces up, forward, back or to either side of the face it
+    /// sits on.
+    Adapter,
     /// A movable joint: its base is rigid with its parent, its top face and what is mounted
     /// there turn about one axis ([`crate::mechanics`]).
     Joint(Joint),
@@ -516,6 +537,19 @@ pub mod parts {
     /// 20 × 20 × 80 cm.
     #[rustfmt::skip]
     pub const BEAM_LONG: PartType = tough(part(11, "robot.beam.20x20x80", Kind::Beam, [1, 1, 4], Faces::ALL, [10, 0, 0, 3]), 60);
+    // Mount rails and the adapter (shooter#126): ordinary parts on the socket tree whose sockets
+    // are further hardpoints. A rail lies flat (its footprint is its length) with sockets on its
+    // top only; the adapter is one cell with sockets on its five free faces.
+    /// A 20 × 40 cm mount rail, 20 cm high: two hardpoints in a row.
+    #[rustfmt::skip]
+    pub const MOUNT_RAIL_SHORT: PartType = tough(part(12, "robot.mount-rail.20x40", Kind::Rail, [1, 2, 1], Faces::TOP, [3, 0, 0, 1]), 45);
+    /// A 20 × 80 cm mount rail, 20 cm high: four hardpoints in a row (two heavy weapons, or four
+    /// light ones).
+    #[rustfmt::skip]
+    pub const MOUNT_RAIL_LONG: PartType = tough(part(13, "robot.mount-rail.20x80", Kind::Rail, [1, 4, 1], Faces::TOP, [6, 0, 0, 2]), 55);
+    /// A 20 cm adapter cube: five sockets, one on each face but its mount face.
+    #[rustfmt::skip]
+    pub const ADAPTER: PartType = tough(part(14, "robot.adapter", Kind::Adapter, [1, 1, 1], Faces::EXPOSED, [2, 0, 0, 1]), 40);
     // Motorised parts end with their drive: torque (N·m), top rate (tenths of a radian a
     // second) and the energy drawn a second while commanded.
     /// A hinge servo: one socket, on its moving side.
@@ -622,7 +656,7 @@ pub const LONG_BARREL: ModId = ModId(3);
 // old build naming it is an unknown mod.
 pub const EFFICIENCY_COIL: ModId = ModId(5);
 
-/// The beta's catalog: three chassis sizes, two beams, two joints, a battery, a sensor, a
+/// The beta's catalog: three chassis sizes, two beams, two mount rails and an adapter, two joints, a battery, a sensor, a
 /// repair module, legs, wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
 /// Provisional values (Q2.i70.1, Q2.i70.2).
 #[rustfmt::skip]
@@ -630,6 +664,7 @@ pub const BETA: Catalog = Catalog {
     parts: &[
         parts::CHASSIS_S, parts::CHASSIS_M, parts::CHASSIS_L,
         parts::BEAM_SHORT, parts::BEAM_LONG,
+        parts::MOUNT_RAIL_SHORT, parts::MOUNT_RAIL_LONG, parts::ADAPTER,
         parts::HINGE, parts::ROTOR,
         parts::BATTERY, parts::SENSOR, parts::REPAIR_MODULE,
         parts::LEG, parts::WHEEL, parts::TRACK,
@@ -774,6 +809,20 @@ impl Part {
                 orientation: Orientation::IDENTITY,
             }),
             modification: None,
+        }
+    }
+
+    /// Turned `yaw` binary angles about its socket's normal.
+    const fn yawed(self, yaw: u16) -> Self {
+        let Some(mount) = self.mount else {
+            panic!("the root is not turned");
+        };
+        Self {
+            mount: Some(Mount {
+                orientation: Orientation::canonical(yaw, 0, 0),
+                ..mount
+            }),
+            ..self
         }
     }
 
@@ -1017,6 +1066,58 @@ pub const ARMORY: Assembly = authored(&[
     forward(12, &FLAMETHROWER, &CHASSIS_L, 2, 1),
     forward(13, &RAIL_GUN, &CHASSIS_L, 0, 2),
     forward(14, &ROCKET_LAUNCHER, &CHASSIS_L, 1, 2),
+]);
+
+/// A fixture on mount rails (shooter#126): the medium chassis on two legs (IDs 1, 2) with a long
+/// rail (ID 3) standing up the right column of its front and a short one (ID 8) at the foot of
+/// its left column. The long rail's four hardpoints carry, bottom to top and facing the aim, the
+/// energy rifle, the shotgun, the blade and the grapple (IDs 4 to 7); the short rail's two the
+/// laser and the flamethrower (IDs 9, 10): six weapons on two supports, 107 of the 110 build
+/// points. Its IDs are in the order a bench places its parts. Valid in [`BETA`].
+pub const RAIL_RACK: Assembly = authored(&[
+    Part::root(0, &CHASSIS_M),
+    Part::on(1, &LEG, 0, &CHASSIS_M, Face::NegZ, 0, 0),
+    Part::on(2, &LEG, 0, &CHASSIS_M, Face::NegZ, 1, 0),
+    forward(3, &MOUNT_RAIL_LONG, &CHASSIS_M, 0, 0),
+    Part::on(4, &ENERGY_RIFLE, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 0),
+    Part::on(5, &SHOTGUN, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 1),
+    Part::on(6, &ENERGY_BLADE, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 2),
+    Part::on(7, &GRAPPLE, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 3),
+    forward(8, &MOUNT_RAIL_SHORT, &CHASSIS_M, 1, 0),
+    Part::on(9, &LASER, 8, &MOUNT_RAIL_SHORT, Face::PosZ, 0, 0),
+    Part::on(10, &FLAMETHROWER, 8, &MOUNT_RAIL_SHORT, Face::PosZ, 0, 1),
+]);
+
+/// A fixture with a turned rail (shooter#126): the medium chassis on two legs with a long rail
+/// (ID 3) turned a quarter on the top left cell of its front, so it lies across the front's top
+/// row and overhangs the right side by two cells, carrying two rail guns side by side (IDs 4, 5)
+/// facing the aim; the grapple and the blade (IDs 6, 7) sit on the chassis' front at its foot
+/// and a battery (ID 8) on its back. Four weapons, two of them on the rail. Valid in [`BETA`].
+pub const CROSS_RAIL: Assembly = authored(&[
+    Part::root(0, &CHASSIS_M),
+    Part::on(1, &LEG, 0, &CHASSIS_M, Face::NegZ, 0, 0),
+    Part::on(2, &LEG, 0, &CHASSIS_M, Face::NegZ, 1, 0),
+    forward(3, &MOUNT_RAIL_LONG, &CHASSIS_M, 1, 3).yawed(Orientation::QUARTER),
+    Part::on(4, &RAIL_GUN, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 0),
+    Part::on(5, &RAIL_GUN, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 2),
+    forward(6, &GRAPPLE, &CHASSIS_M, 0, 0),
+    forward(7, &ENERGY_BLADE, &CHASSIS_M, 1, 0),
+    Part::on(8, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0),
+]);
+
+/// A fixture on an adapter (shooter#126): the small chassis on two legs with an adapter (ID 3)
+/// on its roof; on the adapter's front a short rail (ID 4) turned a quarter, lying across, with
+/// the energy rifle and the shotgun (IDs 5, 6) side by side facing the aim, and on the adapter's
+/// top the grapple (ID 7), pointing up. Three weapons. Valid in [`BETA`].
+pub const ADAPTER_MAST: Assembly = authored(&[
+    Part::root(0, &CHASSIS_S),
+    Part::on(1, &LEG, 0, &CHASSIS_S, Face::NegZ, 0, 0),
+    Part::on(2, &LEG, 0, &CHASSIS_S, Face::NegZ, 1, 0),
+    Part::on(3, &ADAPTER, 0, &CHASSIS_S, Face::PosZ, 0, 0),
+    Part::on(4, &MOUNT_RAIL_SHORT, 3, &ADAPTER, Face::PosX, 0, 0).yawed(Orientation::QUARTER),
+    Part::on(5, &ENERGY_RIFLE, 4, &MOUNT_RAIL_SHORT, Face::PosZ, 0, 0),
+    Part::on(6, &SHOTGUN, 4, &MOUNT_RAIL_SHORT, Face::PosZ, 0, 1),
+    Part::on(7, &GRAPPLE, 3, &ADAPTER, Face::PosZ, 0, 0),
 ]);
 
 /// The named loadouts a person picks from until the builder (shooter#57): the unmodified
