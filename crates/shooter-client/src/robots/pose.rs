@@ -73,6 +73,9 @@ pub struct RobotState {
     pub fired: Instance,
     /// How many shots it has fired this life (the rocket pod's tubes alternate).
     pub shots: u32,
+    /// Seconds since each of its copies that fired lately last did (shooter#127: copies fire
+    /// together, each showing its own shot); a copy not in it shows `fired`'s.
+    pub recent: Recent,
     /// The weapon copy it holds.
     pub held: Instance,
     /// Its energy pool's share of its capacity (0..=1): the weapons' charge glow.
@@ -81,6 +84,65 @@ pub struct RobotState {
     pub swing: Option<f32>,
     /// Seconds since it died, while dead.
     pub dead_for: Option<f32>,
+}
+
+/// Seconds since each weapon copy last fired, by part, for the most recent few.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recent {
+    len: u8,
+    entries: [(PartId, f32); RECENT],
+}
+
+/// How many copies [`Recent`] remembers.
+const RECENT: usize = 8;
+
+impl Default for Recent {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl Recent {
+    /// No copy has fired.
+    pub const NONE: Self = Self {
+        len: 0,
+        entries: [(PartId(0), f32::INFINITY); RECENT],
+    };
+
+    /// Seconds since the copy on `part` last fired, if it is remembered.
+    #[must_use]
+    pub fn since(&self, part: PartId) -> Option<f32> {
+        self.entries[..usize::from(self.len)]
+            .iter()
+            .find(|(at, _)| *at == part)
+            .map(|(_, since)| *since)
+    }
+
+    /// The copy on `part` fired now: it replaces its own entry, else the oldest.
+    pub fn fired(&mut self, part: PartId) {
+        let len = usize::from(self.len);
+        let at = self.entries[..len]
+            .iter()
+            .position(|(at, _)| *at == part)
+            .unwrap_or_else(|| {
+                if len < RECENT {
+                    self.len += 1;
+                    len
+                } else {
+                    (0..RECENT)
+                        .max_by(|a, b| self.entries[*a].1.total_cmp(&self.entries[*b].1))
+                        .unwrap_or(0)
+                }
+            });
+        self.entries[at] = (part, 0.0);
+    }
+
+    /// `seconds` later.
+    pub fn advance(&mut self, seconds: f32) {
+        for (_, since) in &mut self.entries[..usize::from(self.len)] {
+            *since += seconds;
+        }
+    }
 }
 
 /// What its legs and body do.

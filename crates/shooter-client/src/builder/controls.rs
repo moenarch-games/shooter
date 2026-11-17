@@ -116,12 +116,13 @@ impl ControlsBench {
         self.edit(|layout| edit(layout.bindings.get_mut(index).ok_or(Refusal::Nothing)?))
     }
 
-    /// A new binding driving `part` (a leg strides, anything else turns at a rate) on an
-    /// unused key, selected and waiting for its key.
+    /// A new binding for `part` (a gun fires: a direct weapon button, shooter#127; a leg
+    /// strides; anything else turns at a rate) on an unused key, selected and waiting for its
+    /// key.
     ///
     /// # Errors
     ///
-    /// If `part` is no actuator, or the layout is full.
+    /// If `part` is no actuator or gun, or the layout is full.
     pub fn add(&mut self, part: Option<PartId>) -> Result<(), Refusal> {
         let part = part.ok_or(Refusal::Nothing)?;
         let leg = self.actuators.actuators.iter().any(|actuator| {
@@ -131,6 +132,7 @@ impl ControlsBench {
                         shooter_sim::robot::Locomotion::Leg,
                     )
         });
+        let gun = self.actuators.guns.contains(&part);
         let used: Vec<Source> = self.layout.bindings.iter().map(|b| b.source).collect();
         let free = (0..KEYS.len())
             .filter_map(|index| u8::try_from(index).ok())
@@ -146,7 +148,13 @@ impl ControlsBench {
             layout.bindings.push(Binding {
                 source: free,
                 mode: Mode::Hold,
-                output: if leg { Output::Stride } else { Output::Rate },
+                output: if gun {
+                    Output::Fire
+                } else if leg {
+                    Output::Stride
+                } else {
+                    Output::Rate
+                },
                 invert: false,
                 strength: 100,
                 targets: vec![Target {
@@ -199,7 +207,8 @@ impl ControlsBench {
     }
 
     /// Moves the selected binding to the next mouse input: the horizontal movement, the vertical
-    /// one, then each button, then back to the horizontal movement.
+    /// one, then each button, then back to the horizontal movement (a fire binding: the next
+    /// button).
     ///
     /// # Errors
     ///
@@ -208,6 +217,11 @@ impl ControlsBench {
         self.capturing = false;
         self.with_selected(|binding| {
             binding.source = match binding.source {
+                // A fire binding takes buttons only.
+                Source::Button(index) if binding.output == Output::Fire => {
+                    Source::Button((index + 1) % MOUSE_BUTTONS)
+                }
+                _ if binding.output == Output::Fire => Source::Button(0),
                 Source::MouseX => Source::MouseY,
                 Source::MouseY => Source::Button(0),
                 Source::Button(index) if index + 1 < MOUSE_BUTTONS => Source::Button(index + 1),
@@ -240,7 +254,7 @@ impl ControlsBench {
         })
     }
 
-    /// The next kind of command (stride, rate, angle) the selected binding's parts all take.
+    /// The next kind of command (stride, rate, angle, fire) the selected binding's parts all take.
     ///
     /// # Errors
     ///
@@ -253,7 +267,7 @@ impl ControlsBench {
             .get(index)
             .ok_or(Refusal::Nothing)?
             .output;
-        let order = [Output::Stride, Output::Rate, Output::Angle];
+        let order = [Output::Stride, Output::Rate, Output::Angle, Output::Fire];
         let at = order.iter().position(|output| *output == now).unwrap_or(0);
         let mut last = Err(Refusal::Nothing);
         for step in 1..order.len() {
@@ -386,6 +400,7 @@ pub const fn output_name(output: Output) -> &'static str {
         Output::Stride => "STRIDE",
         Output::Rate => "RATE",
         Output::Angle => "ANGLE",
+        Output::Fire => "FIRE",
     }
 }
 
@@ -441,7 +456,7 @@ mod tests {
         // The chassis is no actuator.
         assert_eq!(
             bench.add(Some(PartId(0))),
-            Err(Refusal::Binding(BindingError::NotAnActuator(4, PartId(0))))
+            Err(Refusal::Binding(BindingError::NotAnActuator(5, PartId(0))))
         );
         bench.add(Some(PartId(5))).unwrap();
         assert!(bench.capturing);
@@ -466,13 +481,43 @@ mod tests {
         );
         // The output cycles to what legs take; a mouse axis steers by offset.
         bench.cycle_output().unwrap();
-        assert_eq!(bench.layout().bindings[4].output, Output::Rate);
+        assert_eq!(bench.layout().bindings[5].output, Output::Rate);
         bench.cycle_mouse().unwrap();
-        assert_eq!(bench.layout().bindings[4].source, Source::MouseX);
-        assert_eq!(bench.layout().bindings[4].mode, Mode::Offset);
+        assert_eq!(bench.layout().bindings[5].source, Source::MouseX);
+        assert_eq!(bench.layout().bindings[5].mode, Mode::Offset);
         assert_eq!(bench.bind_key("Escape"), Err(Refusal::UnboundKey));
         bench.delete().unwrap();
-        assert_eq!(bench.layout().bindings.len(), 4);
+        assert_eq!(bench.layout().bindings.len(), 5);
+    }
+
+    /// A gun clicked takes a direct weapon button; a second gun added makes it a weapon group
+    /// that overlaps the preset's every-gun group (shooter#127).
+    #[test]
+    fn a_gun_gets_a_direct_button_and_groups_with_others() {
+        let mut bench = ControlsBench::new(shooter_sim::robot::TWIN_RAIL, None);
+        let preset = bench.layout().bindings.len();
+        bench.add(Some(PartId(7))).unwrap();
+        bench.bind_key("KeyZ").unwrap();
+        let binding = &bench.layout().bindings[preset];
+        assert_eq!(binding.output, Output::Fire);
+        // No other command fits a gun, and no actuator joins a fire binding.
+        assert!(bench.cycle_output().is_err());
+        assert!(bench.toggle_part(Some(PartId(0))).is_err());
+        // Only buttons for the mouse.
+        bench.cycle_mouse().unwrap();
+        assert_eq!(bench.layout().bindings[preset].source, Source::Button(0));
+        bench.bind_key("KeyZ").unwrap();
+        bench.toggle_part(Some(PartId(9))).unwrap();
+        let actuators = Layout::of(&shooter_sim::robot::TWIN_RAIL);
+        let mut state = BindingState::default();
+        let pressed = Pressed {
+            buttons: 1 << shooter_sim::bindings::ALL_GUNS_BUTTON,
+            ..Pressed::default().with_key("KeyZ")
+        };
+        let fire = bench.layout().act(&actuators, &mut state, pressed).triggers;
+        assert_eq!(fire.parts(), [PartId(7), PartId(9)]);
+        // The blade is no gun.
+        assert!(bench.toggle_part(Some(PartId(8))).is_err());
     }
 
     #[test]

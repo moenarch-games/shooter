@@ -132,12 +132,16 @@ pub fn locals(
         locals[joint].scale.y = state.energy.clamp(0.0, 1.0);
     }
     let weapon = instance.weapon;
-    // Only the copy that fired shows the shot (shooter#125).
-    let since = if state.fired == instance {
-        state.since_fired
-    } else {
-        f32::INFINITY
-    };
+    // Only the copy that fired shows the shot (shooter#125); copies that fire together each
+    // show their own (shooter#127).
+    let since = state
+        .recent
+        .since(instance.part)
+        .unwrap_or(if state.fired == instance {
+            state.since_fired
+        } else {
+            f32::INFINITY
+        });
     let mut reach = None;
     match weapon {
         Weapon::EnergyRifle | Weapon::Shotgun => play(rig, "fire", since, &mut locals),

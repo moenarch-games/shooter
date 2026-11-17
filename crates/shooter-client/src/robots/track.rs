@@ -8,6 +8,7 @@
 //! is drawn where the snapshot has it instead, and is gone once the host retires it; only the
 //! small (cosmetic) ones and the destroyed ones fall on their own.
 
+use super::pose::Recent;
 use crate::scene::METRES_PER_UNIT;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3};
 use shooter_sim::damage::PartDamage;
@@ -84,6 +85,8 @@ pub struct Remains {
 pub struct Tracker {
     since_fired: Vec<f32>,
     fired: Vec<(Instance, u32)>,
+    /// Seconds since each copy fired lately, by slot (shooter#127).
+    recent: Vec<Recent>,
     alive: Vec<Option<Remains>>,
     dead: Vec<Option<Remains>>,
     lost: Vec<Vec<Lost>>,
@@ -96,6 +99,7 @@ impl Default for Tracker {
         Self {
             since_fired: vec![f32::INFINITY; SLOTS],
             fired: vec![(Instance::default(), 0); SLOTS],
+            recent: vec![Recent::NONE; SLOTS],
             alive: vec![None; SLOTS],
             dead: vec![None; SLOTS],
             lost: vec![Vec::new(); SLOTS],
@@ -105,15 +109,12 @@ impl Default for Tracker {
 }
 
 impl Tracker {
-    /// One tick of `seconds`: `events` and the local fighter's own shot (`fired`, as predicted;
+    /// One tick of `seconds`: `events` and the local fighter's own shots (`fired`, as predicted;
     /// its own `Fired` events are not counted again).
-    pub fn tick(
-        &mut self,
-        events: &[Event],
-        local: Option<u8>,
-        fired: Option<Instance>,
-        seconds: f32,
-    ) {
+    pub fn tick(&mut self, events: &[Event], local: Option<u8>, fired: &[Instance], seconds: f32) {
+        for recent in &mut self.recent {
+            recent.advance(seconds);
+        }
         for since in &mut self.since_fired {
             *since += seconds;
         }
@@ -123,8 +124,10 @@ impl Tracker {
         for lost in self.lost.iter_mut().flatten() {
             lost.age += seconds;
         }
-        if let (Some(slot), Some(weapon)) = (local, fired) {
-            self.shot(slot, weapon);
+        if let Some(slot) = local {
+            for &weapon in fired {
+                self.shot(slot, weapon);
+            }
         }
         for event in events {
             match *event {
@@ -234,6 +237,7 @@ impl Tracker {
     fn shot(&mut self, slot: u8, instance: Instance) {
         let slot = usize::from(slot);
         self.since_fired[slot] = 0.0;
+        self.recent[slot].fired(instance.part);
         let (_, shots) = self.fired[slot];
         self.fired[slot] = (instance, shots.wrapping_add(1));
     }
@@ -241,6 +245,12 @@ impl Tracker {
     #[must_use]
     pub fn since_fired(&self, slot: u8) -> f32 {
         self.since_fired[usize::from(slot)]
+    }
+
+    /// Seconds since each of `slot`'s copies that fired lately last did.
+    #[must_use]
+    pub fn recent(&self, slot: u8) -> Recent {
+        self.recent[usize::from(slot)]
     }
 
     /// The weapon copy of `slot`'s last shot and how many shots it has fired.
@@ -280,16 +290,16 @@ mod tests {
                 weapon: None,
             }],
             None,
-            None,
+            &[],
             0.5,
         );
-        tracker.tick(&[], None, None, 0.25);
+        tracker.tick(&[], None, &[], 0.25);
         let dead: Vec<_> = tracker.dead().collect();
         assert_eq!(dead.len(), 1);
         assert_eq!(dead[0].0, 3);
         assert_eq!(dead[0].1.center, Vec3::ONE);
         assert!((dead[0].1.dead_for - 0.25).abs() < 1e-6);
-        tracker.tick(&[Event::Spawned { slot: 3, yaw: 0 }], None, None, 0.1);
+        tracker.tick(&[Event::Spawned { slot: 3, yaw: 0 }], None, &[], 0.1);
         assert_eq!(tracker.dead().count(), 0);
     }
 
@@ -315,11 +325,11 @@ mod tests {
             frame,
             "it starts where it came off"
         );
-        tracker.tick(&[], None, None, 5.0);
+        tracker.tick(&[], None, &[], 5.0);
         let fallen = tracker.detached(2)[0].1;
         let drop = frame.w_axis.y - fallen.w_axis.y;
         assert!(drop > 0.5 && drop < 1.6, "{drop}");
-        tracker.tick(&[Event::Spawned { slot: 2, yaw: 0 }], None, None, 0.1);
+        tracker.tick(&[Event::Spawned { slot: 2, yaw: 0 }], None, &[], 0.1);
         assert!(tracker.detached(2).is_empty());
     }
 
@@ -360,7 +370,7 @@ mod tests {
             },
         };
         tracker.debris(&[piece]);
-        tracker.tick(&[], None, None, 5.0);
+        tracker.tick(&[], None, &[], 5.0);
         let drawn = tracker.detached(2);
         assert_eq!(drawn.len(), 1);
         assert!((drawn[0].1.w_axis - Vec4::new(3.0, 0.2, 0.0, 1.0)).length() < 1e-4);
@@ -373,9 +383,9 @@ mod tests {
     fn shots_reset_the_fire_clock() {
         let mut tracker = Tracker::default();
         let laser = Instance::new(7, Weapon::Laser);
-        tracker.tick(&[], Some(1), Some(laser), 0.1);
+        tracker.tick(&[], Some(1), &[laser], 0.1);
         assert!(tracker.since_fired(1) < 1e-6);
-        tracker.tick(&[], Some(1), None, 0.1);
+        tracker.tick(&[], Some(1), &[], 0.1);
         assert!((tracker.since_fired(1) - 0.1).abs() < 1e-6);
         assert!(tracker.since_fired(2).is_infinite());
         assert_eq!(tracker.fired(1), (laser, 1));
@@ -388,7 +398,7 @@ mod tests {
                 direction: [0.0, 0.0, 1.0],
             }],
             Some(1),
-            None,
+            &[],
             0.1,
         );
         assert_eq!(

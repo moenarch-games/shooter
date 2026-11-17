@@ -1288,8 +1288,10 @@ fn the_overcharged_rail_gun_kills_in_fewer_hits_and_fires_slower() {
     assert_eq!(rail_record(STANDARD, 120), (vec![], 0));
     assert_eq!(rail_record(HEAVY, 300), (vec![0, 72, 144, 216, 288], 1));
     // Overcharged (106): 94 ticks apart, three hits a kill, as before (two for the chassis, then
-    // one for the core).
-    assert_eq!(rail_record(MARKSMAN, 220), (vec![12, 106, 200], 1));
+    // one for the core). The marksman fires the moment it takes the rail gun up (no switch
+    // delay since shooter#127), so like the heavy's its shot on tick 0 goes wide of B still
+    // settling; its fourth waits for the pool (45 a shot).
+    assert_eq!(rail_record(MARKSMAN, 300), (vec![0, 94, 188, 299], 1));
 }
 
 #[test]

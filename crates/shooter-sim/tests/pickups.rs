@@ -921,9 +921,10 @@ fn the_rail_capacitor_is_spent_by_its_rail_shots() {
     // The boosted shots recharge in 54 ticks, but each costs 45 energy (150 % of the rail
     // shot's 30) from the root chassis' 100, which regenerates 0.4 a tick less the legs' servos
     // (0.132 a tick, shooter#73): the second goes out at the boosted pace, then a shot waits for the pool
-    // to hold 45 again (80 ticks, then 168). Unboosted, a shot costs 30 and the pool pays it
+    // to hold 45 again (92 ticks: the first went out straight after the rifle, no switch delay
+    // since shooter#127; then 168). Unboosted, a shot costs 30 and the pool pays it
     // every 112 ticks, slower than the rail gun's own 72.
-    assert_eq!(gaps[..boosted - 1], [54, 80, 168, 168], "{gaps:?}");
+    assert_eq!(gaps[..boosted - 1], [54, 92, 168, 168], "{gaps:?}");
     assert!(
         gaps[boosted - 1..]
             .iter()
