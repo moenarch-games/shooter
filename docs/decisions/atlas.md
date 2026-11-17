@@ -456,7 +456,17 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   observation galleries along two walls carrying thrusters, a control booth with two doorways in
   two corners and a test bay in two side walls; its name, size, layout, spawn count, pickup and
   repair anchors (in the booths) and destruction candidates (its low cover, open-floor barriers
-  and crates) are provisional choices, to be tuned in playtests.
+  and crates) are provisional choices, to be tuned in playtests. Since shooter#55 the large arena
+  is in: `drydock`, an 80 m repurposed spaceship shipyard (D2.i55.1) built from the same arena
+  kit (8 to 12 players recommended, 14 spawn points, all on the ground), point-symmetric: two
+  identical docked ships head to tail either side of a 32 m central corridor, each hull 12 m
+  wide and 56 m long from the kit's hull modules (no interiors) with a walkable 4 m foredeck and
+  a raised 6 m stern deck carrying thrusters; a 4 m dock gantry along each hull with a 16 m ramp
+  at either end and two gangways onto the foredeck; a 12 m outer lane behind each hull with a
+  jump pad onto the foredeck; masts for the grapple; an 8 m crane pylon in the corridor's middle
+  with the rail capacitor at its foot. Its name, size, hull heights, layout, spawn count, pickup
+  and repair anchors (under the gantries and in the outer lanes) and destruction candidates (its
+  low cover, floor barriers and crates) are provisional choices, to be tuned in playtests.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration

@@ -444,3 +444,160 @@ fn cell_high_ground_has_routes_up() {
         assert!(point.x.abs().max(point.z.abs()) < 2_000, "{point:?}");
     }
 }
+
+/// The drydock (shooter#55) is a distinct, kit-built large map: a stable ID and tag, bigger than
+/// the yard, laid out for 8 to the default 12 players with spawn points to spare, every piece
+/// derived from its kit placements (its hulls from the kit's hull modules), inside the body IDs
+/// arena geometry may take, and the yard stays the default.
+#[test]
+fn the_drydock_is_the_kit_built_large_map() {
+    use shooter_sim::arena::{FIRST_PLAYER_BODY, FLOOR_BODY};
+    use shooter_sim::arena_kit::{self, Module};
+    assert_eq!(MapId::Drydock.as_str(), "drydock");
+    assert_eq!(MapId::Drydock.tag(), 5);
+    assert_eq!(MapId::DEFAULT, MapId::GreyboxYard);
+    let dock = Arena::drydock();
+    assert_eq!(MapId::Drydock.arena(), dock);
+    for other in [
+        Arena::greybox(),
+        Arena::greybox_yard(),
+        Arena::assembly_works(),
+        Arena::proving_cell(),
+    ] {
+        assert!(dock.half_size > other.half_size);
+    }
+    assert!(MapId::Drydock.capacity().fits(DEATHMATCH_SLOTS));
+    assert!(MapId::Drydock.capacity().min >= 8);
+    assert!(dock.spawn_points().len() > usize::from(DEATHMATCH_SLOTS));
+    assert_eq!(dock.pieces, arena_kit::pieces(&dock.placements));
+    assert!(FLOOR_BODY.0 + dock.pieces.len() as u64 + 1 < FIRST_PLAYER_BODY);
+    let reach = dock.half_size + 60;
+    for placement in &dock.placements {
+        let [min, max] = placement.bounds();
+        assert!(
+            min.x >= -reach && max.x <= reach && min.z >= -reach && max.z <= reach,
+            "{placement:?}"
+        );
+        assert!(min.y >= -10, "{placement:?}");
+    }
+    for pad in &dock.pads {
+        assert!(dock.placements.iter().any(|placement| {
+            placement.module == Module::JumpPad && placement.at == pad.center
+        }));
+    }
+    // The ships are the kit's hull modules: decks, shoulders, sides, ribs and masts.
+    for module in [
+        Module::HullDeck,
+        Module::HullShoulder,
+        Module::HullSide,
+        Module::HullRib,
+        Module::HullMast,
+    ] {
+        assert!(
+            dock.placements.iter().any(|p| p.module == module),
+            "{module:?}"
+        );
+    }
+    let destructible: Vec<_> = dock.placements.iter().filter(|p| p.destructible).collect();
+    assert!(destructible.len() >= 10);
+    assert!(
+        destructible
+            .iter()
+            .all(|p| p.module.broken_proxies().is_some())
+    );
+    assert!(!dock.repair_anchors.is_empty());
+}
+
+/// No two of the drydock's spawn points see each other, all are on the ground, and its bot
+/// points link up by walks, every spawn point to at least two.
+#[test]
+fn drydock_spawns_are_out_of_sight_and_linked_by_walks() {
+    let arena = Arena::drydock();
+    assert_eq!(spawns_in_sight(&arena), Vec::new());
+    assert!(arena.spawn_points().iter().all(|spawn| spawn.feet.y == 0));
+    assert_walks_link_up(&arena);
+}
+
+/// The drydock's hull tops: each ship's foredeck and stern deck are bot points a walk reaches
+/// (up the gantry's ramps, over its gangways, up the stern ramp), a jump pad in each outer lane
+/// throws onto a foredeck and each stern deck carries thrusters. No hull top is an unanswered
+/// perch: from every stern deck point some point on the other ship's hull and some point on a
+/// gantry is in plain sight, and the crane pylon cuts the line between the two stern decks.
+#[test]
+fn drydock_hulls_are_reached_and_answered() {
+    use shooter_sim::drydock::{FOREDECK_TOP, GANTRY_TOP, SHIP_X, STERN_TOP};
+    use shooter_sim::pickups::Class;
+    let arena = Arena::drydock();
+    let points = arena.bot_points();
+    let on = |west: bool, top: i32| -> Vec<Vec3i> {
+        points
+            .iter()
+            .copied()
+            .filter(|point| point.y == top && (point.x < 0) == west && point.x.abs() > 1_600)
+            .collect()
+    };
+    for west in [true, false] {
+        assert!(on(west, FOREDECK_TOP).len() >= 3, "{points:?}");
+        assert!(on(west, STERN_TOP).len() >= 2, "{points:?}");
+    }
+    let thrusters: Vec<_> = arena
+        .module_pads
+        .iter()
+        .filter(|pad| pad.module.class() == Class::Movement)
+        .collect();
+    assert_eq!(thrusters.len(), 2);
+    assert!(thrusters.iter().all(|pad| pad.center.y == STERN_TOP));
+    assert!(
+        arena
+            .module_pads
+            .iter()
+            .any(|pad| pad.module.class() == Class::Weapon && pad.center.y == 0)
+    );
+    for ship in [SHIP_X, -SHIP_X] {
+        assert!(
+            arena.pads.iter().any(|pad| {
+                (pad.center.x - ship).abs() > 1_000
+                    && (pad.center.x - ship).abs() < 1_500
+                    && pad.launch.y >= 1_350
+                    && pad.launch.x.signum() == (ship - pad.center.x).signum()
+            }),
+            "no pad onto the ship at {ship}"
+        );
+    }
+    let world = arena.build_world(GRAVITY).unwrap();
+    let sees = |a: Vec3i, b: Vec3i| {
+        #[allow(clippy::cast_precision_loss)]
+        let eye = |p: Vec3i| [p.x, p.y + EYE_HEIGHT_UNITS, p.z].map(|axis| axis as f32);
+        let (from, to) = (eye(a), eye(b));
+        world
+            .cast_ray(
+                from,
+                [to[0] - from[0], to[1] - from[1], to[2] - from[2]],
+                |_| true,
+            )
+            .is_none()
+    };
+    let gantries: Vec<Vec3i> = points
+        .iter()
+        .copied()
+        .filter(|point| point.y == GANTRY_TOP && point.x.abs() < 1_600)
+        .collect();
+    for west in [true, false] {
+        let other_hull: Vec<Vec3i> = on(!west, FOREDECK_TOP)
+            .into_iter()
+            .chain(on(!west, STERN_TOP))
+            .collect();
+        for perch in on(west, STERN_TOP) {
+            assert!(
+                other_hull.iter().any(|&point| sees(perch, point)),
+                "{perch:?} sees no other hull"
+            );
+            assert!(
+                gantries.iter().any(|&point| sees(perch, point)),
+                "{perch:?} sees no gantry"
+            );
+        }
+    }
+    let (west_stern, east_stern) = (on(true, STERN_TOP), on(false, STERN_TOP));
+    assert!(!sees(west_stern[0], east_stern[0]));
+}

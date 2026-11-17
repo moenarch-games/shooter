@@ -321,10 +321,11 @@ mod tests {
     }
 
     /// A scripted match on each kit-built map (the assembly works, shooter#52; the proving cell,
-    /// shooter#53) records, round-trips, replays tick for tick and restores its map.
+    /// shooter#53; the drydock, shooter#55) records, round-trips, replays tick for tick and
+    /// restores its map.
     #[test]
     fn a_replay_on_a_kit_built_map_reproduces_every_tick() {
-        for map in [MapId::AssemblyWorks, MapId::ProvingCell] {
+        for map in [MapId::AssemblyWorks, MapId::ProvingCell, MapId::Drydock] {
             let script = Script { map, ..short() };
             let replay = record(script).unwrap();
             let bytes = replay.encode().unwrap();

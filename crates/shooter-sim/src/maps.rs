@@ -33,6 +33,11 @@ pub enum MapId {
     /// (shooter#53): a 32 m purpose-built combat test cell built from the arena kit, with a 2 m
     /// test stage, 3 m observation galleries and corner control booths.
     ProvingCell,
+    /// The drydock ([`Arena::drydock`]), the beta's large long-sightline arena (shooter#55): an
+    /// 80 m repurposed shipyard built from the arena kit, two docked spacecraft with walkable
+    /// hulls (a 4 m foredeck, a 6 m stern deck) flanking a central industrial corridor with 4 m
+    /// dock gantries.
+    Drydock,
 }
 
 /// The players a map is laid out for, inclusive. A recommendation for whoever sets up a
@@ -77,11 +82,12 @@ impl std::error::Error for UnknownMap {}
 
 impl MapId {
     /// Every catalogued map.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Greybox,
         Self::GreyboxYard,
         Self::AssemblyWorks,
         Self::ProvingCell,
+        Self::Drydock,
     ];
     /// The map a match is played on when none is chosen.
     pub const DEFAULT: Self = Self::GreyboxYard;
@@ -94,6 +100,7 @@ impl MapId {
             Self::GreyboxYard => "greybox-yard",
             Self::AssemblyWorks => "assembly-works",
             Self::ProvingCell => "proving-cell",
+            Self::Drydock => "drydock",
         }
     }
 
@@ -105,6 +112,7 @@ impl MapId {
             Self::GreyboxYard => 2,
             Self::AssemblyWorks => 3,
             Self::ProvingCell => 4,
+            Self::Drydock => 5,
         }
     }
 
@@ -128,6 +136,8 @@ impl MapId {
             // Small: a duel to a 6-player skirmish. Its 12 spawn points still take the default
             // 12 slots (practice, a host that sets none), only crowded.
             Self::ProvingCell => Capacity { min: 2, max: 6 },
+            // Large: from an 8-player match to the default 12, two spawn points to spare.
+            Self::Drydock => Capacity { min: 8, max: 12 },
         }
     }
 
@@ -146,6 +156,7 @@ impl MapId {
             Self::GreyboxYard => Arena::greybox_yard(),
             Self::AssemblyWorks => Arena::assembly_works(),
             Self::ProvingCell => Arena::proving_cell(),
+            Self::Drydock => Arena::drydock(),
         }
     }
 }

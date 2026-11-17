@@ -11,6 +11,7 @@ pub mod arena_kit;
 pub mod assembly_works;
 pub mod bots;
 pub mod damage;
+pub mod drydock;
 pub mod dummies;
 pub mod energy;
 pub mod fixed;
