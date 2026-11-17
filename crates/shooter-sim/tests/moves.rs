@@ -36,11 +36,13 @@ fn sprinting_is_faster_and_a_slide_starts_faster_still_and_decays() {
     let peak = slide.iter().copied().fold(0.0, f32::max);
     let slide_per_tick = (SLIDE_SPEED_UNITS_PER_SECOND / i32::from(TICK_HZ)) as f32;
     assert!((peak - slide_per_tick).abs() < 0.5, "{slide:?}");
-    // It decays to walking speed and ends; the held sprint takes over again.
+    // It decays to walking speed and ends; the held sprint takes over again. (The legs stride
+    // on through the slide while W is held, as the default layout binds them, so the frame
+    // sways up to half a unit a tick about the decay.)
     assert!(
         slide
             .windows(2)
-            .all(|pair| pair[1] <= pair[0] || pair[1] > 17.0),
+            .all(|pair| pair[1] <= pair[0] + 0.6 || pair[1] > 17.0),
         "{slide:?}"
     );
     assert!(

@@ -786,17 +786,21 @@ pub const ALL: &[Scenario] = &[
 
 /// This tick's controls for scripted person `index`: run and strafe in turns, sweep the view
 /// round, hop, slide, hold the trigger two thirds of the time, swap weapons every 5 s and swing
-/// the blade now and then. A pure function of the tick, so a replay needs nothing else. The
-/// match replays (`shooter-replay`) and the native client's offscreen profile run play it.
+/// the blade now and then, its legs on the named loadouts' preset layout
+/// ([`crate::bindings::Bindings::preset`]; every named loadout has the same legs). A pure
+/// function of the tick, so a replay needs nothing else. The match replays (`shooter-replay`)
+/// and the native client's offscreen profile run play it.
 #[must_use]
 pub fn scripted_intent(index: u8, tick: u32) -> Intent {
     let person = u32::from(index);
     let segment = (tick + 45 * person) / 90;
     let weapons = Weapon::ROTATION;
+    let forward = if segment % 4 == 3 { -1 } else { 1 };
+    let strafe = if segment.is_multiple_of(2) { 1 } else { -1 };
     #[allow(clippy::cast_possible_truncation)]
     Intent {
-        forward: if segment % 4 == 3 { -1 } else { 1 },
-        strafe: if segment.is_multiple_of(2) { 1 } else { -1 },
+        forward,
+        strafe,
         yaw: (tick.wrapping_mul(40 + 13 * person) + person * 16_384) as u16,
         jump: (tick + 30 * person) % 120 < 2,
         sprint: segment.is_multiple_of(3),
@@ -811,6 +815,14 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
             .then(|| weapons[(tick / 300 + person) as usize % weapons.len()]),
         edit: false,
         repair: None,
+        motors: {
+            let layout = crate::mechanics::Layout::of(&crate::robot::STANDARD);
+            crate::bindings::Bindings::preset(&layout).resolve(
+                &layout,
+                &mut crate::bindings::BindingState::default(),
+                crate::bindings::Pressed::wasd(forward, strafe),
+            )
+        },
     }
 }
 

@@ -162,9 +162,11 @@ fn flat_ground_moves_match_the_rapier_oracle() {
             .flat_map(|(a, b)| (0..3).map(move |axis| (a.center[axis] - b.center[axis]).abs()))
             .fold(0.0f32, f32::max);
         println!("one leg lost {lose_leg}: worst path gap {worst:.3} units");
-        // On one leg the robot rocks on that leg's one foot: the backends part a little more.
+        // On one leg the robot rocks on that leg's one foot: the backends part a little more,
+        // and more since shooter#74 (the default layout strides that leg on through the sprint
+        // and the slide while W is held: about 34 units at worst, against 24 before).
         let tolerance = if lose_leg {
-            4.0 * PATH_TOLERANCE_UNITS
+            6.0 * PATH_TOLERANCE_UNITS
         } else {
             PATH_TOLERANCE_UNITS
         };
@@ -683,6 +685,65 @@ mod mechanics {
         for outcome in [&engine, &rapier] {
             assert!(outcome.root.position[0] > 100.0, "{:?}", outcome.root);
             assert!(up(outcome.root)[1] > 0.8, "{:?}", outcome.root);
+        }
+    }
+
+    /// The preset layouts (shooter#74) through the same commands on both backends, narrowed
+    /// like the routes: W rolls the car ahead and the strafer sideways at speeds within a
+    /// tenth, D turns the car the same way on the spot (narrowed to the direction: the wheels
+    /// skid round about ten times faster on Rapier, 1.3 rad/s against 0.13), and the mouse's
+    /// offset aims the paired turret to the same angles within 0.05 rad.
+    #[test]
+    fn the_presets_drive_alike_on_the_rapier_oracle() {
+        use shooter_sim::bindings::{BindingState, Bindings, Pressed};
+        let preset = |pressed: Pressed| {
+            move |mechanics: &Mechanics| {
+                let layout = &mechanics.robots()[0].layout;
+                Bindings::preset(layout)
+                    .resolve(layout, &mut BindingState::default(), pressed)
+                    .controls(layout)
+            }
+        };
+        let w = Pressed::default().with_key("KeyW");
+        for (build, along) in [(fixtures::car(), 0), (fixtures::strafer(), 2)] {
+            let (engine, rapier) = both(&floor(), build, 120, preset(w));
+            let (ev, rv) = (engine.motion.velocity[along], rapier.motion.velocity[along]);
+            assert!(ev > 100.0 && (ev - rv).abs() < 0.1 * rv.abs(), "{ev} {rv}");
+        }
+        let (engine, rapier) = both(
+            &floor(),
+            fixtures::car(),
+            120,
+            preset(Pressed::default().with_key("KeyD")),
+        );
+        let (ew, rw) = (
+            engine.motion.angular_velocity[1],
+            rapier.motion.angular_velocity[1],
+        );
+        assert!(ew * rw > 0.0 && ew.abs() > 0.05, "{ew} {rw}");
+        // The offset is the layout's own state: one pushed for 30 ticks, then left.
+        let aimed = |mechanics: &Mechanics| {
+            let layout = &mechanics.robots()[0].layout;
+            let preset = Bindings::preset(layout);
+            let mut state = BindingState::default();
+            for _ in 0..30 {
+                let _ = preset.resolve(
+                    layout,
+                    &mut state,
+                    Pressed {
+                        mouse: [-10, -8],
+                        ..Pressed::default()
+                    },
+                );
+            }
+            preset
+                .resolve(layout, &mut state, Pressed::default())
+                .controls(layout)
+        };
+        let (engine, rapier) = both(&floor(), fixtures::paired_turret(), 120, aimed);
+        for part in [ROTOR_PART, HINGE_PART] {
+            let (e, r) = (angle(&engine, part).0, angle(&rapier, part).0);
+            assert!((e - r).abs() < 0.05 && e.abs() > 0.5, "{part:?}: {e} {r}");
         }
     }
 }

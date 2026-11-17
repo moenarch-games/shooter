@@ -305,6 +305,8 @@ impl Bot {
             select: Some(weapon),
             edit: false,
             repair: None,
+            // The session resolves its build's preset from its movement ([`crate::bindings`]).
+            motors: crate::bindings::Motors::REST,
         }
     }
 
