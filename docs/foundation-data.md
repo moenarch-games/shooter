@@ -31,7 +31,7 @@ real players.
    | `--target` | Output | For |
    | --- | --- | --- |
    | `game-server` | The log in game-server's replay format, cut after `--to`, plus a `key=value` `.txt` manifest. It always starts at tick 0: the shooter's snapshot is not a restorable baseline | game-server's replay codec and runtime tests (`tests/fixtures/shooter/`) |
-   | `physics` | JSON: arena boxes and ramps, the character box with its contact offset and step-up, gravity, and for each tick `--from..=--to` every fighter's intent, the move its step handed the character controller (`move`: the displacement in units, gravity, ground settle and sliding around other fighters included; `null` without a body), and the position, velocity and ground contact after it | a physics-engine A/B scenario, driving each character with `move` |
+   | `physics` | JSON (`shooter/physics-window/v2`): arena boxes and ramps, gravity, and for each tick `--from..=--to` every fighter's intent, its mechanical robot's root body after the tick (`root`: centre of mass, principal frame, velocity and angular velocity, exact; `null` without a robot, shooter#73), and the position, velocity and ground contact after it | a physics-engine A/B scenario of the robots' root bodies |
    | `render` | JSON: one frame at `--to`. It has the camera at a person's eye, the arena, the fighters, rockets in flight, and the last 6 ticks of shots, beams, explosions and hits | a render-engine scene |
 
 4. **Hand it over:** open a PR on the foundation with the fixture and a test, or file an issue

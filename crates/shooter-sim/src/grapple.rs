@@ -2,18 +2,17 @@
 //! point while the rope keeps them within its length, so momentum across the rope swings them
 //! round the anchor.
 //!
-//! physics-engine cannot yet pull or swing a kinematic character on a rope
-//! (moritzbrantner/physics-engine#557), so this is a deterministic stand-in: each tick before the
-//! world steps, [`Hook::pull`] adds the reel's acceleration toward the anchor and removes any
-//! velocity that would stretch the rope. The physics world's character move still resolves every
-//! collision. [`Hook::pull`] is the whole seam: when the engine has rope joints on characters,
-//! its body becomes that joint and nothing else changes.
+//! A deterministic stand-in for a rope joint: each tick before the world steps, [`Hook::pull`]
+//! adds the reel's acceleration toward the anchor to the robot's velocity and removes any that
+//! would stretch the rope; the movement drive sets the result on the mechanical robot
+//! ([`crate::mechanics::Mechanics::drive`]) and the articulated world resolves every collision.
+//! [`Hook::pull`] is the whole seam: a rope joint on the robot's root body could replace it.
 //!
 //! Everything is integer: positions and velocities in subunits, lengths integer square roots.
 
 use crate::arena::FIRST_PLAYER_BODY;
 use crate::fixed::{subunits_per_tick, subunits_per_tick_squared};
-use crate::physics::{BodyId, PhysicsError, RigidBody, SUBUNITS_PER_UNIT, Vec3i, World};
+use crate::physics::{BodyId, SUBUNITS_PER_UNIT, Vec3i, World};
 use crate::trig;
 use crate::weapons::{self, subunits};
 
@@ -85,24 +84,17 @@ impl Hook {
             .map(|axis| axis as f32 / SUBUNITS_PER_UNIT as f32)
     }
 
-    /// One tick of rope on `body`, whose eye is `eye` (units): reels the rope in, pulls toward
-    /// the anchor and takes out any velocity that would stretch the rope past its length. Call
-    /// after the body's own movement and before the world steps.
-    pub fn pull(
-        &mut self,
-        world: &mut World,
-        body: BodyId,
-        eye: [f32; 3],
-    ) -> Result<(), PhysicsError> {
-        let velocity = world
-            .body(body)
-            .map(RigidBody::velocity)
-            .unwrap_or_default();
+    /// One tick of rope on a body moving at `velocity` (subunits per tick) whose eye is `eye`
+    /// (units): reels the rope in, and returns the velocity pulled toward the anchor without
+    /// any part that would stretch the rope past its length. Call after the body's own
+    /// movement and before the world steps.
+    #[must_use]
+    pub fn pull(&mut self, velocity: Vec3i, eye: [f32; 3]) -> Vec3i {
         let from = subunits(eye);
         let offset = [0, 1, 2].map(|axis| i64::from(self.anchor[axis] - from[axis]));
         let span = distance(offset);
         if span == 0 {
-            return Ok(());
+            return velocity;
         }
         let min_length = i64::from(MIN_LENGTH_UNITS * SUBUNITS_PER_UNIT);
         let mut v = [velocity.x, velocity.y, velocity.z].map(i64::from);
@@ -127,6 +119,6 @@ impl Hook {
         }
         // Reel in: the rope shortens to the distance reached, down to its minimum.
         self.length = narrow(span.max(min_length).min(length));
-        world.set_velocity(body, Vec3i::new(narrow(v[0]), narrow(v[1]), narrow(v[2])))
+        Vec3i::new(narrow(v[0]), narrow(v[1]), narrow(v[2]))
     }
 }

@@ -167,8 +167,14 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   mirrored on the Rapier oracle): every valid build becomes compound bodies on hinge, rotor,
   wheel, track and leg joints (a leg is one module: hip and knee servos and a flat foot), driven
   by per-actuator commands with stall detection, the biped and quadruped presets, per-part poses
-  and hits, and an exactly restorable state. The match's fighters still use the capsule
-  controller; moving them onto the mechanics (snapshots, prediction, replays) is its second half.
+  and hits, and an exactly restorable state.
+  Since shooter#73's match integration every living fighter is its mechanical robot (no capsule),
+  keyed by slot, with the simplest mapping of the shipped controls until the bindings
+  (shooter#74): a movement drive sets the whole robot's velocity from the D2.3 movement rules and
+  keeps it upright facing the aim, its legs stride and wheels roll along, its bodies slide
+  frictionless (the drive carries them) and its legs bend within the gaits' range; a lost part
+  leaves the bodies; snapshots, prediction and replays carry the exact state. The drive is a
+  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
   humanoids and other bipeds, four-leg robo-dogs on built-in quadruped walking presets, wheels and
   tracks, stationary platforms and grappling-only machines, all from the same part types and rules.
@@ -200,6 +206,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   healths. Field repair is shooter#61, collision damage and physical debris shooter#75.
   Since shooter#89 (D2.i89.1) lost means no longer connected to the root chassis: a destroyed
   part takes its subtree with it, and the root chassis' destruction is the kill.
+  Since shooter#73's match integration the parts are placed where the robot's bodies carry them,
+  and a lost part leaves the bodies: lost legs no longer hold the robot up, and it walks at the
+  share of its locomotion still connected.
 - **D2.i70.9** (owner, 2026-11-13 and 2026-11-14; shooter#61; answers Q2.i46.2): Repair is done by
   physically mounted repair modules (mass, health, build points) that the player activates
   manually. A module restores, over time and for energy from the shared pool (D2.i70.3), a

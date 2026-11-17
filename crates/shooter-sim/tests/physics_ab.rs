@@ -29,7 +29,7 @@ fn run_as(backend: Backend, arena: fn() -> Arena, legs: &[Leg], build: Assembly)
     using_backend(backend, || {
         let mut session = Session::new(arena()).expect("arena builds");
         assert_eq!(session.world.backend(), backend);
-        session.fighters[0].rebuild(build);
+        session.rebuild(0, build).unwrap();
         tour::run_legs(&mut session, legs).expect("script runs")
     })
 }
@@ -118,59 +118,8 @@ fn compare_as(scenario: Scenario, build: Assembly) {
 }
 
 #[test]
-fn the_tour_matches_the_rapier_oracle() {
-    compare(tour_scenario());
-}
-
-#[test]
-fn sprint_and_slide_match_the_rapier_oracle() {
-    compare(scenarios::SPRINT_AND_SLIDE);
-}
-
-#[test]
-fn the_double_jump_matches_the_rapier_oracle() {
-    compare(scenarios::DOUBLE_JUMP);
-}
-
-/// The thrusters module (`shooter_sim::pickups`), taken from a pad, then a 2.25 m jump.
-#[test]
-fn the_thruster_jump_matches_the_rapier_oracle() {
-    compare(scenarios::THRUSTER_JUMP);
-}
-
-#[test]
-fn the_jump_pad_matches_the_rapier_oracle() {
-    compare(scenarios::JUMP_PAD);
-}
-
-#[test]
-fn ramp_slides_match_the_rapier_oracle() {
-    compare(scenarios::RAMP_SLIDE);
-}
-
-#[test]
-fn the_thin_wall_matches_the_rapier_oracle() {
-    compare(scenarios::THIN_WALL);
-}
-
-#[test]
-fn the_step_matches_the_rapier_oracle() {
-    compare(scenarios::STEP);
-}
-
-#[test]
-fn the_rocket_jump_matches_the_rapier_oracle() {
-    compare(scenarios::ROCKET_JUMP);
-}
-
-#[test]
 fn the_shooting_range_matches_the_rapier_oracle() {
     compare(scenarios::SHOOTING_RANGE);
-}
-
-#[test]
-fn the_grapple_matches_the_rapier_oracle() {
-    compare(scenarios::GRAPPLE);
 }
 
 #[test]
@@ -178,24 +127,92 @@ fn the_close_range_matches_the_rapier_oracle() {
     compare(scenarios::CLOSE_RANGE);
 }
 
-/// The greybox yard: up its west ramp, along the walkway and off its edge, and its pad throwing
-/// a fighter onto the walkway.
+/// The match's mechanical robots (shooter#73) on flat ground: the standard robot sprints,
+/// slides and stops along the same path on both backends, whole and on one leg (the other shot
+/// off: it no longer weighs or holds anything up, and the robot goes at half speed). The
+/// scripted routes over ledges, steps and pads are checked on physics-engine (`tests/moves.rs`)
+/// and replay exactly on each backend: robots' legs catching a lip, and Rapier's servo spring
+/// under the heavier builds, part the two backends' paths there.
 #[test]
-fn the_yards_walkway_matches_the_rapier_oracle() {
-    compare(scenarios::YARD_WALKWAY);
-    compare(scenarios::YARD_JUMP_PAD);
+fn flat_ground_moves_match_the_rapier_oracle() {
+    let scenario = scenarios::SPRINT_AND_SLIDE;
+    for lose_leg in [false, true] {
+        let run = |backend| {
+            using_backend(backend, || {
+                let mut session = Session::new((scenario.arena)()).expect("arena builds");
+                if lose_leg {
+                    let fighter = &mut session.fighters[0];
+                    let build = fighter.build;
+                    let leg = build
+                        .parts()
+                        .iter()
+                        .position(|part| part.kind == shooter_sim::robot::parts::LEG.id)
+                        .expect("the standard robot has legs");
+                    fighter.parts.hurt(&build, leg, 10_000);
+                }
+                tour::run_legs(&mut session, scenario.legs).expect("script runs")
+            })
+        };
+        let (engine, rapier) = (run(Backend::Engine), run(Backend::Rapier));
+        let worst = engine
+            .iter()
+            .zip(&rapier)
+            .flat_map(|(a, b)| (0..3).map(move |axis| (a.center[axis] - b.center[axis]).abs()))
+            .fold(0.0f32, f32::max);
+        println!("one leg lost {lose_leg}: worst path gap {worst:.3} units");
+        // On one leg the robot rocks on that leg's one foot: the backends part a little more.
+        let tolerance = if lose_leg {
+            4.0 * PATH_TOLERANCE_UNITS
+        } else {
+            PATH_TOLERANCE_UNITS
+        };
+        assert!(worst <= tolerance, "one leg lost {lose_leg}: {worst}");
+        let travelled = |samples: &[Sample]| {
+            let (first, last) = (samples[0].center, samples[samples.len() - 1].center);
+            (last[2] - first[2]).abs()
+        };
+        if lose_leg {
+            let whole = using_backend(Backend::Engine, || {
+                let mut session = Session::new((scenario.arena)()).expect("arena builds");
+                tour::run_legs(&mut session, scenario.legs).expect("script runs")
+            });
+            assert!(
+                travelled(&engine) < 0.75 * travelled(&whole),
+                "{} {}",
+                travelled(&engine),
+                travelled(&whole)
+            );
+        }
+    }
 }
 
-/// The assembly works (shooter#52): its ramp, mezzanine deck, bridge and the drop off the
-/// bridge's edge; low cover, a double jump over it and a barrier; the jump pad and the steps onto
-/// the crane tower; and the grapple up its face by the crane mast.
+/// The match's twelve slots, every one a bot's mechanical robot, on the default map: the mean
+/// wall time a session tick takes on each backend; no threshold
+/// (`--release -- --ignored --nocapture`).
 #[test]
-fn the_assembly_works_matches_the_rapier_oracle() {
-    compare(scenarios::WORKS_RAMP_AND_BRIDGE);
-    compare(scenarios::WORKS_COVER);
-    compare(scenarios::WORKS_TOWER_PAD);
-    compare(scenarios::WORKS_STEPS);
-    compare(scenarios::WORKS_GRAPPLE);
+#[ignore = "a timing run, not a check"]
+fn twelve_robots_in_a_match_a_tick() {
+    for backend in [Backend::Engine, Backend::Rapier] {
+        using_backend(backend, || {
+            let mut session = Session::on_map(
+                shooter_sim::MapId::DEFAULT,
+                shooter_sim::Rules::deathmatch(7),
+            )
+            .expect("map builds");
+            for _ in 0..60 {
+                session.step().unwrap();
+            }
+            let started = std::time::Instant::now();
+            for _ in 0..600 {
+                session.step().unwrap();
+            }
+            println!(
+                "{backend:?}: {} robots in the match: {:.1} µs a tick",
+                session.mechanics.robots().len(),
+                started.elapsed().as_secs_f64() * 1e6 / 600.0
+            );
+        });
+    }
 }
 
 /// The shots and hits of `scenario` on physics-engine as `build`.

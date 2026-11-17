@@ -12,9 +12,9 @@ use physics_engine::approximate::{
 };
 use rapier3d::parry::query::DefaultQueryDispatcher;
 use rapier3d::prelude::{
-    ColliderBuilder, ImpulseJointHandle, JointAxis, PhysicsWorld, Pose, QueryFilter, Ray,
-    RevoluteJoint, RevoluteJointBuilder, RigidBodyBuilder, RigidBodyHandle, Rotation, SharedShape,
-    Vector,
+    CoefficientCombineRule, ColliderBuilder, ImpulseJointHandle, JointAxis, PhysicsWorld, Pose,
+    QueryFilter, Ray, RevoluteJoint, RevoluteJointBuilder, RigidBodyBuilder, RigidBodyHandle,
+    Rotation, SharedShape, Vector,
 };
 
 use super::super::rapier::{TICK_SECONDS, UNITS_PER_METRE, metres, units, wedge};
@@ -109,9 +109,9 @@ impl fmt::Debug for World {
 }
 
 impl World {
-    pub fn new(statics: &[RigidBody]) -> Self {
+    pub fn new(statics: &[RigidBody], gravity: [f32; 3]) -> Self {
         let mut world = PhysicsWorld::new();
-        world.gravity = Vector::new(0.0, -9.81, 0.0);
+        world.gravity = Vector::from_array(gravity);
         world.integration_parameters.dt = TICK_SECONDS;
         for body in statics {
             let shape = match body.kind {
@@ -180,6 +180,11 @@ impl World {
                     ))
                     .mass(child.mass)
                     .friction(spec.friction)
+                    .friction_combine_rule(if spec.friction == 0.0 {
+                        CoefficientCombineRule::Min
+                    } else {
+                        CoefficientCombineRule::Average
+                    })
                     .user_data(tag(spec.id, Some(index)))
                     .build(),
                 handle,
@@ -312,6 +317,51 @@ impl World {
         Some(GamePose {
             position: units(collider.translation()),
             orientation: quad(collider.rotation()),
+        })
+    }
+
+    pub fn set_velocity(
+        &mut self,
+        id: BodyId,
+        velocity: [f32; 3],
+        angular_velocity: [f32; 3],
+    ) -> Result<(), PhysicsError> {
+        let handle = self.handle(id)?;
+        let body = self
+            .world
+            .bodies
+            .get_mut(handle)
+            .ok_or_else(|| error("rapier body is missing"))?;
+        body.set_linvel(metres(velocity), true);
+        body.set_angvel(Vector::from_array(angular_velocity), true);
+        Ok(())
+    }
+
+    /// A contact of any of the body's colliders whose normal (from it to the other) points
+    /// mostly down.
+    pub fn supported(&self, id: BodyId) -> bool {
+        let Some(body) = self
+            .bodies
+            .get(&id)
+            .and_then(|entry| self.world.bodies.get(entry.handle))
+        else {
+            return false;
+        };
+        body.colliders().iter().any(|&collider| {
+            self.world
+                .narrow_phase
+                .contact_pairs_with(collider)
+                .filter(|pair| pair.has_any_active_contact())
+                .any(|pair| {
+                    let sign = if pair.collider1 == collider {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    pair.manifolds()
+                        .iter()
+                        .any(|manifold| sign * manifold.data.normal.y < -0.5)
+                })
         })
     }
 

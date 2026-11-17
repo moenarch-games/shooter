@@ -1030,8 +1030,8 @@ fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
     if !target.alive() {
         return (if from == 0 { 0 } else { 32_768 }, 0);
     }
-    let eye = session.fighters[from].player.eye(&session.world);
-    let parts = target.hitboxes(target.player.center(&session.world), target.intent.yaw);
+    let eye = session.fighters[from].eye();
+    let parts = target.hitboxes();
     let mut chassis = parts
         .get(PartDamage::root(&target.build).unwrap())
         .unwrap()
@@ -1135,10 +1135,11 @@ fn matches_with_configured_builds_replay_exactly() {
     let dog = BETA.validate(&robo_dog()).unwrap();
     let play = || {
         let mut session = duel();
-        session.fighters[0].rebuild(MARKSMAN);
+        session.rebuild(0, MARKSMAN).unwrap();
         session.configure(2, dog);
         let mut snapshots = Vec::new();
-        for _ in 0..600 {
+        // The rail gun's pace is the pool's: its 30 against regeneration less the legs' servos.
+        for _ in 0..900 {
             rail(&mut session, 1);
             snapshots.extend(encode_snapshot(&session.snapshot()));
         }
@@ -1153,7 +1154,7 @@ fn matches_with_configured_builds_replay_exactly() {
 /// held at person 2, and person 2's deaths.
 fn rail_record(build: Assembly, ticks: u32) -> (Vec<u32>, i32) {
     let mut session = duel();
-    session.fighters[0].rebuild(build);
+    session.rebuild(0, build).unwrap();
     let mut fired = Vec::new();
     for _ in 0..ticks {
         let tick = session.ticks();
