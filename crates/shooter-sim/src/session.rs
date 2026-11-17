@@ -23,10 +23,11 @@
 //! world from its exact state, so the host, a predicting client and a replay continue alike.
 //! Each tick the movement rules ([`crate::player::Motion::drive`]: walk, sprint, slide, jumps,
 //! pads, air control, the rope) give the velocity the movement drive sets on the whole robot
-//! ([`Mechanics::drive`]), which also keeps it upright and turns it to face the aim; its legs
-//! stride and its wheels roll along with it ([`crate::mechanics::Controls::carried`]), drawing
-//! their motors' energy from its pool after its jumps, swings and shots, and its legs, wheels
-//! and tracks slide where the drive takes them. It walks on its feet: only a connected leg,
+//! ([`Mechanics::drive`]), which also keeps it upright and turns it to face the aim: an interim
+//! chassis drive (Atlas D2.i70.5) until robots walk and roll on their actuators alone. Its
+//! actuators take what its person's control layout resolved ([`crate::bindings`]; a bot's, its
+//! build's preset from its movement keys), drawing their motors' energy from its pool after its
+//! jumps, swings and shots, and its legs, wheels and tracks slide where the drive takes them. It walks on its feet: only a connected leg,
 //! wheel or track on the ground is footing, and the wished speeds scale by the share of its
 //! locomotion it still has ([`crate::player::Traction`]).
 //!
@@ -68,6 +69,7 @@
 
 use crate::aim;
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
+use crate::bindings::{BindingState, Bindings, Pressed};
 use crate::bots::{Bot, Sight};
 use crate::damage::{BATTERY_BLAST_DAMAGE, BATTERY_BLAST_RADIUS_UNITS, Blow, Hitboxes, PartDamage};
 use crate::dummies::Dummy;
@@ -497,6 +499,33 @@ fn whole(position: [f32; 3]) -> Vec3i {
     Vec3i::new(x, y, z)
 }
 
+/// Below this speed up or down (units a second) a robot held up by its chassis has come to rest
+/// there rather than glancing off on its way down...
+const PERCHED_REST: f32 = 2.0;
+/// ...and with no scenery this far (units) under its feet it is hung up on it, not leaning on
+/// a wall a step above the ground.
+const PERCHED_HEIGHT: f32 = 20.0;
+
+/// A robot held up by its chassis, upright, at rest and high off the ground: perched on a
+/// ledge's lip rather than tipped over.
+fn perched(world: &World, stance: &Stance) -> bool {
+    let feet = stance.feet();
+    upright(stance.origin.orientation)
+        && stance.velocity[1].abs() < PERCHED_REST
+        && world
+            .cast_ray(feet, [0.0, -PERCHED_HEIGHT, 0.0], |body| {
+                body.0 < FIRST_PLAYER_BODY
+            })
+            .is_none()
+}
+
+/// A robot's frame at `orientation` leans less than 45° from upright: its up axis's height,
+/// `1 - 2 (x² + z²)`, is above `cos 45°` (arithmetic only, so every platform agrees).
+fn upright(orientation: [f32; 4]) -> bool {
+    let [x, _, z, _] = orientation;
+    1.0 - 2.0 * (x * x + z * z) > std::f32::consts::FRAC_1_SQRT_2
+}
+
 /// The angular velocity (radians a second) that turns a robot's frame from `orientation`
 /// halfway to upright and facing `yaw` in a tick: the movement drive's balance and aim.
 /// Arithmetic only (no transcendental functions), so every platform agrees.
@@ -591,6 +620,21 @@ fn step_up(world: &World, intent: Intent, feet: [f32; 3], velocity: Vec3i) -> Ve
         * u64::from(SUBUNITS_PER_UNIT.unsigned_abs());
     let hop = i32::try_from(crate::trig::isqrt(lift)).unwrap_or(i32::MAX);
     Vec3i::new(velocity.x, velocity.y.max(hop), velocity.z)
+}
+
+/// The commands the preset layout of the robot in `slot` ([`Bindings::preset`], from its
+/// connected actuators) gives for the keys `intent`'s movement presses ([`Pressed::wasd`]): what
+/// a bot sends, and a script or test that plays the default layout. Rest without a robot.
+fn preset_motors(mechanics: &Mechanics, slot: u8, intent: Intent) -> crate::bindings::Motors {
+    mechanics
+        .robot(slot)
+        .map_or(crate::bindings::Motors::REST, |robot| {
+            Bindings::preset(&robot.layout).resolve(
+                &robot.layout,
+                &mut BindingState::default(),
+                Pressed::wasd(intent.forward, intent.strafe),
+            )
+        })
 }
 
 fn tuning_of(build: &Assembly, carried: Option<Carried>, weapon: Weapon) -> Tuning {
@@ -1333,6 +1377,21 @@ impl Session {
     }
 
     /// One tick for the local person (slot 0) holding `intent`, seeing the others as they are now.
+    /// `intent` as the default layout would send it for the robot in `slot`: unless it already
+    /// commands motors, its movement keys through the robot's preset layout
+    /// ([`crate::bindings::Bindings::preset`]), as bots do. For scripts and tests that play
+    /// the default layout.
+    #[must_use]
+    pub fn with_preset(&self, slot: u8, intent: Intent) -> Intent {
+        if intent.motors != crate::bindings::Motors::REST {
+            return intent;
+        }
+        Intent {
+            motors: preset_motors(&self.mechanics, slot, intent),
+            ..intent
+        }
+    }
+
     pub fn tick(&mut self, intent: Intent) -> Result<StepReport, PhysicsError> {
         let input = Input {
             sequence: self.fighters[0].ack.wrapping_add(1),
@@ -1420,8 +1479,14 @@ impl Session {
                 traction,
             );
             // Resting on its body rather than its feet (its legs shot off, tipped over), it lies
-            // where it is: the movement drive is all that slides a robot over the ground.
-            let velocity = if stance.footing.any && !stance.footing.feet && !hooked {
+            // where it is: the movement drive is all that slides a robot over the ground. One
+            // still upright and hung up on a ledge by its chassis, its feet in the air
+            // ([`perched`]), steps off it under the drive's air control while it means to move
+            // (else it hangs there for good).
+            let perched = fighter.parts.mobile(&fighter.build)
+                && crate::player::wish_direction(intent).is_some()
+                && perched(&self.world, stance);
+            let velocity = if stance.footing.any && !stance.footing.feet && !hooked && !perched {
                 Vec3i::new(0, velocity.y, 0)
             } else {
                 velocity
@@ -1432,20 +1497,16 @@ impl Session {
             self.mechanics
                 .drive(id, velocity, steer(origin.orientation, intent.yaw))?;
             if let Some(robot) = self.mechanics.robot(id) {
-                let walking = footing.grounded
-                    && !fighter.motion.sliding
-                    && crate::player::wish_direction(intent).is_some();
-                let stride = match (walking, intent.forward < 0) {
-                    (false, _) => 0,
-                    (true, false) => 100,
-                    (true, true) => -100,
+                // Its actuators take what its control layout resolved (shooter#74), as far as
+                // they can: the host's word on the input ([`crate::bindings::Motors::controls`]).
+                // A robot whose locomotion is gone still turns its joints; between rounds
+                // everything rests.
+                let commanded = if playing {
+                    fighter.intent.motors
+                } else {
+                    crate::bindings::Motors::REST
                 };
-                motors[slot] = Some(Controls::carried(
-                    &robot.layout,
-                    origin.orientation,
-                    velocity,
-                    stride,
-                ));
+                motors[slot] = Some(commanded.controls(&robot.layout));
             }
             if moved.jumped
                 && boosted
@@ -1722,6 +1783,11 @@ impl Session {
                             fighter.arsenal.held,
                             tick,
                         );
+                        // Its robot's actuators through its build's preset layout, from the
+                        // keys its movement would press: the same commands a person's layout
+                        // sends ([`crate::bindings`]).
+                        fighter.intent.motors =
+                            preset_motors(&self.mechanics, fighter.slot, fighter.intent);
                         fighter.view_tick = tick;
                     }
                 }
@@ -2465,7 +2531,7 @@ impl Session {
             .collect();
         let strike = |at: [f32; 3]| {
             let normal = [eye[0] - at[0], 0.0, eye[2] - at[2]];
-            let length = normal[0].hypot(normal[2]).max(f32::EPSILON);
+            let length = libm::hypotf(normal[0], normal[2]).max(f32::EPSILON);
             Event::Beam {
                 weapon: Weapon::EnergyBlade,
                 from: eye,
@@ -2568,5 +2634,27 @@ impl Session {
             self.strike(slot, attacker, &blows, Weapon::RocketLauncher);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upright;
+
+    /// Only a robot leaning less than 45° may step off a ledge it is hung on: one tipped over
+    /// lies where it is (`tests/collisions.rs` steps an upright one off a block's lip).
+    #[test]
+    fn only_a_robot_leaning_less_than_45_degrees_is_upright() {
+        // Upright, then turned half round about the vertical: upright either way.
+        assert!(upright([0.0, 0.0, 0.0, 1.0]));
+        assert!(upright([0.0, 1.0, 0.0, 0.0]));
+        // Leaning 30° forward (about X) and 40° sideways (about Z): upright.
+        assert!(upright([0.258_819, 0.0, 0.0, 0.965_926]));
+        assert!(upright([0.0, 0.0, 0.342_020, 0.939_693]));
+        // Leaning 50°, on its side and upside down: tipped over.
+        assert!(!upright([0.422_618, 0.0, 0.0, 0.906_308]));
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(!upright([0.0, 0.0, half, half]));
+        assert!(!upright([1.0, 0.0, 0.0, 0.0]));
     }
 }

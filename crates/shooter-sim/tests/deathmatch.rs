@@ -1,6 +1,8 @@
 //! The deathmatch on physics-engine: bots fight and score deterministically, people take slots
 //! from bots, lag-compensated hitscan, the round's end and restart, rocket self-damage, and the
 //! wire round trip.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::aim;
 use shooter_sim::damage::PartDamage;
@@ -929,6 +931,19 @@ fn inputs_and_snapshots_round_trip() {
         repair: Some(shooter_sim::repair::Order::Start(
             shooter_sim::robot::PartId(5),
         )),
+        motors: {
+            let mut motors = shooter_sim::bindings::Motors::REST;
+            motors.gait = shooter_sim::mechanics::GaitChoice::Unison;
+            motors.push(
+                shooter_sim::robot::PartId(6),
+                shooter_sim::mechanics::Command::Stride(-55),
+            );
+            motors.push(
+                shooter_sim::robot::PartId(5),
+                shooter_sim::mechanics::Command::Angle(-9_000),
+            );
+            motors
+        },
     };
     let command = decode_input(&encode_input(intent, 77, None, None)).unwrap();
     assert_eq!((command.intent, command.view_tick), (intent, 77));

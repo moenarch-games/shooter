@@ -261,6 +261,8 @@ pub struct Controls {
     /// Repair presses since the last tick took them.
     repairs: u32,
     wheel: Notches,
+    /// The mouse buttons held (bit per W3C index), for the control layout.
+    buttons: u8,
 }
 
 impl Default for Controls {
@@ -305,6 +307,7 @@ impl Controls {
             steps: 0,
             repairs: 0,
             wheel: Notches::default(),
+            buttons: 0,
         }
     }
 
@@ -390,6 +393,7 @@ impl Controls {
         self.steps = 0;
         self.repairs = 0;
         self.wheel = Notches::default();
+        self.buttons = 0;
         for (_, down) in &mut self.pad_strokes {
             *down = false;
         }
@@ -423,6 +427,9 @@ impl Controls {
 
     /// A W3C mouse button went down (0 primary).
     pub fn mouse_down(&mut self, button: u16) {
+        if button < 8 {
+            self.buttons |= 1 << button;
+        }
         let decisions = self
             .runtime
             .input_down(mouse_button(button), false, NO_CLOCK_MS);
@@ -430,8 +437,28 @@ impl Controls {
     }
 
     pub fn mouse_up(&mut self, button: u16) {
+        if button < 8 {
+            self.buttons &= !(1 << button);
+        }
         let decisions = self.runtime.input_up(&mouse_button(button), NO_CLOCK_MS);
         self.apply(&decisions);
+    }
+
+    /// What the control layout reads this tick (shooter#74, [`shooter_sim::bindings`]): every
+    /// held key by its W3C code, the held mouse buttons and the mouse's movement `mouse`
+    /// (counts since the last tick). The same keys still drive the movement actions above; a
+    /// layout reads them for the robot's actuators.
+    #[must_use]
+    pub fn pressed(&self, mouse: [i32; 2]) -> shooter_sim::bindings::Pressed {
+        let held = self.keys.keys().fold(
+            shooter_sim::bindings::Pressed::default(),
+            |pressed, code| pressed.with_key(&format!("{code:?}")),
+        );
+        shooter_sim::bindings::Pressed {
+            buttons: self.buttons,
+            mouse,
+            ..held
+        }
     }
 
     #[must_use]
@@ -691,6 +718,31 @@ mod tests {
         controls.key_up(KeyCode::Digit3);
         controls.key_down(KeyCode::Digit2, false);
         assert_eq!(controls.selected(), Some(Weapon::RailGun));
+    }
+
+    /// The control layout (shooter#74) reads the held keys by their W3C codes, the held mouse
+    /// buttons and the mouse's movement; focus lost lets go of all of them.
+    #[test]
+    fn the_control_layout_reads_held_keys_buttons_and_the_mouse() {
+        use shooter_sim::bindings::Pressed;
+        let mut controls = Controls::new();
+        controls.key_down(KeyCode::KeyW, false);
+        controls.key_down(KeyCode::KeyJ, false);
+        controls.mouse_down(SECONDARY_BUTTON);
+        let pressed = controls.pressed([4, -2]);
+        assert_eq!(
+            pressed.keys,
+            Pressed::default().with_key("KeyW").with_key("KeyJ").keys
+        );
+        assert_eq!(pressed.buttons, 1 << SECONDARY_BUTTON);
+        assert_eq!(pressed.mouse, [4, -2]);
+        controls.key_up(KeyCode::KeyW);
+        controls.mouse_up(SECONDARY_BUTTON);
+        let pressed = controls.pressed([0, 0]);
+        assert_eq!(pressed.keys, Pressed::default().with_key("KeyJ").keys);
+        assert_eq!(pressed.buttons, 0);
+        controls.release_all();
+        assert_eq!(controls.pressed([0, 0]), Pressed::default());
     }
 
     #[test]

@@ -25,6 +25,9 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
+/// 15: the logged commands are wire-22 inputs (each carries the actuator commands its
+/// person's control layout resolved, shooter#74; the scripted people play the named loadouts'
+/// preset) and the digests cover wire-22 snapshots.
 /// 14: the logged commands are wire-21 inputs (the grapple module's own key, shooter#104) and
 /// the digests cover wire-21 snapshots.
 /// 13: the logged commands are wire-20 inputs and the digests cover wire-20 snapshots
@@ -38,7 +41,7 @@ const MAGIC: &[u8; 4] = b"SHRP";
 /// robot's part healths, part hits and detachments); 7 carried wire 12 (shared energy charge,
 /// batteries, no heat), 6 wire 11 (robot builds as socket-grid component trees), 5 wire 10
 /// (module pickups), 4 wire 9 (robot builds with weapon mods).
-const FORMAT: u8 = 14;
+const FORMAT: u8 = 15;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 

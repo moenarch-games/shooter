@@ -19,6 +19,7 @@
 //! The bench stands far above the arena ([`BENCH_AT`]), the robot facing +X with its root
 //! chassis' centre there, so the match goes on unseen while the person builds.
 
+use super::controls::{ControlsBench, gait_name, mode_name, output_name, source_name};
 use super::{Axis, FINE, Refusal, SNAP, Workbench, degrees, part_name, weapon_of};
 use crate::camera::FOV_Y;
 use crate::overlay::palette::{GRAPHITE, MUTED, OLIVE, ORANGE, PALE, RED, STEEL};
@@ -30,6 +31,7 @@ use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::scene::{OverlayQuad, Scene};
 use render_engine::world::World;
 use shooter_sim::Weapon;
+use shooter_sim::bindings::Bindings;
 use shooter_sim::mechanics::{placements, sockets};
 use shooter_sim::robot::{
     Assembly, BETA, Kind, LOADOUTS, MAX_PARTS, Orientation, PartId, PartTypeId, SocketId,
@@ -51,10 +53,11 @@ pub enum Stage {
 }
 
 /// What the person asked of the match.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
-    /// Ready with this valid build.
-    Ready(Assembly),
+    /// Ready with this valid build and the control layout the person edited for it (none:
+    /// they kept the build's preset, [`super::controls`]).
+    Ready(Assembly, Option<Bindings>),
 }
 
 /// A clickable panel item.
@@ -68,6 +71,33 @@ pub enum Target {
     Mod,
     Remove,
     Ready,
+    /// Opens or closes the controls panel in the inspector's place.
+    Controls,
+    /// A binding's row in the controls panel.
+    Binding(usize),
+    /// The controls panel's buttons.
+    Edit(ControlEdit),
+}
+
+/// What a controls panel button does to the layout ([`super::controls::ControlsBench`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlEdit {
+    Preset,
+    /// A new binding for the selected part.
+    Add,
+    Delete,
+    /// Waits for the key that binds the selected binding.
+    Key,
+    Mouse,
+    Mode,
+    Output,
+    Invert,
+    Weaker,
+    Stronger,
+    /// Puts the selected part in the binding's group, or takes it out.
+    Part,
+    FlipPart,
+    Gait,
 }
 
 /// A rectangle in layout units (720 high).
@@ -112,6 +142,8 @@ const LINE: f32 = 18.0;
 const READY_WIDTH: f32 = 196.0;
 /// The inspector's key help at its foot: six lines.
 const HELP_HEIGHT: f32 = 6.0 * LINE + 8.0;
+/// The binding rows the controls panel shows.
+const CONTROL_ROWS: usize = 14;
 
 /// The panels for a frame `width` units wide.
 struct Layout {
@@ -186,6 +218,54 @@ impl Layout {
             Rect::new(x, y, self.inspector.width - 20.0, 24.0),
             Target::NewFrame,
         ));
+        y += 30.0;
+        buttons.push((
+            Rect::new(x, y, self.inspector.width - 20.0, 24.0),
+            Target::Controls,
+        ));
+        buttons
+    }
+
+    /// The controls panel's binding rows (the first [`CONTROL_ROWS`] of `count`).
+    fn control_rows(&self, count: usize) -> Vec<(Rect, Target)> {
+        let x = self.inspector.x + 6.0;
+        let width = self.inspector.width - 12.0;
+        (0..count.min(CONTROL_ROWS))
+            .map(|index| {
+                #[allow(clippy::cast_precision_loss)]
+                let y = self.inspector.y + 58.0 + ROW * index as f32;
+                (Rect::new(x, y, width, ROW), Target::Binding(index))
+            })
+            .collect()
+    }
+
+    /// The controls panel's buttons: the gait at the top, the edits in pairs at the foot, and
+    /// the way back to the parts.
+    fn control_buttons(&self) -> Vec<(Rect, Target)> {
+        let x = self.inspector.x + 10.0;
+        let full = self.inspector.width - 20.0;
+        let half = (self.inspector.width - 26.0) / 2.0;
+        let mut buttons = vec![(
+            Rect::new(x, self.inspector.y + 28.0, full, 22.0),
+            Target::Edit(ControlEdit::Gait),
+        )];
+        let mut y = self.inspector.y + 58.0 + ROW * CONTROL_ROWS as f32 + 30.0;
+        for (left, right) in [
+            (ControlEdit::Preset, ControlEdit::Add),
+            (ControlEdit::Key, ControlEdit::Mouse),
+            (ControlEdit::Mode, ControlEdit::Output),
+            (ControlEdit::Invert, ControlEdit::Delete),
+            (ControlEdit::Weaker, ControlEdit::Stronger),
+            (ControlEdit::Part, ControlEdit::FlipPart),
+        ] {
+            buttons.push((Rect::new(x, y, half, 24.0), Target::Edit(left)));
+            buttons.push((
+                Rect::new(x + half + 6.0, y, half, 24.0),
+                Target::Edit(right),
+            ));
+            y += 28.0;
+        }
+        buttons.push((Rect::new(x, y, full, 24.0), Target::Controls));
         buttons
     }
 
@@ -198,10 +278,17 @@ impl Layout {
         )
     }
 
-    /// Every clickable item.
-    fn targets(&self) -> Vec<(Rect, Target)> {
+    /// Every clickable item: the inspector's, or with the controls panel open (`bindings` of
+    /// them) the panel's.
+    fn targets(&self, controls: Option<usize>) -> Vec<(Rect, Target)> {
         let mut targets = self.catalogue_rows();
-        targets.extend(self.buttons());
+        match controls {
+            Some(bindings) => {
+                targets.extend(self.control_rows(bindings));
+                targets.extend(self.control_buttons());
+            }
+            None => targets.extend(self.buttons()),
+        }
         targets.push((self.ready(), Target::Ready));
         targets
     }
@@ -316,6 +403,10 @@ fn bench_center(build: &Assembly) -> Vec3 {
 #[derive(Clone, Debug)]
 pub struct Builder {
     pub bench: Workbench,
+    /// The control layout for the robot on the bench ([`super::controls`]).
+    pub controls: ControlsBench,
+    /// The controls panel is open in the inspector's place.
+    pub controls_open: bool,
     pub stage: Stage,
     /// The build Ready sent, until the match shows it configured (the host accepted it).
     pub ready: Option<Assembly>,
@@ -349,6 +440,8 @@ impl Builder {
     pub fn new(build: Assembly, stage: Stage) -> Self {
         Self {
             bench: Workbench::new(build),
+            controls: ControlsBench::new(build, None),
+            controls_open: false,
             stage,
             ready: None,
             notice: None,
@@ -368,6 +461,14 @@ impl Builder {
             fits: Vec::new(),
             fits_for: None,
         }
+    }
+
+    /// The builder with the person's control layout `layout` (none, or one that does not fit
+    /// the build: the build's preset).
+    #[must_use]
+    pub fn with_controls(mut self, layout: Option<&Bindings>) -> Self {
+        self.controls = ControlsBench::new(*self.bench.draft(), layout);
+        self
     }
 
     fn scale(&self) -> f32 {
@@ -392,7 +493,10 @@ impl Builder {
     pub fn target(&self) -> Option<Target> {
         let at = self.pointer();
         self.layout()
-            .targets()
+            .targets(
+                self.controls_open
+                    .then(|| self.controls.layout().bindings.len()),
+            )
             .into_iter()
             .find(|(rect, _)| rect.contains(at))
             .map(|(_, target)| target)
@@ -579,16 +683,78 @@ impl Builder {
                 }
                 let build = self.bench.check().ok()?;
                 self.ready = Some(build);
-                return Some(Action::Ready(build));
+                self.controls.follow(&build);
+                let layout = self
+                    .controls
+                    .custom()
+                    .then(|| self.controls.layout().clone());
+                return Some(Action::Ready(build, layout));
+            }
+            Target::Controls => {
+                self.controls_open = !self.controls_open;
+                self.controls.capturing = false;
+                self.notice = None;
+            }
+            Target::Binding(index) => {
+                self.controls.selected = Some(index);
+                self.controls.capturing = false;
+                self.notice = None;
+            }
+            Target::Edit(edit) => {
+                let edited = self.edit_controls(edit);
+                self.refused(edited);
             }
         }
         None
     }
 
+    /// A controls panel edit, on the layout for the build on the bench now.
+    fn edit_controls(&mut self, edit: ControlEdit) -> Result<(), Refusal> {
+        self.controls.follow(self.bench.draft());
+        let part = self.bench.selected;
+        match edit {
+            ControlEdit::Preset => {
+                self.controls.preset();
+                Ok(())
+            }
+            ControlEdit::Add => self.controls.add(part),
+            ControlEdit::Delete => self.controls.delete(),
+            ControlEdit::Key => {
+                self.controls.selected.ok_or(Refusal::Nothing)?;
+                self.controls.capturing = true;
+                Ok(())
+            }
+            ControlEdit::Mouse => self.controls.cycle_mouse(),
+            ControlEdit::Mode => self.controls.cycle_mode(),
+            ControlEdit::Output => self.controls.cycle_output(),
+            ControlEdit::Invert => self.controls.invert(),
+            ControlEdit::Weaker => self.controls.strength(-10),
+            ControlEdit::Stronger => self.controls.strength(10),
+            ControlEdit::Part => self.controls.toggle_part(part),
+            ControlEdit::FlipPart => self.controls.flip_part(part),
+            ControlEdit::Gait => {
+                self.controls.cycle_gait();
+                Ok(())
+            }
+        }
+    }
+
     /// A key pressed; Ready on Enter.
     pub fn key(&mut self, code: KeyCode) -> Option<Action> {
+        // Waiting for a binding's key: this one binds it (Escape gives up).
+        if self.controls.capturing {
+            if code == KeyCode::Escape {
+                self.controls.capturing = false;
+            } else {
+                self.controls.follow(self.bench.draft());
+                let bound = self.controls.bind_key(&format!("{code:?}"));
+                self.refused(bound);
+            }
+            return None;
+        }
         let sign = if self.shift { -1 } else { 1 };
         match code {
+            KeyCode::KeyK => self.act(Target::Controls),
             KeyCode::KeyR => self.act(Target::Rotate(Axis::Yaw, sign)),
             KeyCode::KeyT => self.act(Target::Rotate(Axis::Pitch, sign)),
             KeyCode::KeyF => self.act(Target::Rotate(Axis::Roll, sign)),
@@ -647,6 +813,7 @@ impl Builder {
     ) -> Scene {
         self.size = (width.max(1), height.max(1));
         let draft = *self.bench.draft();
+        self.controls.follow(&draft);
         let socket_spots = sockets(&draft);
         self.refresh_fits(&socket_spots);
 
@@ -895,6 +1062,10 @@ impl Builder {
     }
 
     fn inspector(&self, painter: &mut Painter, layout: &Layout) {
+        if self.controls_open {
+            self.controls_panel(painter, layout);
+            return;
+        }
         let panel = layout.inspector;
         panel_back(painter, panel);
         let x = panel.x + 10.0;
@@ -984,6 +1155,7 @@ impl Builder {
                 Target::Mod => "MOD (M)",
                 Target::Remove => "REMOVE (X)",
                 Target::NewFrame => "NEW FRAME (CHASSIS)",
+                Target::Controls => "CONTROLS (K)",
                 _ => continue,
             };
             button(painter, rect, label, hovered == Some(target), false);
@@ -1008,6 +1180,111 @@ impl Builder {
                 help,
                 srgb(MUTED, 0.9),
             );
+        }
+    }
+
+    /// The controls panel in the inspector's place: the gait, a row per binding (its input,
+    /// command, mode, strength and how many parts it drives), the selected binding's parts, and
+    /// the edits. Parts are chosen by clicking them on the robot.
+    fn controls_panel(&self, painter: &mut Painter, layout: &Layout) {
+        let panel = layout.inspector;
+        panel_back(painter, panel);
+        let x = panel.x + 10.0;
+        let heading = if self.controls.custom() {
+            "CONTROLS"
+        } else {
+            "CONTROLS: PRESET"
+        };
+        painter.text(x, panel.y + 10.0, CELL, heading, srgb(MUTED, 1.0));
+        let hovered = self.target();
+        let bindings = &self.controls.layout().bindings;
+        for (rect, target) in layout.control_rows(bindings.len()) {
+            let Target::Binding(index) = target else {
+                continue;
+            };
+            let binding = &bindings[index];
+            let selected = self.controls.selected == Some(index);
+            if selected || hovered == Some(target) {
+                painter.rect(
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    srgb(STEEL, if selected { 0.9 } else { 0.5 }),
+                );
+            }
+            let source = if selected && self.controls.capturing {
+                "PRESS".to_owned()
+            } else {
+                source_name(binding.source)
+            };
+            let sign = if binding.invert { '-' } else { '+' };
+            let row = format!(
+                "{source:<8}{} {}{sign}{}",
+                &output_name(binding.output)[..3],
+                &mode_name(binding.mode)[..1],
+                binding.strength,
+            );
+            painter.text(rect.x + 4.0, rect.y + 2.0, SMALL, &row, srgb(PALE, 1.0));
+            let parts = format!("{}P", binding.targets.len());
+            let width = text_width(&parts, painter.snap_cell(SMALL));
+            painter.text(
+                rect.x + rect.width - width - 4.0,
+                rect.y + 2.0,
+                SMALL,
+                &parts,
+                srgb(MUTED, 1.0),
+            );
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let detail_y = panel.y + 58.0 + ROW * CONTROL_ROWS as f32 + 6.0;
+        let detail = self
+            .controls
+            .selected
+            .and_then(|index| bindings.get(index))
+            .map_or_else(
+                || {
+                    if bindings.len() > CONTROL_ROWS {
+                        format!("+{} MORE", bindings.len() - CONTROL_ROWS)
+                    } else {
+                        "CLICK A ROW, THEN A PART".to_owned()
+                    }
+                },
+                |binding| {
+                    let parts: Vec<String> = binding
+                        .targets
+                        .iter()
+                        .map(|target| {
+                            format!("{}{}", target.part.0, if target.invert { "-" } else { "" })
+                        })
+                        .collect();
+                    format!("PARTS {}", parts.join(" "))
+                },
+            );
+        painter.text(x, detail_y, SMALL, &detail, srgb(ORANGE, 1.0));
+        for (rect, target) in layout.control_buttons() {
+            let gait;
+            let label = match target {
+                Target::Edit(ControlEdit::Gait) => {
+                    gait = format!("GAIT: {}", gait_name(self.controls.layout().gait));
+                    gait.as_str()
+                }
+                Target::Edit(ControlEdit::Preset) => "PRESET",
+                Target::Edit(ControlEdit::Add) => "NEW (PART)",
+                Target::Edit(ControlEdit::Key) => "KEY...",
+                Target::Edit(ControlEdit::Mouse) => "MOUSE",
+                Target::Edit(ControlEdit::Mode) => "MODE",
+                Target::Edit(ControlEdit::Output) => "COMMAND",
+                Target::Edit(ControlEdit::Invert) => "INVERT",
+                Target::Edit(ControlEdit::Delete) => "DELETE",
+                Target::Edit(ControlEdit::Weaker) => "STRENGTH-",
+                Target::Edit(ControlEdit::Stronger) => "STRENGTH+",
+                Target::Edit(ControlEdit::Part) => "PART +/-",
+                Target::Edit(ControlEdit::FlipPart) => "FLIP PART",
+                Target::Controls => "PARTS (K)",
+                _ => continue,
+            };
+            button(painter, rect, label, hovered == Some(target), false);
         }
     }
 
@@ -1281,7 +1558,10 @@ mod tests {
         let ready = builder.layout().ready();
         builder.cursor_moved(ready.x + 5.0, ready.y + 5.0);
         assert_eq!(builder.target(), Some(Target::Ready));
-        assert_eq!(builder.mouse(false, true), Some(Action::Ready(STANDARD)));
+        assert_eq!(
+            builder.mouse(false, true),
+            Some(Action::Ready(STANDARD, None))
+        );
         assert_eq!(builder.ready, Some(STANDARD));
         assert!(!builder.can_ready());
         assert_eq!(builder.key(KeyCode::Enter), None, "already sent");
@@ -1331,6 +1611,74 @@ mod tests {
         let lowest = buttons.last().unwrap().0;
         assert!(
             lowest.y + lowest.height < layout.inspector.y + layout.inspector.height - HELP_HEIGHT
+        );
+        let controls = layout.control_buttons();
+        let lowest = controls.last().unwrap().0;
+        assert!(lowest.y + lowest.height <= layout.inspector.y + layout.inspector.height);
+        let rows = layout.control_rows(CONTROL_ROWS);
+        assert!(rows.last().unwrap().0.y + ROW < controls[1].0.y);
+    }
+
+    /// Clicks the panel item `target` (its rectangle's middle).
+    fn click(builder: &mut Builder, target: Target) -> Option<Action> {
+        let (rect, _) = builder
+            .layout()
+            .targets(
+                builder
+                    .controls_open
+                    .then(|| builder.controls.layout().bindings.len()),
+            )
+            .into_iter()
+            .find(|(_, item)| *item == target)
+            .unwrap_or_else(|| panic!("{target:?} is on screen"));
+        let scale = builder.scale();
+        builder.cursor_moved(
+            (rect.x + rect.width / 2.0) * scale,
+            (rect.y + rect.height / 2.0) * scale,
+        );
+        builder.mouse(false, true)
+    }
+
+    #[test]
+    fn the_controls_panel_edits_the_layout_and_ready_sends_it() {
+        let mut builder = drawn(Stage::Setup);
+        // K opens the panel in the inspector's place, on the build's preset.
+        builder.key(KeyCode::KeyK);
+        assert!(builder.controls_open);
+        builder.frame(None, 1280, 720, 0.0);
+        assert!(!builder.controls.custom());
+        // Pick the W binding, wait for a key, press I: the legs stride on I.
+        click(&mut builder, Target::Binding(0));
+        click(&mut builder, Target::Edit(ControlEdit::Key));
+        assert!(builder.controls.capturing);
+        builder.key(KeyCode::KeyI);
+        assert_eq!(
+            builder.controls.layout().bindings[0].source,
+            shooter_sim::bindings::Source::Key(shooter_sim::bindings::key("KeyI").unwrap())
+        );
+        // Toggle, and weaker.
+        click(&mut builder, Target::Edit(ControlEdit::Mode));
+        click(&mut builder, Target::Edit(ControlEdit::Weaker));
+        let binding = &builder.controls.layout().bindings[0];
+        assert_eq!(binding.mode, shooter_sim::bindings::Mode::Toggle);
+        assert_eq!(binding.strength, 90);
+        // The chassis selected on the bench is no actuator: the panel says why.
+        builder.bench.selected = Some(PartId(0));
+        click(&mut builder, Target::Edit(ControlEdit::Part));
+        assert!(builder.notice.is_some());
+        // Ready sends the edited layout with the build; back to the preset sends none.
+        let Some(Action::Ready(build, Some(layout))) = click(&mut builder, Target::Ready) else {
+            panic!("Ready with the edited layout");
+        };
+        assert_eq!(build, STANDARD);
+        assert_eq!(layout.bindings[0].strength, 90);
+        let mut builder = drawn(Stage::Setup).with_controls(Some(&layout));
+        builder.key(KeyCode::KeyK);
+        assert!(builder.controls.custom());
+        click(&mut builder, Target::Edit(ControlEdit::Preset));
+        assert_eq!(
+            click(&mut builder, Target::Ready),
+            Some(Action::Ready(STANDARD, None))
         );
     }
 }

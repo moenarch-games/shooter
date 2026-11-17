@@ -162,9 +162,79 @@ pub struct App {
     builder_shown: bool,
     /// The pointer is locked to the game (native: grabbed; web: Pointer Lock).
     captured: bool,
+    /// The person's control layout for the robot's actuators (shooter#74).
+    driver: Driver,
     /// The browser profile run (`?frames=<n>`), timing each animation frame.
     #[cfg(target_arch = "wasm32")]
     profile: Option<crate::web::Profile>,
+}
+
+/// The person's control layout (Atlas D2.i70.7, [`shooter_sim::bindings`]) and what it needs
+/// between ticks: the layout edited in the builder (none: the build's preset), its toggles and
+/// cursor offsets, the mouse's movement since the last tick, and the robot's connected
+/// actuators with the layout pruned to them. The same natively and in the browser: the mouse
+/// counts arrive as the look's do (pointer-locked movement), so a cursor offset is the sum of
+/// that movement, not a screen position.
+#[derive(Debug, Default)]
+struct Driver {
+    layout: Option<shooter_sim::bindings::Bindings>,
+    state: shooter_sim::bindings::BindingState,
+    mouse: [f64; 2],
+    /// The build and lost parts the actuators and the effective layout are for.
+    resolved: Option<(
+        shooter_sim::Assembly,
+        u32,
+        shooter_sim::mechanics::Layout,
+        shooter_sim::bindings::Bindings,
+    )>,
+}
+
+impl Driver {
+    /// A new layout from the builder: its toggles and offsets start over.
+    fn adopt(&mut self, layout: shooter_sim::bindings::Bindings) {
+        self.layout = Some(layout);
+        self.state = shooter_sim::bindings::BindingState::default();
+        self.resolved = None;
+    }
+
+    /// The mouse moved (pointer locked).
+    fn mouse(&mut self, dx: f64, dy: f64) {
+        self.mouse[0] += dx;
+        self.mouse[1] += dy;
+    }
+
+    /// The whole counts the mouse moved since the last tick (the rest carries over).
+    #[allow(clippy::cast_possible_truncation)]
+    fn take_mouse(&mut self) -> [i32; 2] {
+        let whole = self.mouse.map(f64::trunc);
+        self.mouse = [self.mouse[0] - whole[0], self.mouse[1] - whole[1]];
+        whole.map(|counts| counts.clamp(-10_000.0, 10_000.0) as i32)
+    }
+
+    /// This tick's commands for the robot `build` with parts `lost`, from what is `pressed`.
+    fn motors(
+        &mut self,
+        build: &shooter_sim::Assembly,
+        lost: u32,
+        pressed: shooter_sim::bindings::Pressed,
+    ) -> shooter_sim::bindings::Motors {
+        let stale = self
+            .resolved
+            .as_ref()
+            .is_none_or(|(had, gone, ..)| had != build || *gone != lost);
+        if stale {
+            let actuators = shooter_sim::mechanics::Layout::connected(build, lost);
+            let effective = self.layout.as_ref().map_or_else(
+                || shooter_sim::bindings::Bindings::preset(&actuators),
+                |layout| layout.pruned(&actuators),
+            );
+            self.resolved = Some((*build, lost, actuators, effective));
+        }
+        let Some((_, _, actuators, effective)) = &self.resolved else {
+            return shooter_sim::bindings::Motors::REST;
+        };
+        effective.resolve(actuators, &mut self.state, pressed)
+    }
 }
 
 impl App {
@@ -218,6 +288,7 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             builder_shown: false,
             captured: false,
+            driver: Driver::default(),
             #[cfg(target_arch = "wasm32")]
             profile: None,
         }
@@ -227,7 +298,8 @@ impl App {
     /// nothing connects, until Ready.
     #[must_use]
     pub fn with_builder(mut self, build: shooter_sim::Assembly) -> Self {
-        self.builder = Some(Builder::new(build, Stage::Setup));
+        self.builder =
+            Some(Builder::new(build, Stage::Setup).with_controls(self.driver.layout.as_ref()));
         self
     }
 
@@ -238,7 +310,9 @@ impl App {
             return;
         }
         let build = self.game.configured().unwrap_or_default();
-        self.builder = Some(Builder::new(build, Stage::BetweenLives));
+        self.builder = Some(
+            Builder::new(build, Stage::BetweenLives).with_controls(self.driver.layout.as_ref()),
+        );
         self.capture(false);
         self.controls.release_all();
     }
@@ -254,12 +328,17 @@ impl App {
             .is_some_and(|me| !me.alive)
     }
 
-    /// What the builder asked: Ready sends the build. Before the match the match starts; between
-    /// lives the builder waits until the match shows the build configured.
+    /// What the builder asked: Ready sends the build and takes the control layout (none: the
+    /// build's preset). Before the match the match starts; between lives the builder waits
+    /// until the match shows the build configured.
     fn builder_action(&mut self, action: Option<Action>) {
-        let Some(Action::Ready(build)) = action else {
+        let Some(Action::Ready(build, layout)) = action else {
             return;
         };
+        match layout {
+            Some(layout) => self.driver.adopt(layout),
+            None => self.driver = Driver::default(),
+        }
         self.game.configure(build);
         if self
             .builder
@@ -371,6 +450,7 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             builder_shown: false,
             captured: false,
+            driver: Driver::default(),
         };
         app.attach(gpu);
         app
@@ -622,9 +702,31 @@ impl App {
                     self.controls.selected()
                 }
             };
+            // The robot's actuators through the person's control layout (shooter#74): the keys
+            // and buttons held and the mouse's movement while the game has it.
+            let mouse = self.driver.take_mouse();
+            let motors = match self.game.local_fighter() {
+                Some((me, _)) => {
+                    let pressed = self
+                        .controls
+                        .pressed(if self.captured { mouse } else { [0, 0] });
+                    let pressed = if self.captured {
+                        pressed
+                    } else {
+                        // Without the mouse, its buttons do nothing (the click that captures).
+                        shooter_sim::bindings::Pressed {
+                            buttons: 0,
+                            ..pressed
+                        }
+                    };
+                    self.driver.motors(&me.build, me.parts.lost(), pressed)
+                }
+                None => shooter_sim::bindings::Motors::REST,
+            };
             Intent {
                 forward,
                 strafe,
+                motors,
                 yaw: self.look.sim_yaw(),
                 jump: self.controls.jump_held(),
                 sprint: self.controls.sprint_held(),
@@ -1383,6 +1485,7 @@ impl ApplicationHandler<GpuReady> for App {
             && self.captured
         {
             self.look.mouse(dx, dy);
+            self.driver.mouse(dx, dy);
         }
     }
 }

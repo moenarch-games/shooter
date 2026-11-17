@@ -17,6 +17,9 @@
 //! The in-process practice match builds the same [`Snapshot`], so both modes draw through one
 //! path.
 
+use crate::bindings::{
+    Binding, Bindings, MAX_BINDINGS, MAX_GROUP, MAX_MOTORS, Mode, Motors, Output, Source, Target,
+};
 use crate::damage::PartDamage;
 use crate::energy::Pool;
 use crate::grapple::Hook;
@@ -36,11 +39,12 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-/// 21: inputs carry the grapple module's own key (shooter#104); 20: snapshots carry the physical
-/// debris (shooter#75); 19: inputs carry a repair order,
-/// snapshots each fighter's repair and repairable parts (shooter#61); 18 added the dropped
-/// modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 21;
+/// 22: inputs carry the actuator commands the person's control layout resolved
+/// ([`crate::bindings::Motors`], shooter#74); 21: inputs carry the grapple module's own key
+/// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
+/// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
+/// the dropped modules (shooter#62), 17 the placeables (shooter#60).
+pub const WIRE_VERSION: u8 = 22;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -377,6 +381,35 @@ impl Out {
             }
         }
     }
+    fn gait(&mut self, gait: GaitChoice) {
+        self.u8(match gait {
+            GaitChoice::Suggested => GAIT_SUGGESTED,
+            GaitChoice::Preset(Gait::Biped) => GAIT_BIPED,
+            GaitChoice::Preset(Gait::Quadruped) => GAIT_QUADRUPED,
+            GaitChoice::Unison => GAIT_UNISON,
+        });
+    }
+    /// A command's kind and value.
+    fn command(&mut self, command: MechCommand) {
+        let (kind, value) = match command {
+            MechCommand::Idle => (COMMAND_IDLE, 0),
+            MechCommand::Rate(rate) => (COMMAND_RATE, rate),
+            MechCommand::Angle(angle) => (COMMAND_ANGLE, angle),
+            MechCommand::Stride(stride) => (COMMAND_STRIDE, i16::from(stride)),
+        };
+        self.u8(kind);
+        self.0.extend_from_slice(&value.to_le_bytes());
+    }
+    /// An input's actuator commands ([`Motors`]): the gait, a count (at most [`MAX_MOTORS`]),
+    /// then per part its ID and its command.
+    fn motors(&mut self, motors: &Motors) {
+        self.gait(motors.gait);
+        self.u8(count(motors.commands().len()));
+        for &(part, command) in motors.commands() {
+            self.u8(part.0);
+            self.command(command);
+        }
+    }
     /// A length byte, then up to 255 bytes of UTF-8 (cut at a character boundary).
     fn text(&mut self, text: &str) {
         let mut end = text.len().min(usize::from(u8::MAX));
@@ -488,6 +521,50 @@ impl In<'_> {
         BETA.validate(&Candidate { parts })
             .map_err(WireError::Build)
     }
+    fn gait(&mut self) -> Result<GaitChoice, WireError> {
+        Ok(match self.u8()? {
+            GAIT_SUGGESTED => GaitChoice::Suggested,
+            GAIT_BIPED => GaitChoice::Preset(Gait::Biped),
+            GAIT_QUADRUPED => GaitChoice::Preset(Gait::Quadruped),
+            GAIT_UNISON => GaitChoice::Unison,
+            _ => return Err(WireError::Malformed("unknown gait")),
+        })
+    }
+    /// Inverse of `Out::command`: a stride past ±100 or an unknown kind is malformed.
+    fn command(&mut self) -> Result<MechCommand, WireError> {
+        let kind = self.u8()?;
+        let value = i16::from_le_bytes(self.take()?);
+        Ok(match kind {
+            COMMAND_IDLE if value == 0 => MechCommand::Idle,
+            COMMAND_RATE => MechCommand::Rate(value),
+            COMMAND_ANGLE => MechCommand::Angle(value),
+            COMMAND_STRIDE => MechCommand::Stride(
+                i8::try_from(value)
+                    .ok()
+                    .filter(|stride| (-100..=100).contains(stride))
+                    .ok_or(WireError::Malformed("stride out of range"))?,
+            ),
+            _ => return Err(WireError::Malformed("unknown command")),
+        })
+    }
+    /// Inverse of `Out::motors`: more than [`MAX_MOTORS`] commands, or a part commanded twice,
+    /// is malformed (a tampered input is refused whole).
+    fn motors(&mut self) -> Result<Motors, WireError> {
+        let mut motors = Motors::REST;
+        motors.gait = self.gait()?;
+        let commanded = usize::from(self.u8()?);
+        if commanded > MAX_MOTORS {
+            return Err(WireError::Malformed("too many motor commands"));
+        }
+        for _ in 0..commanded {
+            let part = PartId(self.u8()?);
+            let command = self.command()?;
+            if !motors.push(part, command) {
+                return Err(WireError::Malformed("a part commanded twice"));
+            }
+        }
+        Ok(motors)
+    }
     fn finish(self) -> Result<(), WireError> {
         if self.0.is_empty() {
             Ok(())
@@ -552,6 +629,7 @@ pub fn encode_input(
         // A part ID is below MAX_PARTS in any valid build; the host refuses any other.
         Some(Order::Start(part)) => part.0.min(REPAIR_STOP - 1),
     });
+    out.motors(&intent.motors);
     out.u32(view_tick);
     out.text(name.unwrap_or_default());
     match build {
@@ -592,6 +670,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
         REPAIR_STOP => Some(Order::Stop),
         part => Some(Order::Start(PartId(part))),
     };
+    let motors = input.motors()?;
     let view_tick = input.u32()?;
     let name = Some(input.text()?).filter(|name| !name.is_empty());
     let build = match input.u8()? {
@@ -614,6 +693,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
         grapple: flags & GRAPPLE != 0,
         select,
         repair,
+        motors,
     };
     Ok(Command {
         intent,
@@ -1171,6 +1251,7 @@ const GAIT_SUGGESTED: u8 = 0;
 const GAIT_BIPED: u8 = 1;
 const GAIT_QUADRUPED: u8 = 2;
 const GAIT_UNISON: u8 = 3;
+const COMMAND_IDLE: u8 = 0;
 const COMMAND_RATE: u8 = 1;
 const COMMAND_ANGLE: u8 = 2;
 const COMMAND_STRIDE: u8 = 3;
@@ -1181,26 +1262,15 @@ const COMMAND_STRIDE: u8 = 3;
 #[must_use]
 pub fn encode_controls(controls: &Controls) -> Vec<u8> {
     let mut out = Out(Vec::new());
-    out.u8(match controls.gait {
-        GaitChoice::Suggested => GAIT_SUGGESTED,
-        GaitChoice::Preset(Gait::Biped) => GAIT_BIPED,
-        GaitChoice::Preset(Gait::Quadruped) => GAIT_QUADRUPED,
-        GaitChoice::Unison => GAIT_UNISON,
-    });
-    let commanded: Vec<(u8, u8, i16)> = (0..=u8::MAX)
-        .zip(&controls.commands)
-        .filter_map(|(part, command)| match *command {
-            MechCommand::Idle => None,
-            MechCommand::Rate(rate) => Some((part, COMMAND_RATE, rate)),
-            MechCommand::Angle(angle) => Some((part, COMMAND_ANGLE, angle)),
-            MechCommand::Stride(stride) => Some((part, COMMAND_STRIDE, i16::from(stride))),
-        })
+    out.gait(controls.gait);
+    let commanded: Vec<(u8, MechCommand)> = (0..=u8::MAX)
+        .zip(controls.commands)
+        .filter(|(_, command)| *command != MechCommand::Idle)
         .collect();
     out.u16(u16::try_from(commanded.len()).expect("at most 256 parts"));
-    for (part, kind, value) in commanded {
+    for (part, command) in commanded {
         out.u8(part);
-        out.u8(kind);
-        out.0.extend_from_slice(&value.to_le_bytes());
+        out.command(command);
     }
     out.0
 }
@@ -1213,18 +1283,16 @@ pub fn encode_controls(controls: &Controls) -> Vec<u8> {
 /// twice, or a stride past ±100.
 pub fn decode_controls(bytes: &[u8]) -> Result<Controls, WireError> {
     let mut input = In(bytes);
-    let mut controls = Controls::IDLE;
-    controls.gait = match input.u8()? {
-        GAIT_SUGGESTED => GaitChoice::Suggested,
-        GAIT_BIPED => GaitChoice::Preset(Gait::Biped),
-        GAIT_QUADRUPED => GaitChoice::Preset(Gait::Quadruped),
-        GAIT_UNISON => GaitChoice::Unison,
-        _ => return Err(WireError::Malformed("unknown gait")),
+    let mut controls = Controls {
+        gait: input.gait()?,
+        ..Controls::IDLE
     };
     for _ in 0..input.u16()? {
         let part = usize::from(input.u8()?);
-        let kind = input.u8()?;
-        let value = i16::from_le_bytes(input.take()?);
+        let command = input.command()?;
+        if command == MechCommand::Idle {
+            return Err(WireError::Malformed("unknown command"));
+        }
         let slot = controls
             .commands
             .get_mut(part)
@@ -1232,20 +1300,129 @@ pub fn decode_controls(bytes: &[u8]) -> Result<Controls, WireError> {
         if *slot != MechCommand::Idle {
             return Err(WireError::Malformed("a part commanded twice"));
         }
-        *slot = match kind {
-            COMMAND_RATE => MechCommand::Rate(value),
-            COMMAND_ANGLE => MechCommand::Angle(value),
-            COMMAND_STRIDE => MechCommand::Stride(
-                i8::try_from(value)
-                    .ok()
-                    .filter(|stride| (-100..=100).contains(stride))
-                    .ok_or(WireError::Malformed("stride out of range"))?,
-            ),
-            _ => return Err(WireError::Malformed("unknown command")),
-        };
+        *slot = command;
     }
     input.finish()?;
     Ok(controls)
+}
+
+const SOURCE_KEY: u8 = 0;
+const SOURCE_BUTTON: u8 = 1;
+const SOURCE_MOUSE_X: u8 = 2;
+const SOURCE_MOUSE_Y: u8 = 3;
+const MODES: [Mode; 4] = [Mode::Hold, Mode::Toggle, Mode::Relative, Mode::Offset];
+const OUTPUTS: [Output; 3] = [Output::Stride, Output::Rate, Output::Angle];
+/// A binding's flag: inverted.
+const INVERTED: u8 = 1;
+
+/// A control layout ([`crate::bindings::Bindings`]): its gait, a binding count, then per
+/// binding its source (kind and index), mode, output, flags (inverted), strength and its group
+/// (a count, then per part its ID and whether it is reversed).
+#[must_use]
+pub fn encode_bindings(bindings: &Bindings) -> Vec<u8> {
+    let mut out = Out(Vec::new());
+    out.gait(bindings.gait);
+    out.u8(count(bindings.bindings.len()));
+    for binding in &bindings.bindings {
+        let (kind, index) = match binding.source {
+            Source::Key(index) => (SOURCE_KEY, index),
+            Source::Button(index) => (SOURCE_BUTTON, index),
+            Source::MouseX => (SOURCE_MOUSE_X, 0),
+            Source::MouseY => (SOURCE_MOUSE_Y, 0),
+        };
+        out.u8(kind);
+        out.u8(index);
+        out.u8(count(
+            MODES
+                .iter()
+                .position(|mode| *mode == binding.mode)
+                .unwrap_or(0),
+        ));
+        out.u8(count(
+            OUTPUTS
+                .iter()
+                .position(|output| *output == binding.output)
+                .unwrap_or(0),
+        ));
+        out.u8(if binding.invert { INVERTED } else { 0 });
+        out.u8(binding.strength);
+        out.u8(count(binding.targets.len()));
+        for target in &binding.targets {
+            out.u8(target.part.0);
+            out.u8(u8::from(target.invert));
+        }
+    }
+    out.0
+}
+
+/// Inverse of [`encode_bindings`], held to the layout's bounds
+/// ([`Bindings::check_bounds`]); [`Bindings::check`] against the build it is for is the
+/// caller's.
+///
+/// # Errors
+///
+/// If the bytes are truncated or trail, name an unknown source, mode, output, gait or flag, or
+/// the layout breaks a bound (too many bindings or parts, a key that is none, a mode that does
+/// not fit its source, a strength out of range, a part twice in a group).
+pub fn decode_bindings(bytes: &[u8]) -> Result<Bindings, WireError> {
+    let mut input = In(bytes);
+    let gait = input.gait()?;
+    let length = usize::from(input.u8()?);
+    if length > MAX_BINDINGS {
+        return Err(WireError::Malformed("too many bindings"));
+    }
+    let mut bindings = Vec::with_capacity(length);
+    for _ in 0..length {
+        let kind = input.u8()?;
+        let index = input.u8()?;
+        let source = match (kind, index) {
+            (SOURCE_KEY, index) => Source::Key(index),
+            (SOURCE_BUTTON, index) => Source::Button(index),
+            (SOURCE_MOUSE_X, 0) => Source::MouseX,
+            (SOURCE_MOUSE_Y, 0) => Source::MouseY,
+            _ => return Err(WireError::Malformed("unknown binding source")),
+        };
+        let mode = *MODES
+            .get(usize::from(input.u8()?))
+            .ok_or(WireError::Malformed("unknown binding mode"))?;
+        let output = *OUTPUTS
+            .get(usize::from(input.u8()?))
+            .ok_or(WireError::Malformed("unknown binding output"))?;
+        let flags = input.u8()?;
+        if flags & !INVERTED != 0 {
+            return Err(WireError::Malformed("unknown binding flags"));
+        }
+        let strength = input.u8()?;
+        let parts = usize::from(input.u8()?);
+        if parts > MAX_GROUP {
+            return Err(WireError::Malformed("too many parts in a group"));
+        }
+        let targets = (0..parts)
+            .map(|_| {
+                let part = PartId(input.u8()?);
+                let invert = match input.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(WireError::Malformed("unknown target flag")),
+                };
+                Ok(Target { part, invert })
+            })
+            .collect::<Result<Vec<_>, WireError>>()?;
+        bindings.push(Binding {
+            source,
+            mode,
+            output,
+            invert: flags & INVERTED != 0,
+            strength,
+            targets,
+        });
+    }
+    input.finish()?;
+    let bindings = Bindings { gait, bindings };
+    bindings
+        .check_bounds()
+        .map_err(|_| WireError::Malformed("a binding out of bounds"))?;
+    Ok(bindings)
 }
 
 /// The robots' exact mechanical state ([`crate::mechanics::State`]): a robot count, then per

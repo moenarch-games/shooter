@@ -3,6 +3,8 @@
 //! death with its uses left, who takes a drop when several reach it, a drop's lifetime, the round
 //! and map transitions, the rail capacitor's lag-compensated hits and frags, thrusters, fighters
 //! of different builds, a client predicting a drop's pickup, and the wire.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::aim;
 use shooter_sim::damage::PartDamage;

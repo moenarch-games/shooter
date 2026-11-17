@@ -386,7 +386,7 @@ impl World {
                     compute_impact_geometry_on_penetration: true,
                 },
             )?;
-            if hit.normal1.dot(Vector::Y) >= self.controller.max_slope_climb_angle.cos() {
+            if hit.normal1.dot(Vector::Y) >= libm::cosf(self.controller.max_slope_climb_angle) {
                 return Some(hit.time_of_impact * UNITS_PER_METRE);
             }
             steep.push(handle);
