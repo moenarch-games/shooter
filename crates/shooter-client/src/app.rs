@@ -896,6 +896,11 @@ impl App {
             let Some(gpu) = &mut self.gpu else {
                 return true;
             };
+            // The pointer arrives in the window's pixels, the frame is the surface's.
+            if let Some(window) = &self.window {
+                let size = window.inner_size();
+                builder.resize(size.width, size.height);
+            }
             let (width, height) = gpu.size();
             let robots = self.robots.as_mut().map(|robots| (&mut gpu.world, robots));
             let scene = builder.frame(robots, width, height, seconds);
@@ -1378,6 +1383,9 @@ impl ApplicationHandler<GpuReady> for App {
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.resize(size.width, size.height);
+                }
+                if let Some(builder) = &mut self.builder {
+                    builder.resize(size.width, size.height);
                 }
             }
             WindowEvent::Focused(false) => {

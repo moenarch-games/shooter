@@ -1401,3 +1401,116 @@ fn the_armory_mounts_every_weapon_and_is_over_budget_only() {
         Err(AssemblyError::OverBudget { .. })
     ));
 }
+
+/// The footprint a placement would reserve (shooter#124's preview) is the one the validation
+/// checks: a placement is refused for an overlap exactly when its footprint meets a claimed cell,
+/// and a part's footprint on its parent is what the build claims for it.
+#[test]
+fn a_placement_s_footprint_is_the_one_validation_checks() {
+    let front = |u, v| CHASSIS_S.socket(Face::PosX, u, v).unwrap();
+    let claimed = BETA.claims(&STANDARD, PartId(0));
+    for (socket, owner) in &claimed {
+        let part = STANDARD.part(*owner).unwrap();
+        let mount = part.mount.unwrap();
+        assert!(
+            BETA.footprint(
+                &STANDARD,
+                PartId(0),
+                mount.socket,
+                part.kind,
+                part.modification,
+                mount.orientation
+            )
+            .contains(socket)
+        );
+    }
+    for turn in [0, QUARTER, 2 * QUARTER, 3 * QUARTER, QUARTER / 2, 3] {
+        let orientation = Orientation::canonical(turn, 0, 0);
+        for u in 0..2 {
+            for v in 0..4 {
+                let cells = BETA.footprint(
+                    &STANDARD,
+                    PartId(0),
+                    front(u, v),
+                    BATTERY.id,
+                    None,
+                    orientation,
+                );
+                assert!(cells.contains(&front(u, v)), "its own socket");
+                let meets = claimed.iter().find(|(cell, _)| cells.contains(cell));
+                let mut candidate = STANDARD.candidate();
+                candidate
+                    .parts
+                    .push(on(20, &BATTERY, 0, &CHASSIS_S, Face::PosX, u, v));
+                let (yaw, pitch, roll) = orientation.raw();
+                let mount = candidate.parts.last_mut().unwrap().mount.as_mut().unwrap();
+                (mount.yaw, mount.pitch, mount.roll) = (yaw, pitch, roll);
+                match BETA.validate(&candidate) {
+                    Err(AssemblyError::Overlap(owner, PartId(20))) => {
+                        assert!(
+                            claimed
+                                .iter()
+                                .any(|(cell, by)| *by == owner && cells.contains(cell)),
+                            "{u} {v} {turn}"
+                        );
+                    }
+                    other => assert!(meets.is_none(), "{u} {v} {turn}: {other:?} {meets:?}"),
+                }
+            }
+        }
+    }
+    // A heavy mod lengthens the footprint; past the face's edge reserves nothing.
+    let rifle = BETA.footprint(
+        &STANDARD,
+        PartId(0),
+        front(1, 3),
+        ENERGY_RIFLE.id,
+        Some(LONG_BARREL),
+        Orientation::IDENTITY,
+    );
+    assert_eq!(rifle, [front(1, 3)]);
+    let rifle = BETA.footprint(
+        &STANDARD,
+        PartId(0),
+        front(1, 2),
+        ENERGY_RIFLE.id,
+        Some(LONG_BARREL),
+        Orientation::IDENTITY,
+    );
+    assert_eq!(rifle, [front(1, 2), front(1, 3)]);
+    assert!(
+        BETA.footprint(
+            &STANDARD,
+            PartId(9),
+            front(0, 0),
+            BATTERY.id,
+            None,
+            Orientation::IDENTITY
+        )
+        .is_empty()
+    );
+}
+
+/// A part's preview placement, valid or not, is where the build puts it once placed.
+#[test]
+fn a_preview_placement_is_where_the_placed_part_lands() {
+    use shooter_sim::mechanics::{placement_of, placements};
+    let mut candidate = STANDARD.candidate();
+    let mut part = on(20, &BATTERY, 0, &CHASSIS_S, Face::NegX, 1, 1);
+    let mount = part.mount.as_mut().unwrap();
+    (mount.yaw, mount.pitch, mount.roll) = (QUARTER, 3_000, 7);
+    candidate.parts.push(part);
+    let build = BETA.validate(&candidate).unwrap();
+    let placed = *build.part(PartId(20)).unwrap();
+    let preview = placement_of(&STANDARD, &placed).unwrap();
+    let committed = placements(&build)
+        .into_iter()
+        .find(|placement| placement.part == PartId(20))
+        .unwrap();
+    assert_eq!(preview, committed);
+    // The root has no mount, and a missing parent no place.
+    assert!(placement_of(&STANDARD, STANDARD.part(PartId(0)).unwrap()).is_none());
+    let mut orphan = placed;
+    orphan.mount.as_mut().unwrap().parent = PartId(30);
+    assert!(placement_of(&STANDARD, &orphan).is_none());
+}
