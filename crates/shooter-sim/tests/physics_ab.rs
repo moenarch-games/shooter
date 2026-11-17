@@ -4,7 +4,8 @@
 //! (sprint, slide, double jump, a thruster-module jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
 //! a shooting range, a close range for the shotgun, laser and flamethrower) on physics-engine and on the Rapier oracle
 //! (`shooter_sim::physics::using_backend`), and the mechanics fixtures (shooter#73: rolling,
-//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog) on both.
+//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog) and a fall's collision
+//! damage and debris (shooter#75) on both.
 //! Both must follow the same path within a few centimetres, agree on support at the end of every
 //! leg, and fire, hit and explode on the same ticks for the same damage (rays and the rocket and
 //! pellet sweeps are the backends' `cast_ray`, the flame their `overlap_box`).
@@ -590,4 +591,102 @@ mod mechanics {
             assert!(up(outcome.root)[1] > 0.8, "{:?}", outcome.root);
         }
     }
+}
+
+/// Collision damage and debris (shooter#75), narrowed as the routes above are: a robot standing
+/// on a beam with a battery on it falls 30 m onto the floor on each backend; both measure an
+/// impact on the same tick (within one), strike the same part (the beam's foot) for damage
+/// within a fifth of each other, break it and leave the battery as debris that comes to rest on
+/// the floor and retires; and a fall from 8 m does nothing on either. Narrowed: the battery
+/// tumbles to rest on another face on each backend (engine about 19 units up, Rapier about 7.5:
+/// a 10-unit half extent a little into the floor), so only "on the floor" is compared; it retires
+/// after a different time (still at rest a second, or its 5 s lifetime).
+#[test]
+fn a_fall_and_its_debris_land_alike_on_the_rapier_oracle() {
+    use shooter_sim::robot::parts::{BATTERY, BEAM_LONG};
+    use shooter_sim::robot::{BETA, Face, PartId, RawMount, RawPart, STANDARD};
+    use shooter_sim::{Event, Intent};
+    let underside = STANDARD
+        .candidate()
+        .parts
+        .iter()
+        .find(|part| part.id == 5)
+        .and_then(|part| part.mount)
+        .unwrap()
+        .socket;
+    let mut candidate = STANDARD.candidate();
+    candidate.parts.retain(|part| part.id != 5 && part.id != 6);
+    candidate.parts.push(RawPart {
+        id: 3,
+        kind: BEAM_LONG.id.0,
+        mount: Some(RawMount {
+            parent: 0,
+            socket: underside,
+            ..RawMount::default()
+        }),
+        modification: None,
+    });
+    candidate.parts.push(RawPart {
+        id: 4,
+        kind: BATTERY.id.0,
+        mount: Some(RawMount {
+            parent: 3,
+            socket: BEAM_LONG.socket(Face::PosX, 0, 0).unwrap().0,
+            ..RawMount::default()
+        }),
+        modification: None,
+    });
+    let pole = BETA.validate(&candidate).unwrap();
+    // (tick of the impact, part, damage), the debris' lowest height, ticks until it retired.
+    let fall = |backend, height: f32| {
+        using_backend(backend, || {
+            let mut session = Session::new(Arena::greybox()).expect("arena builds");
+            session.rebuild(0, pole).unwrap();
+            session.stand(0, [0.0, height, -800.0]).unwrap();
+            let mut struck = Vec::new();
+            let mut lowest = f32::MAX;
+            let mut retired = None;
+            let mut seen = false;
+            for tick in 0..600u32 {
+                session.tick(Intent::IDLE).unwrap();
+                for event in &session.events {
+                    if let Event::Hit {
+                        attacker: None,
+                        part,
+                        damage,
+                        ..
+                    } = *event
+                    {
+                        struck.push((tick, part, damage));
+                    }
+                }
+                match session.mechanics.debris().first() {
+                    Some(piece) => {
+                        assert_eq!(piece.part, PartId(4));
+                        seen = true;
+                        lowest = lowest.min(piece.motion.pose.position[1]);
+                    }
+                    None if seen && retired.is_none() => retired = Some(tick),
+                    None => {}
+                }
+            }
+            (struck, lowest, retired)
+        })
+    };
+    for backend in [Backend::Engine, Backend::Rapier] {
+        let (struck, _, _) = fall(backend, 800.0);
+        assert!(struck.is_empty(), "{backend:?}: {struck:?}");
+    }
+    let engine = fall(Backend::Engine, 3_000.0);
+    let rapier = fall(Backend::Rapier, 3_000.0);
+    println!("engine {engine:?}\nrapier {rapier:?}");
+    for (struck, lowest, retired) in [&engine, &rapier] {
+        assert_eq!(struck.len(), 1, "{struck:?}");
+        assert_eq!(struck[0].1, PartId(3));
+        assert!(*lowest > 0.0 && *lowest < 40.0, "{lowest}");
+        assert!(retired.is_some());
+    }
+    let (a, b) = (engine.0[0], rapier.0[0]);
+    assert!(a.0.abs_diff(b.0) <= 1, "{a:?} {b:?}");
+    assert!((a.2 - b.2).abs() * 5 <= a.2.max(b.2), "{a:?} {b:?}");
 }
