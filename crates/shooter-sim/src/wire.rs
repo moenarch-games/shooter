@@ -149,7 +149,7 @@ pub struct RocketState {
 pub struct PelletState {
     pub from: [f32; 3],
     pub to: [f32; 3],
-    /// It was fired this tick (`from` is the shooter's eye).
+    /// It was fired this tick (`from` is the shooter's muzzle).
     pub launched: bool,
 }
 
@@ -624,13 +624,13 @@ fn encode_event(out: &mut Out, event: &Event) {
         Event::Fired {
             slot,
             weapon,
-            eye,
+            from,
             direction,
         } => {
             out.u8(0);
             out.u8(slot);
             out.weapon(weapon);
-            out.vec3(eye);
+            out.vec3(from);
             out.vec3(direction);
         }
         Event::Beam {
@@ -752,7 +752,7 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
         0 => Event::Fired {
             slot: input.u8()?,
             weapon: input.weapon()?,
-            eye: input.vec3()?,
+            from: input.vec3()?,
             direction: input.vec3()?,
         },
         1 => Event::Beam {

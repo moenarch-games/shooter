@@ -23,7 +23,7 @@ use shooter_sim::robot::PartId;
 use shooter_sim::scenarios::scripted_intent;
 
 use shooter_sim::session::{body_of, slot_of};
-use shooter_sim::weapons;
+use shooter_sim::weapons::Delivery;
 use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
@@ -979,24 +979,49 @@ impl App {
                 highlight: None,
             });
         }
-        // The reticle covers what a shot fired now meets: from the eye along the aim the
-        // simulation gets, against the arena and the others as drawn.
+        // The reticle covers what the camera targets, and a blocked marker where a shot fired
+        // now from the held weapon's muzzle would stop short of it ([`aim::aimed`]), against the
+        // arena and the others as drawn: the simulation's rule for the aim it gets.
         let reticle = match (alive, self.game.world()) {
             (Some(me), Some(world)) => {
-                let sight = aim::sight(
+                let eye_units = (eye / METRES_PER_UNIT).to_array();
+                // The predicted robot's muzzle, moved with the drawn eye.
+                let muzzle = self.game.local_fighter().and_then(|(fighter, _)| {
+                    let muzzle = fighter.muzzle(me.held)?;
+                    let at = fighter.eye();
+                    let shift = |point: [f32; 3]| {
+                        [0, 1, 2].map(|axis| point[axis] - at[axis] + eye_units[axis])
+                    };
+                    Some(aim::Muzzle {
+                        mount: shift(muzzle.mount),
+                        at: shift(muzzle.at),
+                    })
+                });
+                let muzzle = match me.held.delivery() {
+                    Delivery::Grapple | Delivery::Melee => None,
+                    _ => muzzle,
+                };
+                let others = || seen.iter().map(|(slot, parts)| (*slot, parts));
+                let shot = aim::aimed(
                     world,
-                    (eye / METRES_PER_UNIT).to_array(),
-                    weapons::aim(self.look.sim_yaw(), self.look.sim_pitch()),
+                    eye_units,
+                    muzzle,
+                    self.look.sim_yaw(),
+                    self.look.sim_pitch(),
+                    body_of(me.slot),
+                    |body| slot_of(body).is_none(),
+                    others(),
+                );
+                let actual = aim::sight(
+                    world,
+                    shot.from,
+                    shot.direction(),
                     RETICLE_RANGE_UNITS,
                     body_of(me.slot),
                     |body| slot_of(body).is_none(),
-                    seen.iter().map(|(slot, parts)| (*slot, parts)),
+                    others(),
                 );
-                Some(camera::reticle(
-                    camera,
-                    Vec3::from(sight.end) * METRES_PER_UNIT,
-                    forward,
-                ))
+                Some(camera::Reticle::of(camera, forward, &shot, &actual))
             }
             _ => None,
         };

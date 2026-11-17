@@ -373,7 +373,7 @@ mod tests {
             &[Event::Fired {
                 slot: 2,
                 weapon: Weapon::RocketLauncher,
-                eye: [0.0; 3],
+                from: [0.0; 3],
                 direction: [0.0, 0.0, 1.0],
             }],
             Some(1),

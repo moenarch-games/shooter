@@ -22,7 +22,7 @@ use shooter_sim::robot::{
     SocketId, Tuning, loadout,
 };
 
-use shooter_sim::trig;
+use shooter_sim::aim;
 use shooter_sim::weapons::Delivery;
 use shooter_sim::wire::{WireError, decode_input, decode_snapshot, encode_input, encode_snapshot};
 use shooter_sim::{Arena, Assembly, Event, Input, Intent, Rules, Session, Spawn, Weapon};
@@ -1024,9 +1024,8 @@ fn played_duel() -> Session {
     session
 }
 
-/// The yaw and pitch from `from`'s eye to `to`'s root chassis a cell below its middle, where the
-/// host places it (straight ahead while `to` is dead).
-#[allow(clippy::cast_possible_truncation)]
+/// The yaw and pitch that put `from`'s reticle ([`aim::at`]) on `to`'s root chassis a cell below
+/// its middle, where the host places it (straight ahead while `to` is dead).
 fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
     let target = &session.fighters[to];
     if !target.alive() {
@@ -1040,11 +1039,7 @@ fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
         .center;
     // A cell below its middle: below the weapons on a loadout's chest.
     chassis[1] -= 20.0;
-    let d = [0, 1, 2].map(|axis| chassis[axis] - eye[axis]);
-    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
-    let run = d[0].hypot(d[2]).round() as i32;
-    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
-    (yaw, pitch)
+    aim::at(Some(&session.world), eye, chassis)
 }
 
 /// Person 1 holds the rail gun's trigger for `ticks` ticks, aimed at person 2's root chassis

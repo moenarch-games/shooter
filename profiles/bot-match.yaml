@@ -1,17 +1,17 @@
 schema_version: runtime-profiler/scenario/v1
 # A scripted deathmatch without a window: twelve slots, ten seeded bots and two scripted
-# people, hosted through game-server's MatchRuntime with replay capture, for the first 600
-# ticks (10 s: the people join and the fighting starts) of the match scripts/profile.sh
+# people, hosted through game-server's MatchRuntime with replay capture, for the first 4000
+# ticks (about 67 s: the people join and fight, the bots score) of the match scripts/profile.sh
 # also records whole as a replay (5 1/2 minutes: a round, the intermission and the next start).
-# Since the robots became mechanical (shooter#73) a tick costs about 7 times what the capsules
-# did; the shorter capture keeps native-perf's per-source-line report under its 8 MiB safety limit
-# (4000 and 1200 ticks still exceeded it; runtime-profiler#151).
+# `process` only: since the robots became mechanical (shooter#73) native-perf's per-source-line
+# report exceeds its 8 MiB safety limit at any match length (even 600 ticks), so it waits on
+# runtime-profiler#151, like the native client's profile.
 # See docs/foundation-data.md.
 id: shooter-bot-match-v1
 target:
   type: command
   program: ./target/release/shooter-replay
-  args: ["record", "--ticks", "600"]
+  args: ["record", "--ticks", "4000"]
   working_directory: ..
 run:
   warmup_iterations: 1
@@ -19,4 +19,3 @@ run:
   timeout_seconds: 120
 collectors:
   - process
-  - native-perf
