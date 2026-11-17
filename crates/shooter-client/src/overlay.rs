@@ -21,7 +21,7 @@ use render_engine::scene::OverlayQuad;
 use shooter_sim::energy::MILLI;
 use shooter_sim::robot::{BETA, ModId};
 use shooter_sim::session::Fighter;
-use shooter_sim::{TICK_HZ, Weapon};
+use shooter_sim::{Assembly, Instance, TICK_HZ, Weapon};
 
 /// An sRGB colour (0-255) with alpha as the overlay's linear colour.
 pub(crate) fn srgb(hex: u32, alpha: f32) -> Vec4 {
@@ -216,6 +216,17 @@ pub const fn weapon_name(weapon: Weapon) -> &'static str {
     }
 }
 
+/// A weapon copy's name in `build`: its weapon's, numbered among its copies when `build` mounts
+/// that weapon more than once ("Rail gun 2/2", shooter#125).
+#[must_use]
+pub fn copy_name(build: &Assembly, instance: Instance) -> String {
+    let name = weapon_name(instance.weapon);
+    match BETA.copy(build, instance) {
+        Some((number, of)) if of > 1 => format!("{name} {number}/{of}"),
+        _ => name.to_owned(),
+    }
+}
+
 /// A weapon mod's name, from its catalog key.
 #[must_use]
 pub fn mod_name(id: ModId) -> &'static str {
@@ -358,14 +369,35 @@ pub(crate) fn text_width(text: &str, cell: f32) -> f32 {
     }
 }
 
+/// One weapon copy the build mounts, as the HUD lists it (shooter#125).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mounted {
+    pub instance: Instance,
+    /// It is still on the robot.
+    pub armed: bool,
+    /// Which copy of its weapon it is and how many the build mounts (`(1, 1)` for a weapon
+    /// mounted once).
+    pub copy: (u8, u8),
+}
+
+impl Mounted {
+    /// Its number among its weapon's copies, `"1/2"`, or nothing for a weapon mounted once.
+    #[must_use]
+    pub fn number(&self) -> Option<String> {
+        let (number, of) = self.copy;
+        (of > 1).then(|| format!("{number}/{of}"))
+    }
+}
+
 /// What the drawn HUD shows of the local fighter this frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Vitals {
-    pub held: Weapon,
+    /// The weapon copy held.
+    pub held: Instance,
     /// Ticks until the held weapon may fire.
     pub cooldown: u32,
-    /// Every weapon the build carries, in [`Weapon::ALL`] order, and whether it still has it.
-    pub carried: Vec<(Weapon, bool)>,
+    /// Every weapon copy the build mounts, in part ID order, and whether it still has it.
+    pub carried: Vec<Mounted>,
     pub held_mod: Option<ModId>,
     /// Milli-units one activation of the held weapon costs (a tick, for the continuous ones).
     pub cost: u32,
@@ -384,18 +416,22 @@ impl Vitals {
         let build = &fighter.build;
         let held = fighter.arsenal.held;
         let tuning = fighter.tuning(held);
-        let carried = Weapon::ALL
-            .into_iter()
-            .filter(|weapon| BETA.weapons(build).any(|(_, carried)| carried == *weapon))
-            .map(|weapon| (weapon, fighter.parts.armed(build, weapon)))
+        let armed = fighter.instances();
+        let carried = BETA
+            .weapons(build)
+            .map(|instance| Mounted {
+                instance,
+                armed: armed.contains(&instance),
+                copy: BETA.copy(build, instance).unwrap_or((1, 1)),
+            })
             .collect();
         Self {
             held,
             cooldown: fighter.arsenal.cooldown(tick),
             carried,
-            held_mod: BETA.mod_on(build, held),
-            cost: tuning.energy(held),
-            continuous: tuning.refire_ticks(held) <= 1,
+            held_mod: BETA.mod_at(build, held.part),
+            cost: tuning.energy(held.weapon),
+            continuous: tuning.refire_ticks(held.weapon) <= 1,
             energy: fighter.energy,
             capacity: fighter.pool().capacity,
             chassis: fighter.chassis_health(),
@@ -403,10 +439,26 @@ impl Vitals {
         }
     }
 
-    fn armed(&self, weapon: Weapon) -> bool {
+    /// The held copy as listed, if the build mounts it.
+    fn held(&self) -> Option<&Mounted> {
         self.carried
             .iter()
-            .any(|(carried, armed)| *carried == weapon && *armed)
+            .find(|mounted| mounted.instance == self.held)
+    }
+
+    fn armed(&self) -> bool {
+        self.held().is_some_and(|mounted| mounted.armed)
+    }
+
+    /// The held weapon's name, with its copy's number when the build mounts it more than once:
+    /// "Rail gun 2/2".
+    #[must_use]
+    pub fn held_name(&self) -> String {
+        let name = weapon_name(self.held.weapon);
+        match self.held().and_then(Mounted::number) {
+            Some(number) => format!("{name} {number}"),
+            None => name.to_owned(),
+        }
     }
 }
 
@@ -416,7 +468,7 @@ const SWITCH_SECONDS: f32 = 0.4;
 /// The drawn HUD's state between frames: the switch highlight and the cooldown's length.
 #[derive(Debug, Default)]
 pub struct Overlay {
-    held: Option<Weapon>,
+    held: Option<Instance>,
     since_switch: f32,
     /// The longest cooldown since the held weapon was last ready: what the refire bar fills.
     period: u32,
@@ -513,19 +565,13 @@ impl Overlay {
                 srgb(PALE, 0.16 * flash),
             );
         }
-        let armed = vitals.armed(vitals.held);
+        let armed = vitals.armed();
         let tone = if armed { PALE } else { MUTED };
         // The silhouette in a recessed bay.
         painter.rect(x + 16.0, y + 14.0, 96.0, 50.0, srgb(STEEL, 0.55));
-        painter.icon(x + 24.0, y + 23.0, 4.0, vitals.held, srgb(tone, 1.0));
+        painter.icon(x + 24.0, y + 23.0, 4.0, vitals.held.weapon, srgb(tone, 1.0));
         let text_x = x + 126.0;
-        painter.text(
-            text_x,
-            y + 14.0,
-            3.0,
-            weapon_name(vitals.held),
-            srgb(tone, 1.0),
-        );
+        painter.text(text_x, y + 14.0, 3.0, &vitals.held_name(), srgb(tone, 1.0));
         let modded = vitals
             .held_mod
             .map_or_else(|| "no mod".to_owned(), |id| format!("+ {}", mod_name(id)));
@@ -592,24 +638,29 @@ fn units(milli: u32) -> String {
     }
 }
 
-/// The carried weapons as small slots in a row ending at `right`, the held one lit.
+/// The carried weapon copies as small slots in a row ending at `right`, the held one lit; a
+/// weapon mounted more than once has a slot for every copy, numbered (shooter#125).
 fn slots(painter: &mut Painter, vitals: &Vitals, right: f32, y: f32, flash: f32) {
     #[allow(clippy::cast_precision_loss)]
     let count = vitals.carried.len() as f32;
     let mut x = right - count * SLOT_WIDTH - (count - 1.0).max(0.0) * SLOT_GAP;
-    // The guns in rotation order, then the blade and the grapple module (on their own keys).
-    let mut order: Vec<(Weapon, bool)> = vitals.carried.clone();
-    order.sort_by_key(|(weapon, _)| {
-        Weapon::ROTATION
+    // The guns in rotation order (copies by part), then the blade and the grapple module (on
+    // their own keys).
+    let mut order: Vec<Mounted> = vitals.carried.clone();
+    order.sort_by_key(|mounted| {
+        let weapon = mounted.instance.weapon;
+        let place = Weapon::ROTATION
             .iter()
-            .position(|held| held == weapon)
+            .position(|held| *held == weapon)
             .unwrap_or(match weapon {
                 Weapon::EnergyBlade => usize::MAX - 1,
                 _ => usize::MAX,
-            })
+            });
+        (place, mounted.instance.part)
     });
-    for (weapon, armed) in order {
-        let held = weapon == vitals.held;
+    for mounted in order {
+        let (weapon, armed) = (mounted.instance.weapon, mounted.armed);
+        let held = mounted.instance == vitals.held;
         let background = if held {
             srgb(GRAPHITE, 0.9)
         } else {
@@ -637,6 +688,8 @@ fn slots(painter: &mut Painter, vitals: &Vitals, right: f32, y: f32, flash: f32)
                 srgb(RED, 1.0),
             );
             painter.text_right(x + SLOT_WIDTH - 5.0, y + 27.0, 1.0, "lost", srgb(RED, 1.0));
+        } else if let Some(number) = mounted.number() {
+            painter.text_right(x + SLOT_WIDTH - 5.0, y + 27.0, 1.0, &number, tone);
         }
         x += SLOT_WIDTH + SLOT_GAP;
     }
@@ -819,21 +872,53 @@ mod tests {
     #[test]
     fn the_vitals_list_the_carried_weapons_and_the_held_ones_cost() {
         let vitals = standard();
-        assert_eq!(vitals.held, Weapon::EnergyRifle);
+        assert_eq!(vitals.held, Instance::new(7, Weapon::EnergyRifle));
+        let listed: Vec<(Instance, bool, Option<String>)> = vitals
+            .carried
+            .iter()
+            .map(|mounted| (mounted.instance, mounted.armed, mounted.number()))
+            .collect();
         assert_eq!(
-            vitals.carried,
+            listed,
             [
-                (Weapon::EnergyRifle, true),
-                (Weapon::Grapple, true),
-                (Weapon::EnergyBlade, true),
-                (Weapon::Shotgun, true),
+                (Instance::new(7, Weapon::EnergyRifle), true, None),
+                (Instance::new(8, Weapon::EnergyBlade), true, None),
+                (Instance::new(9, Weapon::Grapple), true, None),
+                (Instance::new(10, Weapon::Shotgun), true, None),
             ]
         );
+        assert_eq!(vitals.held_name(), "Energy rifle");
         assert_eq!(vitals.cost, 2_000);
         assert!(!vitals.continuous);
         assert_eq!(units(2_000), "2");
         assert_eq!(units(600), "0.6");
         assert_eq!(units(36_000), "36");
+    }
+
+    /// The rocket pod (shooter#125): a slot for each of its four launchers, numbered, the held
+    /// one named with its number; a lost copy struck out, the others still armed.
+    #[test]
+    fn the_vitals_list_every_copy_of_a_weapon() {
+        use shooter_sim::robot::ROCKET_POD;
+        let mut session = Session::new(shooter_sim::Arena::greybox()).unwrap();
+        session.rebuild(0, ROCKET_POD).unwrap();
+        let vitals = Vitals::of(session.local(), session.ticks());
+        assert_eq!(vitals.held, Instance::new(7, Weapon::RocketLauncher));
+        assert_eq!(vitals.held_name(), "Rockets 1/4");
+        let numbers: Vec<Option<String>> = vitals.carried.iter().map(Mounted::number).collect();
+        assert_eq!(
+            numbers,
+            ["1/4", "2/4", "3/4", "4/4"].map(|number| Some(number.to_owned()))
+        );
+        let fighter = &mut session.fighters[0];
+        let build = fighter.build;
+        fighter.parts.hurt(&build, 5, 1_000);
+        let vitals = Vitals::of(session.local(), session.ticks());
+        let armed: Vec<bool> = vitals.carried.iter().map(|mounted| mounted.armed).collect();
+        assert_eq!(armed, [true, false, true, true]);
+        assert!(vitals.armed(), "the held launcher is still on");
+        let quads = Overlay::default().draw(Some(&vitals), 1280, 720, 0.016);
+        assert!(!quads.is_empty());
     }
 
     #[test]
@@ -863,7 +948,7 @@ mod tests {
         let mut vitals = standard();
         let mut overlay = Overlay::default();
         overlay.draw(Some(&vitals), 1280, 720, 0.016);
-        vitals.held = Weapon::Shotgun;
+        vitals.held = Instance::new(10, Weapon::Shotgun);
         let switched = overlay.draw(Some(&vitals), 1280, 720, 0.016);
         let settled = overlay.draw(Some(&vitals), 1280, 720, 1.0);
         // The flash over the panel and the sweeping band, then neither.

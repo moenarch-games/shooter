@@ -140,7 +140,7 @@ pub fn run_legs(session: &mut Session, legs: &[Leg]) -> Result<Vec<Sample>, Phys
                 sliding: report.sliding,
                 launched: report.launched,
                 air_jumped: report.air_jumped,
-                fired: report.fired,
+                fired: report.fired.map(|fired| fired.weapon),
                 damage: report.damage,
                 exploded: report.exploded,
                 hooked: session.local().hook.is_some(),

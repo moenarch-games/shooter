@@ -398,6 +398,7 @@ impl Effects {
                     weapon,
                     from,
                     direction,
+                    ..
                 } => {
                     let direction = Vec3::from(direction);
                     let muzzle = if weapon == Weapon::Grapple {

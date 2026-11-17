@@ -230,7 +230,7 @@ fn a_shotgun_blast_is_a_fixed_pattern_of_pellets() {
     let mut session = armory((scenarios::CLOSE_RANGE.arena)());
     let blast = Intent {
         fire: true,
-        select: Some(Weapon::Shotgun),
+        select: Some(Weapon::Shotgun.into()),
         ..Intent::IDLE
     };
     for _ in 0..12 {
@@ -301,7 +301,7 @@ fn blast_hits(arena: Arena) -> Vec<i32> {
         0,
         Intent {
             fire: true,
-            select: Some(Weapon::Shotgun),
+            select: Some(Weapon::Shotgun.into()),
             ..Intent::IDLE
         },
     );
@@ -350,7 +350,7 @@ fn pellets_never_tunnel_through_a_thin_wall() {
         session
             .tick(Intent {
                 fire: tick < 13,
-                select: Some(Weapon::Shotgun),
+                select: Some(Weapon::Shotgun.into()),
                 ..Intent::IDLE
             })
             .unwrap();

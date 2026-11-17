@@ -131,7 +131,7 @@ fn each_slot_keeps_its_robot_through_open_slots_deaths_respawns_and_rounds() {
                 yaw,
                 pitch,
                 fire: true,
-                select: Some(shooter_sim::Weapon::EnergyRifle),
+                select: Some(shooter_sim::Weapon::EnergyRifle.into()),
                 ..Intent::IDLE
             },
         );

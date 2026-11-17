@@ -90,7 +90,9 @@ use crate::player::{
 use crate::repair::{self, Order, Outcome, Repair};
 use crate::robot::{Assembly, BETA, Kind, PartId, Tuning};
 use crate::scenery::{PlaceableState, Scenery};
-use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
+use crate::weapons::{
+    self, Arsenal, Delivery, Flight, Instance, Pellet, Rocket, Select, Travel, Weapon,
+};
 use std::collections::VecDeque;
 
 /// Ticks a fighter stays dead: 2 s.
@@ -339,10 +341,17 @@ impl Fighter {
         self.grounded
     }
 
-    /// How `weapon` fires for it: its build's mod on the weapon, then the module it carries.
+    /// How the weapon copy `instance` fires for it: its build's mod on that copy, then the
+    /// module it carries.
     #[must_use]
-    pub fn tuning(&self, weapon: Weapon) -> Tuning {
-        tuning_of(&self.build, self.carried, weapon)
+    pub fn tuning(&self, instance: Instance) -> Tuning {
+        tuning_of(&self.build, self.carried, instance)
+    }
+
+    /// The weapon copies it still has, in part ID order ([`PartDamage::instances`]).
+    #[must_use]
+    pub fn instances(&self) -> Vec<Instance> {
+        self.parts.instances(&self.build).collect()
     }
 
     /// Its shared energy pool: its build's capacity and regeneration ([`crate::energy`]).
@@ -375,8 +384,8 @@ impl Fighter {
 
     /// The weapon it takes up at spawn: the first gun its build lets it hold, else the blade
     /// ([`weapons::spawn_weapon`]; never the grapple module), the energy rifle when it has none.
-    fn first_weapon(&self) -> Weapon {
-        weapons::spawn_weapon(|weapon| self.parts.armed(&self.build, weapon)).unwrap_or_default()
+    fn first_weapon(&self) -> Instance {
+        weapons::spawn_weapon(&self.instances()).unwrap_or_default()
     }
 
     /// Its root chassis' health: its life ([`crate::damage`]).
@@ -394,11 +403,22 @@ impl Fighter {
             .unwrap_or_default()
     }
 
-    /// Where `weapon`'s shots leave its robot now ([`aim::muzzle`]): `None` while dead, or when
-    /// it has no such weapon part still connected or the weapon has no muzzle (the blade).
+    /// The weapon copy `which` names on its robot: that exact part if it is a weapon of its
+    /// build, or the first copy of that weapon it still has.
     #[must_use]
-    pub fn muzzle(&self, weapon: Weapon) -> Option<aim::Muzzle> {
-        aim::muzzle(&self.build, &self.hitboxes(), weapon)
+    pub fn copy(&self, which: impl Into<Select>) -> Option<Instance> {
+        match which.into() {
+            Select::Part(part) => BETA.instance(&self.build, part),
+            Select::Weapon(weapon) => self.parts.first(&self.build, weapon),
+        }
+    }
+
+    /// Where the weapon copy `which` names ([`Fighter::copy`]) shoots from now
+    /// ([`aim::muzzle`]): `None` while dead, or when that copy is no longer connected or the
+    /// weapon has no muzzle (the blade).
+    #[must_use]
+    pub fn muzzle(&self, which: impl Into<Select>) -> Option<aim::Muzzle> {
+        aim::muzzle(&self.build, &self.hitboxes(), self.copy(which)?)
     }
 
     /// Its feet (units): its robot's frame origin less the reach of its build standing whole
@@ -637,9 +657,11 @@ fn preset_motors(mechanics: &Mechanics, slot: u8, intent: Intent) -> crate::bind
         })
 }
 
-fn tuning_of(build: &Assembly, carried: Option<Carried>, weapon: Weapon) -> Tuning {
-    let tuning = BETA.tuning(build, weapon);
-    carried.map_or(tuning, |carried| carried.module.tune(weapon, tuning))
+fn tuning_of(build: &Assembly, carried: Option<Carried>, instance: Instance) -> Tuning {
+    let tuning = BETA.tuning(build, instance);
+    carried.map_or(tuning, |carried| {
+        carried.module.tune(instance.weapon, tuning)
+    })
 }
 
 /// One use of `fighter`'s module spent; the last one spends the module.
@@ -724,8 +746,8 @@ pub struct StepReport {
     pub sliding: bool,
     /// It touched down this tick after being airborne.
     pub landed: bool,
-    /// The weapon that fired this tick.
-    pub fired: Option<Weapon>,
+    /// The weapon copy that fired this tick.
+    pub fired: Option<Instance>,
     /// Damage dealt to others (fighters and dummies) this tick.
     pub damage: i32,
     /// A rocket exploded this tick.
@@ -736,10 +758,12 @@ pub struct StepReport {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     /// A shot (or the grapple module's hook) left `from` (units: its muzzle, the eye for the blade,
-    /// [`aim`]) along `direction` (unit vector).
+    /// [`aim`]) along `direction` (unit vector). `part` is the weapon copy that fired
+    /// (shooter#125).
     Fired {
         slot: u8,
         weapon: Weapon,
+        part: PartId,
         from: [f32; 3],
         direction: [f32; 3],
     },
@@ -1282,7 +1306,7 @@ impl Session {
         slot: u8,
         robot: &RobotState,
         motion: Motion,
-        held: Weapon,
+        held: Instance,
         hook: Option<Hook>,
     ) -> Result<(), PhysicsError> {
         self.mechanics.place(RobotState {
@@ -1534,58 +1558,73 @@ impl Session {
             // hook holds while the key stays down and the module is still connected
             // ([`crate::damage`]); let go, or with the module lost or cut off, the rope goes. A
             // robot without a working module has no grapple: the host refuses the key. No
-            // second hook until the first is let go.
-            let grappling = intent.grapple && playing && parts.armed(&build, Weapon::Grapple);
+            // second hook until the first is let go. With several grapple modules, the first
+            // still connected hooks, and a set hook holds while any is.
+            let armed: Vec<Instance> = parts.instances(&build).collect();
+            let grapple = parts.first(&build, Weapon::Grapple);
+            let grappling = intent.grapple && playing && grapple.is_some();
             if !grappling {
                 fighter.hook = None;
             }
-            let hook = grappling
-                && fighter.hook.is_none()
-                && fighter.arsenal.hook(
-                    self.tick,
-                    tuning_of(&build, carried, Weapon::Grapple).refire_ticks(Weapon::Grapple),
-                    || {
-                        energy::spend(
-                            &mut fighter.energy,
-                            tuning_of(&build, carried, Weapon::Grapple).energy(Weapon::Grapple),
-                        )
-                    },
-                );
+            let hook = match grapple.filter(|_| grappling && fighter.hook.is_none()) {
+                Some(grapple) => fighter
+                    .arsenal
+                    .hook(
+                        self.tick,
+                        tuning_of(&build, carried, grapple).refire_ticks(Weapon::Grapple),
+                        || {
+                            energy::spend(
+                                &mut fighter.energy,
+                                tuning_of(&build, carried, grapple).energy(Weapon::Grapple),
+                            )
+                        },
+                    )
+                    .then_some(grapple),
+                None => None,
+            };
             // The grapple's hook, the swing, then the gun ask the shared pool for their energy,
             // first come, first served ([`crate::energy`]); a weapon part the robot has lost
             // cannot ask ([`crate::damage`]), so it neither fires nor spends a cooldown; nor can
-            // a weapon the build does not carry. A switch to a weapon it may not hold is refused
-            // ([`weapons::holdable`]): the host decides, the prediction and replays alike.
+            // a weapon the build does not carry. A switch to a weapon copy it may not hold is
+            // refused ([`weapons::resolve`]): the host decides, the prediction and replays
+            // alike. Every copy of a weapon is its own instance (shooter#125): its own mod,
+            // refire and muzzle; the melee key swings the first blade still connected.
             let charge = &mut fighter.energy;
+            let held = fighter.arsenal.held;
             let fired = fighter.arsenal.trigger_tuned(
                 intent
                     .select
-                    .filter(|weapon| parts.holdable(&build, *weapon)),
-                intent.melee && playing,
+                    .and_then(|select| weapons::resolve(select, held, &armed)),
+                parts
+                    .first(&build, Weapon::EnergyBlade)
+                    .filter(|_| intent.melee && playing),
                 intent.fire && playing,
                 self.tick,
-                |weapon| tuning_of(&build, carried, weapon).refire_ticks(weapon),
-                |weapon| {
-                    parts.armed(&build, weapon)
-                        && energy::spend(charge, tuning_of(&build, carried, weapon).energy(weapon))
+                |instance| tuning_of(&build, carried, instance).refire_ticks(instance.weapon),
+                |instance| {
+                    armed.contains(&instance)
+                        && energy::spend(
+                            charge,
+                            tuning_of(&build, carried, instance).energy(instance.weapon),
+                        )
                 },
             );
-            if hook {
+            if let Some(grapple) = hook {
                 if slot == 0 {
-                    local_fired = Some(Weapon::Grapple);
+                    local_fired = Some(grapple);
                 }
-                self.fire(slot, Weapon::Grapple, intent)?;
+                self.fire(slot, grapple, intent)?;
             }
-            if let Some(weapon) = fired {
+            if let Some(instance) = fired {
                 if slot == 0 {
-                    local_fired = Some(weapon);
+                    local_fired = Some(instance);
                 }
-                self.fire(slot, weapon, intent)?;
+                self.fire(slot, instance, intent)?;
                 // The shot went out boosted; it spends a use of the module that boosted it.
                 let fighter = &mut self.fighters[slot];
                 if fighter
                     .carried
-                    .is_some_and(|carried| carried.module.spent_by_shot(weapon))
+                    .is_some_and(|carried| carried.module.spent_by_shot(instance.weapon))
                 {
                     spend_module(fighter, &mut self.events);
                 }
@@ -2222,16 +2261,22 @@ impl Session {
     /// ignited. The grapple module's hook leaves its mount's muzzle toward the target too and
     /// sets where its line first meets arena geometry ([`Hook::fire`]). The blade leaves the eye
     /// along the aim.
-    fn fire(&mut self, slot: usize, weapon: Weapon, intent: Intent) -> Result<(), PhysicsError> {
+    fn fire(
+        &mut self,
+        slot: usize,
+        instance: Instance,
+        intent: Intent,
+    ) -> Result<(), PhysicsError> {
+        let weapon = instance.weapon;
         let shooter = &self.fighters[slot];
         // The robot is no body in the scenery's world: rays leave its muzzle and meet the other
         // robots' part boxes.
         let body = body_of(shooter.slot);
         let eye = shooter.eye();
-        let delivery = shooter.tuning(weapon).delivery(weapon);
+        let delivery = shooter.tuning(instance).delivery(weapon);
         let muzzle = match delivery {
             Delivery::Melee => None,
-            _ => shooter.muzzle(weapon),
+            _ => shooter.muzzle(instance),
         };
         let seen = self.seen_by(slot);
         let shot = aim::aimed(
@@ -2249,6 +2294,7 @@ impl Session {
         self.events.push(Event::Fired {
             slot: slot as u8,
             weapon,
+            part: instance.part,
             from,
             direction: aim::unit(direction),
         });
