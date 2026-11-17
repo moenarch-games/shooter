@@ -316,6 +316,40 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   repositories (D5.i46.1). Existing blade reach, damage, timing and shove
   values remain provisional balancing, not separately approved numeric policy.
 
+- **D2.i55.1** (owner, 2026-11-16; shooter#55, option B): The
+  first large **spaceship shipyard/drydock arena has two docked spacecraft**
+  flanking a **central industrial corridor**, rather than one central ship
+  or many scattered hull islands. Their contrasting exterior structures and
+  surrounding dock machinery form distinct long-range and close-range routes.
+  Selected exterior hull sections on the ships are physically walkable and
+  grappleable, with credible access from ground lanes and dock gantries;
+  ramps/flanks, intermittent cover and counter-sightlines must prevent either
+  elevated hull from becoming an uncontestable sniper perch. Preserve viable
+  routes for different robot locomotion builds, safe spawns and meaningful
+  multi-robot combat across the dock. **No ship interiors** in this beta;
+  author both ships through the already approved reusable arena kit and any
+  minimal reusable hull surfaces it needs (D2.i46.11, D5.i46.1), with no
+  separate spaceship asset pipeline. Exact dimensions, named landmarks,
+  spawn count, arena capacity, hull surface extent and route geometry remain
+  layout and balance work for #55, validated in native and browser playtests.
+
+
+- **D2.i55.2** (owner, 2026-11-17; shooter#55, option C): The two-ship
+  drydock arena uses **hybrid symmetry**. Keep the competitive skeleton
+  broadly balanced: comparable safe-spawn protection, access to contested
+  pickups and repair anchors, ground-to-hull routes, flanking opportunities
+  and ways to challenge elevated firing positions from either side. Give
+  the **two spacecraft distinct silhouettes, industrial details, gantries,
+  cover shapes and local route geometry**, rather than mirroring one ship
+  exactly onto the other. Balance tactical opportunities and counterplay,
+  not individual polygons or identical paths. Verify the result with
+  traversal/spawn and bot tests, plus native/browser matches using
+  different locomotion, close-range and long-range robot builds. This
+  refines D2.i55.1; exact footprints, distances, spawns, slot capacity
+  and local landmarks remain design/playtest tuning in #55. Keep the
+  existing no-interiors rule, shared arena-kit pipeline and Shooter-owned
+  gameplay/collision authority.
+
 ## 3. Platforms
 
 - **D3.1** (owner, 2026-11-11): Native wgpu client on render-engine plus a browser client on Pages.
