@@ -30,7 +30,6 @@ use crate::scene::{self, METRES_PER_UNIT};
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::scene::{OverlayQuad, Scene};
 use render_engine::world::World;
-use shooter_sim::Weapon;
 use shooter_sim::bindings::Bindings;
 use shooter_sim::mechanics::{placements, sockets};
 use shooter_sim::robot::{
@@ -882,13 +881,9 @@ impl Builder {
                     sliding: false,
                     hook: None,
                     since_fired: f32::INFINITY,
-                    fired: Weapon::EnergyRifle,
+                    fired: shooter_sim::Instance::default(),
                     shots: 0,
-                    held: BETA
-                        .weapons(&shown)
-                        .map(|(_, weapon)| weapon)
-                        .next()
-                        .unwrap_or_default(),
+                    held: BETA.weapons(&shown).next().unwrap_or_default(),
                     energy: 1.0,
                     swing: None,
                     dead_for: None,
@@ -1080,7 +1075,14 @@ impl Builder {
         painter.text(x, y, CELL, heading, srgb(MUTED, 1.0));
         y += 22.0;
         if let Some(kind) = kind {
-            painter.text(x, y, CELL, &part_name(kind), srgb(ORANGE, 1.0));
+            // A weapon mounted more than once: which copy this one is (shooter#125).
+            let name = selected
+                .and_then(|part| BETA.instance(draft, part.id))
+                .map_or_else(
+                    || part_name(kind),
+                    |instance| crate::overlay::copy_name(draft, instance),
+                );
+            painter.text(x, y, CELL, &name, srgb(ORANGE, 1.0));
             y += 22.0;
             let [cx, cy, cz] = kind.cells;
             let mut rows = vec![

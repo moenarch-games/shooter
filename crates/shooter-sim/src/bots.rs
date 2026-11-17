@@ -17,7 +17,7 @@ use crate::player::Intent;
 use crate::rng::Rng;
 use crate::session::slot_of;
 use crate::trig;
-use crate::weapons::{MAX_PITCH, Weapon};
+use crate::weapons::{Instance, MAX_PITCH, Select, Weapon};
 
 /// A bot looks for targets every 6 ticks (0.1 s).
 pub const SCAN_TICKS: u32 = 6;
@@ -166,7 +166,7 @@ impl Bot {
         sights: &[Sight],
         world: &World,
         arena: &Arena,
-        held: Weapon,
+        held: Instance,
         tick: u32,
     ) -> Intent {
         let (Some(center), Some(eye)) = (sights[me].center, sights[me].eye) else {
@@ -227,7 +227,7 @@ impl Bot {
         me: usize,
         (eye, target): (Vec3i, Vec3i),
         world: &World,
-        held: Weapon,
+        held: Instance,
         armed: [bool; 8],
         tick: u32,
     ) -> Intent {
@@ -266,7 +266,9 @@ impl Bot {
         } else {
             Weapon::RailGun
         };
-        // A weapon part it has lost: the first gun it can still fire instead.
+        // A weapon part it has lost: the first gun it can still fire instead. It asks for the
+        // weapon, and the host picks the copy (shooter#125, [`crate::weapons::resolve`]): the
+        // one it holds while that one is still on, else the first copy it still has.
         let weapon = if armed(weapon) {
             weapon
         } else {
@@ -295,14 +297,14 @@ impl Bot {
             jump: self.rng.below(90) == 0,
             sprint: false,
             crouch: false,
-            fire: weapon == held && ready,
+            fire: weapon == held.weapon && ready,
             melee: ready
                 && armed(Weapon::EnergyBlade)
                 && run < MELEE_UNITS
                 && dy.abs() < crate::player::EYE_HEIGHT_UNITS,
             // Bots never grapple (Atlas D2.8), module or not.
             grapple: false,
-            select: Some(weapon),
+            select: Some(Select::Weapon(weapon)),
             edit: false,
             repair: None,
             // The session resolves its build's preset from its movement ([`crate::bindings`]).

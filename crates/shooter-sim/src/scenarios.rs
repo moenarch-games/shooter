@@ -17,9 +17,9 @@ use crate::physics::Vec3i;
 use crate::pickups::{ArenaModule, ModulePad};
 use crate::player::Intent;
 use crate::proving_cell::STAGE_TOP;
-use crate::robot::{Assembly, HEAVY, SKIRMISHER};
+use crate::robot::{Assembly, HEAVY, ROCKET_POD, SKIRMISHER, TWIN_RAIL};
 use crate::tour::{EAST, Leg, NORTH, SOUTH, WEST, hold, stand, walk};
-use crate::weapons::{MAX_PITCH, Weapon};
+use crate::weapons::{MAX_PITCH, Select, Weapon};
 
 /// One scripted scenario.
 #[derive(Clone, Copy, Debug)]
@@ -226,7 +226,7 @@ pub const ROCKET_JUMP: Scenario = Scenario {
             "take the launcher",
             Intent {
                 yaw: SOUTH,
-                select: Some(Weapon::RocketLauncher),
+                select: Some(Select::Weapon(Weapon::RocketLauncher)),
                 ..Intent::IDLE
             },
             20,
@@ -314,7 +314,7 @@ const fn shoot(name: &'static str, yaw: u16, weapon: Weapon, ticks: u32) -> Leg 
         Intent {
             yaw,
             fire: true,
-            select: Some(weapon),
+            select: Some(Select::Weapon(weapon)),
             ..Intent::IDLE
         },
         ticks,
@@ -326,7 +326,7 @@ const fn aim_with(name: &'static str, yaw: u16, weapon: Weapon, ticks: u32) -> L
         name,
         Intent {
             yaw,
-            select: Some(weapon),
+            select: Some(Select::Weapon(weapon)),
             ..Intent::IDLE
         },
         ticks,
@@ -810,9 +810,17 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
         melee: (tick + 50 * person).is_multiple_of(200),
         // The grapple module's own key, a second held every four (shooter#104).
         grapple: (tick + 70 * person) % 240 < 60,
-        select: tick
-            .is_multiple_of(300)
-            .then(|| weapons[(tick / 300 + person) as usize % weapons.len()]),
+        // A weapon every 5 s and, halfway between, the copy on part 9 (the twin rail's second
+        // rail gun, the rocket pod's third launcher; refused where it is no gun, shooter#125).
+        select: if tick.is_multiple_of(300) {
+            Some(Select::Weapon(
+                weapons[(tick / 300 + person) as usize % weapons.len()],
+            ))
+        } else if tick % 300 == 150 {
+            Some(Select::Part(crate::robot::PartId(9)))
+        } else {
+            None
+        },
         edit: false,
         repair: None,
         motors: {
@@ -828,12 +836,16 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
 
 /// The robot build scripted person `index` asks for when it joins: the first person comes back
 /// as the [`HEAVY`] build after its first death, the second as the modded [`SKIRMISHER`]
-/// (rapid-cycler rifle, efficiency-coiled shotgun), the others keep the standard build.
+/// (rapid-cycler rifle, efficiency-coiled shotgun), the third as the [`TWIN_RAIL`] and the fourth
+/// as the [`ROCKET_POD`] (one weapon mounted several times, shooter#125); the others keep the
+/// standard build.
 #[must_use]
 pub const fn scripted_build(index: u8) -> Option<Assembly> {
     match index {
         0 => Some(HEAVY),
         1 => Some(SKIRMISHER),
+        2 => Some(TWIN_RAIL),
+        3 => Some(ROCKET_POD),
         _ => None,
     }
 }

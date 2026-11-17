@@ -84,7 +84,9 @@ fn equip(session: &mut Session, slot: usize, build: Assembly) {
 /// Puts `slot` standing still with its feet at `feet` (units).
 fn stand_at(session: &mut Session, slot: u8, feet: [f32; 3]) {
     session.stand(slot, feet).unwrap();
-    session.fighters[usize::from(slot)].arsenal.held = Weapon::EnergyRifle;
+    session.fighters[usize::from(slot)].arsenal.held = session.fighters[usize::from(slot)]
+        .copy(Weapon::EnergyRifle)
+        .unwrap_or_default();
 }
 
 fn taken(session: &Session) -> Vec<(u8, u8, ArenaModule)> {
@@ -253,7 +255,7 @@ fn rocket_a(session: &mut Session, sequence: &mut u32) {
                     yaw: 32_768,
                     pitch: -1_500,
                     fire: true,
-                    select: Some(Weapon::RocketLauncher),
+                    select: Some(Weapon::RocketLauncher.into()),
                     ..Intent::IDLE
                 },
                 view_tick: session.ticks(),
@@ -725,7 +727,7 @@ fn rail_duel(seen_ticks_ago: u32, build: Assembly, capacitor: bool) -> Option<i3
         session.step().unwrap();
     };
     let take = Intent {
-        select: Some(Weapon::RailGun),
+        select: Some(Weapon::RailGun.into()),
         ..Intent::IDLE
     };
     for _ in 0..10 {
@@ -820,7 +822,7 @@ fn rail_capacitor_kills_score() {
             fire: sequence > 10,
             yaw,
             pitch,
-            select: Some(Weapon::RailGun),
+            select: Some(Weapon::RailGun.into()),
             ..Intent::IDLE
         };
         session.queue(
@@ -872,10 +874,10 @@ fn the_rail_capacitor_is_spent_by_its_rail_shots() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::RailCapacitor)]);
     equip(&mut session, 0, ARMORY);
     // Facing away from B, at the wall.
-    let shoot = |weapon| Intent {
+    let shoot = |weapon: Weapon| Intent {
         yaw: 32_768,
         fire: true,
-        select: Some(weapon),
+        select: Some(weapon.into()),
         ..Intent::IDLE
     };
     let mut sequence = 0;
@@ -954,7 +956,9 @@ fn fighters_of_different_builds_take_and_use_any_module() {
         assert_eq!(BETA.validate(&fighter.build.candidate()), Ok(fighter.build));
     }
     assert_eq!(
-        session.fighters[1].tuning(Weapon::RailGun).damage_percent,
+        session.fighters[1]
+            .tuning(shooter_sim::Instance::new(u8::MAX, Weapon::RailGun))
+            .damage_percent,
         RAIL_CAPACITOR_DAMAGE_PERCENT
     );
     // Both jump: the thrusters leave faster.

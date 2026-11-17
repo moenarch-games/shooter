@@ -117,12 +117,12 @@ fn shoot(
     point: impl Fn(&Session) -> [f32; 3],
 ) -> Vec<Event> {
     let take = Intent {
-        select: Some(weapon),
+        select: Some(weapon.into()),
         ..Intent::IDLE
     };
     for _ in 0..120 {
         step(session, take, facing(b_yaw));
-        let held = session.fighters[0].arsenal.held == weapon;
+        let held = session.fighters[0].arsenal.held.weapon == weapon;
         if held && session.fighters[0].energy == session.fighters[0].pool().capacity {
             break;
         }
@@ -133,7 +133,7 @@ fn shoot(
             yaw,
             pitch,
             fire: true,
-            select: Some(weapon),
+            select: Some(weapon.into()),
             ..Intent::IDLE
         };
         step(session, fire, facing(b_yaw));
@@ -356,7 +356,7 @@ fn several_parts_come_off_at_once_and_lost_weapons_cannot_fire() {
                 yaw: 32_768,
                 fire: weapon != Weapon::EnergyBlade,
                 melee: weapon == Weapon::EnergyBlade,
-                select: Some(weapon),
+                select: Some(weapon.into()),
                 ..Intent::IDLE
             };
             step(&mut session, Intent::IDLE, intent);
@@ -569,7 +569,7 @@ fn part_damage_travels_in_snapshots_and_a_predictor_follows_it() {
         let intent = Intent {
             yaw: 32_768,
             fire: true,
-            select: Some(weapon),
+            select: Some(weapon.into()),
             ..Intent::IDLE
         };
         for _ in 0..40 {
@@ -631,22 +631,22 @@ fn b_takes(session: &mut Session, intent: Intent) -> Vec<Weapon> {
 #[test]
 fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
     let mut session = duel();
-    let select = |weapon| Intent {
+    let select = |weapon: Weapon| Intent {
         yaw: 32_768,
-        select: Some(weapon),
+        select: Some(weapon.into()),
         ..Intent::IDLE
     };
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::EnergyRifle);
     // Not carried: refused, whatever the client asks.
     for weapon in [Weapon::RailGun, Weapon::Laser, Weapon::Flamethrower] {
         b_takes(&mut session, select(weapon));
-        assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+        assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::EnergyRifle);
     }
     // The blade is not held while a gun is left.
     b_takes(&mut session, select(Weapon::EnergyBlade));
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::EnergyRifle);
     b_takes(&mut session, select(Weapon::Shotgun));
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::Shotgun);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::Shotgun);
     // The grapple module is never held, whole or lost (Atlas D2.i104.2); back to the rifle is
     // fine.
     let b = &mut session.fighters[1];
@@ -662,9 +662,9 @@ fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
     b.parts.hurt(&build, grapple, 1_000);
     assert!(!b.parts.armed(&build, Weapon::Grapple));
     b_takes(&mut session, select(Weapon::Grapple));
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::Shotgun);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::Shotgun);
     b_takes(&mut session, select(Weapon::EnergyRifle));
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::EnergyRifle);
     // The rifle and the shotgun lost too: the blade is the last weapon, held and swung by the
     // trigger.
     let b = &mut session.fighters[1];
@@ -672,7 +672,7 @@ fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
         b.parts.hurt(&build, index(weapon), 1_000);
     }
     b_takes(&mut session, select(Weapon::EnergyBlade));
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyBlade);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::EnergyBlade);
     let mut fired = Vec::new();
     for _ in 0..40 {
         fired.extend(b_takes(
@@ -688,5 +688,5 @@ fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
     assert!(!fired.is_empty());
     // Rebuilt (as at a spawn), it takes up its build's first weapon.
     session.rebuild(1, HEAVY).unwrap();
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::RailGun);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::RailGun);
 }

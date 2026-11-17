@@ -508,7 +508,10 @@ fn repair_moving_and_firing_share_the_pool_first_come_first_served() {
 
     // Contested: a pool that pays the shot first has nothing left for the repair that tick.
     let shot = BETA
-        .tuning(&MECHANIC, Weapon::EnergyRifle)
+        .tuning(
+            &MECHANIC,
+            BETA.first(&MECHANIC, Weapon::EnergyRifle).unwrap(),
+        )
         .energy(Weapon::EnergyRifle);
     let mut session = repairing_leg(TOWARD);
     while session.fighters[1].arsenal.cooldown(session.ticks()) > 0 {

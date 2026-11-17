@@ -36,15 +36,17 @@ use crate::repair::{self, Order, Repair};
 use crate::robot::{Assembly, AssemblyError, BETA, Candidate, PartId, RawMount, RawPart};
 use crate::scenery::PlaceableState;
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
-use crate::weapons::Weapon;
+use crate::weapons::{Instance, Select, Weapon};
 use std::fmt;
 
+/// 23: weapons are addressed by mounted copy (shooter#125): an input's switch names a weapon or
+/// an exact weapon part, a fighter's held weapon and a shot's `Fired` event carry the part;
 /// 22: inputs carry the actuator commands the person's control layout resolved
 /// ([`crate::bindings::Motors`], shooter#74); 21: inputs carry the grapple module's own key
 /// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
 /// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
 /// the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 22;
+pub const WIRE_VERSION: u8 = 23;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -87,7 +89,7 @@ pub struct FighterState {
     pub alive: bool,
     pub frags: i32,
     pub deaths: i32,
-    pub held: Weapon,
+    pub held: Instance,
     pub yaw: u16,
     pub pitch: i16,
     /// Its centre ([`Fighter::center`]), units (zero while dead).
@@ -339,6 +341,25 @@ impl Out {
     fn weapon(&mut self, weapon: Weapon) {
         self.u8(weapon.index());
     }
+    /// A weapon copy: its part ID, then its weapon.
+    fn instance(&mut self, instance: Instance) {
+        self.u8(instance.part.0);
+        self.weapon(instance.weapon);
+    }
+    /// A switch request: [`NONE`], or 0 and a weapon, or 1 and a part ID.
+    fn select(&mut self, select: Option<Select>) {
+        match select {
+            None => self.u8(NONE),
+            Some(Select::Weapon(weapon)) => {
+                self.u8(0);
+                self.weapon(weapon);
+            }
+            Some(Select::Part(part)) => {
+                self.u8(1);
+                self.u8(part.0);
+            }
+        }
+    }
     fn module(&mut self, module: ArenaModule) {
         self.u8(module.tag());
     }
@@ -456,6 +477,20 @@ impl In<'_> {
     }
     fn weapon(&mut self) -> Result<Weapon, WireError> {
         Weapon::from_index(self.u8()?).ok_or(WireError::Malformed("unknown weapon"))
+    }
+    fn instance(&mut self) -> Result<Instance, WireError> {
+        Ok(Instance {
+            part: PartId(self.u8()?),
+            weapon: self.weapon()?,
+        })
+    }
+    fn select(&mut self) -> Result<Option<Select>, WireError> {
+        Ok(match self.u8()? {
+            NONE => None,
+            0 => Some(Select::Weapon(self.weapon()?)),
+            1 => Some(Select::Part(PartId(self.u8()?))),
+            _ => return Err(WireError::Malformed("unknown weapon switch")),
+        })
     }
     fn module(&mut self) -> Result<ArenaModule, WireError> {
         ArenaModule::from_tag(self.u8()?).ok_or(WireError::Malformed("unknown module"))
@@ -622,7 +657,7 @@ pub fn encode_input(
     .iter()
     .filter(|(held, _)| *held)
     .fold(0, |flags, (_, flag)| flags | flag));
-    out.option(intent.select.map(Weapon::index));
+    out.select(intent.select);
     out.u8(match intent.repair {
         None => NONE,
         Some(Order::Stop) => REPAIR_STOP,
@@ -659,12 +694,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
     let yaw = input.u16()?;
     let pitch = i16::from_le_bytes(input.take()?);
     let flags = input.u8()?;
-    let select = match input.option()? {
-        Some(index) => {
-            Some(Weapon::from_index(index).ok_or(WireError::Malformed("unknown weapon"))?)
-        }
-        None => None,
-    };
+    let select = input.select()?;
     let repair = match input.u8()? {
         NONE => None,
         REPAIR_STOP => Some(Order::Stop),
@@ -708,12 +738,14 @@ fn encode_event(out: &mut Out, event: &Event) {
         Event::Fired {
             slot,
             weapon,
+            part,
             from,
             direction,
         } => {
             out.u8(0);
             out.u8(slot);
             out.weapon(weapon);
+            out.u8(part.0);
             out.vec3(from);
             out.vec3(direction);
         }
@@ -836,6 +868,7 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
         0 => Event::Fired {
             slot: input.u8()?,
             weapon: input.weapon()?,
+            part: PartId(input.u8()?),
             from: input.vec3()?,
             direction: input.vec3()?,
         },
@@ -949,7 +982,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         out.u8(u8::from(fighter.alive));
         out.i32(fighter.frags);
         out.i32(fighter.deaths);
-        out.weapon(fighter.held);
+        out.instance(fighter.held);
         out.u16(fighter.yaw);
         out.0.extend_from_slice(&fighter.pitch.to_le_bytes());
         out.vec3(fighter.position);
@@ -1084,7 +1117,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 alive: input.u8()? != 0,
                 frags: input.i32()?,
                 deaths: input.i32()?,
-                held: input.weapon()?,
+                held: input.instance()?,
                 yaw: input.u16()?,
                 pitch: i16::from_le_bytes(input.take()?),
                 position: input.vec3()?,

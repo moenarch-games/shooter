@@ -118,7 +118,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   connectivity, physical occupancy, core count (D2.i70.2) and the budgets. Stationary,
   asymmetrical, sideways-driving, grappling-only or otherwise unconventional robots are valid; no
   build is rejected, warned about or corrected for lacking standard locomotion. Owner: shooter#71.
-  The core count is gone with the core (D2.i89.1).
+  The core count is gone with the core (D2.i89.1). Since shooter#125 the validator no longer
+  refuses a weapon mounted twice: each copy is an instance addressed by its part (own mount, mod,
+  health, refire and muzzle; wire 23, replay format 16), still fired one at a time (shooter#127).
 - **D2.i70.2** (owner, 2026-11-13; shooter#70): Every robot has exactly one control core, on an
   exterior socket of the player's choice. Armor may cover it (penetration exists, D2.i70.8); there
   is no exposed-face check. Destroying the core, and only that, eliminates the robot: losing
@@ -592,7 +594,8 @@ whether resupply locks movement or firing (Q2.i123.3).
   Defaults in use until decided (shooter#47): provisional, tunable catalog data in
   `shooter_sim::robot::BETA`. Sockets for torso, head, two arms and locomotion (torso, head and
   locomotion required); a hand hardpoint per arm and two shoulder hardpoints on the torso, each
-  light or heavy; the blade mounts only on a hand; a weapon mounts at most once. The locomotion
+  light or heavy; the blade mounts only on a hand; a weapon mounts at most once (lifted by
+  shooter#125). The locomotion
   carries the mass of everything else, the torso supplies the power everything draws, the parts'
   cooling sheds the weapons' heat, and a build costs at most 120 build points. Two of each part
   (light and heavy) and the eight shipped weapons, all available from the start.
