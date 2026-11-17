@@ -20,9 +20,11 @@
 //! (`shooter_sim::robot::parts`, `BETA.mods`). Every kit key must be a catalog part or mod of
 //! that kit, and every catalog part and mod must be in a kit (the arena kit's keys are the
 //! simulation's arena modules, `shooter_sim::arena_kit::Module`); anything else fails the load
-//! loudly ([`complete`]). One catalog part has no model of its own yet: the repair module
-//! (`robot.repair-module`, shooter#61) is drawn as the robot kit's sensor ([`drawn_key`]) until
-//! the robot kit ships one (moritzbrantner/asset-tooling#742).
+//! loudly ([`complete`]). Some catalog parts have no model of their own yet: the repair module
+//! (`robot.repair-module`, shooter#61) is drawn as the robot kit's sensor until the robot kit
+//! ships one (moritzbrantner/asset-tooling#742), and the mount rails and the adapter
+//! (shooter#126) as its beams fitted to their cuboids (moritzbrantner/asset-tooling#743):
+//! [`drawn_key`], [`stand_in`].
 
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::material::{Sampler, TextureData};
@@ -134,14 +136,39 @@ impl Bundle {
     }
 }
 
-/// The kit entry catalog part `key` is drawn with: its own, but the repair module's, which the
-/// robot kit has no model for yet and draws as the sensor (the nearest small utility module).
+/// The kit entry catalog part `key` is drawn with: its own, but for the parts the robot kit has
+/// no model for yet: the repair module draws as the sensor (the nearest small utility module,
+/// moritzbrantner/asset-tooling#742), the mount rails as the beams of their length and the
+/// adapter as the short beam (the nearest structural parts, moritzbrantner/asset-tooling#743),
+/// fitted to their cuboids by [`stand_in`].
 #[must_use]
 pub fn drawn_key(key: &str) -> &str {
-    if key == shooter_sim::robot::parts::REPAIR_MODULE.key {
-        shooter_sim::robot::parts::SENSOR.key
+    use shooter_sim::robot::parts::{
+        ADAPTER, BEAM_LONG, BEAM_SHORT, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, REPAIR_MODULE, SENSOR,
+    };
+    match key {
+        _ if key == REPAIR_MODULE.key => SENSOR.key,
+        _ if key == MOUNT_RAIL_SHORT.key || key == ADAPTER.key => BEAM_SHORT.key,
+        _ if key == MOUNT_RAIL_LONG.key => BEAM_LONG.key,
+        _ => key,
+    }
+}
+
+/// How catalog part `key`'s stand-in mesh ([`drawn_key`]) is fitted to the part's cuboid, in the
+/// part's frame (metres from its cuboid's minimum corner): a mount rail's beam laid flat along
+/// the rail's y (the beam's z turned onto it), the adapter's short beam at half its length;
+/// identity for a part drawn with its own model.
+#[must_use]
+pub fn stand_in(key: &str) -> Mat4 {
+    use shooter_sim::robot::parts::{ADAPTER, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT};
+    let cell = crate::robots::model::CELL;
+    if key == MOUNT_RAIL_SHORT.key || key == MOUNT_RAIL_LONG.key {
+        Mat4::from_translation(Vec3::new(0.0, 0.0, cell))
+            * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+    } else if key == ADAPTER.key {
+        Mat4::from_scale(Vec3::new(1.0, 1.0, 0.5))
     } else {
-        key
+        Mat4::IDENTITY
     }
 }
 
