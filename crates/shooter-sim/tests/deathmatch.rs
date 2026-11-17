@@ -7,7 +7,7 @@ use shooter_sim::damage::PartDamage;
 use shooter_sim::melee;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{CHASSIS_L, CHASSIS_S};
-use shooter_sim::robot::{MARKSMAN, SKIRMISHER, STANDARD};
+use shooter_sim::robot::{ARMORY, HEAVY, MARKSMAN, PYRO, SKIRMISHER, STANDARD};
 use shooter_sim::scenarios;
 use shooter_sim::session::{SELF_SPLASH_PERCENT, body_of, slot_of};
 use shooter_sim::tour::run_legs;
@@ -110,7 +110,16 @@ fn duel_arena() -> Arena {
         }],
         module_pads: Vec::new(),
         waypoints: Vec::new(),
+        placements: Vec::new(),
+        repair_anchors: Vec::new(),
     }
+}
+
+/// `slot` is built as `build` this life and the next (a fighter fires only what it carries).
+fn equip(session: &mut Session, slot: usize, build: Assembly) {
+    let fighter = &mut session.fighters[slot];
+    fighter.configured = build;
+    fighter.rebuild(build);
 }
 
 fn duel_rules() -> Rules {
@@ -237,7 +246,7 @@ fn modded_hitscan_is_lag_compensated_for_the_modded_damage() {
     assert_eq!(shot(STANDARD, Weapon::EnergyRifle), (None, Some(12)));
     // The rapid cycler's rifle bolts are lighter, the overcharged rail gun's beam heavier.
     assert_eq!(shot(SKIRMISHER, Weapon::EnergyRifle), (None, Some(9)));
-    assert_eq!(shot(STANDARD, Weapon::RailGun), (None, Some(85)));
+    assert_eq!(shot(HEAVY, Weapon::RailGun), (None, Some(85)));
     assert_eq!(shot(MARKSMAN, Weapon::RailGun), (None, Some(106)));
     // The long barrel changes the range, not the damage.
     assert_eq!(shot(MARKSMAN, Weapon::EnergyRifle), (None, Some(12)));
@@ -426,6 +435,8 @@ fn the_blade_strikes_the_nearest_part_whatever_gun_is_held() {
     let mut session = Session::with_rules(arena, duel_rules()).unwrap();
     session.join(1).unwrap();
     session.join(2).unwrap();
+    // A carries the rockets it holds (and the blade).
+    equip(&mut session, 0, HEAVY);
     session.step().unwrap();
     let (mut strikes, mut lost) = (Vec::new(), Vec::new());
     for sequence in 1..=120 {
@@ -511,6 +522,7 @@ fn rail_kills_score_and_the_round_ends_and_restarts() {
     let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
     session.join(1).unwrap();
     session.join(2).unwrap();
+    equip(&mut session, 0, HEAVY);
     let mut kills = 0;
     let mut over = false;
     // A aims at B's root chassis: four rail beams break it, the kill.
@@ -574,6 +586,7 @@ fn rail_kills_score_and_the_round_ends_and_restarts() {
 fn a_rocket_jump_costs_health() {
     let scenario = scenarios::ROCKET_JUMP;
     let mut session = Session::new((scenario.arena)()).unwrap();
+    equip(&mut session, 0, HEAVY);
     run_legs(&mut session, scenario.legs).unwrap();
     let local = session.local();
     assert!(local.alive());
@@ -660,6 +673,7 @@ fn inputs_and_snapshots_round_trip() {
         fire: true,
         melee: true,
         select: Some(Weapon::RocketLauncher),
+        edit: true,
     };
     let command = decode_input(&encode_input(intent, 77, None, None)).unwrap();
     assert_eq!((command.intent, command.view_tick), (intent, 77));
@@ -694,6 +708,7 @@ fn a_standing_input_backlog_is_trimmed_and_a_silent_person_stops() {
     use shooter_sim::session::{BACKLOG_KEEP, BACKLOG_WINDOW_TICKS, HOLD_INPUT_TICKS};
     let mut session = bot_match(3, 0);
     let slot = usize::from(session.join(4).unwrap().unwrap());
+    equip(&mut session, slot, HEAVY);
     let forward = Intent {
         forward: 1,
         fire: true,
@@ -747,6 +762,7 @@ fn the_flame_burns_other_fighters_never_its_owner() {
     let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
     session.join(1).unwrap();
     session.join(2).unwrap();
+    equip(&mut session, 0, ARMORY);
     let (mut burnt, mut first) = (0, None);
     // A walks up to 3 m short of B, burning the parts nearest it (the front) and the root chassis
     // among them, until it breaks.
@@ -817,6 +833,7 @@ fn the_flame_ignites_before_it_burns_a_fighter() {
     let mut session = Session::with_rules(arena, duel_rules()).unwrap();
     session.join(1).unwrap();
     session.join(2).unwrap();
+    equip(&mut session, 0, ARMORY);
     let mut burns = Vec::new();
     for sequence in 1..60 {
         let now = session.ticks();
@@ -861,16 +878,98 @@ fn the_flame_ignites_before_it_burns_a_fighter() {
     assert!(burns[35 + ignition..].iter().all(|burnt| *burnt));
 }
 
+/// The pyro loadout (shooter#96) plays its laser and its flamethrower in a match: it holds the
+/// laser from the start (not the grapple, though that comes first in the rotation) and burns B
+/// with it, then takes up the flamethrower and burns B with that.
+#[test]
+fn the_pyro_fires_its_laser_and_its_flamethrower() {
+    // B stands 3 m in front of A: in the laser's reach and the flame's.
+    let arena = Arena {
+        spawns: vec![Spawn {
+            feet: Vec3i::new(0, 0, -300),
+            yaw: 32_768,
+        }],
+        ..duel_arena()
+    };
+    let mut session = Session::with_rules(arena, duel_rules()).unwrap();
+    session.join(1).unwrap();
+    session.join(2).unwrap();
+    equip(&mut session, 0, PYRO);
+    assert_eq!(session.fighters[0].arsenal.held, Weapon::Laser);
+    let mut sequence = 0;
+    // What A's hits on B dealt, while firing `weapon` for `ticks`.
+    let mut fire = |session: &mut Session, weapon: Weapon, ticks: u32| {
+        let (mut fired, mut damage) = (false, 0);
+        for _ in 0..ticks {
+            sequence += 1;
+            let now = session.ticks();
+            let (yaw, pitch) = at_chassis(session, 0, 1);
+            let intent = Intent {
+                yaw,
+                pitch,
+                fire: session.fighters[0].arsenal.held == weapon,
+                select: Some(weapon),
+                ..Intent::IDLE
+            };
+            session.queue(
+                1,
+                Input {
+                    sequence,
+                    intent,
+                    view_tick: now,
+                },
+            );
+            session.step().unwrap();
+            for event in &session.events {
+                match *event {
+                    Event::Fired {
+                        slot: 0,
+                        weapon: shot,
+                        ..
+                    } if shot == weapon => fired = true,
+                    Event::Hit {
+                        victim: 1,
+                        attacker: Some(0),
+                        damage: dealt,
+                        ..
+                    } => damage += dealt,
+                    _ => {}
+                }
+            }
+        }
+        (fired, damage)
+    };
+    let (lasered, laser_damage) = fire(&mut session, Weapon::Laser, 30);
+    assert!(lasered && laser_damage > 0, "laser {laser_damage}");
+    let (burnt, flame_damage) = fire(&mut session, Weapon::Flamethrower, 45);
+    assert!(burnt && flame_damage > 0, "flame {flame_damage}");
+    assert_eq!(session.fighters[0].deaths, 0);
+}
+
 /// Twelve bots on the greybox yard (the default map): they fight and score across its 76 m, and
 /// none is stranded: every bot covers ground, and a living bot that is not shooting at anyone
 /// never stays within 1 m of one spot for long.
 #[test]
 fn bots_keep_moving_and_scoring_on_the_yard() {
+    bots_keep_moving_and_scoring_on(MapId::GreyboxYard, 2_000.0);
+}
+
+/// The same on the assembly works (shooter#52), a smaller map of three levels: no bot is
+/// stranded on its decks, in its bays or behind its cover.
+#[test]
+fn bots_keep_moving_and_scoring_on_the_assembly_works() {
+    bots_keep_moving_and_scoring_on(MapId::AssemblyWorks, 1_500.0);
+}
+
+/// Twelve bots for 90 s on `map`: plenty of shots, at least ten kills, every bot at least
+/// `roams` units from where it started and none idle (alive, mobile, not firing, within 1 m of
+/// one spot) for 5 s.
+fn bots_keep_moving_and_scoring_on(map: MapId, roams: f32) {
     let rules = Rules {
         frag_limit: 0,
         ..Rules::deathmatch(7)
     };
-    let mut session = Session::on_map(MapId::GreyboxYard, rules).unwrap();
+    let mut session = Session::on_map(map, rules).unwrap();
     let slots = session.fighters.len();
     let (mut kills, mut shots) = (0, 0);
     // Per slot: where it last moved 1 m from (or last fired) and when, its longest idle stay
@@ -909,13 +1008,13 @@ fn bots_keep_moving_and_scoring_on_the_yard() {
             }
         }
     }
-    println!("{shots} shots, {kills} kills; longest idle {idle:?}; farthest {farthest:?}");
+    println!("{map}: {shots} shots, {kills} kills; longest idle {idle:?}; farthest {farthest:?}");
     assert!(shots > 100, "{shots} shots");
     assert!(kills >= 10, "{kills} kills in 90 s");
     for slot in 0..slots {
         assert!(
-            farthest[slot] > 2_000.0,
-            "slot {slot} got {} units",
+            farthest[slot] > roams,
+            "{map}: slot {slot} got {} units",
             farthest[slot]
         );
         assert!(
@@ -937,4 +1036,161 @@ fn a_bot_match_on_the_yard_replays_exactly() {
     };
     assert_eq!(play(3), play(3));
     assert_ne!(play(3), play(4));
+}
+
+/// A bot match on the assembly works replays exactly from its seed, and another seed plays out
+/// differently.
+#[test]
+fn a_bot_match_on_the_assembly_works_replays_exactly() {
+    let play = |seed| {
+        let mut session = Session::on_map(MapId::AssemblyWorks, Rules::deathmatch(seed)).unwrap();
+        for _ in 0..1_200 {
+            session.step().unwrap();
+        }
+        encode_snapshot(&session.snapshot())
+    };
+    assert_eq!(play(3), play(3));
+    assert_ne!(play(3), play(4));
+}
+
+/// One tick: A (person 1) rails B's root chassis while B lives, and B (person 2) holds `b`,
+/// unless `b` is `None` (B sends nothing, a lost connection).
+fn rail_tick(session: &mut Session, b: Option<Intent>) {
+    let now = session.ticks();
+    let (yaw, pitch) = if session.fighters[1].alive() {
+        at_chassis(session, 0, 1)
+    } else {
+        (0, 0)
+    };
+    let rail = Intent {
+        fire: session.fighters[1].alive(),
+        yaw,
+        pitch,
+        select: Some(Weapon::RailGun),
+        ..Intent::IDLE
+    };
+    for (id, intent) in [(1, Some(rail)), (2, b)] {
+        let Some(intent) = intent else {
+            continue;
+        };
+        let slot = id as usize - 1;
+        let sequence = session.fighters[slot].ack + 1;
+        session.queue(
+            id,
+            Input {
+                sequence,
+                intent,
+                view_tick: now,
+            },
+        );
+    }
+    session.step().unwrap();
+}
+
+const EDITING: Intent = Intent {
+    edit: true,
+    ..Intent::IDLE
+};
+
+/// A duel in which A (heavy) has railed B dead, B holding Edit Robot all along (alive, it does
+/// nothing).
+fn edited_duel(rules: Rules) -> Session {
+    let mut session = Session::with_rules(duel_arena(), rules).unwrap();
+    session.join(1).unwrap();
+    session.join(2).unwrap();
+    equip(&mut session, 0, HEAVY);
+    for _ in 0..2_000 {
+        rail_tick(&mut session, Some(EDITING));
+        if !session.fighters[1].alive() {
+            return session;
+        }
+        assert_eq!(session.fighters[1].build, STANDARD, "alive: never rebuilt");
+    }
+    panic!("B never died");
+}
+
+/// Edit Robot after death suspends the respawn with no time limit (Atlas D2.i70.11); Ready (the
+/// flag released) brings the robot back as the build configured meanwhile, at once.
+#[test]
+fn edit_robot_holds_the_respawn_until_ready() {
+    let mut session = edited_duel(duel_rules());
+    assert!(session.configure(2, MARKSMAN));
+    // Ten times the respawn countdown: still in the builder.
+    for _ in 0..10 * duel_rules().respawn_ticks {
+        rail_tick(&mut session, Some(EDITING));
+        assert!(!session.fighters[1].alive());
+    }
+    rail_tick(&mut session, Some(Intent::IDLE));
+    let b = &session.fighters[1];
+    assert!(b.alive());
+    assert_eq!((b.build, b.configured), (MARKSMAN, MARKSMAN));
+    assert!(
+        session
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::Spawned { slot: 1, .. }))
+    );
+}
+
+/// Without Edit Robot the dead come back after the normal countdown, as their last build.
+#[test]
+fn without_edit_robot_the_respawn_is_automatic() {
+    let mut session = edited_duel(duel_rules());
+    for _ in 0..duel_rules().respawn_ticks + 1 {
+        rail_tick(&mut session, Some(Intent::IDLE));
+    }
+    let b = &session.fighters[1];
+    assert!(b.alive());
+    assert_eq!(b.build, STANDARD);
+}
+
+/// A person in the builder whose inputs stop (a lost connection) lets go of it: the robot comes
+/// back after the countdown and the input hold.
+#[test]
+fn a_silent_editor_comes_back() {
+    use shooter_sim::session::HOLD_INPUT_TICKS;
+    let mut session = edited_duel(duel_rules());
+    for _ in 0..duel_rules().respawn_ticks.max(HOLD_INPUT_TICKS) + 1 {
+        rail_tick(&mut session, None);
+    }
+    assert!(session.fighters[1].alive());
+}
+
+/// A round's start does not pull a person out of the builder: the robot waits until Ready.
+#[test]
+fn a_new_round_waits_for_ready() {
+    let rules = Rules {
+        frag_limit: 1,
+        ..duel_rules()
+    };
+    let mut session = edited_duel(rules);
+    let Phase::Intermission { restarts_at, .. } = session.phase else {
+        panic!("{:?}", session.phase);
+    };
+    while session.ticks() <= restarts_at + 30 {
+        rail_tick(&mut session, Some(EDITING));
+    }
+    assert!(matches!(session.phase, Phase::Playing { .. }));
+    assert!(session.fighters[0].alive());
+    assert!(!session.fighters[1].alive());
+    rail_tick(&mut session, Some(Intent::IDLE));
+    assert!(session.fighters[1].alive());
+}
+
+/// A person who has not played yet is still at the builder before the match: a build it
+/// configures applies at once. From its first input on, the robot alive keeps its build.
+#[test]
+fn a_build_configured_before_playing_applies_at_once() {
+    let mut session = Session::with_rules(duel_arena(), duel_rules()).unwrap();
+    session.join(1).unwrap();
+    session.join(2).unwrap();
+    assert!(session.configure(2, PYRO));
+    let b = &session.fighters[1];
+    assert_eq!((b.build, b.configured), (PYRO, PYRO));
+    assert_eq!(b.arsenal.held, Weapon::Laser);
+    assert_eq!(b.energy, b.pool().capacity);
+    rail_tick(&mut session, Some(Intent::IDLE));
+    assert!(session.configure(2, HEAVY));
+    let b = &session.fighters[1];
+    assert_eq!((b.build, b.configured), (PYRO, HEAVY));
 }

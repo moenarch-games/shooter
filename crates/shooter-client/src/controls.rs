@@ -9,7 +9,8 @@
 use input_bindings_core::{
     ActionDefinition, ActionRegistry, AxisDirection, Binding, DeviceClass, DeviceStroke,
     InputRuntime, InputRuntimeOptions, InputStroke, KeyMatch, KeyStroke, Modifiers, Provenance,
-    RepeatPolicy, RuntimeDecision, SemanticControlState, WhenExpr,
+    RepeatPolicy, RuntimeActionPhase, RuntimeDecision, SemanticControlState, WheelDirection,
+    WhenExpr,
 };
 use shooter_sim::Weapon;
 use std::collections::BTreeMap;
@@ -24,6 +25,10 @@ pub const SPRINT: &str = "move.sprint";
 pub const CROUCH: &str = "move.crouch";
 pub const FIRE: &str = "weapon.fire";
 pub const MELEE: &str = "weapon.melee";
+/// One step through the carried weapons ([`shooter_sim::weapons::cycled`]): wheel down or E...
+pub const NEXT: &str = "weapon.next";
+/// ...and back: wheel up or Q.
+pub const PREVIOUS: &str = "weapon.previous";
 /// Select actions, in [`Weapon::ROTATION`] order.
 pub const SELECT: [&str; Weapon::ROTATION.len()] = [
     "weapon.energyRifle",
@@ -81,6 +86,13 @@ fn stick(axis: u8, direction: AxisDirection) -> InputStroke {
     })
 }
 
+fn wheel(direction: WheelDirection) -> InputStroke {
+    InputStroke::Device(DeviceStroke::Wheel {
+        direction,
+        modifiers: Modifiers::default(),
+    })
+}
+
 fn mouse_button(button: u16) -> InputStroke {
     InputStroke::Device(DeviceStroke::MouseButton {
         button,
@@ -93,7 +105,7 @@ fn mouse_button(button: u16) -> InputStroke {
 pub fn action_registry() -> ActionRegistry {
     use AxisDirection::{Negative, Positive};
     use standard::{LEFT_X, LEFT_Y, SOUTH};
-    let actions: [(&str, &str, Vec<InputStroke>); 16] = [
+    let actions: [(&str, &str, Vec<InputStroke>); 18] = [
         (
             MOVE_FORWARD,
             "Move forward",
@@ -124,6 +136,16 @@ pub fn action_registry() -> ActionRegistry {
             MELEE,
             "Energy blade (quick melee)",
             vec![key("KeyV"), mouse_button(BACK_BUTTON)],
+        ),
+        (
+            NEXT,
+            "Next weapon",
+            vec![wheel(WheelDirection::Down), key("KeyE")],
+        ),
+        (
+            PREVIOUS,
+            "Previous weapon",
+            vec![wheel(WheelDirection::Up), key("KeyQ")],
         ),
         (SELECT[0], "Energy rifle", vec![key("Digit1")]),
         (SELECT[1], "Rail gun", vec![key("Digit2")]),
@@ -216,6 +238,9 @@ pub struct Controls {
     /// Each pad stroke the catalog binds, and whether it is down.
     pad_strokes: Vec<(InputStroke, bool)>,
     keys: BTreeMap<KeyCode, InputStroke>,
+    /// Weapon steps pressed since the last tick took them: + next, - previous.
+    steps: i32,
+    wheel: Notches,
 }
 
 impl Default for Controls {
@@ -257,11 +282,41 @@ impl Controls {
             state: SemanticControlState::new(),
             pad_strokes,
             keys: BTreeMap::new(),
+            steps: 0,
+            wheel: Notches::default(),
         }
     }
 
     fn apply(&mut self, decisions: &[RuntimeDecision]) {
         self.state.apply_decisions(decisions);
+        // Next and previous are presses, not holds: each one is a step.
+        for dispatch in decisions.iter().flat_map(|decision| &decision.dispatches) {
+            if dispatch.phase == RuntimeActionPhase::Press && !dispatch.repeat {
+                match dispatch.action.as_str() {
+                    NEXT => self.steps += 1,
+                    PREVIOUS => self.steps -= 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// The mouse wheel turned by `delta` (winit's: positive y scrolls up, in lines or pixels)
+    /// at `now_ms`: each notch ([`Notches`]) is a wheel stroke, pressed and released, so it
+    /// resolves through the catalog like any other input.
+    pub fn wheel(&mut self, delta: WheelDelta, now_ms: f64) {
+        let Some(direction) = self.wheel.notch(delta, now_ms) else {
+            return;
+        };
+        let stroke = wheel(direction);
+        let mut decisions = self.runtime.input_down(stroke.clone(), false, NO_CLOCK_MS);
+        decisions.extend(self.runtime.input_up(&stroke, NO_CLOCK_MS));
+        self.apply(&decisions);
+    }
+
+    /// The weapon steps pressed since the last call: + next, - previous.
+    pub fn take_steps(&mut self) -> i32 {
+        std::mem::take(&mut self.steps)
     }
 
     /// winit's `KeyCode` names are the W3C physical key codes.
@@ -305,6 +360,8 @@ impl Controls {
     /// Focus left the game: every held action lets go.
     pub fn release_all(&mut self) {
         self.keys.clear();
+        self.steps = 0;
+        self.wheel = Notches::default();
         for (_, down) in &mut self.pad_strokes {
             *down = false;
         }
@@ -367,6 +424,120 @@ impl Controls {
             .zip(Weapon::ROTATION)
             .find(|(action, _)| self.state.is_held(action))
             .map(|(_, weapon)| weapon)
+    }
+}
+
+/// One mouse wheel event's vertical turn, as winit reports it natively and in the browser:
+/// positive scrolls up (away from the person).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WheelDelta {
+    /// In lines: a classic wheel's notch is one (Firefox reports three).
+    Lines(f32),
+    /// In physical pixels: browsers and touchpads (a Chromium notch is 100 CSS pixels on
+    /// Windows, about 53 on Linux).
+    Pixels(f64),
+}
+
+/// The wheel travel a notch takes, in lines...
+pub const LINES_PER_NOTCH: f32 = 1.0;
+/// ...and in pixels.
+pub const PIXELS_PER_NOTCH: f64 = 50.0;
+/// After a notch, further turning the same way within this long is the same notch (a burst:
+/// several events for one detent, a touchpad's or a smooth-scrolling wheel's stream).
+pub const NOTCH_GUARD_MS: f64 = 60.0;
+/// Wheel travel that rests this long without making a notch is forgotten.
+const NOTCH_RESET_MS: f64 = 250.0;
+
+/// Wheel events in, notches out: one step per notch, whatever the device's units or burst.
+/// Travel adds up until it makes a notch (at most one an event); then, for
+/// [`NOTCH_GUARD_MS`], turning the same way makes nothing more.
+#[derive(Clone, Debug, Default)]
+struct Notches {
+    /// Travel since the last notch, in notches (positive up).
+    travel: f64,
+    last_event_ms: f64,
+    last_notch: Option<(WheelDirection, f64)>,
+}
+
+impl Notches {
+    fn notch(&mut self, delta: WheelDelta, now_ms: f64) -> Option<WheelDirection> {
+        let turn = match delta {
+            WheelDelta::Lines(lines) => f64::from(lines / LINES_PER_NOTCH),
+            WheelDelta::Pixels(pixels) => pixels / PIXELS_PER_NOTCH,
+        };
+        if turn == 0.0 || !turn.is_finite() {
+            return None;
+        }
+        let direction = if turn > 0.0 {
+            WheelDirection::Up
+        } else {
+            WheelDirection::Down
+        };
+        let stale = now_ms - self.last_event_ms > NOTCH_RESET_MS;
+        self.last_event_ms = now_ms;
+        if stale || self.travel.signum() != turn.signum() {
+            self.travel = 0.0;
+        }
+        if let Some((last, at)) = &self.last_notch
+            && *last == direction
+            && now_ms - at < NOTCH_GUARD_MS
+        {
+            self.travel = 0.0;
+            return None;
+        }
+        self.travel += turn;
+        if self.travel.abs() < 1.0 - 1e-6 {
+            return None;
+        }
+        self.travel = 0.0;
+        self.last_notch = Some((direction.clone(), now_ms));
+        Some(direction)
+    }
+}
+
+/// The weapon the local fighter asks to hold: a select key held, or where the next and previous
+/// steps lead through the weapons it carries and still has ([`shooter_sim::weapons::cycled`]).
+/// A step's target is asked for every tick for [`Selection::ASK_TICKS`] (inputs are unreliable
+/// datagrams; asking for the weapon already held changes nothing), and steps taken meanwhile
+/// count on from it, so quick notches add up however late the host's word comes. The host
+/// decides: it refuses a weapon the robot does not have.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Selection {
+    /// The step's target and the ticks it has been asked for.
+    wanted: Option<(Weapon, u32)>,
+}
+
+impl Selection {
+    /// Half a second: well over a round trip.
+    pub const ASK_TICKS: u32 = 30;
+
+    /// This tick's `select`: `direct` (a select key) if held, else the cycle's target `steps`
+    /// on from the last target (or from `held`, the weapon held as predicted), with `armed`
+    /// saying which weapons the build still has.
+    pub fn intent(
+        &mut self,
+        direct: Option<Weapon>,
+        steps: i32,
+        held: Weapon,
+        armed: impl Fn(Weapon) -> bool,
+    ) -> Option<Weapon> {
+        if direct.is_some() {
+            self.wanted = None;
+            return direct;
+        }
+        if steps != 0 {
+            let from = self.wanted.map_or(held, |(weapon, _)| weapon);
+            if let Some(target) = shooter_sim::weapons::cycled(from, steps, armed) {
+                self.wanted = Some((target, 0));
+            }
+        }
+        let (weapon, asked) = self.wanted.as_mut()?;
+        *asked += 1;
+        let weapon = *weapon;
+        if *asked >= Self::ASK_TICKS {
+            self.wanted = None;
+        }
+        Some(weapon)
     }
 }
 
@@ -513,6 +684,92 @@ mod tests {
         controls.poll_pads(&PadState::default());
         assert_eq!(controls.movement(), (0, 0));
         assert!(!controls.jump_held());
+    }
+
+    #[test]
+    fn e_and_q_step_through_the_weapons_once_a_press() {
+        let mut controls = Controls::new();
+        controls.key_down(KeyCode::KeyE, false);
+        // Held down, the key repeats: still one step.
+        controls.key_down(KeyCode::KeyE, true);
+        controls.key_up(KeyCode::KeyE);
+        assert_eq!(controls.take_steps(), 1);
+        assert_eq!(controls.take_steps(), 0);
+        controls.key_down(KeyCode::KeyQ, false);
+        controls.key_up(KeyCode::KeyQ);
+        controls.key_down(KeyCode::KeyQ, false);
+        controls.key_up(KeyCode::KeyQ);
+        controls.key_down(KeyCode::KeyE, false);
+        assert_eq!(controls.take_steps(), -1);
+        assert_eq!(controls.selected(), None);
+    }
+
+    #[test]
+    fn a_wheel_notch_is_one_step_in_lines_or_pixels_and_bursts_do_not_add_up() {
+        let mut controls = Controls::new();
+        // A classic wheel, notch by notch: down is next, up is previous.
+        controls.wheel(WheelDelta::Lines(-1.0), 0.0);
+        controls.wheel(WheelDelta::Lines(-1.0), 100.0);
+        assert_eq!(controls.take_steps(), 2);
+        controls.wheel(WheelDelta::Lines(1.0), 200.0);
+        assert_eq!(controls.take_steps(), -1);
+        // Firefox's three lines a notch, and a high-resolution wheel's fractions.
+        controls.wheel(WheelDelta::Lines(-3.0), 400.0);
+        assert_eq!(controls.take_steps(), 1);
+        for (index, at) in [500.0, 510.0, 520.0].into_iter().enumerate() {
+            controls.wheel(WheelDelta::Lines(-0.34), at);
+            assert_eq!(controls.take_steps(), i32::from(index == 2));
+        }
+        // Pixels: a browser notch (100 or 53 CSS pixels) is one step...
+        controls.wheel(WheelDelta::Pixels(-100.0), 1_000.0);
+        controls.wheel(WheelDelta::Pixels(-53.0), 1_200.0);
+        assert_eq!(controls.take_steps(), 2);
+        // ...a burst of events for one notch (a smooth-scrolling wheel) is one...
+        for at in 0..8 {
+            controls.wheel(WheelDelta::Pixels(30.0), 1_400.0 + f64::from(at) * 5.0);
+        }
+        assert_eq!(controls.take_steps(), -1);
+        // ...and a little touchpad drift that never makes a notch is forgotten.
+        controls.wheel(WheelDelta::Pixels(-30.0), 2_000.0);
+        controls.wheel(WheelDelta::Pixels(-30.0), 2_400.0);
+        assert_eq!(controls.take_steps(), 0);
+        controls.release_all();
+        assert_eq!(controls.take_steps(), 0);
+    }
+
+    #[test]
+    fn the_selection_cycles_the_carried_weapons_and_keeps_asking_for_a_while() {
+        use Weapon::{EnergyBlade, EnergyRifle, Grapple, RailGun, Shotgun};
+        let standard = |weapon| matches!(weapon, EnergyRifle | Grapple | Shotgun | EnergyBlade);
+        let mut selection = Selection::default();
+        assert_eq!(selection.intent(None, 0, EnergyRifle, standard), None);
+        assert_eq!(
+            selection.intent(None, 1, EnergyRifle, standard),
+            Some(Grapple)
+        );
+        // A second notch before the switch shows counts on from the first one's target.
+        assert_eq!(
+            selection.intent(None, 1, EnergyRifle, standard),
+            Some(Shotgun)
+        );
+        // Asked for until the host surely has it, then nothing.
+        let mut asked = 1;
+        while selection.intent(None, 0, Shotgun, standard).is_some() {
+            asked += 1;
+        }
+        assert_eq!(asked, Selection::ASK_TICKS);
+        // Wraps round; a select key wins over the cycle and ends it.
+        assert_eq!(
+            selection.intent(None, 1, Shotgun, standard),
+            Some(EnergyRifle)
+        );
+        assert_eq!(
+            selection.intent(Some(RailGun), 0, Shotgun, standard),
+            Some(RailGun)
+        );
+        assert_eq!(selection.intent(None, 0, Shotgun, standard), None);
+        // Nothing to cycle through: nothing asked.
+        assert_eq!(selection.intent(None, 1, EnergyRifle, |_| false), None);
     }
 
     #[test]

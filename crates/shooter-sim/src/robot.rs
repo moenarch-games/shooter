@@ -67,20 +67,20 @@
 //! to at least two cells long), and changes how that weapon fires ([`Tuning`]: damage, refire,
 //! range and the energy a shot costs). Every mod that changes the fire trades something away.
 //!
-//! A build does not yet change how a fighter moves or which weapons it carries: every fighter
-//! still has the full arsenal, and a weapon without a mod in the build fires as shipped. A
-//! mounted weapon's mod applies whenever it fires, on the host and in a client's prediction
-//! alike. Every part has component health; [`crate::damage`] places the parts on the fighter
-//! as hitboxes, resolves strikes onto them and detaches what is destroyed: a lost weapon part
-//! no longer fires, a lost battery takes its energy with it, a robot without a connected
+//! A build does not yet change how a fighter moves, but it is its arsenal (shooter#92): a fighter
+//! holds, fires and swings only the weapons its build mounts and still has, a weapon without a
+//! mod fires as shipped, and a mounted weapon's mod applies whenever it fires, on the host and in
+//! a client's prediction alike. Every part has component health; [`crate::damage`] places the
+//! parts on the fighter as hitboxes, resolves strikes onto them and detaches what is destroyed:
+//! a lost weapon part no longer fires, a lost battery takes its energy with it, a robot without a connected
 //! locomotion part cannot walk, and the root chassis is the only kill. [`crate::mechanics`]
 //! builds any valid build as a mechanical robot, but the match's fighters do not use it yet (shooter#73's
 //! second half); locomotion (shooter#58) and the builder (shooter#57) apply the rest.
 
 use crate::weapons::{Delivery, Weapon};
 use parts::{
-    BATTERY, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, GRAPPLE, LEG, RAIL_GUN,
-    ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, FLAMETHROWER, GRAPPLE,
+    LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
 
@@ -916,13 +916,51 @@ pub const MARKSMAN: Assembly = with_weapons(
     None,
 );
 
+/// A close- and mid-range loadout on the standard frame: on the small chassis' front facing the
+/// aim, the laser with a long barrel (a two-cell module: half again the beam's reach) high on
+/// the left, the flamethrower high on the right, the blade below it and the grapple below the
+/// laser; no battery, so it lives on the root chassis' 100. The one named loadout carrying the
+/// laser and the flamethrower (shooter#96). Valid in [`BETA`].
+pub const PYRO: Assembly = with_weapons(
+    frame(&CHASSIS_S),
+    [
+        forward(7, &LASER, &CHASSIS_S, 1, 2).with(LONG_BARREL),
+        forward(8, &ENERGY_BLADE, &CHASSIS_S, 0, 2),
+        forward(9, &FLAMETHROWER, &CHASSIS_S, 0, 3),
+        forward(10, &GRAPPLE, &CHASSIS_S, 1, 1),
+    ],
+    None,
+);
+
+/// The test ranges' build: every weapon, unmodded, on the front of the large chassis (the
+/// light ones in the bottom two rows, the rail gun and the rocket launcher above), on the shared
+/// frame. A fighter fires only what its build carries (shooter#92), so the scripted weapon
+/// scenarios and the weapon tests use it. It costs more build points than [`BETA`] allows, so
+/// it is never a player's: the host refuses it like any invalid build.
+pub const ARMORY: Assembly = authored(&[
+    Part::root(0, &CHASSIS_L),
+    Part::on(2, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+    Part::on(5, &LEG, 0, &CHASSIS_L, Face::NegZ, 0, 0),
+    Part::on(6, &LEG, 0, &CHASSIS_L, Face::NegZ, 1, 0),
+    forward(7, &ENERGY_RIFLE, &CHASSIS_L, 0, 0),
+    forward(8, &ENERGY_BLADE, &CHASSIS_L, 1, 0),
+    forward(9, &GRAPPLE, &CHASSIS_L, 2, 0),
+    forward(10, &SHOTGUN, &CHASSIS_L, 0, 1),
+    forward(11, &LASER, &CHASSIS_L, 1, 1),
+    forward(12, &FLAMETHROWER, &CHASSIS_L, 2, 1),
+    forward(13, &RAIL_GUN, &CHASSIS_L, 0, 2),
+    forward(14, &ROCKET_LAUNCHER, &CHASSIS_L, 1, 2),
+]);
+
 /// The named loadouts a person picks from until the builder (shooter#57): the unmodified
-/// standard and heavy builds and the two contrasting modded ones, all component trees.
-pub const LOADOUTS: [(&str, Assembly); 4] = [
+/// standard and heavy builds, the two contrasting modded ones and the pyro (the laser and the
+/// flamethrower, shooter#96), all component trees.
+pub const LOADOUTS: [(&str, Assembly); 5] = [
     ("standard", STANDARD),
     ("heavy", HEAVY),
     ("skirmisher", SKIRMISHER),
     ("marksman", MARKSMAN),
+    ("pyro", PYRO),
 ];
 
 /// The loadout called `name` in [`LOADOUTS`] (any case).

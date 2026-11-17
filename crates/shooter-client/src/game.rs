@@ -6,7 +6,7 @@
 
 use crate::interpolation::Interpolation;
 use shooter_sim::physics::World;
-use shooter_sim::session::LOCAL_PLAYER;
+use shooter_sim::session::{Fighter, LOCAL_PLAYER};
 use shooter_sim::{Assembly, Event, Intent, MapId, Rules, Session, Snapshot, StepReport};
 
 /// The practice match's bot seed.
@@ -47,25 +47,35 @@ impl Game {
         }
     }
 
-    /// Plays as `build` (a named loadout, `shooter_sim::robot::LOADOUTS`): in practice from the
-    /// start (called before the first tick), online it is asked of the host, which applies it at
-    /// the next spawn.
+    /// Plays as `build` (a named loadout, `shooter_sim::robot::LOADOUTS`) from the start, called
+    /// before the first tick ([`Game::configure`] before the robot has played).
     #[must_use]
     pub fn with_loadout(mut self, build: Assembly) -> Self {
-        match &mut self {
+        self.configure(build);
+        self
+    }
+
+    /// Asks for the local robot to be `build` (a validated build, the builder's Ready): in
+    /// practice the in-process session applies it, online it rides along with the inputs to the
+    /// host. Either way the session's one rule decides when ([`Session::configure`]): at the
+    /// next spawn, or at once before the robot has played.
+    pub fn configure(&mut self, build: Assembly) {
+        match self {
             Self::Practice {
                 session, snapshot, ..
             } => {
-                if let Some(slot) = session.slot_of_player(LOCAL_PLAYER) {
-                    let local = &mut session.fighters[usize::from(slot)];
-                    local.rebuild(build);
-                    local.configured = build;
-                    **snapshot = session.snapshot();
-                }
+                session.configure(LOCAL_PLAYER, build);
+                **snapshot = session.snapshot();
             }
             Self::Online(online) => online.request_build(build),
         }
-        self
+    }
+
+    /// The build the local robot comes back as, as the match (the host, online) last said.
+    #[must_use]
+    pub fn configured(&self) -> Option<Assembly> {
+        let slot = self.local_slot()?;
+        Some(self.snapshot()?.slot(slot)?.configured)
     }
 
     /// One local tick holding `intent`.
@@ -149,6 +159,19 @@ impl Game {
         }
     }
 
+    /// The local fighter as it stands now (predicted online, while it is alive) and the tick it
+    /// stands at: the weapon it holds and when that may fire, its energy, its build and parts.
+    /// The weapon HUD and the weapon cycle read it.
+    #[must_use]
+    pub fn local_fighter(&self) -> Option<(&Fighter, u32)> {
+        let session = match self {
+            Self::Practice { session, .. } => Some(&**session),
+            Self::Online(online) => online.live(),
+        }?;
+        let fighter = session.local();
+        fighter.alive().then(|| (fighter, session.ticks()))
+    }
+
     /// Whether the local fighter is sliding (the camera dips).
     #[must_use]
     pub fn local_sliding(&self) -> bool {
@@ -210,10 +233,15 @@ pub mod online {
         hook: Option<Hook>,
         /// The charge in its energy pool (milli-units).
         energy: u32,
+        /// The weapon it holds (the host may refuse a switch the prediction made).
+        held: Weapon,
     }
 
     pub struct Online {
-        connection: Connection,
+        /// The host, until the first tick opens the connection to it (nobody joins while the
+        /// person is still at the builder before the match, shooter#57).
+        host: Option<(String, Trust)>,
+        connection: Option<Connection>,
         /// The name picked for this match (sanitized as the host does).
         name: Option<String>,
         /// The loadout asked of the host, if any.
@@ -261,7 +289,8 @@ pub mod online {
         pub fn connect(url: String, certificate: Trust, name: Option<&str>) -> Self {
             let status = format!("connecting to {url}");
             Self {
-                connection: Connection::open(url, certificate),
+                host: Some((url, certificate)),
+                connection: None,
                 name: name.and_then(names::sanitize),
                 build: None,
                 parts: PartDamage::default(),
@@ -310,7 +339,7 @@ pub mod online {
         }
 
         /// The predictor while it predicts the local fighter.
-        fn live(&self) -> Option<&Session> {
+        pub(super) fn live(&self) -> Option<&Session> {
             self.predictor.as_ref().filter(|_| self.predicting)
         }
 
@@ -325,7 +354,9 @@ pub mod online {
         #[cfg(not(target_arch = "wasm32"))]
         #[doc(hidden)]
         pub fn sever(&self) {
-            self.connection.sever();
+            if let Some(connection) = &self.connection {
+                connection.sever();
+            }
         }
 
         pub fn other_center(&self, slot: u8, blend: f32) -> Option<[f32; 3]> {
@@ -462,17 +493,20 @@ pub mod online {
             predictor.tick(intent).map_err(|error| error.to_string())
         }
 
-        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, u32) {
-            self.live()
-                .map_or(([0.0; 3], Motion::default(), None, 0), |predictor| {
+        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, u32, Weapon) {
+            self.live().map_or(
+                ([0.0; 3], Motion::default(), None, 0, Weapon::default()),
+                |predictor| {
                     let local = predictor.local();
                     (
                         local.player.center(&predictor.world),
                         local.player.motion,
                         local.hook,
                         local.energy,
+                        local.arsenal.held,
                     )
-                })
+                },
+            )
         }
         pub fn hook(&self) -> Option<[f32; 3]> {
             self.live()?.local().hook.map(|hook| hook.anchor_units())
@@ -534,7 +568,8 @@ pub mod online {
                 .any(|axis| (acked.position[axis] - me.position[axis]).abs() > TOLERANCE_UNITS)
                 || acked.motion != me.motion
                 || acked.hook != me.hook
-                || acked.energy != me.energy;
+                || acked.energy != me.energy
+                || acked.held != me.held;
             if off {
                 place(self.predictor_mut()?)?;
                 let replay: Vec<Pending> = self.pending.drain(..).collect();
@@ -545,6 +580,7 @@ pub mod online {
                         pending.motion,
                         pending.hook,
                         pending.energy,
+                        pending.held,
                     ) = self.state();
                     self.pending.push_back(pending);
                 }
@@ -553,7 +589,15 @@ pub mod online {
         }
 
         pub fn tick(&mut self, intent: Intent) -> Result<Tick, String> {
-            for event in self.connection.poll() {
+            if let Some((url, certificate)) = self.host.take() {
+                self.connection = Some(Connection::open(url, certificate));
+            }
+            let events = self
+                .connection
+                .as_ref()
+                .map(Connection::poll)
+                .unwrap_or_default();
+            for event in events {
                 match event {
                     NetEvent::Welcome { player_id } => {
                         if self.player_id.is_some() {
@@ -612,15 +656,17 @@ pub mod online {
                     .as_ref()
                     .and_then(|latest| latest.of_player(self.player_id?).map(|me| me.configured));
                 let build = self.build.filter(|build| configured != Some(*build));
-                self.connection.send(
-                    self.sequence,
-                    &encode_input(intent, view_tick, name, build.as_ref()),
-                );
+                if let Some(connection) = &self.connection {
+                    connection.send(
+                        self.sequence,
+                        &encode_input(intent, view_tick, name, build.as_ref()),
+                    );
+                }
                 if self.predicting {
                     report = self.predict(intent)?;
                     let shots = self.predicted_shots();
                     self.events.extend(shots);
-                    let (position, motion, hook, energy) = self.state();
+                    let (position, motion, hook, energy, held) = self.state();
                     self.pending.push_back(Pending {
                         sequence: self.sequence,
                         intent,
@@ -628,6 +674,7 @@ pub mod online {
                         motion,
                         hook,
                         energy,
+                        held,
                     });
                     while self.pending.len() > 120 {
                         self.pending.pop_front();

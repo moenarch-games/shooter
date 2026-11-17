@@ -1,13 +1,16 @@
 //! The window, the fixed-tick loop and the frame: input in, the match ticks (in-process practice
 //! or a hosted match), render out.
 
+use crate::arena_art::ArenaArt;
 use crate::audio::Sounds;
+use crate::builder::view::{Action, Builder, Stage, death_prompt};
 use crate::camera::{self, Follow};
-use crate::controls::{Controls, Look, PRIMARY_BUTTON, PadState, standard};
+use crate::controls::{Controls, Look, PRIMARY_BUTTON, PadState, Selection, WheelDelta, standard};
 use crate::effects::Effects;
 use crate::game::Game;
 use crate::gpu::Gpu;
 use crate::hud::{Hud, HudText};
+use crate::overlay::{Overlay, Vitals};
 use crate::robots::{self, RobotState, RobotView, Robots, track::Tracker};
 use crate::scene::{self, Actors, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT, SWING_SECONDS};
 use render_engine::glam::{Mat4, Vec3};
@@ -23,7 +26,9 @@ use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, TICK_HZ, Weap
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{
+    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -37,21 +42,21 @@ type KitInbox = std::rc::Rc<
     std::cell::RefCell<Option<Result<(Vec<robots::kit::Plan>, robots::load::Files), String>>>,
 >;
 
-/// Where the browser fetches the kits: `robot-kit/` and `weapon-kit/` beside the page
-/// (`scripts/build-web.sh`).
+/// Where the browser fetches the kits: `robot-kit/`, `weapon-kit/`, `locomotion-kit/` and
+/// `arena-kit/` beside the page (`scripts/build-web.sh`).
 #[cfg(target_arch = "wasm32")]
 const KIT_URL: &str = "";
 
 /// The HUD's note while the kit is not drawn yet.
 const KIT_LOADING: &str = "robot kit loading: box placeholders stand in";
 
-/// Starts the browser's robot kit fetch.
+/// Starts the browser's fetch of `bundles` (one load).
 #[cfg(target_arch = "wasm32")]
-fn fetch_kit() -> KitInbox {
+fn fetch_kit(bundles: &'static [robots::kit::Bundle]) -> KitInbox {
     let inbox = KitInbox::default();
     let filled = inbox.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        let fetched = robots::load::fetch(KIT_URL).await;
+        let fetched = robots::load::fetch(KIT_URL, bundles).await;
         *filled.borrow_mut() = Some(fetched);
     });
     inbox
@@ -99,6 +104,10 @@ pub struct App {
     pads: Option<gilrs::Gilrs>,
     sounds: Sounds,
     hud: Hud,
+    /// The drawn HUD: the weapon panel and the chassis and energy bars.
+    overlay: Overlay,
+    /// The weapon the controls ask for (a select key, or the next and previous steps).
+    selection: Selection,
     shown: HudText,
     /// Tab held: the scoreboard shows.
     board: bool,
@@ -112,6 +121,12 @@ pub struct App {
     /// The browser's kit fetch, once it is done.
     #[cfg(target_arch = "wasm32")]
     kit_inbox: KitInbox,
+    /// The arena kit in the GPU's world (a kit-built map waits for it), or why not; None while
+    /// it loads.
+    arena_art: Option<Result<ArenaArt, String>>,
+    /// The browser's arena kit fetch, once it is done.
+    #[cfg(target_arch = "wasm32")]
+    arena_inbox: KitInbox,
     /// Shots and deaths per slot, for the robots' poses.
     tracker: Tracker,
     /// This frame's ticks' events, rockets and pellets, whose effects start once the robots are
@@ -134,6 +149,12 @@ pub struct App {
     eye: f32,
     /// The third-person camera following the local fighter.
     follow: Follow,
+    /// The robot builder while it is open: before the match (nothing plays) or between lives
+    /// (the robot dead, its respawn held until Ready).
+    builder: Option<Builder>,
+    /// Whether the page shows the builder (the browser hides its own overlays then).
+    #[cfg(target_arch = "wasm32")]
+    builder_shown: bool,
     /// The pointer is locked to the game (native: grabbed; web: Pointer Lock).
     captured: bool,
     /// The browser profile run (`?frames=<n>`), timing each animation frame.
@@ -160,6 +181,8 @@ impl App {
                 .ok(),
             sounds: Sounds::new(),
             hud: Hud::default(),
+            overlay: Overlay::default(),
+            selection: Selection::default(),
             shown: HudText::default(),
             board: false,
             effects: None,
@@ -167,7 +190,10 @@ impl App {
             robots: None,
             kit_status: Some(KIT_LOADING.to_owned()),
             #[cfg(target_arch = "wasm32")]
-            kit_inbox: fetch_kit(),
+            kit_inbox: fetch_kit(&robots::kit::Bundle::FIGHTERS),
+            arena_art: None,
+            #[cfg(target_arch = "wasm32")]
+            arena_inbox: fetch_kit(&[robots::kit::Bundle::Arena]),
             tracker: Tracker::default(),
             pending: Vec::new(),
             glows: vec![0.0; usize::from(u8::MAX)],
@@ -181,9 +207,76 @@ impl App {
             previous_eye: EYE,
             eye: EYE,
             follow: Follow::default(),
+            builder: None,
+            #[cfg(target_arch = "wasm32")]
+            builder_shown: false,
             captured: false,
             #[cfg(target_arch = "wasm32")]
             profile: None,
+        }
+    }
+
+    /// Opens the builder before the match on `build` (shooter#57): nothing plays, and online
+    /// nothing connects, until Ready.
+    #[must_use]
+    pub fn with_builder(mut self, build: shooter_sim::Assembly) -> Self {
+        self.builder = Some(Builder::new(build, Stage::Setup));
+        self
+    }
+
+    /// Opens the builder between lives on the build the robot comes back as: its respawn waits
+    /// until Ready.
+    fn edit_robot(&mut self) {
+        if self.builder.is_some() {
+            return;
+        }
+        let build = self.game.configured().unwrap_or_default();
+        self.builder = Some(Builder::new(build, Stage::BetweenLives));
+        self.capture(false);
+        self.controls.release_all();
+    }
+
+    /// Whether the local robot is dead in the match (its respawn counting down).
+    fn local_dead(&self) -> bool {
+        let Some(slot) = self.game.local_slot() else {
+            return false;
+        };
+        self.game
+            .snapshot()
+            .and_then(|snapshot| snapshot.slot(slot))
+            .is_some_and(|me| !me.alive)
+    }
+
+    /// What the builder asked: Ready sends the build. Before the match the match starts; between
+    /// lives the builder waits until the match shows the build configured.
+    fn builder_action(&mut self, action: Option<Action>) {
+        let Some(Action::Ready(build)) = action else {
+            return;
+        };
+        self.game.configure(build);
+        if self
+            .builder
+            .as_ref()
+            .is_some_and(|builder| builder.stage == Stage::Setup)
+        {
+            self.builder = None;
+            self.last_frame = Instant::now();
+        }
+    }
+
+    /// Between lives, the builder closes once the host shows the readied build configured (the
+    /// next tick lets go of Edit Robot and the robot comes back), or if the robot is alive
+    /// again anyway (a new session after a reconnect).
+    fn follow_builder(&mut self) {
+        let Some(builder) = &self.builder else {
+            return;
+        };
+        if builder.stage != Stage::BetweenLives {
+            return;
+        }
+        let accepted = builder.ready.is_some() && builder.ready == self.game.configured();
+        if accepted || self.game.local_fighter().is_some() {
+            self.builder = None;
         }
     }
 
@@ -243,12 +336,15 @@ impl App {
             pads: None,
             sounds: Sounds::new(),
             hud: Hud::default(),
+            overlay: Overlay::default(),
+            selection: Selection::default(),
             shown: HudText::default(),
             board: false,
             effects: None,
             actors: None,
             robots: None,
             kit_status: Some(KIT_LOADING.to_owned()),
+            arena_art: None,
             tracker: Tracker::default(),
             pending: Vec::new(),
             glows: vec![0.0; usize::from(u8::MAX)],
@@ -262,6 +358,9 @@ impl App {
             previous_eye: EYE,
             eye: EYE,
             follow: Follow::default(),
+            builder: None,
+            #[cfg(target_arch = "wasm32")]
+            builder_shown: false,
             captured: false,
         };
         app.attach(gpu);
@@ -296,6 +395,8 @@ impl App {
         self.actors = Some(Actors::new(&mut gpu.world));
         #[cfg(not(target_arch = "wasm32"))]
         self.robots_ready(&mut gpu, robots::load::read());
+        #[cfg(not(target_arch = "wasm32"))]
+        self.arena_ready(&mut gpu, robots::load::read_arena());
         if let Some(window) = &self.window {
             let size = window.inner_size();
             gpu.resize(size.width, size.height);
@@ -337,13 +438,55 @@ impl App {
         }
     }
 
-    /// Puts the match's arena into the GPU's world the first time both are there. A host keeps
-    /// a match on one map, so it is drawn once.
+    /// In the browser: the arena kit fetch is done and the GPU is up.
+    #[cfg(target_arch = "wasm32")]
+    fn poll_arena(&mut self) {
+        if self.gpu.is_none() {
+            return;
+        }
+        let Some(fetched) = self.arena_inbox.borrow_mut().take() else {
+            return;
+        };
+        let kit = fetched.and_then(|(plans, files)| robots::load::finish(&plans, &files));
+        if let Some(mut gpu) = self.gpu.take() {
+            self.arena_ready(&mut gpu, kit);
+            self.gpu = Some(gpu);
+        }
+    }
+
+    /// The arena kit is read (or failed): its modules go into `gpu`'s world, or a kit-built map
+    /// is drawn as boxes and the HUD says why.
+    fn arena_ready(&mut self, gpu: &mut Gpu, kit: Result<robots::kit::KitData, String>) {
+        let art = kit.and_then(|kit| ArenaArt::new(&mut gpu.world, kit));
+        if let Err(error) = &art {
+            crate::log(error);
+        }
+        self.arena_art = Some(art);
+    }
+
+    /// Why a kit-built map is drawn as boxes, if it is: for the HUD.
+    fn arena_status(&self) -> Option<String> {
+        let map = self.drawn?;
+        let Some(Err(error)) = &self.arena_art else {
+            return None;
+        };
+        (!map.arena().placements.is_empty())
+            .then(|| format!("{error}: the arena is drawn as boxes"))
+    }
+
+    /// Puts the match's arena into the GPU's world the first time both are there (and, for a
+    /// kit-built map, once the arena kit is read or has failed). A host keeps a match on one
+    /// map, so it is drawn once.
     fn draw_map(&mut self) {
         let (Some(gpu), Some(map), None) = (&mut self.gpu, self.game.map(), self.drawn) else {
             return;
         };
-        scene::build(&mut gpu.world, &map.arena());
+        let arena = map.arena();
+        if !arena.placements.is_empty() && self.arena_art.is_none() {
+            return;
+        }
+        let art = self.arena_art.as_ref().and_then(|art| art.as_ref().ok());
+        scene::build(&mut gpu.world, &arena, art);
         self.drawn = Some(map);
     }
 
@@ -424,7 +567,30 @@ impl App {
             *tick += 1;
             self.look = Look::new(radians(intent.yaw));
             intent
+        } else if self.builder.is_some() {
+            // In the builder: Edit Robot held, the robot dead and waiting (D2.i70.11).
+            Intent {
+                yaw: self.look.sim_yaw(),
+                pitch: self.look.sim_pitch(),
+                edit: true,
+                ..Intent::IDLE
+            }
         } else {
+            // The wheel and Q/E step through the weapons the robot still has, from the one it
+            // holds as predicted; the host decides.
+            let steps = self.controls.take_steps();
+            let select = match self.game.local_fighter() {
+                Some((me, _)) => self.selection.intent(
+                    self.controls.selected(),
+                    steps,
+                    me.arsenal.held,
+                    |weapon| me.parts.armed(&me.build, weapon),
+                ),
+                None => {
+                    self.selection = Selection::default();
+                    self.controls.selected()
+                }
+            };
             Intent {
                 forward,
                 strafe,
@@ -436,7 +602,8 @@ impl App {
                 // Only a captured mouse shoots: the click that captures it does not.
                 fire: self.captured && self.controls.fire_held(),
                 melee: self.captured && self.controls.melee_held(),
-                select: self.controls.selected(),
+                select,
+                edit: false,
             }
         };
         let tick = match self.game.tick(intent) {
@@ -446,6 +613,7 @@ impl App {
                 return false;
             }
         };
+        self.follow_builder();
         let local = self.game.local_slot();
         self.previous_eye = self.eye;
         let target = if self.game.local_sliding() {
@@ -526,6 +694,8 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         self.poll_kit();
         #[cfg(target_arch = "wasm32")]
+        self.poll_arena();
+        #[cfg(target_arch = "wasm32")]
         if self.captured && !crate::web::pointer_locked() {
             // The browser let go of the pointer (Escape): stop playing until the next click.
             self.capture(false);
@@ -536,7 +706,16 @@ impl App {
         self.look.stick(&pads, seconds);
 
         let tick = 1.0 / f32::from(TICK_HZ);
-        self.accumulator += seconds;
+        // Before the match nothing plays: the match starts at Ready.
+        let setup = self
+            .builder
+            .as_ref()
+            .is_some_and(|builder| builder.stage == Stage::Setup);
+        self.accumulator = if setup {
+            0.0
+        } else {
+            self.accumulator + seconds
+        };
         let mut ticks = 0;
         while self.accumulator >= tick {
             self.accumulator -= tick;
@@ -551,6 +730,25 @@ impl App {
         }
         let ticks = ticks.min(MAX_TICKS_PER_FRAME);
         self.draw_map();
+        #[cfg(target_arch = "wasm32")]
+        if self.builder_shown != self.builder.is_some() {
+            self.builder_shown = self.builder.is_some();
+            crate::web::show_builder(self.builder_shown);
+        }
+        if let Some(builder) = &mut self.builder {
+            // The bench instead of the match: its effects are not shown.
+            self.pending.clear();
+            let Some(gpu) = &mut self.gpu else {
+                return true;
+            };
+            let (width, height) = gpu.size();
+            let robots = self.robots.as_mut().map(|robots| (&mut gpu.world, robots));
+            let scene = builder.frame(robots, width, height, seconds);
+            if let Err(error) = gpu.render(&scene, ticks) {
+                crate::log(&error);
+            }
+            return true;
+        }
 
         let blend = self.accumulator / tick;
         let center = Vec3::from(self.previous_center).lerp(Vec3::from(self.center), blend);
@@ -590,6 +788,8 @@ impl App {
             })
             .collect();
         let me = local.and_then(|slot| snapshot.and_then(|snapshot| snapshot.slot(slot)));
+        // Dead: the countdown, and Edit Robot (B) to suspend it.
+        let respawn_in = me.filter(|me| !me.alive).map(|me| me.respawn_in);
         let alive = me.filter(|me| me.alive && self.game.local_center().is_some());
         // The robots' poses: each fighter shown alive, and the dead where they fell.
         let mut robot_views: Vec<RobotView> = Vec::new();
@@ -811,13 +1011,17 @@ impl App {
         let mut text = self
             .hud
             .text(snapshot, local, self.game.status(), self.board, seconds);
-        text.robot = self.kit_status.clone().unwrap_or_else(|| {
-            drawn
-                .iter()
-                .find(|robot| Some(robot.slot) == local)
-                .map(robot_line)
-                .unwrap_or_default()
-        });
+        text.robot = self
+            .kit_status
+            .clone()
+            .or_else(|| self.arena_status())
+            .unwrap_or_else(|| {
+                drawn
+                    .iter()
+                    .find(|robot| Some(robot.slot) == local)
+                    .map(robot_line)
+                    .unwrap_or_default()
+            });
         #[cfg(target_arch = "wasm32")]
         crate::hud::show(&text, &mut self.shown);
         #[cfg(not(target_arch = "wasm32"))]
@@ -830,21 +1034,26 @@ impl App {
             .as_mut()
             .map(|effects| effects.lights(seconds, &rockets))
             .unwrap_or_default();
-        let scene = scene::frame(camera, forward, point_lights);
+        let mut scene = scene::frame(camera, forward, point_lights);
+        // The drawn HUD: the held weapon (as predicted), the carried ones, chassis and energy.
+        let vitals = self
+            .game
+            .local_fighter()
+            .map(|(me, tick)| Vitals::of(me, tick));
         let Some(gpu) = &mut self.gpu else {
             return true;
         };
+        let (width, height) = gpu.size();
+        scene.overlay = self.overlay.draw(vitals.as_ref(), width, height, seconds);
+        if let Some(ticks) = respawn_in {
+            scene.overlay.extend(death_prompt(
+                f32::from(u16::try_from(ticks).unwrap_or(u16::MAX)) / f32::from(TICK_HZ),
+                width,
+                height,
+            ));
+        }
         if let Some(actors) = &mut self.actors {
-            actors.update(
-                &mut gpu.world,
-                &fighters,
-                &rockets,
-                text.health,
-                camera,
-                forward,
-                &modules,
-                reticle,
-            );
+            actors.update(&mut gpu.world, &fighters, &rockets, &modules, reticle);
         }
         if let Err(error) = gpu.render(&scene, ticks) {
             crate::log(&error);
@@ -888,24 +1097,10 @@ fn damaged_parts(fighter: &FighterState) -> Vec<PartId> {
         .collect()
 }
 
-/// The HUD's robot line for the local fighter: its animation state and its placeholder parts,
-/// "robot: run (walk-biped) + fire · placeholders (asset-tooling#634): robot.wheel, …".
+/// The HUD's robot line for the local fighter: its animation state, "robot: run (walk-biped) +
+/// fire".
 fn robot_line(robot: &robots::Drawn) -> String {
-    let mut owners: Vec<&str> = robot.placeholders.iter().map(|(_, owner)| *owner).collect();
-    owners.dedup();
-    let placeholders: Vec<String> = owners
-        .iter()
-        .map(|owner| {
-            let keys: Vec<&str> = robot
-                .placeholders
-                .iter()
-                .filter(|(_, by)| by == owner)
-                .map(|(key, _)| *key)
-                .collect();
-            format!(" · placeholders ({owner}): {}", keys.join(", "))
-        })
-        .collect();
-    format!("robot: {}{}", robot.label, placeholders.concat())
+    format!("robot: {}", robot.label)
 }
 
 impl ApplicationHandler<GpuReady> for App {
@@ -964,6 +1159,47 @@ impl ApplicationHandler<GpuReady> for App {
                 self.controls.release_all();
                 self.board = false;
             }
+            // The builder has the pointer and the keys while it is open.
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(builder) = &mut self.builder {
+                    #[allow(clippy::cast_possible_truncation)]
+                    builder.cursor_moved(position.x as f32, position.y as f32);
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                if let Some(builder) = &mut self.builder {
+                    let state = modifiers.state();
+                    builder.modifiers(state.shift_key(), state.control_key());
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } if self.builder.is_some() => {
+                let pressed = state == ElementState::Pressed;
+                let action = match (button, &mut self.builder) {
+                    (MouseButton::Left | MouseButton::Right, Some(builder)) => {
+                        builder.mouse(button == MouseButton::Right, pressed)
+                    }
+                    _ => None,
+                };
+                self.builder_action(action);
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.builder.is_some() => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => lines,
+                    #[allow(clippy::cast_possible_truncation)]
+                    MouseScrollDelta::PixelDelta(pixels) => pixels.y as f32 / 100.0,
+                };
+                if let Some(builder) = &mut self.builder {
+                    builder.wheel(lines);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } if self.builder.is_some() => {
+                if let (PhysicalKey::Code(code), ElementState::Pressed, Some(builder)) =
+                    (event.physical_key, event.state, &mut self.builder)
+                {
+                    let action = builder.key(code);
+                    self.builder_action(action);
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -984,6 +1220,16 @@ impl ApplicationHandler<GpuReady> for App {
                     self.controls.mouse_up(button);
                 }
             }
+            // The wheel cycles weapons while the game has the mouse (winit reports the browser's
+            // wheel events here too, in lines or pixels as the page got them).
+            WindowEvent::MouseWheel { delta, .. } if self.captured => {
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => WheelDelta::Lines(lines),
+                    MouseScrollDelta::PixelDelta(pixels) => WheelDelta::Pixels(pixels.y),
+                };
+                let now_ms = (Instant::now() - self.started).as_secs_f64() * 1_000.0;
+                self.controls.wheel(delta, now_ms);
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;
@@ -995,6 +1241,14 @@ impl ApplicationHandler<GpuReady> for App {
                 }
                 if code == KeyCode::Tab {
                     self.board = event.state == ElementState::Pressed;
+                    return;
+                }
+                // Dead: Edit Robot instead of the automatic respawn.
+                if code == KeyCode::KeyB
+                    && event.state == ElementState::Pressed
+                    && self.local_dead()
+                {
+                    self.edit_robot();
                     return;
                 }
                 if event.state == ElementState::Pressed {

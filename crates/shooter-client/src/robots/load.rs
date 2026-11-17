@@ -1,7 +1,9 @@
-//! Reading the pinned kits ([`Bundle::ALL`]): natively from directories
-//! (`scripts/fetch-robot-kit.sh` puts them in `target/robot-kit` and `target/weapon-kit`;
-//! `SHOOTER_ROBOT_KIT` and `SHOOTER_WEAPON_KIT` name others), in the browser over HTTP as each
-//! kit's release tar, `robot-kit/kit.tar` and `weapon-kit/kit.tar` beside the page
+//! Reading the pinned kits ([`Bundle::ALL`]; the fighters' three in one load, the arena kit in
+//! another): natively from directories (`scripts/fetch-robot-kit.sh` puts them in
+//! `target/robot-kit`, `target/weapon-kit`, `target/locomotion-kit` and `target/arena-kit`;
+//! `SHOOTER_ROBOT_KIT`, `SHOOTER_WEAPON_KIT`, `SHOOTER_LOCOMOTION_KIT` and `SHOOTER_ARENA_KIT` name
+//! others), in the browser over HTTP as each kit's release tar, `robot-kit/kit.tar`,
+//! `weapon-kit/kit.tar`, `locomotion-kit/kit.tar` and `arena-kit/kit.tar` beside the page
 //! (`scripts/build-web.sh` copies them into `web/dist`), checked against its pinned SHA-256 and
 //! read in memory ([`untar`]). One request a kit: Chromium's WebGPU on SwiftShader refuses
 //! buffers mapped at creation (every mesh upload) once a page has made many requests
@@ -129,14 +131,17 @@ pub fn take(
     Ok(())
 }
 
-/// The native directory of `bundle`: `$SHOOTER_ROBOT_KIT` / `$SHOOTER_WEAPON_KIT`, else the
-/// workspace's `target/robot-kit` / `target/weapon-kit`.
+/// The native directory of `bundle`: `$SHOOTER_ROBOT_KIT` / `$SHOOTER_WEAPON_KIT` /
+/// `$SHOOTER_LOCOMOTION_KIT` / `$SHOOTER_ARENA_KIT`, else the workspace's `target/robot-kit` /
+/// `target/weapon-kit` / `target/locomotion-kit` / `target/arena-kit`.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn directory(bundle: Bundle) -> std::path::PathBuf {
     let variable = match bundle {
         Bundle::Robot => "SHOOTER_ROBOT_KIT",
         Bundle::Weapons => "SHOOTER_WEAPON_KIT",
+        Bundle::Locomotion => "SHOOTER_LOCOMOTION_KIT",
+        Bundle::Arena => "SHOOTER_ARENA_KIT",
     };
     std::env::var_os(variable).map_or_else(
         || {
@@ -165,14 +170,24 @@ fn read_bounded(path: &std::path::Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(fail)
 }
 
-/// Reads and decodes the kits in their [`directory`]s.
+/// Reads and decodes the fighters' kits ([`Bundle::FIGHTERS`]) in their [`directory`]s.
 ///
 /// # Errors
 ///
 /// As [`read_from`].
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read() -> Result<KitData, String> {
-    read_from(&Bundle::ALL.map(|bundle| (bundle, directory(bundle))))
+    read_from(&Bundle::FIGHTERS.map(|bundle| (bundle, directory(bundle))))
+}
+
+/// Reads and decodes the arena kit ([`Bundle::Arena`]) in its [`directory`].
+///
+/// # Errors
+///
+/// As [`read_from`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_arena() -> Result<KitData, String> {
+    read_from(&[(Bundle::Arena, directory(Bundle::Arena))])
 }
 
 /// Reads and decodes each kit from its directory.
@@ -249,12 +264,12 @@ mod web {
 
     /// Fetches each kit's release tar from `base` (a URL ending in `/`, or empty for the page's
     /// directory) and its kit directory, checks it against its pin and takes the files its
-    /// manifest's plan lists.
-    pub async fn fetch(base: &str) -> Result<(Vec<Plan>, Files), String> {
+    /// manifest's plan lists: `bundles`, one load.
+    pub async fn fetch(base: &str, bundles: &[Bundle]) -> Result<(Vec<Plan>, Files), String> {
         let mut plans = Vec::new();
         let mut files = Files::new();
         let mut total = 0;
-        for bundle in Bundle::ALL {
+        for &bundle in bundles {
             let url = format!("{base}{}/kit.tar", bundle.directory());
             let tar = body(&url).await?;
             let (hash, pin) = (sha256(&tar), pinned_tar(bundle));

@@ -1,7 +1,7 @@
 {
   "release": "shooter-combat-robot",
   "tar": "https://github.com/moritzbrantner/asset-tooling/releases/download/shooter-combat-robot/shooter-combat-robot.kit.tar",
-  "sha256": "9845aa5da319b26991184030c4f7dc5dc813b898f4f728f17de2c83b57052e3b",
-  "manifestSha256": "0e5157603a6b36620ed6dd817c656b113b0d9785fefeaaa606926032bb4c561c",
-  "assetTooling": "b7937c1b3888e88d9ab164ecceb74b2f213a5d05"
+  "sha256": "96ce305562748d67f6a624b3b1bc04e431ad4e901d8ba47ca89533dffee3d7ab",
+  "manifestSha256": "37d4bc7e0dcd242adafd0a53df22f7a2790e1434bd7572b4aaada81de45fbf45",
+  "assetTooling": "dc5015a962123450e311ba845b30a86f3863a525"
 }

@@ -1,7 +1,9 @@
-//! The arena as render-engine content: one mesh per piece at its true size (so normals stay
+//! The arena as render-engine content: a kit-built map's modules (`crate::arena_art`), or a
+//! greybox map's one mesh per piece at its true size (so normals stay
 //! exact), a checkered floor for a sense of speed, glowing jump pads, the module pickups' pads, and the hall's lighting;
 //! and the [`Actors`] that move over it.
 
+use crate::arena_art::ArenaArt;
 use crate::camera::{self, basis};
 use crate::effects::tint;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
@@ -127,8 +129,25 @@ const fn swapped(half: Vec3) -> Vec3 {
     Vec3::new(half.z, half.y, half.x)
 }
 
-/// Uploads the arena and retains its instances in `world`: they are drawn every frame.
-pub fn build(world: &mut World, arena: &Arena) {
+/// The greybox jump pads' and module pads' plates (metres).
+const PAD_THICKNESS: f32 = 0.02;
+
+/// Uploads the arena and retains its instances in `world`: they are drawn every frame. A
+/// kit-built map (one with placements) is drawn from the arena kit when `art` is there, else
+/// (the kit unavailable) and on the greybox maps as boxes; the module pads on every map.
+pub fn build(world: &mut World, arena: &Arena, art: Option<&ArenaArt>) {
+    match art.filter(|_| !arena.placements.is_empty()) {
+        Some(art) => {
+            art.draw(world, arena);
+        }
+        None => greybox(world, arena),
+    }
+    module_pads(world, arena);
+}
+
+/// The arena's pieces as boxes and wedges on a checkered floor, and its jump pads as glowing
+/// plates.
+fn greybox(world: &mut World, arena: &Arena) {
     let floor_material = material(world, [0.20, 0.22, 0.26], 0.8);
     let wall = material(world, [0.55, 0.57, 0.62], 0.7);
     let accent = material(world, [0.85, 0.42, 0.12], 0.5);
@@ -192,7 +211,6 @@ pub fn build(world: &mut World, arena: &Arena) {
         perceptual_roughness: 0.3,
         ..StandardMaterial::default()
     });
-    const PAD_THICKNESS: f32 = 0.02;
     for pad in &arena.pads {
         #[allow(clippy::cast_precision_loss)]
         let half = Vec3::new(pad.half[0] as f32, 0.0, pad.half[1] as f32) * METRES_PER_UNIT;
@@ -206,7 +224,10 @@ pub fn build(world: &mut World, arena: &Arena) {
             skin: None,
         });
     }
+}
 
+/// Module pickup pads, on every map.
+fn module_pads(world: &mut World, arena: &Arena) {
     // Module pickup pads: dark plates as wide as their reach, tinted by the module they hold;
     // the module itself floats over the plate while it is there ([`Actors`]).
     #[allow(clippy::cast_precision_loss)]
@@ -352,7 +373,7 @@ struct FighterInstances {
 
 /// The moving things drawn over the arena: every fighter (the local one too, seen from the
 /// third-person camera) with its gun, swung blade and grapple cable, the rockets, the modules lying on their pads, the reticle
-/// and (natively; the page draws its own) a health bar. Placeholder primitives: a fighter drawn as
+/// (the HUD is screen overlay, [`crate::overlay`]). Placeholder primitives: a fighter drawn as
 /// its robot ([`crate::robots`]) shows no box body or held gun box here (its weapons are the
 /// weapons kit's); the swung blade's sweep still shows the simulation's arc for every fighter.
 pub struct Actors {
@@ -375,8 +396,6 @@ pub struct Actors {
     /// Modules on their pads, reused frame to frame (hidden when unused).
     modules: Vec<InstanceId>,
     reticle: InstanceId,
-    /// Natively: the health bar's mesh, material and instance (HUD stopgap).
-    health_bar: Option<(MeshId, MaterialId, InstanceId)>,
 }
 
 fn glowing(rgb: Vec3, nits: f32) -> StandardMaterial {
@@ -430,21 +449,6 @@ impl Actors {
                 skin: None,
             })
         };
-        let health_bar = (!cfg!(target_arch = "wasm32")).then(|| {
-            let mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::new(
-                HEALTH_BAR_LENGTH,
-                0.004,
-                0.001,
-            ))));
-            let material = world.add_material(&glowing(Vec3::new(0.3, 1.0, 0.5), 20_000.0));
-            let instance = world.add_instance(Instance {
-                mesh,
-                material,
-                world_from_local: HIDDEN,
-                skin: None,
-            });
-            (mesh, material, instance)
-        });
         Self {
             fighters: Vec::new(),
             fighter_mesh,
@@ -467,7 +471,6 @@ impl Actors {
                 .map(|module| world.add_material(&glowing(module_tint(module), 4_000.0))),
             modules: Vec::new(),
             reticle,
-            health_bar,
         }
     }
 
@@ -489,18 +492,14 @@ impl Actors {
         );
     }
 
-    /// Places everything for this frame. `camera`/`forward` is the camera; `reticle` where the
-    /// reticle is drawn ([`camera::reticle`]), while the local fighter is alive; `health` is its
-    /// health (0..=1); `modules` the modules lying on their pads (each pad's centre, metres).
-    #[allow(clippy::too_many_arguments)]
+    /// Places everything for this frame. `reticle` is where the reticle is drawn
+    /// ([`camera::reticle`]), while the local fighter is alive; `modules` the modules lying on
+    /// their pads (each pad's centre, metres).
     pub fn update(
         &mut self,
         world: &mut World,
         fighters: &[FighterView],
         rockets: &[Vec3],
-        health: Option<f32>,
-        camera: Vec3,
-        forward: Vec3,
         modules: &[(Vec3, ArenaModule)],
         reticle: Option<Vec3>,
     ) {
@@ -647,25 +646,7 @@ impl Actors {
         let mut instance = world.instance(self.reticle);
         instance.world_from_local = reticle.map_or(HIDDEN, Mat4::from_translation);
         world.set_instance(self.reticle, instance);
-        if let Some((mesh, material, instance)) = self.health_bar {
-            let at = health.map_or(HIDDEN, |health| health_bar_pose(camera, forward, health));
-            Self::place(world, instance, mesh, material, at);
-        }
     }
-}
-
-/// The native health bar's full length (metres, half a metre ahead of the camera).
-const HEALTH_BAR_LENGTH: f32 = 0.12;
-
-/// The health bar low and right of the view's centre, clear of the fighter over whose shoulder
-/// the camera looks, shrunk to `health` from its left end.
-fn health_bar_pose(camera: Vec3, forward: Vec3, health: f32) -> Mat4 {
-    let (forward, right, up) = basis(forward);
-    let health = health.clamp(0.0, 1.0);
-    let left = camera + forward * 0.5 - up * 0.25 + right * 0.12;
-    let center = left + right * (HEALTH_BAR_LENGTH * health / 2.0);
-    let rotation = Quat::from_mat3(&Mat3::from_cols(-right, up, forward));
-    Mat4::from_scale_rotation_translation(Vec3::new(health.max(0.001), 1.0, 1.0), rotation, center)
 }
 
 /// The frame's camera ([`camera`]) and the hall's light: a high sun through an open roof and

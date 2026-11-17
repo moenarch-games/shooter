@@ -4,7 +4,8 @@
 //! ([`crate::wire`]) and build the same [`Arena`] from this catalog, so the native client, the
 //! browser client and the host share one definition of its geometry (collision and drawing),
 //! spawn points, jump pads and walkable traversal. Replays carry the ID too. Authored art for
-//! a map comes from asset-tooling (moritzbrantner/asset-tooling#593); its layout, placement and
+//! a map comes from asset-tooling's arena kit (moritzbrantner/asset-tooling#593): a kit-built map
+//! lists the kit's module placements ([`crate::arena_kit`]); its layout, placement and
 //! collision data live here.
 //!
 //! A map recommends a player-capacity range ([`Capacity`]) and bounds a match's slot count by
@@ -24,6 +25,10 @@ pub enum MapId {
     /// The greybox yard ([`Arena::greybox_yard`]), a 76 m interim playtest map with a raised
     /// walkway, wall lines and grapple towers (shooter#82): the default until the beta arenas.
     GreyboxYard,
+    /// The assembly works ([`Arena::assembly_works`]), the beta's medium arena (shooter#52): a
+    /// 56 m multilevel robotic assembly factory built from the arena kit, with mezzanines, a
+    /// gantry bridge and crane towers.
+    AssemblyWorks,
 }
 
 /// The players a map is laid out for, inclusive. A recommendation for whoever sets up a
@@ -68,7 +73,7 @@ impl std::error::Error for UnknownMap {}
 
 impl MapId {
     /// Every catalogued map.
-    pub const ALL: [Self; 2] = [Self::Greybox, Self::GreyboxYard];
+    pub const ALL: [Self; 3] = [Self::Greybox, Self::GreyboxYard, Self::AssemblyWorks];
     /// The map a match is played on when none is chosen.
     pub const DEFAULT: Self = Self::GreyboxYard;
 
@@ -78,6 +83,7 @@ impl MapId {
         match self {
             Self::Greybox => "greybox",
             Self::GreyboxYard => "greybox-yard",
+            Self::AssemblyWorks => "assembly-works",
         }
     }
 
@@ -87,6 +93,7 @@ impl MapId {
         match self {
             Self::Greybox => 1,
             Self::GreyboxYard => 2,
+            Self::AssemblyWorks => 3,
         }
     }
 
@@ -105,6 +112,8 @@ impl MapId {
             Self::Greybox => Capacity { min: 2, max: 12 },
             // Too big for a duel: 6 to the default 12, two spawn points to spare.
             Self::GreyboxYard => Capacity { min: 6, max: 12 },
+            // Medium: from a 4-player skirmish to the default 12, two spawn points to spare.
+            Self::AssemblyWorks => Capacity { min: 4, max: 12 },
         }
     }
 
@@ -121,6 +130,7 @@ impl MapId {
         match self {
             Self::Greybox => Arena::greybox(),
             Self::GreyboxYard => Arena::greybox_yard(),
+            Self::AssemblyWorks => Arena::assembly_works(),
         }
     }
 }

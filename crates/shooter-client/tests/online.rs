@@ -7,10 +7,11 @@
 use game_server::{
     BrowserRoutePrefix, MatchHostWebTransportConfig, serve_match_host_with_shutdown,
 };
+use shooter_client::controls::Selection;
 use shooter_client::game::Game;
 use shooter_client::game::online::Online;
 use shooter_sim::robot::{SKIRMISHER, STANDARD};
-use shooter_sim::{Controller, Intent, MapId};
+use shooter_sim::{Controller, Intent, MapId, Weapon};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use wtransport::Identity;
@@ -183,4 +184,145 @@ fn a_lost_connection_rejoins_its_slot() {
         snapshot.slot(slot).unwrap().controller,
         Controller::Human(player)
     );
+}
+
+/// The weapon cycle goes through the host (shooter#92): two steps from the standard build's
+/// rifle reach its shotgun (past the grapple) in the prediction at once and on the host, and a
+/// switch to a weapon the robot does not carry, asked for as long as a step is, changes nothing
+/// on either.
+#[test]
+fn the_weapon_cycle_goes_through_the_host() {
+    let host = Host::start(2);
+    let mut game = host.connect(None);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    // Ticks `game` with `select` until the host shows `want` held (or `ticks` pass): whether it
+    // did, and whether the fighter died meanwhile (a bot can end the life mid-check).
+    let hold = |game: &mut Game, select: Option<Weapon>, want: Weapon, ticks: u32| {
+        let deaths = |game: &Game| {
+            let slot = game.local_slot()?;
+            Some(game.snapshot()?.slot(slot)?.deaths)
+        };
+        let before = deaths(game);
+        let mut shown = false;
+        for _ in 0..ticks {
+            game.tick(Intent {
+                select,
+                ..Intent::IDLE
+            })
+            .unwrap();
+            let held = game
+                .local_slot()
+                .and_then(|slot| game.snapshot()?.slot(slot).map(|me| me.held));
+            shown = held == Some(want);
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        (shown, deaths(game) == before)
+    };
+    let mut checked = false;
+    while Instant::now() < deadline && !checked {
+        game.tick(Intent::IDLE).unwrap();
+        std::thread::sleep(Duration::from_millis(16));
+        let Some((me, _)) = game.local_fighter() else {
+            continue;
+        };
+        if me.arsenal.held != Weapon::EnergyRifle {
+            continue;
+        }
+        // Two notches down: rifle, grapple, shotgun.
+        let mut selection = Selection::default();
+        let (build, parts) = (me.build, me.parts);
+        let armed = |weapon| parts.armed(&build, weapon);
+        let select = selection.intent(None, 2, Weapon::EnergyRifle, armed);
+        assert_eq!(select, Some(Weapon::Shotgun));
+        game.tick(Intent {
+            select,
+            ..Intent::IDLE
+        })
+        .unwrap();
+        assert_eq!(
+            game.local_fighter().map(|(me, _)| me.arsenal.held),
+            Some(Weapon::Shotgun),
+            "predicted at once"
+        );
+        let (shown, alive) = hold(&mut game, select, Weapon::Shotgun, Selection::ASK_TICKS);
+        if !alive {
+            continue;
+        }
+        assert!(shown, "the host took the switch");
+        // The rail gun is not on the standard build: refused by the host, and the prediction
+        // follows the host.
+        let (shotgun, alive) = hold(
+            &mut game,
+            Some(Weapon::RailGun),
+            Weapon::Shotgun,
+            Selection::ASK_TICKS,
+        );
+        if !alive {
+            continue;
+        }
+        assert!(shotgun, "the host kept the shotgun");
+        assert_eq!(
+            game.local_fighter().map(|(me, _)| me.arsenal.held),
+            Some(Weapon::Shotgun)
+        );
+        checked = true;
+    }
+    assert!(checked, "no life lasted the check");
+}
+
+/// The builder through a real host (shooter#57): a build readied before the match (before the
+/// first tick connects) is the robot's first life; after a death, Edit Robot holds the respawn
+/// however long it takes, a new build readied meanwhile is accepted by the host, and letting go
+/// brings the robot back as it.
+#[test]
+fn the_builder_s_builds_reach_the_host_before_the_match_and_between_lives() {
+    use shooter_sim::robot::{HEAVY, PYRO};
+    let host = Host::start(3);
+    let mut game = host.connect(None);
+    game.configure(PYRO);
+    let me = |game: &Game| {
+        let slot = game.local_slot()?;
+        game.snapshot()?.slot(slot).copied()
+    };
+    let play = |game: &mut Game, intent: Intent, seconds: u64, until: &dyn Fn(&Game) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        while Instant::now() < deadline && !until(game) {
+            game.tick(intent).unwrap();
+            std::thread::sleep(Duration::from_millis(16));
+        }
+    };
+    play(&mut game, Intent::IDLE, 20, &|game| {
+        me(game).is_some_and(|me| me.configured == PYRO)
+    });
+    let first = me(&game).expect("admitted");
+    // Configured before it played: the robot is that build at once, not after a death.
+    assert_eq!(
+        (first.build, first.configured),
+        (PYRO, PYRO),
+        "the first life"
+    );
+    assert_eq!(first.deaths, 0);
+
+    // Eleven bots end an idle robot's life soon enough.
+    play(&mut game, Intent::IDLE, 120, &|game| {
+        me(game).is_some_and(|me| !me.alive)
+    });
+    assert!(!me(&game).unwrap().alive, "never killed");
+    let editing = Intent {
+        edit: true,
+        ..Intent::IDLE
+    };
+    game.configure(HEAVY);
+    play(&mut game, editing, 20, &|game| {
+        me(game).is_some_and(|me| me.configured == HEAVY)
+    });
+    // Past the 2 s countdown, still in the builder.
+    play(&mut game, editing, 3, &|_| false);
+    let waiting = me(&game).unwrap();
+    assert!(!waiting.alive, "the respawn waits for Ready");
+    assert_eq!(waiting.configured, HEAVY);
+    play(&mut game, Intent::IDLE, 20, &|game| {
+        me(game).is_some_and(|me| me.alive)
+    });
+    assert_eq!(me(&game).unwrap().build, HEAVY);
 }

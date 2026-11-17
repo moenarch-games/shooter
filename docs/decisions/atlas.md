@@ -70,6 +70,17 @@ implemented yet.
 - **D2.i46.8** (owner, 2026-11-13): Weapons build on the shipped rifle, rail gun, rockets, shotgun,
   laser, flamethrower, grapple hook and blade, and allow weapon modifications. Full
   weapon-from-parts engineering is later, not beta.
+  Since shooter#92 (owner request, 2026-11-14) a build is its arsenal: a fighter spawns holding
+  its build's first weapon and holds, fires and swings only the weapons the build mounts and still
+  has; the host refuses a switch to any other. The mouse wheel and Q/E cycle those weapons in the
+  fixed rotation order; the blade stays on its own key unless it is the last weapon. No named
+  loadout mounts the laser or the flamethrower yet, so until the builder (shooter#57) only the
+  tests' over-budget armory build fires them.
+  Since shooter#96 (owner, 2026-11-14) a fifth named loadout, `pyro`, mounts the laser (with a
+  long barrel) and the flamethrower beside the blade and the grapple, so every weapon stays
+  playable until the builder. A fighter spawns holding its build's first weapon in the rotation
+  that is not the grapple; the grapple, then the blade, only when it carries nothing else.
+  Since shooter#57 the builder mounts any weapon on any build (D2.i70.11).
 - **D2.i46.9** (owner, 2026-11-13): Some powerful weapon and movement modules spawn as pickups at
   contested arena points. Any robot can use them, with no compatibility gate; a build may exploit
   one better (for example grapple plus a sniper position). Their lifetime is open (Q2.i46.3).
@@ -213,6 +224,21 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   valid build after the normal countdown unless the player chooses Edit Robot; the builder then
   suspends respawn, with no time limit, until the player presses Ready with a host-accepted build
   (2026-11-14, A). Owner: shooter#57.
+  Ships since shooter#57 (`shooter_client::builder`), with the simplest options for what was
+  open (the gestures and the plumbing, the owner's to revisit): both clients open on the builder
+  before the match, nothing playing and online nothing connecting until Ready; a robot that has
+  applied no input since its person joined is still being set up, so a build configured then
+  applies at once (`Session::configure`), every later one at the next spawn. Parts are dragged
+  from the catalogue onto a socket, or clicked and then placed on sockets; R, T and F turn a part
+  an eighth of a turn about its socket's axes (Shift back, Ctrl about a degree), M cycles a
+  weapon's mods, X/Delete removes a part with its subtree (never the root chassis; a new frame
+  starts from a chassis), right drag turns the view. The bench checks every edit through
+  `Catalog::validate` with the build-point ceiling lifted, refusing structural breaks with the
+  rule's reason and showing the beta catalog's verdict; Ready takes only a valid build. Edit
+  Robot is B while dead, carried as an input flag (`Intent::edit`, wire 15) that holds the dead
+  robot out of its respawn and out of a round's start; the builder closes when a snapshot shows
+  the readied build configured, and a person whose inputs stop (a lost connection) lets go of it
+  after the input hold. Not yet: action-group bindings (shooter#74) and typed exact angles.
 - **D2.i70.12** (owner, 2026-11-13; shooter#70): What ships today is the baseline, not the beta
   contract: `shooter_sim::robot` (shooter#47) with its anatomical torso, head, arm and locomotion
   sockets, hand and shoulder hardpoints, named loadouts and its mass, power, heat and cooling
@@ -251,6 +277,8 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   long as before (Q2.i70.1), and the build points fell by the core's 10 so every build keeps its
   headroom. The pinned robot kit still ships a `robot.core` model, which the client skips by name
   until a kit release drops it.
+
+- **D2.i102.1** (owner, 2026-11-16; shooter#102, option B): **Camera-targeted, muzzle-authoritative shots.** The third-person camera establishes the intended aim point, but a damaging ranged weapon's actual hit ray or projectile originates at its mounted, connected weapon muzzle and travels toward that point. Geometry between the muzzle and the aim point blocks or intercepts the shot even if the camera sees the target: camera peeking does not enable shooting through cover. The authoritative origin and intersection are simulation/host rules shared with native and WebGPU prediction, reticle and visual effects; the client renderer may not supply independent combat truth. Preserve the existing weapon damage, energy, part-loss, lag-compensation and replay contracts, reconciling muzzle transforms with the real weapon/robot kit and articulation. This applies to mounted damaging ranged weapons, with the grapple's separate movement/rope contract reconciled rather than silently changed. **Intent only; implementation/visual acceptance pending** in #102 and #49. Draft PR #84 remains its previously defined battery/laser-visual change, without this gameplay redesign unless separately integrated.
 
 ## 3. Platforms
 
@@ -349,7 +377,8 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   weapon's damage, refire and range in percent: rapid cycler, overcharger, long barrel (makes its
   weapon heavy) and heat sink. Every mod that changes the fire gives up damage, refire or range.
   Until the builder (shooter#57), people pick a named loadout (`robot::LOADOUTS`: standard,
-  heavy, skirmisher, marksman), sent through the existing build request.
+  heavy, skirmisher, marksman; pyro since shooter#96), sent through the existing build request.
+  Since shooter#57 they are where the builder starts from (D2.i70.11).
   Attachment rules answered by D2.i70.1 and D2.i70.2, cooling superseded by D2.i70.4; the numbers
   remain open as Q2.i70.1 and Q2.i70.2. The defaults above stay shipped until migrated
   (D2.i70.12). The sockets, hardpoints and load budget were migrated by shooter#71; the power and
@@ -368,7 +397,12 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   fixture (2 to 12 players, 13 spawn points); a map's recommended capacity does not change the
   slot count. Since shooter#50 a deathmatch has 12 slots unless the host sets another count per
   match (`SHOOTER_MATCH_IDS=<id>=<map>:<slots>`), bounded by one slot per spawn point of the map;
-  no global maximum (D2.i46.12).
+  no global maximum (D2.i46.12). Since shooter#52 the medium arena is in: `assembly-works`, a
+  56 m multilevel robotic assembly factory (owner decisions on #52) built from the arena kit
+  (4 to 12 players, 14 spawn points), point-symmetric with mezzanines and a gantry bridge at 3 m
+  and crane towers at 5 m; its name, size, layout, pickup and repair anchors and destruction
+  candidates (its low cover, barriers and crates) are provisional choices, to be tuned in
+  playtests. The yard stays the default.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration

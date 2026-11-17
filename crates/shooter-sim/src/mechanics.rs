@@ -65,7 +65,7 @@ use crate::physics::articulated::{
 use crate::physics::{BodyId, PhysicsError, RigidBody};
 use crate::robot::{
     Assembly, BETA, CELL_MM, Drive, Face, Joint, Kind, Locomotion, MAX_PARTS, Orientation, Part,
-    PartId, PartType,
+    PartId, PartType, SocketId,
 };
 use crate::trig::{TRIG_ONE, cos, sin};
 
@@ -331,6 +331,46 @@ pub fn placements(build: &Assembly) -> Vec<Placement> {
             }
         })
         .collect()
+}
+
+/// Where a socket is in its robot's frame (units): the centre of its cell on its part's face and
+/// the face's outward normal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SocketSpot {
+    pub part: PartId,
+    pub socket: SocketId,
+    pub centre: [f32; 3],
+    pub normal: [f32; 3],
+}
+
+/// Every socket of every part of `build` in its robot's frame (part-ID order, then socket
+/// order), except those on a mounted part's own mount face, which rests on its parent (the
+/// builder's targets, shooter#57). Whether a socket is free for a part is
+/// [`crate::robot::Catalog::validate`]'s to say.
+#[must_use]
+pub fn sockets(build: &Assembly) -> Vec<SocketSpot> {
+    let mut spots = Vec::new();
+    for ((id, frame), part) in frames(build).into_iter().zip(build.parts()) {
+        let kind = part_type(part);
+        let cells = cells_of(part);
+        for socket in 0..kind.socket_count() {
+            let socket = SocketId(u8::try_from(socket).unwrap_or(u8::MAX));
+            let Some(site) = kind.site(socket) else {
+                continue;
+            };
+            if site.face == Face::NegZ && part.mount.is_some() {
+                continue;
+            }
+            let at = frame.then(socket_frame(site.face, site.u, site.v, cells));
+            spots.push(SocketSpot {
+                part: id,
+                socket,
+                centre: at.origin,
+                normal: at.direction([0.0, 0.0, 1.0]),
+            });
+        }
+    }
+    spots
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 //! its weapons' mods, rebuilt when its build changes and posed every frame ([`super::pose`]).
 
 use super::kit::{KitData, KitMaterial};
-use super::model::{Model, Visual};
+use super::model::Model;
 use super::pose::{self, Muzzle, PartStates, RobotState};
 use super::weapon::Memory;
 use render_engine::glam::{Mat4, Quat, Vec3, Vec4};
@@ -40,8 +40,6 @@ pub struct Drawn {
     pub slot: u8,
     /// Its animation state ([`pose::Animation::label`]).
     pub label: String,
-    /// Its placeholder parts and the issues that make them.
-    pub placeholders: Vec<(&'static str, &'static str)>,
     /// Where its grapple's cable starts (the launcher's muzzle).
     pub grapple: Option<Vec3>,
     /// Its attached weapons' muzzles, where their shots are drawn from.
@@ -62,6 +60,10 @@ struct SlotRobot {
     glow: Option<u8>,
     marker: InstanceId,
     phase: f32,
+    /// Each part's roll angle (radians; only wheels and tracks turn), from its ground motion.
+    rolls: Vec<f32>,
+    /// Where it looked last frame (its turn rate).
+    forward: Option<Vec3>,
     /// Its weapons' transitions, from its first frame.
     memory: Option<Memory>,
 }
@@ -71,8 +73,6 @@ pub struct Robots {
     kit: KitData,
     meshes: Vec<MeshId>,
     materials: Vec<StandardMaterial>,
-    placeholder_mesh: MeshId,
-    placeholder: MaterialId,
     marker_mesh: MeshId,
     marker_material: MaterialId,
     models: HashMap<Assembly, Rc<Model>>,
@@ -95,7 +95,7 @@ fn glowing(rgba: Vec4, nits: f32) -> StandardMaterial {
 }
 
 /// The kit's material with `textures` (by kit index).
-fn material(kit: &KitMaterial, textures: &[TextureId]) -> StandardMaterial {
+pub(crate) fn material(kit: &KitMaterial, textures: &[TextureId]) -> StandardMaterial {
     let texture = |index: Option<usize>| index.and_then(|index| textures.get(index).copied());
     StandardMaterial {
         base_color: kit.base_color,
@@ -139,12 +139,9 @@ impl Robots {
             .iter()
             .map(|kit| material(kit, &textures))
             .collect();
-        let purple = Vec4::new(0.62, 0.2, 1.0, 0.55);
         Ok(Self {
             meshes,
             materials,
-            placeholder_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::ONE))),
-            placeholder: world.add_material(&glowing(purple, 600.0)),
             marker_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::splat(MARKER_SIZE)))),
             marker_material: world.add_material(&glowing(Vec4::new(1.0, 0.0, 0.8, 1.0), 20_000.0)),
             kit,
@@ -189,29 +186,19 @@ impl Robots {
         let instances = model
             .parts
             .iter()
-            .map(|part| match part.visual {
-                Visual::Kit { entry, .. } => {
-                    let skin = self.kit.entries[entry]
-                        .rig
-                        .as_ref()
-                        .map(|rig| world.add_skin(&rig.palette(&rig.rest())));
-                    let instance = world.add_instance(Instance {
-                        mesh: self.meshes[entry],
-                        material: materials[self.kit.entries[entry].material],
-                        world_from_local: HIDDEN,
-                        skin,
-                    });
-                    (instance, skin)
-                }
-                Visual::Placeholder { .. } => (
-                    world.add_instance(Instance {
-                        mesh: self.placeholder_mesh,
-                        material: self.placeholder,
-                        world_from_local: HIDDEN,
-                        skin: None,
-                    }),
-                    None,
-                ),
+            .map(|part| {
+                let entry = part.entry;
+                let skin = self.kit.entries[entry]
+                    .rig
+                    .as_ref()
+                    .map(|rig| world.add_skin(&rig.palette(&rig.rest())));
+                let instance = world.add_instance(Instance {
+                    mesh: self.meshes[entry],
+                    material: materials[self.kit.entries[entry].material],
+                    world_from_local: HIDDEN,
+                    skin,
+                });
+                (instance, skin)
             })
             .collect();
         let mods = model
@@ -232,6 +219,7 @@ impl Robots {
             world_from_local: HIDDEN,
             skin: None,
         });
+        let rolls = vec![0.0; model.parts.len()];
         SlotRobot {
             build,
             model,
@@ -241,6 +229,8 @@ impl Robots {
             glow: None,
             marker,
             phase: 0.0,
+            rolls,
+            forward: None,
             memory: None,
         }
     }
@@ -285,12 +275,34 @@ impl Robots {
                 .memory
                 .get_or_insert_with(|| Memory::settled(&view.state));
             memory.advance(&view.state, seconds);
+            let yaw_rate = robot.forward.map_or(0.0, |from| {
+                pose::yaw_rate(from, view.state.forward, seconds)
+            });
+            robot.forward = Some(view.state.forward);
+            pose::advance_rolls(
+                &mut robot.rolls,
+                &robot.model,
+                &view.state,
+                yaw_rate,
+                seconds,
+            );
+            // The simulation's wheel and track angles where the view has them, else the rolls.
+            let mut joints = view.parts.joints.to_vec();
+            for (part, angle) in robot.model.parts.iter().zip(&robot.rolls) {
+                if part.roll.is_some() && !joints.iter().any(|(id, _)| *id == part.id) {
+                    joints.push((part.id, *angle));
+                }
+            }
+            let parts = PartStates {
+                joints: &joints,
+                ..view.parts
+            };
             let posed = pose::pose(
                 &robot.model,
                 &self.kit,
                 &view.state,
                 robot.phase,
-                &view.parts,
+                &parts,
                 memory,
             );
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -313,20 +325,14 @@ impl Robots {
                 .zip(&posed.parts)
                 .zip(&robot.instances)
             {
-                let (mesh, material) = match part.visual {
-                    Visual::Kit { entry, damaged } => {
-                        let entry = if posed_part.damaged {
-                            damaged.unwrap_or(entry)
-                        } else {
-                            entry
-                        };
-                        (
-                            self.meshes[entry],
-                            robot.materials[self.kit.entries[entry].material],
-                        )
-                    }
-                    Visual::Placeholder { .. } => (self.placeholder_mesh, self.placeholder),
+                let entry = match (posed_part.damaged, part.damaged) {
+                    (true, Some(damaged)) => damaged,
+                    _ => part.entry,
                 };
+                let (mesh, material) = (
+                    self.meshes[entry],
+                    robot.materials[self.kit.entries[entry].material],
+                );
                 if let (Some(skin), Some(palette)) = (skin, &posed_part.palette) {
                     world.set_skin(*skin, palette);
                 }
@@ -361,7 +367,6 @@ impl Robots {
             drawn.push(Drawn {
                 slot: view.slot,
                 label: posed.animation.label(&robot.model),
-                placeholders: robot.model.placeholders(),
                 grapple: posed.grapple,
                 muzzles: posed.muzzles,
             });

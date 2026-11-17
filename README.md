@@ -7,14 +7,17 @@ demanding consumer: every gap or regression it finds is filed on the crate that 
 Product intent lives in the [Decision Atlas](docs/decisions/atlas.md). The owner has set a beta
 direction (Atlas D1.i46.1, D2.i46.\*, tracker #45): a third-person arena shooter with modular
 robots, about 12 slots and three arenas. The third-person camera, the robot build schema and
-the 12 slots are in, and the fighters are drawn as their robot builds from asset-tooling's robot
-kit; the rest is not implemented yet. Everything below describes what works today: a
-third-person, 12-slot deathmatch on greybox arenas (the 76 m greybox yard by default, the 40 m
-greybox hall as the test fixture), the fighters still moving as capsules.
+the 12 slots are in, the robot builder opens before the match and between lives, the fighters
+are drawn as their robot builds from asset-tooling's robot,
+weapons and locomotion kits, and the medium arena is built from its arena kit; the rest is not
+implemented yet. Everything below describes what works today: a third-person, 12-slot
+deathmatch on the 76 m greybox yard by default, the kit-built 56 m assembly works (the medium
+arena) on request, and the 40 m greybox hall as the test fixture, the fighters still moving as
+capsules.
 
 ## What a player does
 
-Open the native client or the browser build on Pages and join a hosted deathmatch on a greybox arena.
+Open the native client or the browser build on Pages and join a hosted deathmatch.
 Bots fill the empty slots. Move fast: sprint, slide, step up low ledges, double jump, jump pads,
 rocket jumps, the grapple hook and air control. Fight with energy guns, a grapple hook and melee
 weapons.
@@ -34,10 +37,10 @@ weapons.
 
 ## Play
 
-The current slice is a deathmatch in a greybox arena (by default the greybox yard, below) with ramps,
+The current slice is a deathmatch in an arena (by default the greybox yard, below) with ramps,
 a raised level and jump pads onto it,
 six guns (energy rifle, rail gun, rocket launcher, shotgun, laser, flamethrower), the grapple hook and an energy blade. Twelve slots by default; bots fill every slot no
-person holds. A kill scores a frag; dying by your own rocket, your own battery's blast or a fall costs one. The dead respawn after 2 s at the spawn point
+person holds. A kill scores a frag; dying by your own rocket, your own battery's blast or a fall costs one. The dead respawn after 2 s (unless they press B, Edit Robot, below) at the spawn point
 farthest from everyone else. A round ends at 15 frags or after 5 minutes, the scores show for 8 s
 and a fresh round starts. A fighter is its robot build with per-part health (below, **Part
 damage**): destroying its root chassis is the kill. Each fighter is drawn as its robot build (below, **Robot
@@ -50,9 +53,27 @@ same simulation in-process: you in slot 0 against eleven bots, no server needed.
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID, its arena
 (geometry, collision, spawn points, jump pads, module pickup pads, bot waypoints) and the player
-count it is laid out for. Two interim greybox maps, until the beta's three arenas arrive with
-asset-tooling's arena kit:
+count it is laid out for. The first of the beta's three arenas, the medium one, is in, built from
+asset-tooling's arena kit; two interim greybox maps stay:
 
+- `assembly-works`, the medium arena (shooter#52; 4 to 12 players, 14 spawn points): a multilevel
+  robotic assembly factory repurposed for combat (the owner's choice of setting), a 56 m hall
+  inside 10 m walls, point-symmetric. Its ground is the central assembly floor, broken up by 2 m
+  barriers, 1.2 m low cover, a parts container, 4 m pillars and generators, with a 2 m assembly
+  cradle under the middle; behind a 4 m bay wall at either end lies a work bay, entered through a
+  doorway or round the wall's open end, with containers, a blast screen and crates. At 3 m a
+  mezzanine runs along each bay wall (the wall stands 1 m over its deck as a parapet), joined
+  across the middle by a gantry bridge with staggered low cover and the rail capacitor at its
+  centre, the contested high ground: a 4 m wide, 12 m ramp climbs each mezzanine, a jump pad
+  beside the bridge throws a fighter onto it, and the grapple reaches it from under it. At 5 m a
+  crane tower stands in the corner of each bay with thrusters on top, reached by four 1 m work
+  platforms (a double jump onto the 2 m one, another onto the 4 m one, a jump onto the tower),
+  by a jump pad at its foot that throws 15 m/s up, or by the grapple on its 3 m mast. 4 m deep
+  charging bays in the side walls, the bay walls, the tower and the floor's 4 m pillars break
+  the long lines; no spawn point is in sight of another, and none is a dead end. Its low cover,
+  barriers and crates are marked as destruction candidates for shooter#60 (nothing breaks yet)
+  and four repair anchors (under the mezzanines and in the bays) are data for shooter#61. Plan,
+  views and frames: [docs/captures/52](docs/captures/52).
 - `greybox-yard`, the default for hosted matches and practice (6 to 12 players, 14 spawn points):
   a 76 m square with 5 m walls, point-symmetric (the north half turned half a turn is the south
   half). A raised walkway crosses the middle, a 3 m deck on two pillars that you can walk under,
@@ -66,6 +87,24 @@ asset-tooling's arena kit:
 - `greybox`, the first 40 m hall (2 to 12 players, 13 spawn points), kept unchanged as the test
   and Rapier A/B fixture.
 
+**Arena kit.** A kit-built map lists the arena kit's module placements (a module, where its
+origin sits on whole centimetres, a quarter-turn yaw, intact or broken; `shooter_sim::arena_kit`),
+and the simulation derives the map's collision pieces from the modules' collision proxies:
+blocks for walkable and blocked boxes, ramps turned with their yaw, nothing for the floor plates
+and the jump pad's footprint, neighbouring boxes that meet over a whole face fused into one piece
+(a wall of fifteen modules is one box, with no seams to snag on), destruction candidates kept as
+pieces of their own. The proxies come from the pinned kit's descriptor through a checked-in table
+(`scripts/gen-arena-kit.py` writes it, a client test checks it against the pinned kit), so the
+simulation reads no files. Both clients draw each placement's kit mesh where the simulation puts
+it and lay the floor with the kit's 2 m plates; until the kit is read a kit-built map waits, and
+if it cannot be read the map is drawn as boxes with a note in the HUD. The greybox maps are
+unchanged. The small and large arenas (#53, #55) use the same path.
+`cargo test -p shooter-client --test arena` checks the table against the pinned kit, the kit's
+decoding and that every placed module is drawn inside the box its collision comes from;
+`scripts/gen-arena-kit.py` rewrites the table after a pin bump; `cargo run -p shooter-client
+--release --example arena_views -- assembly-works DIR` renders a map's overview and route views
+offscreen.
+
 The recommended capacity never changes the slot count (12 unless the host sets another per
 match, at most one per spawn point). The host picks each match's map
 (`SHOOTER_MATCH_IDS=dm=greybox-yard`, [docs/hosting.md](docs/hosting.md)) and its snapshots name it,
@@ -74,7 +113,7 @@ so a joining client builds and predicts on that map; practice takes `--map <id>`
 refused everywhere.
 
 ```sh
-scripts/fetch-robot-kit.sh                 # the pinned robot and weapons kits into target/robot-kit, target/weapon-kit
+scripts/fetch-robot-kit.sh                 # the pinned robot, weapons, locomotion and arena kits into target/*-kit
 cargo run -p shooter-client --release      # native window, practice
 scripts/build-web.sh                       # browser build (and the kit) into web/dist (needs a WebGPU browser)
 python3 -m http.server -d web/dist
@@ -114,9 +153,23 @@ the host's reconnect grace. A public host is described in [docs/hosting.md](docs
 
 Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
 double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
-mouse. Steer in the air with WASD. The HUD (the root chassis' health and the parts damaged and lost, energy, weapon, frags and place, the round clock, the
-carried module and its uses left, the kill and pickup feed) is the page's overlay in the browser and the window title plus a chassis health bar natively,
-until render-engine draws screen overlays.
+mouse. Steer in the air with WASD.
+
+**HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser:
+render-engine's screen-overlay quads in the robot kits' palette (pale grey on graphite, olive, an
+orange accent), in the bottom corners clear of the reticle, laid out for 720 lines and scaled with
+the window. Bottom right, the held weapon: its silhouette, name and mod, the energy a shot costs
+(a second, for the laser and the flamethrower), whether it is ready, recharging (a bar filling to
+its next shot), short of energy or lost, and above it a slot for every weapon the build carries
+with its key (lost ones red and struck out); a switch flashes the panel and sweeps a highlight
+across it. Bottom left, the root chassis' health and the energy pool, with the share one shot of
+the held weapon takes marked in orange. render-engine's overlay draws solid rectangles only, so
+the text is a 5×7 bitmap font and the weapons are pixel silhouettes, both drawn as quads in the
+client. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
+the carried module and its uses left, the kill and pickup feed, banners and the scoreboard) is
+still text: the page's overlay in the browser and the window title natively.
+
+Screenshots: [docs/captures/92](docs/captures/92).
 
 **Camera and aim.** Native and browser clients share one third-person follow camera
 (`shooter-client`'s `camera`): 3.5 m behind the eye along the aim, 0.6 m right of it and 0.3 m
@@ -129,7 +182,13 @@ meets the arena or another fighter as you see them, the same function the host r
 hitscan with, so it sits slightly off the screen's centre (more for close targets) and lands on
 cover in front of your fighter even where the camera sees past it.
 
-The left mouse button fires; 1 to 7 pick the weapon:
+The left mouse button fires. The mouse wheel steps through the weapons your robot carries and
+still has (down or E for the next, up or Q for the previous), in the order below, wrapping round
+and skipping the ones it does not carry or has lost; the blade stays on V, unless it is the last
+weapon left, when it is held and the trigger swings it. One wheel notch is one step, whether the
+wheel reports lines or pixels: a burst of events within 60 ms is one notch. 1 to 7 pick a weapon
+directly. A fighter holds and fires only the weapons its build mounts (#92): the host refuses a
+switch to any other, and the prediction follows the host.
 
 | Key | Weapon | Shot |
 | --- | --- | --- |
@@ -170,11 +229,48 @@ chassis is the robot's vital part (Atlas D2.i89.1, #89): there is no separate co
 build naming the retired core (part code 30) is rejected as an unknown part. Nothing requires locomotion: tanks, four-legged dogs,
 humanoids, stationary turrets and grappling-only machines are all valid. Every fighter starts as
 the standard build; a person's command may ask for another, which the host validates (an invalid
-one rejects the command) and applies at that fighter's next spawn, never while it is alive.
+one rejects the command) and applies at that fighter's next spawn, never while it is alive, unless
+the robot has not played yet (no input applied since its person joined: the builder before the
+match), when it is that build at once.
 Snapshots carry each fighter's build and the one it comes back as. The cell size, chassis sizes,
 part values and budgets are provisional (Atlas Q2.i70.1, Q2.i70.2), the part keys await the
-asset kits, and a build does not yet change movement or the arsenal: every fighter still carries
-every weapon, and there is no builder screen yet.
+asset kits, and a build does not yet change movement, but it is the arsenal: a fighter spawns
+holding its build's first weapon in the rotation that is not the grapple (the grapple, then the
+blade, only when it carries nothing else; #96) and fires only what the build mounts (#92). The
+`pyro` loadout
+carries the laser and the flamethrower (#96); the tests' over-budget `ARMORY` build carries every
+weapon. You build your robot in the builder (below, **Robot builder**).
+
+**Robot builder** (`shooter_client::builder`, Atlas D2.i70.11, #57). Both clients open on a
+blueprint workbench before the match: nothing plays (and online nothing connects) until you press
+Ready. The robot stands in the middle, drawn from the kits as in the match, with its sockets
+marked; the part catalogue (every part and weapon with its build points) and the five named
+loadouts to start from are on the left, the component inspector on the right (the selected part,
+or the part in hand: cells, mass, health, points, energy, motor, the energy a shot costs, its
+turn in degrees and its mod), and the budget along the bottom: build points and parts against
+their limits, mass, energy and regeneration, and whether the build is valid (or the rule it
+breaks). Drag a part from the catalogue onto a socket, or click it and click sockets to place
+copies; the sockets it fits light up, and hovering one previews the part there with its real
+geometry, its box and the cells its footprint takes. Click a part to select it. R, T and F turn
+the selected part (or the one in hand) an eighth of a turn about its socket's normal, pitch and
+roll axes (Shift back, Ctrl a degree instead, exact either way); M cycles a weapon's mods, X or
+Delete removes a part and what hangs from it (never the root chassis: "new frame" starts over
+from a chassis in hand), Escape drops or deselects, right drag or the arrow keys turn the view,
+the wheel zooms. A further chassis mounts on a socket like any part, so frames of several
+cuboids build up. Every edit goes through the simulation's one validation path: an edit that
+breaks a structural rule (a taken cell, a mod that does not fit, a weapon twice, the part
+ceiling) is refused with the reason, and only the build points may run over while you work;
+Ready takes only a valid build, which the host validates again. Nothing warns about odd builds.
+When your robot is destroyed, the respawn counts down as before, with "[B] Edit Robot" on
+screen: B opens the builder on the build you come back as and holds the respawn, at no time
+limit, even across a round's start, until you press Ready and the host shows the build
+configured (an input flag, `Intent::edit`; a lost connection lets go of it). While alive there
+is no rebuilding. In the browser the page hides its own overlays while the builder is open. Not
+in the builder yet: actuator bindings and action groups (#74, Atlas D2.i70.7), typed exact angles
+and a testing chamber (post-beta).
+`cargo run -p shooter-client --release --example builder_views -- <dir>` renders the bench
+(before the match, a part being placed, a selected weapon, an over-budget build, a build between
+lives) offscreen; [captures](docs/captures/57-builder/).
 
 **Energy.** Every robot has one shared energy pool (`shooter_sim::energy`, Atlas D2.i70.3,
 D2.i70.4, D2.i89.1): the root chassis stores 100 and regenerates 24 a second (other chassis
@@ -188,8 +284,7 @@ hook simply does not happen (no cooldown is spent) and works again once regenera
 it; the charge never goes below zero. Within a tick a robot's requests go first come, first
 served in a fixed order: a thruster jump, then the blade swing, then the gun (provisional, Atlas
 Q2.i70.4). There is no heat or cooling. The host owns the pool; snapshots carry each robot's
-charge, the client predicts its own, replays reproduce it, and the HUD's status line shows it
-(`⚡ 87/160`). Values are provisional (Atlas Q2.i70.1). A lost battery (destroyed, or carried off
+charge, the client predicts its own, replays reproduce it, and the HUD's energy bar shows it. Values are provisional (Atlas Q2.i70.1). A lost battery (destroyed, or carried off
 with a part it hung from) takes its capacity and its share of the charge with it, once; a
 destroyed one also blasts its neighbours (below, **Part damage**). Motors draw from the same
 pool (below).
@@ -212,8 +307,8 @@ works fully until zero; then it is destroyed for the rest of that life and every
 connected to the root chassis through the part tree falls away with it (breaking a beam drops it
 and whatever hangs from it; another chassis section is ordinary structure). Destroying the root chassis
 is the only kill; respawn restores the configured build whole. A lost
-weapon part no longer fires or swings (a gun the build never carried still fires as shipped:
-every fighter keeps the full arsenal); a destroyed battery sets off a small blast (40 at its
+weapon part no longer fires or swings and cannot be selected (nor can a gun the build never
+carried, #92); a destroyed battery sets off a small blast (40 at its
 centre, 0.8 m; provisional, Atlas Q2.i70.5) through the same damage, and a battery it destroys
 blasts in turn, once each; a robot with no connected leg, wheel or track cannot walk, jump or
 slide but stays alive while its root chassis does. Losing some of its legs changes nothing yet: how the
@@ -247,23 +342,28 @@ bindings (#74). Masses, torques, rates, draws and gait timings are provisional; 
 (66 joints) steps in about 0.16 ms a tick natively on physics-engine (0.20 ms on Rapier).
 
 **Robot models** (`shooter_client::robots`, #54). Both clients draw every fighter as its validated
-build from two asset-tooling kits: `shooter-combat-robot` (the chassis, beams, hinge, rotor,
-sensor, battery, the armor plate and its damaged look, and the rigged leg with its walk clips) and
+build from three asset-tooling kits: `shooter-combat-robot` (the chassis, beams, hinge, rotor,
+sensor, battery, the armor plate and its damaged look, and the rigged leg with its walk clips),
 `shooter-weapons` (the eight weapons, rigged with their states and glow channels, and the four
-mods). Each release is pinned by SHA-256 (`assets/robot-kit.pin.json`,
-`assets/weapon-kit.pin.json`); `scripts/fetch-robot-kit.sh` fetches them into `target/robot-kit`
-and `target/weapon-kit` for the native client (`$SHOOTER_ROBOT_KIT` and `$SHOOTER_WEAPON_KIT` name
+mods) and `shooter-robot-locomotion` (the wheel and the track, each with its `roll` clip and a
+damaged look). Each release is pinned by SHA-256 (`assets/robot-kit.pin.json`,
+`assets/weapon-kit.pin.json`, `assets/locomotion-kit.pin.json`); `scripts/fetch-robot-kit.sh`
+fetches them into `target/robot-kit`, `target/weapon-kit` and `target/locomotion-kit` for the
+native client (`$SHOOTER_ROBOT_KIT`, `$SHOOTER_WEAPON_KIT` and `$SHOOTER_LOCOMOTION_KIT` name
 others) and `scripts/build-web.sh` puts each kit's release tar in `web/dist`, which the browser
 fetches in one request a kit and reads in memory. Every file is checked against the bundles' pins
 and bounds (4 MiB a file, 8 MiB a load, 16 MiB and 30 s a tar in the browser), every kit key must
-be a catalog part or mod (or a robot-kit part the simulation retired, listed by name and skipped:
-the pinned release still ships the removed control core, `robot.core`, until a kit release drops
-it), every catalog mod a weapons-kit entry and every catalog part a kit entry
-or a declared placeholder; otherwise the load fails, the HUD says why and the fighters stay
-boxes. Each part sits where the simulation places it (`mechanics::placements`), so loadouts look
-different, and each mod sits on its weapon's anchor from the weapons kit's descriptor. Wheels and
-tracks (asset-tooling#634) are not modelled yet: they draw as translucent purple boxes of their
-cells and the HUD lists them. The robot stands on its capsule's feet and faces its look; its legs
+be a catalog part or mod of that kit and every catalog part and mod must be in a kit; otherwise
+the load fails, the HUD says why and the fighters stay boxes. Each part sits where the simulation
+places it (`mechanics::placements`), so loadouts look different, and each mod sits on its
+weapon's anchor from the weapons kit's descriptor. Wheels and tracks turn about the axles the
+locomotion kit's descriptor (`socket-grid-kit-descriptor-v3`) puts exactly where the simulation's
+mechanics turn them (the mount normal; the wheel's 0.18 m tyre, the track's two 0.1 m road
+wheels), by their `roll` clip at the joint's angle (the belt moves with the wheels): the
+simulation's angle where a state gives one (the gallery's mechanics fixtures), and in a match,
+where the fighters move as capsules (the named loadouts walk on legs), the turn the robot's ground
+motion and turn rate would give them, so the two sides turn opposite ways and a robot turning on
+the spot counter-rotates its tracks. The robot stands on its capsule's feet and faces its look; its legs
 rest when idle, walk the kit's clips when running (at most 2.5 cycles a second, so feet slide at
 full speed), tuck while airborne or grappling and crouch in a slide. The weapons play the kit's
 states from the match (`robots::weapon`): a shot's recoil and muzzle flash, the laser's and
@@ -282,8 +382,12 @@ of their top face, where the kit pivots at the cube's centre), but nothing in a 
 yet. Parts a robot has lost (from the host's per-part state in each snapshot) fall from where they
 came off to the floor with their weapons and mods and lie there until it respawns, while the rest
 of it keeps animating; damaged parts draw their damaged look where the kit has one (the armor
-plate). `cargo run -p shooter-client --release --example robot_gallery -- <dir>` renders the
-loadouts, the mechanics fixtures, every pose, the weapons' states and the mods offscreen.
+plate, the wheel and the track). `cargo run -p shooter-client --release --example robot_gallery
+-- <dir>` renders the loadouts, the mechanics fixtures (the car, strafer and turret with their
+wheels where the simulation turned them, and the gallery's own mini-tank on tracks: in the
+simulation its hull rests on the floor and its tracks spin without moving it, #58), every pose,
+the weapons' states, the mods, and damaged and lost wheels and tracks offscreen
+([captures](docs/captures/54-locomotion/)).
 
 **Weapon mods.** A weapon part may carry one mod, which costs build points and mass and changes
 how that weapon fires (on the host, in the client's prediction and in lag-compensated hits
@@ -293,15 +397,18 @@ energy), the *overcharger* (same guns: 125% damage, 130% refire time, 150% energ
 *long barrel* (rifle, rail gun, laser: 150% range, 110% refire time, and its weapon becomes a
 two-cell module) and the *efficiency coil* (rifle, rail gun, rockets, shotgun: 60% energy a shot,
 125% refire time). The heat sink is gone with heat; a build naming it is rejected as an unknown
-mod. A mod that does not fit its weapon rejects the build. Pick a named loadout
+mod. A mod that does not fit its weapon rejects the build. Start the builder from a named loadout
 with `--loadout <name>` natively or `&loadout=<name>` in the browser (the join overlay's loadout
 field): `standard`, `heavy` (with a battery: 160 energy), `skirmisher` (rapid-cycler rifle,
-efficiency-coiled shotgun) or `marksman` (long-barrel rifle, overcharged rail gun: three hits a
-front kill instead of four, on the root chassis), each a two-legged component tree with a sensor
+efficiency-coiled shotgun), `marksman` (long-barrel rifle, overcharged rail gun: three hits a
+front kill instead of four, on the root chassis) or `pyro` (long-barrel laser reaching 45 m,
+flamethrower, blade and grapple on the small chassis: 180 kg, 79 of 110 points, the root
+chassis' 100 energy; it spawns holding the laser),
+each a two-legged component tree with a sensor
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
-shot at the upper half of the chassis meets a weapon first. Practice
-starts as it; online the host applies it at your next spawn. The HUD's status line shows the held
-weapon's mod and every equipped one.
+shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads
+them too. The weapon panel shows the held
+weapon's mod and the status line every equipped one.
 
 **Module pickups.** A few powerful modules lie on pads at contested points of a map, placed in
 the map's data (`shooter_sim::pickups`, `Arena::module_pads`). Any robot that walks (or jumps
@@ -312,7 +419,9 @@ and *thrusters* (every jump, the air jump too, leaves at 9 m/s instead of 6: a 2
 the platform; 6 boosted jumps, each costing 15 energy; without the energy a jump is a plain one
 and keeps its use). On the greybox the capacitor lies on the platform's south-east corner, the perch
 that sees the whole hall, and the thrusters in the open south-west quarter under its sightline;
-on the greybox yard the capacitor lies on the walkway's middle and thrusters on each platform.
+on the greybox yard the capacitor lies on the walkway's middle and thrusters on each platform;
+on the assembly works the capacitor lies on the gantry bridge's middle and thrusters on each crane
+tower.
 A module lasts until its uses are spent, its holder dies or the round ends (owner decision on
 #62); nothing drops. A robot carries one module, and taking another replaces it. A pad is back
 30 s after it was taken; every pad is ready at the start of a round. When several robots reach a
@@ -323,7 +432,7 @@ as tinted plates with the module floating over them while it is there. Values ar
 (Atlas Q2.i46.3); the boosts are paid from the robot's shared energy pool (owner option B on #62).
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points
-and the map's waypoints (wall gaps, ramp ends, the walkway, the platforms), taking only straight
+and the map's waypoints (wall gaps, doorways, ramp ends, the decks, the platforms), taking only straight
 walks no wall or ramp side blocks,
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
 degrees of wandering error, strafing as they fire; the flamethrower inside 5 m, the rifle (even
@@ -331,7 +440,10 @@ slots) or the shotgun (odd slots) up close, rockets or the laser at mid range, t
 and inside 3 m they rush in and swing the blade.
 
 The movement and the weapons are checked against Rapier on a scripted tour of the greybox, the
-greybox yard's walkway (up its ramp, along the deck, off its edge, and its jump pad onto it) and on
+greybox yard's walkway (up its ramp, along the deck, off its edge, and its jump pad onto it), the
+assembly works' routes (up its ramp, along the mezzanine and the bridge and off its edge; into its
+low cover, over it and into a barrier; its pad, its work platforms and the grapple on the crane
+mast onto the crane tower) and on
 scripted moves (sprint, slide, double jump, a thruster-module jump, jump pad, ramp slides, a thin wall, a step, a rocket
 jump, a grapple onto a ledge, a shooting range, a close range for the shotgun, laser and flamethrower):
 `cargo test -p shooter-sim --features physics-ab --test physics_ab`, which also runs the
@@ -349,7 +461,10 @@ life until spent or death, round and map starts, the rail capacitor's lag-compen
 frags, thrusters, robots of different builds and the wire.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
 lag compensation of shots and swings, that the reticle's aim ends where the hosted beam does, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
-clients through a real game-server host on loopback and resumes a severed connection in its slot.
+clients through a real game-server host on loopback, resumes a severed connection in its slot and
+takes the builder's builds to the host before the match and between lives; the Edit Robot hold
+(after a death, at a round's start, after a lost connection) and the build readied before playing
+are checked in `deathmatch` too.
 
 When a crate can't do something yet, the shooter files an issue on that crate and uses Rapier
 (or the off-the-shelf equivalent) for that piece only, until the crate catches up.

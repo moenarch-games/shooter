@@ -5,13 +5,23 @@
 use shooter_sim::dummies::DUMMY_HEALTH;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::player::PLAYER_HALF_EXTENTS;
+use shooter_sim::robot::ARMORY;
 use shooter_sim::scenarios::{self, Scenario};
 use shooter_sim::tour::{Sample, end_of, run_legs};
 use shooter_sim::weapons::{self, FLAME_IGNITION_TICKS, PELLETS};
 use shooter_sim::{Arena, Event, Intent, Piece, Post, Session, Weapon};
 
+/// One person alone in `arena`, built as the [`ARMORY`]: every weapon to fire.
+fn armory(arena: Arena) -> Session {
+    let mut session = Session::new(arena).expect("arena builds");
+    let fighter = &mut session.fighters[0];
+    fighter.configured = ARMORY;
+    fighter.rebuild(ARMORY);
+    session
+}
+
 fn run(scenario: Scenario) -> (Session, Vec<Sample>) {
-    let mut session = Session::new((scenario.arena)()).expect("arena builds");
+    let mut session = armory((scenario.arena)());
     let samples = run_legs(&mut session, scenario.legs).expect("scenario runs");
     (session, samples)
 }
@@ -83,7 +93,7 @@ fn dummies_stand_and_patrol() {
         posts: vec![post([500, 0, 800], 0), post([-1_000, 0, -800], 300)],
         ..Arena::greybox()
     };
-    let mut session = Session::new(arena).unwrap();
+    let mut session = armory(arena);
     let start = session.dummies[1].center(&session.world).unwrap();
     let mut xs = Vec::new();
     for _ in 0..240 {
@@ -106,7 +116,7 @@ fn dummies_stand_and_patrol() {
 
 #[test]
 fn a_hitscan_shot_reports_its_beam() {
-    let mut session = Session::new((scenarios::SHOOTING_RANGE.arena)()).unwrap();
+    let mut session = armory((scenarios::SHOOTING_RANGE.arena)());
     session
         .tick(Intent {
             fire: true,
@@ -203,7 +213,7 @@ fn pellet_tick(session: &Session) -> (Vec<[i32; 3]>, Vec<[f32; 3]>) {
 
 #[test]
 fn a_shotgun_blast_is_a_fixed_pattern_of_pellets() {
-    let mut session = Session::new((scenarios::CLOSE_RANGE.arena)()).unwrap();
+    let mut session = armory((scenarios::CLOSE_RANGE.arena)());
     let blast = Intent {
         fire: true,
         select: Some(Weapon::Shotgun),
@@ -251,7 +261,7 @@ fn lone_dummy(metres: i32) -> Arena {
 
 /// The damage of every pellet of one blast at `arena`'s dummies.
 fn blast_hits(arena: Arena) -> Vec<i32> {
-    let mut session = Session::new(arena).unwrap();
+    let mut session = armory(arena);
     let blast = Intent {
         fire: true,
         select: Some(Weapon::Shotgun),
@@ -292,7 +302,7 @@ fn pellets_never_tunnel_through_a_thin_wall() {
         half: Vec3i::new(400, 150, 2),
     }];
     assert!(blast_hits(arena.clone()).is_empty());
-    let mut session = Session::new(arena).unwrap();
+    let mut session = armory(arena);
     let mut struck = 0;
     for tick in 0..40 {
         session

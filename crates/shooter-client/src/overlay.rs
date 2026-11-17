@@ -1,0 +1,752 @@
+//! The drawn HUD: the weapon panel and the chassis and energy bars, as render-engine screen
+//! overlay quads ([`render_engine::scene::Scene::overlay`]), the same natively and in the browser.
+//!
+//! render-engine's overlay draws solid rectangles only, so the text is a 5×7 bitmap font and the
+//! weapon silhouettes are pixel art, both drawn here as quads (each lit row run one quad). The
+//! look follows the robot kits' palette: pale grey on graphite panels, olive for the mods and the
+//! chassis, an orange accent for the held weapon, energy and the switch highlight. Everything
+//! sits in the bottom corners, clear of the reticle; the layout is for 720 lines and scales with
+//! the frame's height.
+//!
+//! The bottom right shows the held weapon (its silhouette, name and mod, the energy one shot
+//! costs, and whether it is ready, recharging, short of energy or lost) over a row of slots for
+//! every weapon the build carries (its select key, the blade's V; lost ones struck out red); a
+//! switch flashes the panel and sweeps a highlight across it. The bottom left shows the root
+//! chassis' health and the energy pool, the share one shot of the held weapon takes marked on it.
+
+use render_engine::glam::{Vec2, Vec4};
+use render_engine::scene::OverlayQuad;
+use shooter_sim::energy::MILLI;
+use shooter_sim::robot::{BETA, ModId};
+use shooter_sim::session::Fighter;
+use shooter_sim::{TICK_HZ, Weapon};
+
+/// An sRGB colour (0-255) with alpha as the overlay's linear colour.
+pub(crate) fn srgb(hex: u32, alpha: f32) -> Vec4 {
+    let channel = |shift: u32| {
+        #[allow(clippy::cast_precision_loss)]
+        let value = ((hex >> shift) & 0xff) as f32 / 255.0;
+        if value <= 0.040_45 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    Vec4::new(channel(16), channel(8), channel(0), alpha)
+}
+
+/// The palette: the robot kits' pale grey, graphite and olive, and the orange accent.
+pub(crate) mod palette {
+    pub const PALE: u32 = 0xE4_E6_E1;
+    pub const MUTED: u32 = 0x9A_A0_A3;
+    pub const GRAPHITE: u32 = 0x1F_22_25;
+    pub const STEEL: u32 = 0x3A_40_45;
+    pub const OLIVE: u32 = 0x9C_AA_5C;
+    pub const ORANGE: u32 = 0xFF_8A_1F;
+    pub const RED: u32 = 0xE0_4A_2F;
+}
+use palette::{GRAPHITE, MUTED, OLIVE, ORANGE, PALE, RED, STEEL};
+
+/// The 5×7 glyphs, rows top down, the leftmost column the highest of five bits.
+fn glyph(character: char) -> [u8; 7] {
+    match character.to_ascii_uppercase() {
+        'A' => [14, 17, 17, 31, 17, 17, 17],
+        'B' => [30, 17, 17, 30, 17, 17, 30],
+        'C' => [14, 17, 16, 16, 16, 17, 14],
+        'D' => [30, 17, 17, 17, 17, 17, 30],
+        'E' => [31, 16, 16, 30, 16, 16, 31],
+        'F' => [31, 16, 16, 30, 16, 16, 16],
+        'G' => [14, 17, 16, 23, 17, 17, 15],
+        'H' => [17, 17, 17, 31, 17, 17, 17],
+        'I' => [14, 4, 4, 4, 4, 4, 14],
+        'J' => [7, 2, 2, 2, 2, 18, 12],
+        'K' => [17, 18, 20, 24, 20, 18, 17],
+        'L' => [16, 16, 16, 16, 16, 16, 31],
+        'M' => [17, 27, 21, 21, 17, 17, 17],
+        'N' => [17, 17, 25, 21, 19, 17, 17],
+        'O' => [14, 17, 17, 17, 17, 17, 14],
+        'P' => [30, 17, 17, 30, 16, 16, 16],
+        'Q' => [14, 17, 17, 17, 21, 18, 13],
+        'R' => [30, 17, 17, 30, 20, 18, 17],
+        'S' => [15, 16, 16, 14, 1, 1, 30],
+        'T' => [31, 4, 4, 4, 4, 4, 4],
+        'U' => [17, 17, 17, 17, 17, 17, 14],
+        'V' => [17, 17, 17, 17, 17, 10, 4],
+        'W' => [17, 17, 17, 21, 21, 21, 10],
+        'X' => [17, 17, 10, 4, 10, 17, 17],
+        'Y' => [17, 17, 17, 10, 4, 4, 4],
+        'Z' => [31, 1, 2, 4, 8, 16, 31],
+        '0' => [14, 17, 19, 21, 25, 17, 14],
+        '1' => [4, 12, 4, 4, 4, 4, 14],
+        '2' => [14, 17, 1, 2, 4, 8, 31],
+        '3' => [31, 2, 4, 2, 1, 17, 14],
+        '4' => [2, 6, 10, 18, 31, 2, 2],
+        '5' => [31, 16, 30, 1, 1, 17, 14],
+        '6' => [6, 8, 16, 30, 17, 17, 14],
+        '7' => [31, 1, 2, 4, 8, 8, 8],
+        '8' => [14, 17, 17, 14, 17, 17, 14],
+        '9' => [14, 17, 17, 15, 1, 2, 12],
+        '+' => [0, 4, 4, 31, 4, 4, 0],
+        '-' => [0, 0, 0, 31, 0, 0, 0],
+        '/' => [0, 1, 2, 4, 8, 16, 0],
+        '.' => [0, 0, 0, 0, 0, 12, 12],
+        ':' => [0, 12, 12, 0, 12, 12, 0],
+        '%' => [24, 25, 2, 4, 8, 19, 3],
+        '(' => [2, 4, 8, 8, 8, 4, 2],
+        ')' => [8, 4, 2, 2, 2, 4, 8],
+        '[' => [14, 8, 8, 8, 8, 8, 14],
+        ']' => [14, 2, 2, 2, 2, 2, 14],
+        ',' => [0, 0, 0, 0, 12, 4, 8],
+        '<' => [2, 4, 8, 16, 8, 4, 2],
+        '>' => [8, 4, 2, 1, 2, 4, 8],
+        '=' => [0, 0, 31, 0, 31, 0, 0],
+        '!' => [4, 4, 4, 4, 4, 0, 4],
+        '?' => [14, 17, 1, 2, 4, 0, 4],
+        '\'' => [4, 4, 8, 0, 0, 0, 0],
+        _ => [0; 7],
+    }
+}
+
+/// Font cells a character advances (five wide, one apart).
+const ADVANCE: f32 = 6.0;
+
+/// A weapon's silhouette, muzzle to the right, 20 cells by 8.
+const fn silhouette(weapon: Weapon) -> [&'static str; 8] {
+    match weapon {
+        Weapon::EnergyRifle => [
+            "....................",
+            "......#######.......",
+            "##################..",
+            "####################",
+            "########..####......",
+            "###.....##..##......",
+            "###.........##......",
+            "....................",
+        ],
+        Weapon::RailGun => [
+            "....................",
+            "...#################",
+            "####################",
+            "...#################",
+            "######..##..........",
+            "####....##..........",
+            "###.................",
+            "....................",
+        ],
+        Weapon::RocketLauncher => [
+            "...............###..",
+            "####################",
+            "####################",
+            "####################",
+            "####################",
+            "....##....###.......",
+            "....##....###.......",
+            "....................",
+        ],
+        Weapon::Grapple => [
+            "..................#.",
+            ".................##.",
+            "###########.######..",
+            "################....",
+            "###########.######..",
+            ".....##..........##.",
+            ".....##...........#.",
+            "....................",
+        ],
+        Weapon::EnergyBlade => [
+            "....................",
+            "...#................",
+            "...###############..",
+            "####################",
+            "...###############..",
+            "...#................",
+            "....................",
+            "....................",
+        ],
+        Weapon::Shotgun => [
+            "....................",
+            "....................",
+            "..##################",
+            "####################",
+            "#########...........",
+            "####....##..........",
+            "###.................",
+            "....................",
+        ],
+        Weapon::Laser => [
+            "....................",
+            "......##.##.##......",
+            "##################..",
+            "####################",
+            "##################..",
+            "####...##...........",
+            "###....##...........",
+            "....................",
+        ],
+        Weapon::Flamethrower => [
+            "....................",
+            ".............###....",
+            "####################",
+            "####################",
+            "###..######.........",
+            "###.########........",
+            "....######..........",
+            "....................",
+        ],
+    }
+}
+
+/// A weapon's name on the HUD.
+#[must_use]
+pub const fn weapon_name(weapon: Weapon) -> &'static str {
+    match weapon {
+        Weapon::EnergyRifle => "Energy rifle",
+        Weapon::RailGun => "Rail gun",
+        Weapon::RocketLauncher => "Rockets",
+        Weapon::Grapple => "Grapple",
+        Weapon::EnergyBlade => "Energy blade",
+        Weapon::Shotgun => "Shotgun",
+        Weapon::Laser => "Laser",
+        Weapon::Flamethrower => "Flamethrower",
+    }
+}
+
+/// A weapon mod's name, from its catalog key.
+#[must_use]
+pub fn mod_name(id: ModId) -> &'static str {
+    match BETA.modification(id).map(|modification| modification.key) {
+        Some("mod.rapid-cycler") => "rapid cycler",
+        Some("mod.overcharger") => "overcharger",
+        Some("mod.long-barrel") => "long barrel",
+        Some("mod.efficiency-coil") => "efficiency coil",
+        _ => "mod",
+    }
+}
+
+/// The key that selects `weapon`: its digit, or V for the blade.
+fn key_label(weapon: Weapon) -> String {
+    Weapon::ROTATION
+        .iter()
+        .position(|held| *held == weapon)
+        .map_or_else(|| "V".to_owned(), |index| (index + 1).to_string())
+}
+
+/// Quads in layout units (720 lines high), scaled to the frame and snapped to whole pixels.
+pub(crate) struct Painter {
+    pub(crate) quads: Vec<OverlayQuad>,
+    pub(crate) scale: f32,
+}
+
+impl Painter {
+    pub(crate) fn rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: Vec4) {
+        if width <= 0.0 || height <= 0.0 || color.w <= 0.0 {
+            return;
+        }
+        let snap = |value: f32| (value * self.scale).round();
+        let (left, top) = (snap(x), snap(y));
+        let size = Vec2::new(
+            (snap(x + width) - left).max(1.0),
+            (snap(y + height) - top).max(1.0),
+        );
+        self.quads.push(OverlayQuad {
+            position: Vec2::new(left, top),
+            size,
+            color,
+        });
+    }
+
+    /// A rectangle's outline, `line` thick.
+    pub(crate) fn frame(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        line: f32,
+        color: Vec4,
+    ) {
+        self.rect(x, y, width, line, color);
+        self.rect(x, y + height - line, width, line, color);
+        self.rect(x, y + line, line, height - 2.0 * line, color);
+        self.rect(x + width - line, y + line, line, height - 2.0 * line, color);
+    }
+
+    /// Lit cells of a bitmap, `cell` units each, every row's runs one quad.
+    fn cells(
+        &mut self,
+        x: f32,
+        y: f32,
+        cell: f32,
+        rows: impl Iterator<Item = Vec<bool>>,
+        color: Vec4,
+    ) {
+        for (row, lit) in rows.enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let top = y + row as f32 * cell;
+            let mut column = 0;
+            while column < lit.len() {
+                if !lit[column] {
+                    column += 1;
+                    continue;
+                }
+                let start = column;
+                while column < lit.len() && lit[column] {
+                    column += 1;
+                }
+                #[allow(clippy::cast_precision_loss)]
+                self.rect(
+                    x + start as f32 * cell,
+                    top,
+                    (column - start) as f32 * cell,
+                    cell,
+                    color,
+                );
+            }
+        }
+    }
+
+    /// `text` in capitals at `cell` units a font cell, left-aligned at `x`; its width.
+    pub(crate) fn text(&mut self, x: f32, y: f32, cell: f32, text: &str, color: Vec4) -> f32 {
+        let snapped = self.snap_cell(cell);
+        let mut at = x;
+        for character in text.chars() {
+            let rows = glyph(character)
+                .into_iter()
+                .map(|bits| (0..5).map(|bit| bits & (16 >> bit) != 0).collect());
+            self.cells(at, y, snapped, rows, color);
+            at += ADVANCE * snapped;
+        }
+        text_width(text, snapped)
+    }
+
+    /// `text` right-aligned to `right`.
+    pub(crate) fn text_right(&mut self, right: f32, y: f32, cell: f32, text: &str, color: Vec4) {
+        let width = text_width(text, self.snap_cell(cell));
+        self.text(right - width, y, cell, text, color);
+    }
+
+    /// A font cell as a whole number of pixels (crisp glyphs at any height), back in units.
+    pub(crate) fn snap_cell(&self, cell: f32) -> f32 {
+        (cell * self.scale).round().max(1.0) / self.scale
+    }
+
+    pub(crate) fn icon(&mut self, x: f32, y: f32, cell: f32, weapon: Weapon, color: Vec4) {
+        let rows = silhouette(weapon)
+            .into_iter()
+            .map(|row| row.bytes().map(|byte| byte == b'#').collect());
+        self.cells(x, y, self.snap_cell(cell), rows, color);
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn text_width(text: &str, cell: f32) -> f32 {
+    let count = text.chars().count() as f32;
+    if count == 0.0 {
+        0.0
+    } else {
+        (count * ADVANCE - 1.0) * cell
+    }
+}
+
+/// What the drawn HUD shows of the local fighter this frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Vitals {
+    pub held: Weapon,
+    /// Ticks until the held weapon may fire.
+    pub cooldown: u32,
+    /// Every weapon the build carries, in [`Weapon::ALL`] order, and whether it still has it.
+    pub carried: Vec<(Weapon, bool)>,
+    pub held_mod: Option<ModId>,
+    /// Milli-units one activation of the held weapon costs (a tick, for the continuous ones).
+    pub cost: u32,
+    /// Whether the held weapon fires every tick the trigger is held (laser, flamethrower).
+    pub continuous: bool,
+    pub energy: u32,
+    pub capacity: u32,
+    pub chassis: u16,
+    pub chassis_whole: u16,
+}
+
+impl Vitals {
+    /// The local fighter's, as it stands at `tick`.
+    #[must_use]
+    pub fn of(fighter: &Fighter, tick: u32) -> Self {
+        let build = &fighter.build;
+        let held = fighter.arsenal.held;
+        let tuning = fighter.tuning(held);
+        let carried = Weapon::ALL
+            .into_iter()
+            .filter(|weapon| BETA.weapons(build).any(|(_, carried)| carried == *weapon))
+            .map(|weapon| (weapon, fighter.parts.armed(build, weapon)))
+            .collect();
+        Self {
+            held,
+            cooldown: fighter.arsenal.cooldown(tick),
+            carried,
+            held_mod: BETA.mod_on(build, held),
+            cost: tuning.energy(held),
+            continuous: tuning.refire_ticks(held) <= 1,
+            energy: fighter.energy,
+            capacity: fighter.pool().capacity,
+            chassis: fighter.chassis_health(),
+            chassis_whole: shooter_sim::damage::PartDamage::fresh(build).chassis_health(build),
+        }
+    }
+
+    fn armed(&self, weapon: Weapon) -> bool {
+        self.carried
+            .iter()
+            .any(|(carried, armed)| *carried == weapon && *armed)
+    }
+}
+
+/// How long a switch's highlight lasts (seconds).
+const SWITCH_SECONDS: f32 = 0.4;
+
+/// The drawn HUD's state between frames: the switch highlight and the cooldown's length.
+#[derive(Debug, Default)]
+pub struct Overlay {
+    held: Option<Weapon>,
+    since_switch: f32,
+    /// The longest cooldown since the held weapon was last ready: what the refire bar fills.
+    period: u32,
+    last_cooldown: u32,
+}
+
+/// Layout units (the frame is 720 high in them).
+const MARGIN: f32 = 24.0;
+const PANEL_WIDTH: f32 = 364.0;
+const PANEL_HEIGHT: f32 = 104.0;
+const SLOT_WIDTH: f32 = 54.0;
+const SLOT_HEIGHT: f32 = 38.0;
+const SLOT_GAP: f32 = 6.0;
+const VITALS_WIDTH: f32 = 272.0;
+const VITALS_HEIGHT: f32 = 84.0;
+
+impl Overlay {
+    /// The quads for a `width`×`height` frame `seconds` after the last; nothing while the local
+    /// fighter is not alive.
+    pub fn draw(
+        &mut self,
+        vitals: Option<&Vitals>,
+        width: u32,
+        height: u32,
+        seconds: f32,
+    ) -> Vec<OverlayQuad> {
+        let Some(vitals) = vitals else {
+            self.held = None;
+            return Vec::new();
+        };
+        if self.held != Some(vitals.held) {
+            // The first frame of a life is no switch.
+            self.since_switch = if self.held.is_some() {
+                0.0
+            } else {
+                SWITCH_SECONDS
+            };
+            self.held = Some(vitals.held);
+        } else {
+            self.since_switch += seconds;
+        }
+        if vitals.cooldown == 0 {
+            self.period = 0;
+        } else if vitals.cooldown > self.last_cooldown {
+            self.period = self.period.max(vitals.cooldown);
+        }
+        self.last_cooldown = vitals.cooldown;
+        #[allow(clippy::cast_precision_loss)]
+        let (width, height) = (width as f32, height as f32);
+        let scale = height / 720.0;
+        let mut painter = Painter {
+            quads: Vec::with_capacity(512),
+            scale,
+        };
+        let right = width / scale - MARGIN;
+        let bottom = 720.0 - MARGIN;
+        self.weapon_panel(
+            &mut painter,
+            vitals,
+            right - PANEL_WIDTH,
+            bottom - PANEL_HEIGHT,
+        );
+        slots(
+            &mut painter,
+            vitals,
+            right,
+            bottom - PANEL_HEIGHT - SLOT_GAP - SLOT_HEIGHT,
+            self.highlight(),
+        );
+        bars(&mut painter, vitals, MARGIN, bottom - VITALS_HEIGHT);
+        painter.quads
+    }
+
+    /// The switch highlight left, 1 at the switch and 0 once it is over.
+    fn highlight(&self) -> f32 {
+        (1.0 - self.since_switch / SWITCH_SECONDS).clamp(0.0, 1.0)
+    }
+
+    fn weapon_panel(&self, painter: &mut Painter, vitals: &Vitals, x: f32, y: f32) {
+        let flash = self.highlight();
+        painter.rect(x, y, PANEL_WIDTH, PANEL_HEIGHT, srgb(GRAPHITE, 0.82));
+        painter.rect(x, y, PANEL_WIDTH, 2.0, srgb(STEEL, 1.0));
+        // The accent bar on its left edge widens with a switch.
+        painter.rect(x, y, 4.0 + 6.0 * flash, PANEL_HEIGHT, srgb(ORANGE, 1.0));
+        if flash > 0.0 {
+            painter.rect(x, y, PANEL_WIDTH, PANEL_HEIGHT, srgb(ORANGE, 0.18 * flash));
+            // A band sweeping across, left to right.
+            let sweep = 1.0 - flash;
+            painter.rect(
+                x + (PANEL_WIDTH - 40.0) * sweep,
+                y,
+                40.0,
+                PANEL_HEIGHT,
+                srgb(PALE, 0.16 * flash),
+            );
+        }
+        let armed = vitals.armed(vitals.held);
+        let tone = if armed { PALE } else { MUTED };
+        // The silhouette in a recessed bay.
+        painter.rect(x + 16.0, y + 14.0, 96.0, 50.0, srgb(STEEL, 0.55));
+        painter.icon(x + 24.0, y + 23.0, 4.0, vitals.held, srgb(tone, 1.0));
+        let text_x = x + 126.0;
+        painter.text(
+            text_x,
+            y + 14.0,
+            3.0,
+            weapon_name(vitals.held),
+            srgb(tone, 1.0),
+        );
+        let modded = vitals
+            .held_mod
+            .map_or_else(|| "no mod".to_owned(), |id| format!("+ {}", mod_name(id)));
+        let mod_color = if vitals.held_mod.is_some() {
+            OLIVE
+        } else {
+            MUTED
+        };
+        painter.text(text_x, y + 43.0, 2.0, &modded, srgb(mod_color, 1.0));
+        // The cost of a shot (a second, for the continuous weapons).
+        #[allow(clippy::cast_precision_loss)]
+        let cost = if vitals.continuous {
+            format!(
+                "{}/s",
+                units(vitals.cost.saturating_mul(u32::from(TICK_HZ)))
+            )
+        } else {
+            format!("{}/shot", units(vitals.cost))
+        };
+        painter.text(text_x, y + 62.0, 2.0, &cost, srgb(ORANGE, 1.0));
+        // Ready, recharging, starved or lost: a label and the refire bar under it all.
+        let short = vitals.energy < vitals.cost;
+        let (label, color) = if !armed {
+            ("lost", RED)
+        } else if short {
+            ("low energy", RED)
+        } else if vitals.cooldown > 0 {
+            ("recharging", MUTED)
+        } else {
+            ("ready", OLIVE)
+        };
+        painter.text_right(
+            x + PANEL_WIDTH - 14.0,
+            y + 62.0,
+            2.0,
+            label,
+            srgb(color, 1.0),
+        );
+        let (bar_x, bar_y, bar_width) = (x + 16.0, y + PANEL_HEIGHT - 16.0, PANEL_WIDTH - 30.0);
+        painter.rect(bar_x, bar_y, bar_width, 5.0, srgb(STEEL, 1.0));
+        #[allow(clippy::cast_precision_loss)]
+        let ready = if !armed {
+            0.0
+        } else if self.period == 0 {
+            1.0
+        } else {
+            1.0 - vitals.cooldown as f32 / self.period as f32
+        };
+        let fill = if ready >= 1.0 && !short {
+            OLIVE
+        } else {
+            ORANGE
+        };
+        painter.rect(bar_x, bar_y, bar_width * ready, 5.0, srgb(fill, 1.0));
+    }
+}
+
+/// Milli-units as whole units, or tenths below 10.
+fn units(milli: u32) -> String {
+    if milli < 10 * MILLI && !milli.is_multiple_of(MILLI) {
+        format!("{}.{}", milli / MILLI, milli % MILLI / (MILLI / 10))
+    } else {
+        (milli / MILLI).to_string()
+    }
+}
+
+/// The carried weapons as small slots in a row ending at `right`, the held one lit.
+fn slots(painter: &mut Painter, vitals: &Vitals, right: f32, y: f32, flash: f32) {
+    #[allow(clippy::cast_precision_loss)]
+    let count = vitals.carried.len() as f32;
+    let mut x = right - count * SLOT_WIDTH - (count - 1.0).max(0.0) * SLOT_GAP;
+    // The guns in rotation order, then the blade (on its own key).
+    let mut order: Vec<(Weapon, bool)> = vitals.carried.clone();
+    order.sort_by_key(|(weapon, _)| {
+        Weapon::ROTATION
+            .iter()
+            .position(|held| held == weapon)
+            .unwrap_or(usize::MAX)
+    });
+    for (weapon, armed) in order {
+        let held = weapon == vitals.held;
+        let background = if held {
+            srgb(GRAPHITE, 0.9)
+        } else {
+            srgb(GRAPHITE, 0.62)
+        };
+        painter.rect(x, y, SLOT_WIDTH, SLOT_HEIGHT, background);
+        if held {
+            let line = 2.0 + 2.0 * flash;
+            painter.frame(x, y, SLOT_WIDTH, SLOT_HEIGHT, line, srgb(ORANGE, 1.0));
+        }
+        let tone = match (armed, held) {
+            (false, _) => srgb(RED, 0.75),
+            (true, true) => srgb(PALE, 1.0),
+            (true, false) => srgb(MUTED, 1.0),
+        };
+        painter.icon(x + 7.0, y + 8.0, 2.0, weapon, tone);
+        painter.text(x + 7.0, y + 27.0, 1.0, &key_label(weapon), srgb(MUTED, 1.0));
+        if !armed {
+            // Struck out.
+            painter.rect(
+                x + 4.0,
+                y + SLOT_HEIGHT / 2.0 - 1.0,
+                SLOT_WIDTH - 8.0,
+                2.0,
+                srgb(RED, 1.0),
+            );
+            painter.text_right(x + SLOT_WIDTH - 5.0, y + 27.0, 1.0, "lost", srgb(RED, 1.0));
+        }
+        x += SLOT_WIDTH + SLOT_GAP;
+    }
+}
+
+/// The root chassis' health and the energy pool, at `x`, `y`.
+fn bars(painter: &mut Painter, vitals: &Vitals, x: f32, y: f32) {
+    painter.rect(x, y, VITALS_WIDTH, VITALS_HEIGHT, srgb(GRAPHITE, 0.82));
+    painter.rect(x, y, VITALS_WIDTH, 2.0, srgb(STEEL, 1.0));
+    let inner = VITALS_WIDTH - 28.0;
+    let share = |value: u32, whole: u32| {
+        #[allow(clippy::cast_precision_loss)]
+        let share = value as f32 / whole.max(1) as f32;
+        share.clamp(0.0, 1.0)
+    };
+    // The chassis: olive, orange once under a third.
+    let health = share(u32::from(vitals.chassis), u32::from(vitals.chassis_whole));
+    painter.text(x + 14.0, y + 12.0, 2.0, "chassis", srgb(MUTED, 1.0));
+    painter.text_right(
+        x + VITALS_WIDTH - 14.0,
+        y + 12.0,
+        2.0,
+        &format!("{}/{}", vitals.chassis, vitals.chassis_whole),
+        srgb(PALE, 1.0),
+    );
+    painter.rect(x + 14.0, y + 29.0, inner, 7.0, srgb(STEEL, 1.0));
+    let tone = if health < 1.0 / 3.0 { ORANGE } else { OLIVE };
+    painter.rect(x + 14.0, y + 29.0, inner * health, 7.0, srgb(tone, 1.0));
+    // The energy, with the share one shot of the held weapon takes marked at its end.
+    let charge = share(vitals.energy, vitals.capacity);
+    let shot = if vitals.continuous {
+        vitals.cost.saturating_mul(u32::from(TICK_HZ))
+    } else {
+        vitals.cost
+    };
+    let cost = share(shot.min(vitals.energy), vitals.capacity);
+    painter.text(x + 14.0, y + 46.0, 2.0, "energy", srgb(MUTED, 1.0));
+    painter.text_right(
+        x + VITALS_WIDTH - 14.0,
+        y + 46.0,
+        2.0,
+        &format!("{}/{}", vitals.energy / MILLI, vitals.capacity / MILLI),
+        srgb(PALE, 1.0),
+    );
+    painter.rect(x + 14.0, y + 63.0, inner, 7.0, srgb(STEEL, 1.0));
+    painter.rect(x + 14.0, y + 63.0, inner * charge, 7.0, srgb(PALE, 0.85));
+    painter.rect(
+        x + 14.0 + inner * (charge - cost),
+        y + 63.0,
+        inner * cost,
+        7.0,
+        srgb(ORANGE, 1.0),
+    );
+    if vitals.energy < vitals.cost {
+        painter.frame(x + 13.0, y + 62.0, inner + 2.0, 9.0, 1.0, srgb(RED, 1.0));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shooter_sim::robot::STANDARD;
+    use shooter_sim::{Rules, Session};
+
+    fn standard() -> Vitals {
+        let session = Session::new(shooter_sim::Arena::greybox()).unwrap();
+        let _ = Rules::solo();
+        let fighter = session.local();
+        assert_eq!(fighter.build, STANDARD);
+        Vitals::of(fighter, session.ticks())
+    }
+
+    #[test]
+    fn the_vitals_list_the_carried_weapons_and_the_held_ones_cost() {
+        let vitals = standard();
+        assert_eq!(vitals.held, Weapon::EnergyRifle);
+        assert_eq!(
+            vitals.carried,
+            [
+                (Weapon::EnergyRifle, true),
+                (Weapon::Grapple, true),
+                (Weapon::EnergyBlade, true),
+                (Weapon::Shotgun, true),
+            ]
+        );
+        assert_eq!(vitals.cost, 2_000);
+        assert!(!vitals.continuous);
+        assert_eq!(units(2_000), "2");
+        assert_eq!(units(600), "0.6");
+        assert_eq!(units(36_000), "36");
+    }
+
+    #[test]
+    fn the_hud_stays_in_the_bottom_corners_clear_of_the_reticle() {
+        let vitals = standard();
+        let mut overlay = Overlay::default();
+        for (width, height) in [(1280, 720), (1920, 1080), (1024, 768)] {
+            let quads = overlay.draw(Some(&vitals), width, height, 0.016);
+            assert!(!quads.is_empty());
+            #[allow(clippy::cast_precision_loss)]
+            let (w, h) = (width as f32, height as f32);
+            for quad in &quads {
+                let (min, max) = (quad.position, quad.position + quad.size);
+                assert!(
+                    min.x >= 0.0 && min.y >= 0.0 && max.x <= w && max.y <= h,
+                    "{quad:?}"
+                );
+                // Nothing in the middle half of the frame, where the reticle moves.
+                assert!(min.y >= h * 0.6, "{quad:?} at {width}×{height}");
+            }
+        }
+        assert!(overlay.draw(None, 1280, 720, 0.016).is_empty());
+    }
+
+    #[test]
+    fn a_switch_lights_the_panel_and_fades() {
+        let mut vitals = standard();
+        let mut overlay = Overlay::default();
+        overlay.draw(Some(&vitals), 1280, 720, 0.016);
+        vitals.held = Weapon::Shotgun;
+        let switched = overlay.draw(Some(&vitals), 1280, 720, 0.016);
+        let settled = overlay.draw(Some(&vitals), 1280, 720, 1.0);
+        // The flash over the panel and the sweeping band, then neither.
+        assert_eq!(switched.len(), settled.len() + 2);
+    }
+}

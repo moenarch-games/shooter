@@ -1,10 +1,14 @@
 //! The asset-tooling kits the fighters are drawn from (Atlas D5.i46.1): the robot part kit
-//! (release `shooter-combat-robot`) and the weapons kit (release `shooter-weapons`, the eight
-//! weapons and four mods). Which bundle files the clients read, their content pins and size
-//! bounds, and the decoding of their glTF scenes (meshes, skins, clips), KTX2 (Basis Universal)
-//! textures and the weapons kit's socket-grid descriptor (anchors, glow channels, states) into
-//! render-engine data. Both clients read the same files through [`Plan`] and [`decode`]: natively
-//! from a directory, in the browser over HTTP (`crate::robots::load`).
+//! (release `shooter-combat-robot`), the weapons kit (release `shooter-weapons`, the eight
+//! weapons and four mods) and the locomotion kit (release `shooter-robot-locomotion`, the wheel
+//! and the track). Which bundle files the clients read, their content pins and size bounds, and
+//! the decoding of their glTF scenes (meshes, skins, clips), KTX2 (Basis Universal) textures and
+//! the socket-grid descriptors (the weapons' anchors, glow channels and states; the wheels' and
+//! tracks' axles and roll clip) into render-engine data. Both clients read the same files through
+//! [`Plan`] and [`decode`]: natively from a directory, in the browser over HTTP
+//! (`crate::robots::load`). The arena kit (release `shooter-arena`, [`Bundle::Arena`]) is read the
+//! same way in a load of its own, for the kit-built maps (`crate::arena_art`): its modules' intact
+//! and broken looks, a module's static mesh nodes baked into one mesh.
 //!
 //! **Pins.** The releases are rolling, so the shooter pins each ([`Bundle::pin_json`],
 //! `assets/*-kit.pin.json`): the tar's SHA-256 (checked by `scripts/fetch-robot-kit.sh`) and the
@@ -13,12 +17,10 @@
 //! a load over [`MAX_TOTAL_BYTES`].
 //!
 //! **IDs.** Kit entries are keyed by the simulation's part and mod keys
-//! (`shooter_sim::robot::parts`, `BETA.mods`). Every kit key must be a catalog part or mod, every
-//! catalog mod must be in the weapons kit and every catalog part in a kit or a declared
-//! placeholder ([`placeholder_owner`]: the wheels and tracks of asset-tooling#634); anything else
-//! fails the load loudly ([`complete`]). The one exception is a robot-kit entry for a part the
-//! simulation has retired, listed by name with the issue that retired it ([`RETIRED_KIT_PARTS`]:
-//! the control core, shooter#89): the load skips it and nothing draws it.
+//! (`shooter_sim::robot::parts`, `BETA.mods`). Every kit key must be a catalog part or mod of
+//! that kit, and every catalog part and mod must be in a kit (the arena kit's keys are the
+//! simulation's arena modules, `shooter_sim::arena_kit::Module`); anything else fails the load
+//! loudly ([`complete`]).
 
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::material::{Sampler, TextureData};
@@ -26,43 +28,62 @@ use render_engine::mesh::MeshData;
 use render_engine::wgpu;
 use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
-use shooter_sim::robot::{BETA, Kind};
+use shooter_sim::arena_kit::Module;
+use shooter_sim::robot::{BETA, Kind, Locomotion};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// The most one bundle file may hold (the largest, the robot kit's normal atlas, is about
 /// 0.45 MB).
 pub const MAX_FILE_BYTES: usize = 4 << 20;
-/// The most one load (both kits) may read (the drawn closures are about 1.5 MB and 1 MB).
+/// The most one load (all three kits) may read (the drawn closures are about 1.5 MB, 1 MB and
+/// 1.4 MB).
 pub const MAX_TOTAL_BYTES: usize = 8 << 20;
-/// The variants the clients draw: every part's full detail, and the armor plate's damaged look.
-/// (The weapons kit's `lod1` and `lod2` are not read: at the arena's distances a weapon is a few
-/// hundred triangles.)
+/// The variants the clients draw: every part's full detail, and the damaged look where a kit has
+/// one (the armor plate, the wheel and the track). (The `lod1` and `lod2` levels are not read: at
+/// the arena's distances a weapon is a few hundred triangles and a wheel about a thousand.)
 pub const VARIANTS: [&str; 2] = ["default", "damaged"];
+/// The arena kit's drawn variants: every module intact, and broken where the kit has a broken
+/// look (`shooter_sim::arena_kit::Variant`). Its `lod1` levels are not read.
+pub const ARENA_VARIANTS: [&str; 2] = ["default", "broken"];
 /// The atlases' top mip level is skipped: at third-person distances a 1024 px atlas is plenty,
 /// and it keeps the transcoded RGBA8 textures at a quarter of their full size (about 22 MB for
-/// the robot kit and 6 MB for the weapons).
+/// the robot kit, 6 MB for the weapons and 6 MB for the wheels and tracks).
 pub const SKIPPED_MIPS: u32 = 1;
-/// The attachment of the weapons kit that describes its anchors, channels and states.
+/// The attachment of the weapons and locomotion kits that describes their anchors, channels and
+/// states, and the wheels' and tracks' axles and roll.
 pub const DESCRIPTOR: &str = "socket-grid-descriptor";
+/// The locomotion kit's descriptor schema (asset-tooling
+/// `schemas/socket-grid-kit-descriptor-v3.schema.json`: v2 plus each part's `locomotion` block).
+pub const LOCOMOTION_SCHEMA: &str = "socket-grid-kit-descriptor-v3";
 
 /// One pinned asset-tooling release the clients draw from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Bundle {
-    /// `shooter-combat-robot`: the robot parts.
+    /// `shooter-combat-robot`: the robot parts but the wheels and tracks.
     Robot,
     /// `shooter-weapons`: the weapons and their mods.
     Weapons,
+    /// `shooter-robot-locomotion`: the wheel and the track.
+    Locomotion,
+    /// `shooter-arena`: the arena modules the kit-built maps are drawn from (`crate::arena_art`).
+    Arena,
 }
 
 impl Bundle {
-    pub const ALL: [Self; 2] = [Self::Robot, Self::Weapons];
+    /// Every pinned kit.
+    pub const ALL: [Self; 4] = [Self::Robot, Self::Weapons, Self::Locomotion, Self::Arena];
+    /// The kits the fighters are drawn from: one load, [`crate::robots::Robots`].
+    pub const FIGHTERS: [Self; 3] = [Self::Robot, Self::Weapons, Self::Locomotion];
 
-    /// Its pin (`assets/robot-kit.pin.json`, `assets/weapon-kit.pin.json`).
+    /// Its pin (`assets/robot-kit.pin.json`, `assets/weapon-kit.pin.json`,
+    /// `assets/locomotion-kit.pin.json`).
     #[must_use]
     pub const fn pin_json(self) -> &'static str {
         match self {
             Self::Robot => include_str!("../../../../assets/robot-kit.pin.json"),
             Self::Weapons => include_str!("../../../../assets/weapon-kit.pin.json"),
+            Self::Locomotion => include_str!("../../../../assets/locomotion-kit.pin.json"),
+            Self::Arena => include_str!("../../../../assets/arena-kit.pin.json"),
         }
     }
 
@@ -72,18 +93,41 @@ impl Bundle {
         match self {
             Self::Robot => "robot-kit",
             Self::Weapons => "weapon-kit",
+            Self::Locomotion => "locomotion-kit",
+            Self::Arena => "arena-kit",
         }
     }
 
-    /// Whether `key` may be an entry of this kit: a robot part, or a weapon or mod.
+    /// The bundle variants the clients draw from it ([`VARIANTS`], or the arena modules' intact
+    /// and broken looks): no `lod1` levels.
+    #[must_use]
+    pub const fn variants(self) -> [&'static str; 2] {
+        match self {
+            Self::Robot | Self::Weapons | Self::Locomotion => VARIANTS,
+            Self::Arena => ARENA_VARIANTS,
+        }
+    }
+
+    /// Whether `key` may be an entry of this kit: a robot part, a weapon or mod, a wheel or
+    /// track, an arena module of the simulation's table (`shooter_sim::arena_kit`).
     fn holds(self, key: &str) -> bool {
         let part = BETA.parts.iter().find(|part| part.key == key);
+        let rolls = |kind: Kind| {
+            matches!(
+                kind,
+                Kind::Locomotion(Locomotion::Wheel | Locomotion::Track)
+            )
+        };
         match self {
-            Self::Robot => part.is_some_and(|part| !matches!(part.kind, Kind::Weapon(_))),
+            Self::Robot => {
+                part.is_some_and(|part| !matches!(part.kind, Kind::Weapon(_)) && !rolls(part.kind))
+            }
             Self::Weapons => {
                 part.is_some_and(|part| matches!(part.kind, Kind::Weapon(_)))
                     || BETA.mods.iter().any(|modification| modification.key == key)
             }
+            Self::Locomotion => part.is_some_and(|part| rolls(part.kind)),
+            Self::Arena => Module::ALL.iter().any(|module| module.key() == key),
         }
     }
 }
@@ -115,32 +159,6 @@ pub fn pinned_tar(bundle: Bundle) -> String {
         .as_str()
         .expect("the pin names the tar's SHA-256")
         .to_owned()
-}
-
-/// The issue that makes a catalog part no shipped kit draws yet, if it is one: those draw as
-/// labelled placeholders. Any other catalog part missing from the kits is an error.
-#[must_use]
-pub fn placeholder_owner(key: &str) -> Option<&'static str> {
-    matches!(key, "robot.wheel" | "robot.track").then_some("asset-tooling#634")
-}
-
-/// Robot-kit entries the pinned release still ships for parts the simulation has retired, and
-/// the issue that retired each: the load skips them (nothing draws them) instead of failing.
-/// `robot.core` went when the root chassis became the vital part (shooter#89); a later
-/// `shooter-combat-robot` release can drop it, and then this list empties.
-pub const RETIRED_KIT_PARTS: [(&str, &str); 1] = [("robot.core", "shooter#89")];
-
-/// The issue that retired `key` in `bundle`, if the kit may still carry it as a retired part.
-#[must_use]
-pub fn retired(bundle: Bundle, key: &str) -> Option<&'static str> {
-    (bundle == Bundle::Robot)
-        .then(|| {
-            RETIRED_KIT_PARTS
-                .iter()
-                .find(|(retired, _)| *retired == key)
-        })
-        .flatten()
-        .map(|(_, issue)| *issue)
 }
 
 /// `bytes`' SHA-256 in lowercase hex.
@@ -253,15 +271,12 @@ impl Plan {
             let variant = asset["variant"]
                 .as_str()
                 .ok_or_else(|| format!("{name}: {key} has no variant"))?;
-            if retired(bundle, key).is_some() {
-                continue;
-            }
             if !bundle.holds(key) {
                 return Err(format!(
                     "{name}: entry {key} is no part or mod of the simulation's catalog this kit draws"
                 ));
             }
-            if !VARIANTS.contains(&variant) {
+            if !bundle.variants().contains(&variant) {
                 continue;
             }
             for attachment in asset["attachments"].as_array().into_iter().flatten() {
@@ -297,6 +312,38 @@ impl Plan {
                     return Err(format!("{name}: no {DESCRIPTOR} attachment"));
                 }
             }
+            Bundle::Locomotion => {
+                if descriptor.is_none() {
+                    return Err(format!("{name}: no {DESCRIPTOR} attachment"));
+                }
+                for key in ["robot.wheel", "robot.track"] {
+                    if !entries
+                        .iter()
+                        .any(|entry| entry.key == key && entry.variant == "damaged")
+                    {
+                        return Err(format!("{name}: {key} has no damaged variant"));
+                    }
+                }
+            }
+            Bundle::Arena => {
+                // Every module of the simulation's table is drawn, intact and (where the table
+                // has broken proxies) broken.
+                for module in Module::ALL {
+                    let looks =
+                        std::iter::once("default").chain(module.broken_proxies().map(|_| "broken"));
+                    for variant in looks {
+                        if !entries
+                            .iter()
+                            .any(|entry| entry.key == module.key() && entry.variant == variant)
+                        {
+                            return Err(format!(
+                                "{name}: {} has no {variant} variant",
+                                module.key()
+                            ));
+                        }
+                    }
+                }
+            }
         }
         Ok(Self {
             bundle,
@@ -323,8 +370,8 @@ impl Plan {
     }
 }
 
-/// Checks that `plans` between them draw the whole catalog: every catalog part is in a kit or a
-/// declared placeholder, and every catalog mod is in a kit.
+/// Checks that `plans` between them draw the whole catalog: every catalog part and every catalog
+/// mod is in a kit.
 ///
 /// # Errors
 ///
@@ -336,11 +383,8 @@ pub fn complete(plans: &[Plan]) -> Result<(), String> {
         .map(|entry| entry.key.as_str())
         .collect();
     for part in BETA.parts {
-        if !keys.contains(part.key) && placeholder_owner(part.key).is_none() {
-            return Err(format!(
-                "robot kit: catalog part {} is neither in a kit nor a declared placeholder",
-                part.key
-            ));
+        if !keys.contains(part.key) {
+            return Err(format!("robot kit: catalog part {} is in no kit", part.key));
         }
     }
     for modification in BETA.mods {
@@ -647,6 +691,90 @@ impl Gear {
     }
 }
 
+/// What the locomotion kit's descriptor says about a wheel or track (its v3 `locomotion` block):
+/// where the simulation's rolling bodies are and how the kit's roll clip follows their turn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rolling {
+    /// The axle every wheel node turns about, in the part's glTF frame: the part's mount normal,
+    /// as the simulation's revolute joints (`shooter_sim::mechanics`). A positive angle turns
+    /// right-handed about it.
+    pub axis: Vec3,
+    /// Metres of ground a radian of turn rolls: the tyre's tread (0.18 m) or the belt round the
+    /// track's wheels (0.1 m).
+    pub radius: f32,
+    /// The simulation's rolling bodies' centres (the wheel's sphere, the track's two road
+    /// wheels), in the part's glTF frame (metres).
+    pub centres: Vec<Vec3>,
+    /// The looping clip that turns the wheels (and moves the belt), its length (seconds) and the
+    /// turn one cycle of it makes (radians).
+    pub clip: String,
+    pub seconds: f32,
+    pub radians_per_cycle: f32,
+}
+
+impl Rolling {
+    /// The clip's time (seconds) for a turn of `angle` radians: `(angle mod 2π) / 2π` of it
+    /// (the descriptor's `roll.rule`).
+    #[must_use]
+    pub fn time(&self, angle: f32) -> f32 {
+        angle.rem_euclid(self.radians_per_cycle) / self.radians_per_cycle * self.seconds
+    }
+}
+
+/// The wheels and tracks of the locomotion kit's v3 descriptor, by key, with the nodes each
+/// one's clip turns.
+fn rolling(descriptor: &[u8]) -> Result<HashMap<String, (Rolling, Vec<String>)>, String> {
+    let fail = |what: &str| format!("locomotion-kit: descriptor: {what}");
+    let json: Json =
+        serde_json::from_slice(descriptor).map_err(|error| fail(&error.to_string()))?;
+    if json["schema"].as_str() != Some(LOCOMOTION_SCHEMA) {
+        return Err(fail(&format!("not a {LOCOMOTION_SCHEMA}")));
+    }
+    let mut out = HashMap::new();
+    for part in json["parts"].as_array().into_iter().flatten() {
+        let key = part["key"]
+            .as_str()
+            .ok_or_else(|| fail("a part has no key"))?;
+        let block = &part["locomotion"];
+        let malformed = || fail(&format!("{key} has a malformed locomotion block"));
+        #[allow(clippy::cast_possible_truncation)]
+        let number = |value: &Json| value.as_f64().map(|value| value as f32);
+        let roll = &block["roll"];
+        let rolling = Rolling {
+            axis: vec3(&block["axis"]).ok_or_else(malformed)?,
+            radius: number(&block["rollingRadius"]).ok_or_else(malformed)?,
+            centres: block["bodies"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|body| vec3(&body["centre"]))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(malformed)?,
+            clip: roll["animation"].as_str().ok_or_else(malformed)?.to_owned(),
+            seconds: number(&roll["seconds"]).ok_or_else(malformed)?,
+            radians_per_cycle: number(&roll["radiansPerCycle"]).ok_or_else(malformed)?,
+        };
+        let wheels = block["wheels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|node| node.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(malformed)?;
+        if rolling.centres.is_empty()
+            || wheels.is_empty()
+            || rolling.radius <= 0.0
+            || rolling.seconds <= 0.0
+            || rolling.radians_per_cycle <= 0.0
+            || rolling.axis.length() < 0.5
+        {
+            return Err(malformed());
+        }
+        out.insert(key.to_owned(), (rolling, wheels));
+    }
+    Ok(out)
+}
+
 fn vec3(value: &Json) -> Option<Vec3> {
     let array = value.as_array()?;
     #[allow(clippy::cast_possible_truncation)]
@@ -741,6 +869,8 @@ pub struct KitEntry {
     pub rig: Option<Rig>,
     /// A weapon's or mod's anchors, channels and states (the weapons kit's descriptor).
     pub gear: Option<Gear>,
+    /// A wheel's or track's axle and roll clip (the locomotion kit's descriptor).
+    pub rolling: Option<Rolling>,
 }
 
 /// The decoded kits: what the clients upload and pose.
@@ -840,16 +970,21 @@ fn checked<'a>(
 /// not its pinned content, a scene is not the one-mesh part the kit standard describes, or a
 /// weapon or mod is not in the weapons kit's descriptor or lacks a state's clip.
 pub fn decode(plans: &[Plan], files: &HashMap<String, Vec<u8>>) -> Result<KitData, String> {
-    complete(plans)?;
+    if plans.iter().any(|plan| plan.bundle != Bundle::Arena) {
+        complete(plans)?;
+    }
     let files = checked(plans, files)?;
     let mut textures: Vec<TextureData> = Vec::new();
     let mut texture_ids: HashMap<(String, bool), usize> = HashMap::new();
     let mut materials: Vec<KitMaterial> = Vec::new();
     let mut entries = Vec::new();
     for plan in plans {
-        let gear = match &plan.descriptor {
-            Some(descriptor) => Some(gear(files[&descriptor.path])?),
-            None => None,
+        let (gear, rolling) = match (&plan.descriptor, plan.bundle) {
+            (Some(descriptor), Bundle::Locomotion) => {
+                (None, Some(rolling(files[&descriptor.path])?))
+            }
+            (Some(descriptor), _) => (Some(gear(files[&descriptor.path])?), None),
+            (None, _) => (None, None),
         };
         for entry in &plan.entries {
             let mut decoded = scene(
@@ -858,6 +993,7 @@ pub fn decode(plans: &[Plan], files: &HashMap<String, Vec<u8>>) -> Result<KitDat
                 &mut textures,
                 &mut texture_ids,
                 &mut materials,
+                plan.bundle == Bundle::Arena,
             )?;
             if let Some(gear) = &gear {
                 let found = gear
@@ -878,6 +1014,23 @@ pub fn decode(plans: &[Plan], files: &HashMap<String, Vec<u8>>) -> Result<KitDat
                 }
                 decoded.gear = Some(found.clone());
             }
+            if let Some(rolling) = &rolling {
+                let fail = |what: String| format!("locomotion-kit: {}: {what}", entry.key);
+                let (found, wheels) = rolling
+                    .get(&entry.key)
+                    .ok_or_else(|| fail("not in the descriptor".into()))?;
+                let rig = decoded
+                    .rig
+                    .as_ref()
+                    .ok_or_else(|| fail("not rigged".into()))?;
+                if rig.clip(&found.clip).is_none() {
+                    return Err(fail(format!("no {} clip", found.clip)));
+                }
+                if let Some(missing) = wheels.iter().find(|node| rig.joint(node).is_none()) {
+                    return Err(fail(format!("no {missing} node")));
+                }
+                decoded.rolling = Some(found.clone());
+            }
             entries.push(decoded);
         }
     }
@@ -888,13 +1041,94 @@ pub fn decode(plans: &[Plan], files: &HashMap<String, Vec<u8>>) -> Result<KitDat
     })
 }
 
-/// One entry's scene, its textures and material added to the load's.
+/// The one primitive of `node`'s mesh, if it has exactly one.
+fn only_primitive<'a>(node: &gltf::Node<'a>) -> Option<gltf::Primitive<'a>> {
+    let mut primitives = node.mesh()?.primitives();
+    let first = primitives.next()?;
+    primitives.next().is_none().then_some(first)
+}
+
+/// One primitive's vertices placed by `placed`: positions, normals, UVs, tangents, colours and
+/// indices (no skin). None without positions.
+fn static_mesh<'a, 's, F>(
+    primitive: &'a gltf::Primitive<'a>,
+    placed: Mat4,
+    get: F,
+) -> Option<MeshData>
+where
+    F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>,
+{
+    let normal_matrix = placed.inverse().transpose();
+    let reader = primitive.reader(get);
+    let positions: Vec<Vec3> = reader
+        .read_positions()?
+        .map(|p| placed.transform_point3(Vec3::from(p)))
+        .collect();
+    Some(MeshData {
+        normals: reader.read_normals().map_or_else(
+            || vec![Vec3::Y; positions.len()],
+            |normals| {
+                normals
+                    .map(|n| {
+                        normal_matrix
+                            .transform_vector3(Vec3::from(n))
+                            .normalize_or(Vec3::Y)
+                    })
+                    .collect()
+            },
+        ),
+        uvs: reader
+            .read_tex_coords(0)
+            .map(|uvs| uvs.into_f32().map(Vec2::from).collect())
+            .unwrap_or_default(),
+        tangents: reader
+            .read_tangents()
+            .map(|tangents| tangents.map(Vec4::from).collect())
+            .unwrap_or_default(),
+        colors: reader
+            .read_colors(0)
+            .map(|colors| colors.into_rgba_f32().map(Vec4::from).collect())
+            .unwrap_or_default(),
+        indices: reader.read_indices().map_or_else(
+            || (0..u32::try_from(positions.len()).unwrap_or(u32::MAX)).collect(),
+            |indices| indices.into_u32().collect(),
+        ),
+        positions,
+        ..MeshData::default()
+    })
+}
+
+/// `theirs` appended to `ours` where both have the attribute for every vertex, else none.
+fn join<T>(ours: &mut Vec<T>, theirs: Vec<T>, counts: (usize, usize)) {
+    if ours.len() == counts.0 && theirs.len() == counts.1 {
+        ours.extend(theirs);
+    } else {
+        ours.clear();
+    }
+}
+
+/// `more` appended to `data` (static meshes; an attribute one of them lacks is dropped).
+fn append(data: &mut MeshData, more: MeshData) {
+    let base = u32::try_from(data.positions.len()).unwrap_or(u32::MAX);
+    let counts = (data.positions.len(), more.positions.len());
+    join(&mut data.uvs, more.uvs, counts);
+    join(&mut data.tangents, more.tangents, counts);
+    join(&mut data.colors, more.colors, counts);
+    data.normals.extend(more.normals);
+    data.indices
+        .extend(more.indices.into_iter().map(|index| index + base));
+    data.positions.extend(more.positions);
+}
+
+/// One entry's scene, its textures and material added to the load's. With `parts` (the arena
+/// kit) its static mesh nodes are baked into one mesh.
 fn scene(
     entry: &EntryRef,
     files: &HashMap<String, &[u8]>,
     textures: &mut Vec<TextureData>,
     texture_ids: &mut HashMap<(String, bool), usize>,
     materials: &mut Vec<KitMaterial>,
+    parts: bool,
 ) -> Result<KitEntry, String> {
     let path = &entry.scene.path;
     let bytes = files[path];
@@ -973,14 +1207,18 @@ fn scene(
             meshes.push(node);
         }
     }
-    let [node] = meshes.as_slice() else {
-        return Err(fail("a kit part is exactly one mesh"));
+    // A kit part is one mesh node; an arena module (the door: its two leaves) may be several
+    // static ones, baked into one mesh.
+    let (node, others) = match meshes.as_slice() {
+        [node] => (node, &[][..]),
+        [node, others @ ..] if parts && meshes.iter().all(|node| node.skin().is_none()) => {
+            (node, others)
+        }
+        _ => return Err(fail("a kit part is exactly one mesh")),
     };
-    let mesh = node.mesh().ok_or_else(|| fail("no mesh"))?;
-    let primitives: Vec<gltf::Primitive> = mesh.primitives().collect();
-    let [primitive] = primitives.as_slice() else {
-        return Err(fail("a kit part is exactly one primitive"));
-    };
+    let one_primitive = "a kit part is exactly one primitive";
+    let primitive = only_primitive(node).ok_or_else(|| fail(one_primitive))?;
+    let primitive = &primitive;
     let skin = node.skin();
     // A static mesh is baked into its node's place; a skinned one keeps its bind pose (glTF
     // skins ignore the mesh node's transform).
@@ -989,45 +1227,17 @@ fn scene(
     } else {
         global(node.index())
     };
-    let normal_matrix = placed.inverse().transpose();
     let reader = primitive.reader(get);
-    let positions: Vec<Vec3> = reader
-        .read_positions()
-        .ok_or_else(|| fail("no positions"))?
-        .map(|p| placed.transform_point3(Vec3::from(p)))
-        .collect();
-    let mut data = MeshData {
-        normals: reader.read_normals().map_or_else(
-            || vec![Vec3::Y; positions.len()],
-            |normals| {
-                normals
-                    .map(|n| {
-                        normal_matrix
-                            .transform_vector3(Vec3::from(n))
-                            .normalize_or(Vec3::Y)
-                    })
-                    .collect()
-            },
-        ),
-        uvs: reader
-            .read_tex_coords(0)
-            .map(|uvs| uvs.into_f32().map(Vec2::from).collect())
-            .unwrap_or_default(),
-        tangents: reader
-            .read_tangents()
-            .map(|tangents| tangents.map(Vec4::from).collect())
-            .unwrap_or_default(),
-        colors: reader
-            .read_colors(0)
-            .map(|colors| colors.into_rgba_f32().map(Vec4::from).collect())
-            .unwrap_or_default(),
-        indices: reader.read_indices().map_or_else(
-            || (0..u32::try_from(positions.len()).unwrap_or(u32::MAX)).collect(),
-            |indices| indices.into_u32().collect(),
-        ),
-        positions,
-        ..MeshData::default()
-    };
+    let mut data = static_mesh(primitive, placed, get).ok_or_else(|| fail("no positions"))?;
+    for other in others {
+        let part = only_primitive(other).ok_or_else(|| fail(one_primitive))?;
+        if part.material().index() != primitive.material().index() {
+            return Err(fail("a module's meshes share one material"));
+        }
+        let more =
+            static_mesh(&part, global(other.index()), get).ok_or_else(|| fail("no positions"))?;
+        append(&mut data, more);
+    }
     let rig = match skin {
         None => None,
         Some(skin) => {
@@ -1190,6 +1400,7 @@ fn scene(
         material,
         rig,
         gear: None,
+        rolling: None,
     })
 }
 
@@ -1211,10 +1422,18 @@ mod tests {
     }
 
     #[test]
-    fn only_the_wheels_and_tracks_are_declared_placeholders() {
-        assert_eq!(placeholder_owner("weapon.rail-gun"), None);
-        assert_eq!(placeholder_owner("robot.track"), Some("asset-tooling#634"));
-        assert_eq!(placeholder_owner("robot.leg"), None);
+    fn every_catalog_part_has_exactly_one_kit_and_every_kit_a_pin() {
+        for part in BETA.parts {
+            let kits = Bundle::ALL
+                .iter()
+                .filter(|bundle| bundle.holds(part.key))
+                .count();
+            assert_eq!(kits, 1, "{}", part.key);
+        }
+        assert!(Bundle::Locomotion.holds("robot.wheel"));
+        assert!(Bundle::Locomotion.holds("robot.track"));
+        assert!(!Bundle::Robot.holds("robot.track"));
+        assert!(!Bundle::Locomotion.holds("robot.leg"));
         for bundle in Bundle::ALL {
             assert_eq!(pinned_manifest(bundle).len(), 64);
             assert_eq!(pinned_tar(bundle).len(), 64);
@@ -1273,26 +1492,46 @@ mod tests {
             descriptor: None,
         };
         let error = complete(&[plan("robot.sensor")]).unwrap_err();
-        assert!(error.contains("neither in a kit"), "{error}");
+        assert!(error.contains("in no kit"), "{error}");
+        // The locomotion kit holds only the wheel and the track, with its descriptor and their
+        // damaged looks.
+        let (bytes, pin) = manifest(&asset("robot.leg"));
+        let error = Plan::checked(Bundle::Locomotion, &bytes, &pin).unwrap_err();
+        assert!(error.contains("robot.leg"), "{error}");
+        let (bytes, pin) = manifest(&asset("robot.wheel"));
+        let error = Plan::checked(Bundle::Locomotion, &bytes, &pin).unwrap_err();
+        assert!(error.contains(DESCRIPTOR), "{error}");
     }
 
     #[test]
-    fn the_retired_control_core_is_skipped_by_name_in_the_robot_kit_only() {
-        // The retired core is no catalog part any more...
-        assert!(BETA.parts.iter().all(|part| part.key != "robot.core"));
-        assert_eq!(retired(Bundle::Robot, "robot.core"), Some("shooter#89"));
-        assert_eq!(retired(Bundle::Weapons, "robot.core"), None);
-        assert_eq!(retired(Bundle::Robot, "robot.sensor"), None);
-        // ...so a robot kit that still ships it loads without it...
-        let damaged = asset("robot.armor.plate").replace("\"default\"", "\"damaged\"");
-        let (bytes, pin) = manifest(&format!("{}, {damaged}", asset("robot.core")));
-        let plan = Plan::checked(Bundle::Robot, &bytes, &pin).unwrap();
-        assert_eq!(plan.entries.len(), 1);
-        assert!(plan.entries.iter().all(|entry| entry.key != "robot.core"));
-        // ...while a weapons kit naming it is still refused, like any other stray key.
-        let (bytes, pin) = manifest(&asset("robot.core"));
-        let error = Plan::checked(Bundle::Weapons, &bytes, &pin).unwrap_err();
-        assert!(error.contains("robot.core"), "{error}");
+    fn a_locomotion_descriptor_is_read_and_checked() {
+        let part = |key: &str, block: &str| format!(r#"{{"key": "{key}", "locomotion": {block}}}"#);
+        let wheel = r#"{"axis": [0, 1, 0], "rollingRadius": 0.18,
+            "bodies": [{"centre": [0.1, 0.1, -0.1], "radius": 0.18}], "wheels": ["wheel"],
+            "roll": {"animation": "roll", "seconds": 1, "radiansPerCycle": 6.283185}}"#;
+        let descriptor = |parts: &str, schema: &str| {
+            format!(r#"{{"schema": "{schema}", "parts": [{parts}]}}"#).into_bytes()
+        };
+        let read = rolling(&descriptor(&part("robot.wheel", wheel), LOCOMOTION_SCHEMA)).unwrap();
+        let (found, wheels) = &read["robot.wheel"];
+        assert_eq!(found.axis, Vec3::Y);
+        assert_eq!(found.centres, [Vec3::new(0.1, 0.1, -0.1)]);
+        assert_eq!(wheels, &["wheel".to_owned()]);
+        // Half a turn is half the clip; a turn back wraps forward.
+        assert!((found.time(std::f32::consts::PI) - 0.5).abs() < 1e-5);
+        assert!((found.time(-std::f32::consts::FRAC_PI_2) - 0.75).abs() < 1e-5);
+        let error = rolling(&descriptor(
+            &part("robot.wheel", wheel),
+            "socket-grid-kit-descriptor-v2",
+        ))
+        .unwrap_err();
+        assert!(error.contains(LOCOMOTION_SCHEMA), "{error}");
+        let error = rolling(&descriptor(
+            &part("robot.wheel", r#"{"axis": [0, 1, 0]}"#),
+            LOCOMOTION_SCHEMA,
+        ))
+        .unwrap_err();
+        assert!(error.contains("malformed"), "{error}");
     }
 
     #[test]

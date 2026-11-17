@@ -1,8 +1,12 @@
-//! The greybox arena: one floor, perimeter walls and a few blocks and ramps, as fixed physics
-//! bodies. The clients draw the same pieces, so what a player sees is what they collide with.
+//! An arena: one floor, perimeter walls and blocks and ramps, as fixed physics bodies. The
+//! greybox maps list their pieces directly and the clients draw them as boxes; a kit-built map
+//! (the assembly works, [`crate::assembly_works`]) lists arena-kit module placements
+//! ([`crate::arena_kit`]) its pieces are derived from, and the clients draw the modules. Either
+//! way what a player sees is what they collide with.
 //!
 //! Lengths are centimetre units, as in physics-engine (`length_unit` 100). Y is up; the floor's top is at 0.
 
+use crate::arena_kit::Placement;
 use crate::physics::RampRise;
 use crate::physics::{BodyId, PhysicsError, RigidBody, Vec3i, World};
 use crate::pickups::{ArenaModule, ModulePad};
@@ -110,6 +114,13 @@ pub struct Arena {
     /// ([`Arena::bot_points`]): corners, ramp ends and the walkway, where spawn points alone
     /// would leave a bot no straight walk on.
     pub waypoints: Vec<Vec3i>,
+    /// The arena kit's modules this arena is built from ([`crate::arena_kit`]), which the clients
+    /// draw; its [`Arena::pieces`] are derived from them. Empty on the greybox maps, whose pieces
+    /// are drawn as plain boxes.
+    pub placements: Vec<Placement>,
+    /// Where field repair stations stand (feet, units): anchors for shooter#61, which owns what
+    /// they do. Nothing uses them yet.
+    pub repair_anchors: Vec<Vec3i>,
 }
 
 /// The floor's body; pieces take the IDs after it, players start at [`FIRST_PLAYER_BODY`].
@@ -264,6 +275,8 @@ impl Arena {
             spawns,
             module_pads,
             waypoints: Vec::new(),
+            placements: Vec::new(),
+            repair_anchors: Vec::new(),
         }
     }
 
@@ -417,6 +430,8 @@ impl Arena {
             spawns,
             module_pads,
             waypoints,
+            placements: Vec::new(),
+            repair_anchors: Vec::new(),
         }
     }
 
@@ -451,18 +466,30 @@ impl Arena {
         let samples = ((to.x - from.x).abs().max((to.z - from.z).abs()) / 50).max(16);
         let step_up = crate::player::STEP_UP.max_height;
         let height = 2 * crate::player::PLAYER_HALF_EXTENTS.y;
+        // Only pieces near the walk's footprint can stop it (a kit-built map has hundreds).
+        let near: Vec<&Piece> = self
+            .pieces
+            .iter()
+            .filter(|piece| {
+                let (center, half) = (piece.center(), piece.half());
+                center.x + half.x + MARGIN >= from.x.min(to.x)
+                    && center.x - half.x - MARGIN <= from.x.max(to.x)
+                    && center.z + half.z + MARGIN >= from.z.min(to.z)
+                    && center.z - half.z - MARGIN <= from.z.max(to.z)
+            })
+            .collect();
         (0..=samples).all(|step| {
             let x = from.x + (to.x - from.x) * step / samples;
             let z = from.z + (to.z - from.z) * step / samples;
             let feet = from.y + (to.y - from.y) * step / samples;
-            self.pieces.iter().all(|piece| {
+            near.iter().all(|piece| {
                 let (center, half) = (piece.center(), piece.half());
                 if (x - center.x).abs() > half.x + MARGIN || (z - center.z).abs() > half.z + MARGIN
                 {
                     return true;
                 }
                 let bottom = center.y - half.y;
-                let top = match *piece {
+                let top = match **piece {
                     Piece::Block { .. } => center.y + half.y,
                     // A ramp's top where the fighter is: walked up or down along its rise, it
                     // stays within a step of the feet; crossed sideways, it is a wall.
