@@ -320,27 +320,26 @@ mod tests {
         assert_eq!(verified.final_snapshot.tick, 600);
     }
 
-    /// A scripted match on the kit-built assembly works (shooter#52) records, round-trips,
-    /// replays tick for tick and restores its map.
+    /// A scripted match on each kit-built map (the assembly works, shooter#52; the proving cell,
+    /// shooter#53) records, round-trips, replays tick for tick and restores its map.
     #[test]
-    fn a_replay_on_the_assembly_works_reproduces_every_tick() {
-        let script = Script {
-            map: MapId::AssemblyWorks,
-            ..short()
-        };
-        let replay = record(script).unwrap();
-        let bytes = replay.encode().unwrap();
-        assert_eq!(Replay::decode(&bytes).unwrap().map, MapId::AssemblyWorks);
-        assert_eq!(record(script).unwrap().encode().unwrap(), bytes);
-        let verified = verify(&replay).unwrap();
-        assert_eq!(verified.checkpoints_verified, 600);
-        assert_eq!(verified.final_snapshot.tick, 600);
-        replay
-            .play(600, |session| {
-                assert_eq!(session.map, Some(MapId::AssemblyWorks));
-                Ok(())
-            })
-            .unwrap();
+    fn a_replay_on_a_kit_built_map_reproduces_every_tick() {
+        for map in [MapId::AssemblyWorks, MapId::ProvingCell] {
+            let script = Script { map, ..short() };
+            let replay = record(script).unwrap();
+            let bytes = replay.encode().unwrap();
+            assert_eq!(Replay::decode(&bytes).unwrap().map, map);
+            assert_eq!(record(script).unwrap().encode().unwrap(), bytes);
+            let verified = verify(&replay).unwrap();
+            assert_eq!(verified.checkpoints_verified, 600);
+            assert_eq!(verified.final_snapshot.tick, 600);
+            replay
+                .play(600, |session| {
+                    assert_eq!(session.map, Some(map));
+                    Ok(())
+                })
+                .unwrap();
+        }
     }
 
     #[test]

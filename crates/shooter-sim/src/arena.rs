@@ -1,6 +1,6 @@
 //! An arena: one floor, perimeter walls and blocks and ramps, as fixed physics bodies. The
 //! greybox maps list their pieces directly and the clients draw them as boxes; a kit-built map
-//! (the assembly works, [`crate::assembly_works`]) lists arena-kit module placements
+//! (the assembly works, [`crate::assembly_works`]; the proving cell, [`crate::proving_cell`]) lists arena-kit module placements
 //! ([`crate::arena_kit`]) its pieces are derived from, and the clients draw the modules. Either
 //! way what a player sees is what they collide with.
 //!
