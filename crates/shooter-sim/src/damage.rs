@@ -9,17 +9,18 @@
 //! destroyed part stay; the rest are lost, destroyed or not ([`PartDamage::lost`]). That is the
 //! subtree below the destroyed part; when the root chassis itself is destroyed, everything is
 //! lost and the robot is dead. Lost is derived from the healths alone, so the wire carries the
-//! healths only. Nothing comes back mid-life: health only goes down, and respawn restores the configured build
-//! ([`PartDamage::fresh`]).
+//! healths only. Nothing comes back mid-life: a destroyed or lost part stays gone, and only a
+//! field repair ([`crate::repair`], [`PartDamage::heal`]) raises the health of a damaged part
+//! still connected; respawn restores the configured build ([`PartDamage::fresh`]).
 //!
-//! **Hitboxes** ([`Hitboxes`]). The match's fighters still move on the capsule controller
-//! (shooter#73's second half moves them onto [`crate::mechanics`]), so a fighter's parts are
-//! placed at rest where [`crate::mechanics::placements`] puts them in the robot's frame, the
-//! robot's lowest point on the capsule's feet, turned to face the fighter's yaw (+X forward,
-//! like the drawn robot). Each connected part is an oriented box: armor plates are real boxes
-//! like the rest. Lag-compensated strikes place them at the rewound centre and yaw. The capsule
-//! still collides with the arena; strikes meet the part boxes, not the capsule, so a shot through
-//! a gap between the legs flies on.
+//! **Hitboxes** ([`Hitboxes`]). The match's fighters are mechanical robots (shooter#73), so a
+//! fighter's parts are where its bodies carry them ([`Hitboxes::posed`]): each connected part's
+//! cuboid ([`crate::mechanics::placements`]) on the authored frame of the body that holds it (a
+//! leg's on its thigh). Each connected part is an oriented box: armor plates are real boxes like
+//! the rest. Lag-compensated strikes meet the boxes where they were at the rewound tick, less the
+//! parts lost since. Strikes meet the part boxes, not the robot's collision shapes, so a shot
+//! through a gap between the legs flies on. [`Hitboxes::place`] still places a build at rest at a
+//! centre and yaw: what a client draws others at until it draws their bodies.
 //!
 //! **Resolution**, deterministic and once per strike:
 //! - A ray (hitscan beam, pellet, rocket in flight) meets the boxes in order along it (ties by
@@ -41,9 +42,10 @@
 //! sets off a small blast ([`BATTERY_BLAST_RADIUS_UNITS`], [`BATTERY_BLAST_DAMAGE`]) that
 //! damages nearby parts through the same resolution (another battery it destroys blasts in turn,
 //! at most once each; no chain-reaction subsystem); and a robot with no connected locomotion
-//! part (legs, wheels, tracks) cannot walk, jump or slide ([`PartDamage::mobile`]). Losing some
-//! of its legs or wheels changes nothing yet: how the surviving ones move it is the mechanical
-//! robots' (shooter#73's second half); the capsule invents no fallback.
+//! part (legs, wheels, tracks) cannot walk, jump or slide ([`PartDamage::mobile`]). A lost leg,
+//! wheel or track leaves its robot's bodies (shooter#73, [`crate::mechanics::Mechanics::sever`]): it
+//! no longer holds the robot up, and the robot walks at the share of its locomotion it still has
+//! ([`crate::player::Traction`]); a robot left on its chassis lies where it fell.
 //!
 //! The part healths (the catalog's, [`crate::robot::PartType::health`]), the penetration and the
 //! battery blast are provisional (Atlas Q2.i70.1, Q2.i70.5).
@@ -140,6 +142,16 @@ impl PartDamage {
         self.lost
     }
 
+    /// Every part of the build (bits by index).
+    #[must_use]
+    pub const fn everything(&self) -> u32 {
+        if self.len as usize >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << self.len) - 1
+        }
+    }
+
     /// Part `index` is still connected (and so not destroyed).
     #[must_use]
     pub const fn attached(&self, index: usize) -> bool {
@@ -185,7 +197,7 @@ impl PartDamage {
         crate::weapons::holdable(|weapon| self.armed(build, weapon)).any(|held| held == weapon)
     }
 
-    /// It still has a connected leg, wheel or track: the capsule may walk, jump and slide.
+    /// It still has a connected leg, wheel or track: it may walk, jump and slide.
     #[must_use]
     pub fn mobile(&self, build: &Assembly) -> bool {
         build.parts().iter().enumerate().any(|(index, part)| {
@@ -243,6 +255,33 @@ impl PartDamage {
             destroyed,
             lost: self.lost & !before,
         })
+    }
+
+    /// Part `index` of `build` has taken damage and is still connected (above zero): what a
+    /// field repair may restore ([`crate::repair`]).
+    #[must_use]
+    pub fn damaged(&self, build: &Assembly, index: usize) -> bool {
+        self.attached(index)
+            && build
+                .parts()
+                .get(index)
+                .is_some_and(|part| self.health[index] < part_type(part).health)
+    }
+
+    /// `amount` of health back to part `index` of `build`, never past its catalog health: only
+    /// a part still connected (a destroyed or lost one is gone for the life). The health it
+    /// gained.
+    pub fn heal(&mut self, build: &Assembly, index: usize, amount: u16) -> u16 {
+        if !self.attached(index) {
+            return 0;
+        }
+        let Some(part) = build.parts().get(index) else {
+            return 0;
+        };
+        let whole = part_type(part).health;
+        let gained = amount.min(whole.saturating_sub(self.health[index]));
+        self.health[index] += gained;
+        gained
     }
 }
 
@@ -304,7 +343,7 @@ fn axes_of([x, y, z, w]: [f32; 4]) -> [[f32; 3]; 3] {
 }
 
 impl Hitboxes {
-    /// `build`'s connected parts (by `damage`) on a fighter whose capsule is centred at `center`
+    /// `build`'s connected parts (by `damage`) at rest on a fighter centred at `center`
     /// (units) facing `yaw`.
     #[must_use]
     pub fn place(build: &Assembly, damage: &PartDamage, center: [f32; 3], yaw: u16) -> Self {
@@ -319,7 +358,7 @@ impl Hitboxes {
                 )
             })
             .collect();
-        // The robot's lowest point at rest stands on the capsule's feet.
+        // The robot's lowest point at rest stands on the feet below the centre.
         let floor = local
             .iter()
             .map(|(centre, axes, half)| {
@@ -361,10 +400,86 @@ impl Hitboxes {
         Self { boxes }
     }
 
+    /// `build`'s connected parts (by `damage`) where its mechanical robot carries them: each
+    /// part's cuboid ([`placements`]) in the authored frame of the body that carries it,
+    /// `frames` ([`crate::mechanics::RobotState::part_frames`]). A part without a frame (it came
+    /// off) has no box.
+    #[must_use]
+    pub fn posed(
+        build: &Assembly,
+        damage: &PartDamage,
+        frames: &[(PartId, crate::physics::articulated::Pose)],
+    ) -> Self {
+        let boxes = build
+            .parts()
+            .iter()
+            .zip(placements(build))
+            .enumerate()
+            .filter(|(index, _)| damage.attached(*index))
+            .filter_map(|(index, (part, placement))| {
+                let frame = frames.iter().find(|(id, _)| *id == part.id)?.1;
+                let turn = axes_of(frame.orientation);
+                let apply = |v: [f32; 3]| -> [f32; 3] {
+                    std::array::from_fn(|axis| {
+                        turn[0][axis] * v[0] + turn[1][axis] * v[1] + turn[2][axis] * v[2]
+                    })
+                };
+                let centre = apply(placement.centre);
+                Some(PartBox {
+                    index,
+                    part: part.id,
+                    armor: part_type(part).kind == Kind::Armor,
+                    center: std::array::from_fn(|axis| frame.position[axis] + centre[axis]),
+                    axes: axes_of(placement.orientation).map(apply),
+                    half: placement.half_extents,
+                })
+            })
+            .collect();
+        Self { boxes }
+    }
+
+    /// These boxes less the parts `damage` says are lost since.
+    #[must_use]
+    pub fn attached(&self, damage: &PartDamage) -> Self {
+        Self {
+            boxes: self
+                .boxes
+                .iter()
+                .filter(|part| damage.attached(part.index))
+                .copied()
+                .collect(),
+        }
+    }
+
+    /// These boxes grown by `margin` (units) on every side: what a flame of that radius along
+    /// a ray touches.
+    #[must_use]
+    pub fn grown(&self, margin: f32) -> Self {
+        Self {
+            boxes: self
+                .boxes
+                .iter()
+                .map(|part| PartBox {
+                    half: part.half.map(|half| half + margin),
+                    ..*part
+                })
+                .collect(),
+        }
+    }
+
     /// The box of part `index`, if it is connected.
     #[must_use]
     pub fn get(&self, index: usize) -> Option<&PartBox> {
         self.boxes.iter().find(|part| part.index == index)
+    }
+
+    /// How far (units) part `index`'s box comes to `point` (0 inside it), if it is connected.
+    #[must_use]
+    pub fn reach(&self, index: usize, point: [f32; 3]) -> Option<f32> {
+        let part = self.get(index)?;
+        let on = Self::closest(part, point);
+        let gap = [0, 1, 2].map(|axis| on[axis] - point[axis]);
+        Some(dot(gap, gap).sqrt())
     }
 
     /// Where along `translation` (0..=1) a ray from `origin` enters each box it meets: (the
@@ -490,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn the_standard_robot_stands_on_the_capsules_feet() {
+    fn the_standard_robot_stands_on_its_feet() {
         let boxes = Hitboxes::place(&STANDARD, &PartDamage::fresh(&STANDARD), [0.0; 3], 0);
         let low = boxes
             .boxes

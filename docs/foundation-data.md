@@ -31,18 +31,17 @@ real players.
    | `--target` | Output | For |
    | --- | --- | --- |
    | `game-server` | The log in game-server's replay format, cut after `--to`, plus a `key=value` `.txt` manifest. It always starts at tick 0: the shooter's snapshot is not a restorable baseline | game-server's replay codec and runtime tests (`tests/fixtures/shooter/`) |
-   | `physics` | JSON: arena boxes and ramps, the character box with its contact offset and step-up, gravity, and for each tick `--from..=--to` every fighter's intent, the move its step handed the character controller (`move`: the displacement in units, gravity, ground settle and sliding around other fighters included; `null` without a body), and the position, velocity and ground contact after it | a physics-engine A/B scenario, driving each character with `move` |
+   | `physics` | JSON (`shooter/physics-window/v2`): arena boxes and ramps, gravity, and for each tick `--from..=--to` every fighter's intent, its mechanical robot's root body after the tick (`root`: centre of mass, principal frame, velocity and angular velocity, exact; `null` without a robot, shooter#73), and the position, velocity and ground contact after it | a physics-engine A/B scenario of the robots' root bodies |
    | `render` | JSON: one frame at `--to`. It has the camera at a person's eye, the arena, the fighters, rockets in flight, and the last 6 ticks of shots, beams, explosions and hits | a render-engine scene |
 
 4. **Hand it over:** open a PR on the foundation with the fixture and a test, or file an issue
    with the command when the foundation has no format for it yet.
 5. **Profile:** `scripts/profile.sh [OUT] [native|web|all]` captures runtime-profiler scenarios
    (default all). The native lane has two.
-   `profiles/bot-match.yaml` is about 5 1/2 minutes of match ticks without a window; the script
-   also records the same match as a replay. It collects `process` and `native-perf`: the
-   bundle's `hotspots.json` holds the sampled hotspots with call paths, and the script renders
-   the top ones to `bot-match/hotspots.md`. `native-perf` needs `perf` and
-   `kernel.perf_event_paranoid` at 2 or lower (user-space cycles). `profiles/native-client.yaml` runs
+   `profiles/bot-match.yaml` is the first 4000 ticks (about 67 s) of the match without a window; the script
+   also records the same match whole (20000 ticks) as a replay. It collects `process` only: since
+   the mechanical robots (#73) `native-perf`'s report exceeds its 8 MiB safety limit at any
+   match length (runtime-profiler#151); the sampled hotspots come back when that is fixed. `profiles/native-client.yaml` runs
    `shooter-client --frames 600`: the native client draws 600 frames (10 s) of a practice match
    (on the default map; `--map <id>` picks another, and the summary line names it)
    offscreen at 1280x720, one tick per frame, with the local fighter played by the replays'
@@ -87,6 +86,6 @@ scripts/profile.sh                       # all lanes; `scripts/profile.sh target
 | game-server | 20 s deathmatch replay fixture with a codec and runtime-shape test: [game-server#84](https://github.com/moritzbrantner/game-server/pull/84) |
 | physics-engine | Accepted as the `shooter_window` A/B scenario ([physics-engine#558](https://github.com/moritzbrantner/physics-engine/issues/558)). Its window: `record --seed 33 --ticks 720`, then `promote --target physics --from 580 --to 699` (a rocket blast lifts slot 0 at tick 610, slot 3 launches off a jump pad at tick 634). Recorded from the six-slot match on the 9-spawn greybox; since the 12-slot default (#50) the same command records a different match, and since the greybox yard became the default map (#82) it records on the yard unless given `--map greybox` |
 | render-engine | Proposed as a scene fixture: [render-engine#105](https://github.com/moritzbrantner/render-engine/issues/105) |
-| runtime-profiler | Pinned at `2110e16` (the `;` in Rust symbols fix, [runtime-profiler#149](https://github.com/moritzbrantner/runtime-profiler/issues/149)). The bot match collects `native-perf` hotspots. The native client stays on `process`: its perf report (lavapipe and wgpu stacks) exceeds the profiler's 8 MiB limit ([runtime-profiler#151](https://github.com/moritzbrantner/runtime-profiler/issues/151)) |
+| runtime-profiler | Pinned at `2110e16` (the `;` in Rust symbols fix, [runtime-profiler#149](https://github.com/moritzbrantner/runtime-profiler/issues/149)). Both the bot match and the native client stay on `process`: their perf reports (the mechanical robots' physics, and lavapipe and wgpu stacks) exceed the profiler's 8 MiB limit ([runtime-profiler#151](https://github.com/moritzbrantner/runtime-profiler/issues/151)) |
 
 Profiling the browser client is [#28](https://github.com/moenarch-games/shooter/issues/28).

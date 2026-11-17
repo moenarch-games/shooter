@@ -4,16 +4,21 @@
 //! and a close range for the shotgun, laser and flamethrower, and the greybox yard's walkway
 //! (up its ramp, along and off it) and its jump pad onto it, and the assembly works' routes (its
 //! ramp, mezzanine and bridge, its cover, and its pad, work platforms and crane mast onto the
-//! crane tower). The movement and weapon tests check
+//! crane tower), and the proving cell's (its ramp and gallery, its stage, its pad and a grapple
+//! from the stage onto the gallery), and the drydock's (its gantry ramp and a gangway onto a
+//! foredeck, the stern ramp, the outer lane's pad and a grapple on the bow mast). The movement
+//! and weapon tests check
 //! what each one does and the Rapier A/B test runs each on both backends.
 
 use crate::arena::{Arena, Piece, Post};
+use crate::drydock::{FOREDECK_TOP, GANTRY_X, SHIP_X};
 use crate::physics::RampRise;
 use crate::physics::Vec3i;
 use crate::pickups::{ArenaModule, ModulePad};
 use crate::player::Intent;
+use crate::proving_cell::STAGE_TOP;
 use crate::robot::{Assembly, HEAVY, SKIRMISHER};
-use crate::tour::{EAST, Leg, NORTH, SOUTH, hold, stand, walk};
+use crate::tour::{EAST, Leg, NORTH, SOUTH, WEST, hold, stand, walk};
 use crate::weapons::{MAX_PITCH, Weapon};
 
 /// One scripted scenario.
@@ -209,11 +214,13 @@ pub const STEP: Scenario = Scenario {
 /// Straight down.
 const DOWN: i16 = -MAX_PITCH;
 
-/// A 2.5 m ledge 3.3 m south: out of reach of a double jump (about 2 m), in reach of a rocket
-/// jump. Jump, fire a rocket at the feet, then steer onto the ledge.
+/// A 2.5 m ledge 3.3 m south, 12 m wide: out of reach of a double jump (about 2 m), in reach of
+/// a rocket jump. Jump, fire a rocket down at the reticle (the camera looks down from over the
+/// right shoulder, so the blast lands beside the feet and shoves the robot sideways too), then
+/// steer onto the ledge.
 pub const ROCKET_JUMP: Scenario = Scenario {
     name: "rocket jump onto a ledge",
-    arena: || open([0, 0, -330], vec![block([0, 125, 600], [300, 125, 600])]),
+    arena: || open([0, 0, -330], vec![block([0, 125, 600], [600, 125, 600])]),
     legs: &[
         hold(
             "take the launcher",
@@ -249,13 +256,14 @@ pub const ROCKET_JUMP: Scenario = Scenario {
     ],
 };
 
-/// Pitch steps from the grapple scenario's eye (0, 165, -600) up to the pillar's face at
-/// (0, 500, 650): atan(335 / 1250) ≈ 15.0°.
-const PILLAR_PITCH: i16 = 2_731;
+/// Pitch steps from the grapple scenario's eye (0, 165, -600) that put the camera's target, and
+/// so the line from the grapple module's muzzle (a hand left of, below and ahead of the eye),
+/// on the pillar's face at (0, 500, 650): about 16.1°.
+const PILLAR_PITCH: i16 = 2_931;
 
 /// A 3 m ledge 9 m south (beyond a double jump and a rocket jump) with an 8 m pillar on it.
-/// Take the grapple, hook the pillar's face 5 m up over the ledge's edge, get reeled up and over
-/// the edge, let go and step onto the ledge.
+/// Aim the grapple module (its own key; the standard build mounts it), hook the pillar's face
+/// 5 m up over the ledge's edge, get reeled up and over the edge, let go and step onto the ledge.
 pub const GRAPPLE: Scenario = Scenario {
     name: "grapple onto a ledge",
     arena: || {
@@ -269,11 +277,10 @@ pub const GRAPPLE: Scenario = Scenario {
     },
     legs: &[
         hold(
-            "take the grapple",
+            "aim the grapple",
             Intent {
                 yaw: SOUTH,
                 pitch: PILLAR_PITCH,
-                select: Some(Weapon::Grapple),
                 ..Intent::IDLE
             },
             15,
@@ -283,7 +290,7 @@ pub const GRAPPLE: Scenario = Scenario {
             Intent {
                 yaw: SOUTH,
                 pitch: PILLAR_PITCH,
-                fire: true,
+                grapple: true,
                 ..Intent::IDLE
             },
             90,
@@ -525,25 +532,25 @@ pub const WORKS_STEPS: Scenario = Scenario {
     ],
 };
 
-/// Pitch steps from the tower grapple's eye (2350, 165, -1450) up to the crane mast's ring.
-const MAST_PITCH: i16 = 6_200;
+/// Pitch steps from the tower grapple's eye (2330, 165, -1450) that put the line from the grapple
+/// module's muzzle on the crane mast's ring, over the tower's lip.
+const MAST_PITCH: i16 = 6_400;
 
 /// The assembly works' crane mast from the floor south of the tower: hook its ring, reel up the
 /// tower's face and over its edge, and let go onto the top.
 pub const WORKS_GRAPPLE: Scenario = Scenario {
     name: "the works' grapple onto the crane tower",
     arena: || Arena {
-        spawn: Vec3i::new(2_350, 0, -1_450),
+        spawn: Vec3i::new(2_330, 0, -1_450),
         spawn_yaw: NORTH,
         ..Arena::assembly_works()
     },
     legs: &[
         hold(
-            "take the grapple",
+            "aim the grapple",
             Intent {
                 yaw: NORTH,
                 pitch: MAST_PITCH,
-                select: Some(Weapon::Grapple),
                 ..Intent::IDLE
             },
             15,
@@ -553,13 +560,198 @@ pub const WORKS_GRAPPLE: Scenario = Scenario {
             Intent {
                 yaw: NORTH,
                 pitch: MAST_PITCH,
-                fire: true,
+                grapple: true,
                 ..Intent::IDLE
             },
             90,
         ),
         walk("let go onto the tower", NORTH, 30),
         stand("on the tower", 30),
+    ],
+};
+
+/// The proving cell from the foot of its north gallery's ramp: north up the 12 m ramp onto the
+/// gallery, east along its deck past the thrusters, then south off its edge between its low
+/// covers to the floor 3 m below.
+pub const CELL_GALLERY: Scenario = Scenario {
+    name: "the cell's ramp and gallery",
+    arena: || Arena {
+        spawn: Vec3i::new(-1_400, 0, 150),
+        spawn_yaw: NORTH,
+        ..Arena::proving_cell()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the ramp", NORTH, 130),
+        walk("along the gallery", EAST, 92),
+        stand("on the gallery", 10),
+        walk("off the edge", SOUTH, 40),
+        stand("below", 40),
+    ],
+};
+
+/// The proving cell's stage: south up its north ramp onto the 2 m stage, across it past the rail
+/// capacitor and down its south ramp.
+pub const CELL_STAGE: Scenario = Scenario {
+    name: "the cell's stage",
+    arena: || Arena {
+        spawn: Vec3i::new(0, 0, -1_250),
+        spawn_yaw: SOUTH,
+        ..Arena::proving_cell()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the ramp", SOUTH, 85),
+        stand("on the stage", 10),
+        walk("down the south ramp", SOUTH, 125),
+        stand("at its foot", 10),
+    ],
+};
+
+/// The proving cell's jump pad in front of the north gallery: onto it, thrown north onto the
+/// gallery's deck.
+pub const CELL_PAD: Scenario = Scenario {
+    name: "the cell's pad onto the gallery",
+    arena: || Arena {
+        spawn: Vec3i::new(-700, 0, -650),
+        spawn_yaw: NORTH,
+        ..Arena::proving_cell()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("onto the pad", NORTH, 20),
+        stand("thrown", 90),
+        stand("on the gallery", 20),
+    ],
+};
+
+/// Pitch steps from the stage grapple's eye (-100, 365, -250) up to the north wall 7 m up behind
+/// the gallery, (-100, 700, -1600): atan(335 / 1350) ≈ 13.9°.
+const GALLERY_PITCH: i16 = 2_537;
+
+/// The proving cell from its stage's north edge: hook the north wall over the gallery, get reeled
+/// up and over the gallery's edge, let go and step onto its deck.
+pub const CELL_GRAPPLE: Scenario = Scenario {
+    name: "the cell's grapple onto the gallery",
+    arena: || Arena {
+        spawn: Vec3i::new(-100, STAGE_TOP, -250),
+        spawn_yaw: NORTH,
+        ..Arena::proving_cell()
+    },
+    legs: &[
+        hold(
+            "aim the grapple",
+            Intent {
+                yaw: NORTH,
+                pitch: GALLERY_PITCH,
+                ..Intent::IDLE
+            },
+            15,
+        ),
+        hold(
+            "hook and reel in",
+            Intent {
+                yaw: NORTH,
+                pitch: GALLERY_PITCH,
+                grapple: true,
+                ..Intent::IDLE
+            },
+            90,
+        ),
+        walk("let go onto the gallery", NORTH, 30),
+        stand("on the gallery", 60),
+    ],
+};
+
+/// The drydock from the foot of its west gantry's north ramp: south up the 16 m ramp onto the
+/// 4 m gantry, along it to the north gangway, then west over the gangway and the hull's
+/// shoulder onto the foredeck.
+pub const DOCK_GANTRY: Scenario = Scenario {
+    name: "the dock's gantry and gangway",
+    arena: || Arena {
+        spawn: Vec3i::new(GANTRY_X, 0, -3_200),
+        spawn_yaw: SOUTH,
+        ..Arena::drydock()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the ramp", SOUTH, 160),
+        walk("along the gantry", SOUTH, 30),
+        stand("on the gantry", 10),
+        walk("over the gangway", WEST, 70),
+        stand("on the foredeck", 20),
+    ],
+};
+
+/// The drydock's west foredeck: south up the 8 m ramp onto the 6 m stern deck, and along it.
+pub const DOCK_STERN: Scenario = Scenario {
+    name: "the dock's stern ramp",
+    arena: || Arena {
+        spawn: Vec3i::new(SHIP_X, FOREDECK_TOP, 0),
+        spawn_yaw: SOUTH,
+        ..Arena::drydock()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the ramp", SOUTH, 110),
+        stand("on the stern deck", 20),
+    ],
+};
+
+/// The drydock's west outer lane: onto its jump pad, thrown east over the hull's shoulder onto
+/// the foredeck.
+pub const DOCK_PAD: Scenario = Scenario {
+    name: "the dock's pad onto the foredeck",
+    arena: || Arena {
+        spawn: Vec3i::new(-3_650, 0, -600),
+        spawn_yaw: EAST,
+        ..Arena::drydock()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("onto the pad", EAST, 25),
+        stand("thrown", 100),
+        stand("on the foredeck", 20),
+    ],
+};
+
+/// Pitch steps from the outer lane's eye (-3300, 165, -2200) up to the bow mast's top on the
+/// foredeck, (-2200, 670, -2200): atan(505 / 1100) ≈ 24.7°, raised about 1.6° so the line from
+/// the grapple module's muzzle (below the eye) still meets the mast's top.
+const BOW_MAST_PITCH: i16 = 4_797;
+
+/// The drydock's west outer lane: hook the bow mast over the hull, get reeled up over the
+/// shoulder and flung toward the mast, let go and step back to land on the foredeck short of
+/// the mast's foot.
+pub const DOCK_GRAPPLE: Scenario = Scenario {
+    name: "the dock's grapple onto the foredeck",
+    arena: || Arena {
+        spawn: Vec3i::new(-3_300, 0, -2_200),
+        spawn_yaw: EAST,
+        ..Arena::drydock()
+    },
+    legs: &[
+        hold(
+            "aim the grapple",
+            Intent {
+                yaw: EAST,
+                pitch: BOW_MAST_PITCH,
+                ..Intent::IDLE
+            },
+            15,
+        ),
+        hold(
+            "hook and reel in",
+            Intent {
+                yaw: EAST,
+                pitch: BOW_MAST_PITCH,
+                grapple: true,
+                ..Intent::IDLE
+            },
+            95,
+        ),
+        walk("let go onto the foredeck", WEST, 10),
+        stand("on the foredeck", 90),
     ],
 };
 
@@ -582,6 +774,14 @@ pub const ALL: &[Scenario] = &[
     WORKS_TOWER_PAD,
     WORKS_STEPS,
     WORKS_GRAPPLE,
+    CELL_GALLERY,
+    CELL_STAGE,
+    CELL_PAD,
+    CELL_GRAPPLE,
+    DOCK_GANTRY,
+    DOCK_STERN,
+    DOCK_PAD,
+    DOCK_GRAPPLE,
 ];
 
 /// This tick's controls for scripted person `index`: run and strafe in turns, sweep the view
@@ -604,10 +804,13 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
         pitch: 0,
         fire: (tick + 20 * person) % 60 < 40,
         melee: (tick + 50 * person).is_multiple_of(200),
+        // The grapple module's own key, a second held every four (shooter#104).
+        grapple: (tick + 70 * person) % 240 < 60,
         select: tick
             .is_multiple_of(300)
             .then(|| weapons[(tick / 300 + person) as usize % weapons.len()]),
         edit: false,
+        repair: None,
     }
 }
 

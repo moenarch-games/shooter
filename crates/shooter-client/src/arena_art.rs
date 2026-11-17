@@ -3,16 +3,19 @@
 //! material uploaded once ([`ArenaArt::new`]), then an arena's placements
 //! (`shooter_sim::Arena::placements`, from which the simulation derives its collision) drawn as
 //! instances of them where the simulation puts them, and its floor laid with the kit's 2 m floor
-//! plates ([`ArenaArt::draw`]). The greybox maps have no placements and keep their boxes
+//! plates ([`ArenaArt::draw`]); each destruction candidate in the look the match's snapshot gives
+//! it, intact or the kit's broken variant ([`ArenaArt::show`]: the snapshot is the only word on it,
+//! shooter#60). The greybox maps have no placements and keep their boxes
 //! (`crate::scene`).
 
 use crate::robots::draw::material;
 use crate::robots::kit::KitData;
 use crate::scene::METRES_PER_UNIT;
 use render_engine::glam::{Mat4, Quat, Vec3};
-use render_engine::world::{Instance, MaterialId, MeshId, TextureId, World};
+use render_engine::world::{Instance, InstanceId, MaterialId, MeshId, TextureId, World};
 use shooter_sim::Arena;
 use shooter_sim::arena_kit::{Module, Placement, Variant};
+use shooter_sim::scenery::PlaceableState;
 use std::collections::HashMap;
 
 /// The floor plates' size (metres): the kit's 2 m grid.
@@ -81,9 +84,8 @@ impl ArenaArt {
     }
 
     /// Retains `arena`'s floor plates and placed modules in `world`: they are drawn every frame.
-    /// Returns how many instances it added.
-    pub fn draw(&self, world: &mut World, arena: &Arena) -> usize {
-        let mut added = 0;
+    /// Returns the placed modules, whose looks [`ArenaArt::show`] follows.
+    pub fn draw(&self, world: &mut World, arena: &Arena) -> Placed {
         let (plate, plate_material) = self.meshes[&(Module::Floor, Variant::Intact)];
         #[allow(clippy::cast_precision_loss)]
         let half = arena.half_size as f32 * METRES_PER_UNIT;
@@ -103,19 +105,57 @@ impl ArenaArt {
                     world_from_local: Mat4::from_translation(center),
                     skin: None,
                 });
-                added += 1;
             }
         }
-        for placement in &arena.placements {
-            let (mesh, material) = self.look(placement);
-            world.add_instance(Instance {
-                mesh,
-                material,
-                world_from_local: transform(placement),
-                skin: None,
-            });
-            added += 1;
+        let placements = arena
+            .placements
+            .iter()
+            .map(|placement| {
+                let (mesh, material) = self.look(placement);
+                let id = world.add_instance(Instance {
+                    mesh,
+                    material,
+                    world_from_local: transform(placement),
+                    skin: None,
+                });
+                (id, *placement)
+            })
+            .collect();
+        Placed {
+            authored: placements,
         }
-        added
     }
+
+    /// Brings the placed modules' looks to the match's word (a snapshot's
+    /// `shooter_sim::Snapshot::scenery`): each placeable broken there drawn as the kit's broken
+    /// variant, every other one as its map authored it. Only the changed ones are touched.
+    pub fn show(&self, world: &mut World, placed: &Placed, scenery: &[PlaceableState]) {
+        for (index, (id, authored)) in placed.authored.iter().enumerate() {
+            // Only the map's destruction candidates ever change.
+            if !authored.destructible {
+                continue;
+            }
+            let broken = scenery
+                .iter()
+                .any(|placeable| usize::from(placeable.id) == index && placeable.health == 0);
+            let placement = if broken { authored.broken() } else { *authored };
+            let (mesh, material) = self.look(&placement);
+            world.set_instance(
+                *id,
+                Instance {
+                    mesh,
+                    material,
+                    world_from_local: transform(&placement),
+                    skin: None,
+                },
+            );
+        }
+    }
+}
+
+/// A kit-built arena's modules in the GPU's world ([`ArenaArt::draw`]): each placement's
+/// instance and the placement as its map authored it, in placement order (a placeable's stable
+/// ID is its index).
+pub struct Placed {
+    authored: Vec<(InstanceId, Placement)>,
 }

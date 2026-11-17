@@ -15,7 +15,7 @@ use super::kit::{Anchor, KitData};
 use crate::scene::METRES_PER_UNIT;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use shooter_sim::mechanics::placements;
-use shooter_sim::robot::{Assembly, BETA, CELL_MM, Kind, Locomotion, PartId};
+use shooter_sim::robot::{Assembly, BETA, CELL_MM, Kind, PartId};
 use shooter_sim::{TICK_HZ, Weapon};
 
 /// glTF +X, +Y and +Z as the part's x, z and −y.
@@ -42,19 +42,6 @@ pub struct Roll {
 }
 
 impl Roll {
-    /// How fast (radians a second) it turns rolling on the floor while the robot moves at
-    /// `velocity` (metres a second, robot frame) and turns at `yaw_rate` (radians a second about
-    /// +Y): its centre's ground speed across its axle over its radius. An upright axle does not
-    /// roll.
-    #[must_use]
-    pub fn rate(&self, velocity: Vec3, yaw_rate: f32) -> f32 {
-        #[allow(clippy::cast_precision_loss)]
-        let centre = self.centres.iter().sum::<Vec3>() / self.centres.len().max(1) as f32;
-        let moving = velocity + (Vec3::Y * yaw_rate).cross(centre);
-        let ahead = self.axis.cross(Vec3::Y);
-        Vec3::new(moving.x, 0.0, moving.z).dot(ahead) / self.radius
-    }
-
     /// Its lowest point (metres, robot frame): the bottom of its lowest rolling disc.
     #[must_use]
     pub fn bottom(&self) -> f32 {
@@ -80,8 +67,6 @@ pub struct ModelPart {
     pub damaged: Option<usize>,
     /// Its mesh's frame (the kit's glTF frame) in the robot's frame at rest.
     pub robot_from_local: Mat4,
-    /// A leg's offset in its gait's cycle (0..1).
-    pub phase: f32,
     /// A weapon's seconds between shots in this build (its mod's tuning included).
     pub refire: f32,
     /// A wheel's or track's axle.
@@ -115,9 +100,6 @@ pub struct Model {
     pub top: f32,
     /// Its rearmost point (metres along +X), the pivot it topples over when it dies.
     pub back: f32,
-    /// The leg clip its legs walk with: `walk-quadruped` with four legs, `walk-biped` with any
-    /// other number, none without legs.
-    pub gait: Option<&'static str>,
 }
 
 impl Model {
@@ -131,7 +113,6 @@ impl Model {
         let mut parts = Vec::with_capacity(build.parts().len());
         let mut mods = Vec::new();
         let (mut floor, mut top, mut back) = (f32::MAX, f32::MIN, f32::MAX);
-        let mut legs = Vec::new();
         for (part, placement) in build.parts().iter().zip(placements(build)) {
             let part_type = BETA
                 .part_type(part.kind)
@@ -146,8 +127,9 @@ impl Model {
                 + axes.z_axis.abs() * half.z;
             top = top.max(centre.y + extent.y);
             back = back.min(centre.x - extent.x);
+            let drawn = super::kit::drawn_key(part_type.key);
             let entry = kit
-                .entry(part_type.key, "default")
+                .entry(drawn, "default")
                 .ok_or_else(|| format!("robot: part {} has no kit entry", part_type.key))?;
             let corner = centre - rotation * half;
             let robot_from_local = Mat4::from_rotation_translation(rotation, corner)
@@ -167,9 +149,6 @@ impl Model {
             // A wheel or track stands on its rolling discs (the wheel's tyre is inset from its
             // cuboid), anything else on its cuboid.
             floor = floor.min(roll.as_ref().map_or(centre.y - extent.y, Roll::bottom));
-            if part_type.kind == Kind::Locomotion(Locomotion::Leg) {
-                legs.push((parts.len(), centre));
-            }
             let weapon = match part_type.kind {
                 Kind::Weapon(weapon) => Some(weapon),
                 _ => None,
@@ -191,32 +170,11 @@ impl Model {
                     .mount
                     .and_then(|mount| build.parts().iter().position(|p| p.id == mount.parent)),
                 entry,
-                damaged: kit.entry(part_type.key, "damaged"),
+                damaged: kit.entry(drawn, "damaged"),
                 robot_from_local,
-                phase: 0.0,
                 refire: weapon.map_or(0.0, |weapon| refire(build, weapon)),
                 roll,
             });
-        }
-        let gait = match legs.len() {
-            0 => None,
-            4 => Some("walk-quadruped"),
-            _ => Some("walk-biped"),
-        };
-        #[allow(clippy::cast_precision_loss)]
-        let middle =
-            legs.iter().map(|(_, centre)| *centre).sum::<Vec3>() / legs.len().max(1) as f32;
-        for (index, centre) in legs {
-            let right = centre.z > middle.z;
-            let front = centre.x > middle.x;
-            // The clips' phases: biped left 0, right 0.5; quadruped rear-left 0, front-left
-            // 0.25, rear-right 0.5, front-right 0.75.
-            parts[index].phase = match (gait == Some("walk-quadruped"), right, front) {
-                (true, false, true) => 0.25,
-                (true, true, true) => 0.75,
-                (_, true, _) => 0.5,
-                (_, false, _) => 0.0,
-            };
         }
         Ok(Self {
             parts,
@@ -224,7 +182,6 @@ impl Model {
             floor,
             top,
             back,
-            gait,
         })
     }
 

@@ -3,13 +3,15 @@
 //! (the rocket pod's tubes alternate), where each one died (a dead fighter has no
 //! position in a snapshot), so it can topple there until it respawns, and where each part it has
 //! lost this life came off, so the part falls from there to the floor and lies there until the
-//! fighter respawns (presentation only: the host decides what is lost, [`shooter_sim::damage`];
-//! the pieces are not physical, debris is shooter#75).
+//! fighter respawns (presentation only: the host decides what is lost, [`shooter_sim::damage`]).
+//! A large part the host keeps as physical debris (shooter#75, [`shooter_sim::mechanics::DebrisState`])
+//! is drawn where the snapshot has it instead, and is gone once the host retires it; only the
+//! small (cosmetic) ones and the destroyed ones fall on their own.
 
 use crate::scene::METRES_PER_UNIT;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3};
 use shooter_sim::damage::PartDamage;
-use shooter_sim::mechanics::placements;
+use shooter_sim::mechanics::{DebrisState, placements};
 use shooter_sim::robot::PartId;
 use shooter_sim::{Assembly, Event, Weapon};
 
@@ -25,6 +27,18 @@ struct Lost {
     frame: Mat4,
     height: f32,
     age: f32,
+    /// The host has kept it as physical debris: drawn where that is, gone once it retires.
+    physical: bool,
+}
+
+/// A piece of the host's debris drawn as its part: the frame (metres) of the robot it came off,
+/// as the piece carries it.
+fn debris_frame(piece: &DebrisState) -> Option<Mat4> {
+    let pose = piece.frame().ok()?;
+    Some(Mat4::from_rotation_translation(
+        Quat::from_array(pose.orientation).normalize(),
+        Vec3::from(pose.position) * METRES_PER_UNIT,
+    ))
 }
 
 /// The robot's frame at rest standing on a capsule centred at `center` (metres) looking along
@@ -73,6 +87,8 @@ pub struct Tracker {
     alive: Vec<Option<Remains>>,
     dead: Vec<Option<Remains>>,
     lost: Vec<Vec<Lost>>,
+    /// The host's debris in the latest snapshot, by slot: each piece's part and frame.
+    debris: Vec<Vec<(PartId, Mat4)>>,
 }
 
 impl Default for Tracker {
@@ -83,6 +99,7 @@ impl Default for Tracker {
             alive: vec![None; SLOTS],
             dead: vec![None; SLOTS],
             lost: vec![Vec::new(); SLOTS],
+            debris: vec![Vec::new(); SLOTS],
         }
     }
 }
@@ -156,28 +173,58 @@ impl Tracker {
             return;
         }
         let (floor, bottoms) = rest(build);
+        let debris = &self.debris[usize::from(slot)];
         for index in missing {
+            let part = build.parts()[index].id;
             lost.push(Lost {
-                part: build.parts()[index].id,
+                part,
                 frame,
                 height: (bottoms[index] - floor).max(0.0),
                 age: 0.0,
+                physical: debris.iter().any(|(piece, _)| *piece == part),
             });
         }
     }
 
-    /// `slot`'s lost parts and where their robot frames are now: each falls from where it came
-    /// off until it lies on the floor ([`super::PartStates::detached`]).
+    /// The host's physical debris now (a snapshot's, [`shooter_sim::Snapshot::debris`]): each
+    /// piece's part is drawn where the piece is from now on, and once a piece is gone from the
+    /// snapshots (retired) its part is not drawn any more.
+    pub fn debris(&mut self, debris: &[DebrisState]) {
+        for pieces in &mut self.debris {
+            pieces.clear();
+        }
+        for piece in debris {
+            let Some(frame) = debris_frame(piece) else {
+                continue;
+            };
+            let slot = usize::from(piece.slot);
+            self.debris[slot].push((piece.part, frame));
+            for lost in &mut self.lost[slot] {
+                lost.physical |= lost.part == piece.part;
+            }
+        }
+    }
+
+    /// `slot`'s lost parts and where their robot frames are now: physical debris where the host
+    /// has it (none once retired), every other part falling from where it came off until it lies
+    /// on the floor ([`super::PartStates::detached`]).
     #[must_use]
     pub fn detached(&self, slot: u8) -> Vec<(PartId, Mat4)> {
+        let debris = &self.debris[usize::from(slot)];
         self.lost[usize::from(slot)]
             .iter()
-            .map(|lost| {
+            .filter_map(|lost| {
+                if let Some((_, frame)) = debris.iter().find(|(part, _)| *part == lost.part) {
+                    return Some((lost.part, *frame));
+                }
+                if lost.physical {
+                    return None;
+                }
                 let fallen = (0.5 * GRAVITY * lost.age * lost.age).min(lost.height);
-                (
+                Some((
                     lost.part,
                     Mat4::from_translation(-Vec3::Y * fallen) * lost.frame,
-                )
+                ))
             })
             .collect()
     }
@@ -268,6 +315,52 @@ mod tests {
     }
 
     #[test]
+    fn a_part_kept_as_debris_is_drawn_where_the_host_has_it_until_it_retires() {
+        use render_engine::glam::Vec4;
+        use shooter_sim::physics::articulated::{Child, Motion, Pose, Shape};
+        let build = Assembly::default();
+        let mut parts = PartDamage::fresh(&build);
+        let rifle = build
+            .parts()
+            .iter()
+            .position(|p| p.id == PartId(7))
+            .unwrap();
+        parts.hurt(&build, rifle, 1_000);
+        let mut tracker = Tracker::default();
+        let frame = rest_frame(&build, Vec3::new(0.0, 0.9, 0.0), Vec3::Z);
+        tracker.parts(2, &build, &parts, frame);
+        // The host keeps it as a piece: a box authored in its robot's frame, its body 3 m away.
+        let piece = DebrisState {
+            slot: 2,
+            part: PartId(7),
+            piece: Child {
+                shape: Shape::Box([10.0, 10.0, 20.0]),
+                position: [0.0; 3],
+                orientation: [0.0, 0.0, 0.0, 1.0],
+                mass: 12.0,
+            },
+            age: 30,
+            rest: 0,
+            motion: Motion {
+                pose: Pose {
+                    position: [300.0, 20.0, 0.0],
+                    orientation: [0.0, 0.0, 0.0, 1.0],
+                },
+                velocity: [0.0; 3],
+                angular_velocity: [0.0; 3],
+            },
+        };
+        tracker.debris(&[piece]);
+        tracker.tick(&[], None, None, 5.0);
+        let drawn = tracker.detached(2);
+        assert_eq!(drawn.len(), 1);
+        assert!((drawn[0].1.w_axis - Vec4::new(3.0, 0.2, 0.0, 1.0)).length() < 1e-4);
+        // Retired by the host: no longer drawn, not falling on its own either.
+        tracker.debris(&[]);
+        assert!(tracker.detached(2).is_empty());
+    }
+
+    #[test]
     fn shots_reset_the_fire_clock() {
         let mut tracker = Tracker::default();
         tracker.tick(&[], Some(1), Some(Weapon::Laser), 0.1);
@@ -280,7 +373,7 @@ mod tests {
             &[Event::Fired {
                 slot: 2,
                 weapon: Weapon::RocketLauncher,
-                eye: [0.0; 3],
+                from: [0.0; 3],
                 direction: [0.0, 0.0, 1.0],
             }],
             Some(1),

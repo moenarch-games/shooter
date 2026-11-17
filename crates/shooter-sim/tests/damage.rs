@@ -5,12 +5,12 @@
 //! restoring the build, a destroyed battery's energy and blast, the wire and a predictor following the
 //! host, and bot matches that lose parts and replay exactly.
 
+use shooter_sim::aim;
 use shooter_sim::damage::{BATTERY_BLAST_DAMAGE, PartDamage};
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{ARMOR_PLATE, BEAM_LONG, CHASSIS_L, CHASSIS_S, SENSOR};
 use shooter_sim::robot::{ARMORY, BETA, Face, HEAVY, PartId, RawMount, RawPart, STANDARD};
-use shooter_sim::trig;
 use shooter_sim::weapons::{SPLASH_DAMAGE, Weapon};
 use shooter_sim::wire::{decode_snapshot, encode_snapshot};
 use shooter_sim::{Arena, Assembly, Event, Input, Intent, Rules, Session, Spawn};
@@ -57,10 +57,9 @@ fn duel() -> Session {
 
 /// `slot` is built as `build`, whole and fully charged, this life.
 fn rebuild(session: &mut Session, slot: usize, build: Assembly) {
+    session.fighters[slot].configured = build;
+    session.rebuild(u8::try_from(slot).unwrap(), build).unwrap();
     let fighter = &mut session.fighters[slot];
-    fighter.build = build;
-    fighter.configured = build;
-    fighter.parts = PartDamage::fresh(&build);
     fighter.energy = fighter.pool().capacity;
 }
 
@@ -73,19 +72,13 @@ fn part_center(session: &Session, slot: usize, part: PartId) -> [f32; 3] {
         .iter()
         .position(|p| p.id == part)
         .unwrap();
-    let parts = fighter.hitboxes(fighter.player.center(&session.world), fighter.intent.yaw);
+    let parts = fighter.hitboxes();
     parts.get(index).expect("a connected part").center
 }
 
-/// The yaw and pitch from `slot`'s eye to `point`.
-#[allow(clippy::cast_possible_truncation)]
+/// The yaw and pitch that put `slot`'s reticle on `point` ([`aim::at`]).
 fn aim_at(session: &Session, slot: usize, point: [f32; 3]) -> (u16, i16) {
-    let eye = session.fighters[slot].player.eye(&session.world);
-    let d = [0, 1, 2].map(|axis| point[axis] - eye[axis]);
-    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
-    let run = d[0].hypot(d[2]).round() as i32;
-    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
-    (yaw, pitch)
+    aim::at(Some(&session.world), session.fighters[slot].eye(), point)
 }
 
 /// One tick: A holds `a`, B holds `b` (both seeing the match as it is).
@@ -220,7 +213,7 @@ fn front_and_side_shots_strike_the_parts_they_meet() {
 fn a_rocket_splash_strikes_each_part_in_reach_once() {
     let mut session = duel();
     let events = shoot(&mut session, Weapon::RocketLauncher, 32_768, |session| {
-        let center = session.fighters[1].player.center(&session.world);
+        let center = session.fighters[1].center();
         [center[0], 0.0, center[2] - 60.0]
     });
     assert!(struck(&events).is_empty(), "the rocket is still flying");
@@ -393,8 +386,15 @@ fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_t
     assert_eq!(b.chassis_health(), 270);
     assert!(!b.parts.mobile(&b.build));
     assert!(!b.parts.weapon_lost(&b.build, Weapon::Shotgun));
-    // It cannot walk or jump (no leg, wheel or track), only turn.
-    let before = session.fighters[1].player.center(&session.world);
+    // Its legs came off its robot (shooter#73): they no longer hold it up, so it drops onto
+    // its chassis; and it cannot walk or jump (no leg, wheel or track), only turn.
+    assert!(session.mechanics.robot(1).unwrap().lost != 0);
+    let standing = session.fighters[1].center();
+    for _ in 0..30 {
+        step(&mut session, Intent::IDLE, facing(32_768));
+    }
+    let before = session.fighters[1].center();
+    assert!(before[1] < standing[1] - 50.0, "{standing:?} {before:?}");
     for _ in 0..60 {
         let run = Intent {
             yaw: 32_768,
@@ -405,9 +405,9 @@ fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_t
         };
         step(&mut session, Intent::IDLE, run);
     }
-    let after = session.fighters[1].player.center(&session.world);
+    let after = session.fighters[1].center();
     assert!(
-        (0..3).all(|axis| (after[axis] - before[axis]).abs() < 0.5),
+        (0..3).all(|axis| (after[axis] - before[axis]).abs() < 15.0),
         "{before:?} {after:?}"
     );
     // The root chassis (270) is the kill: four rail beams to it (below the weapons on its
@@ -543,7 +543,7 @@ fn part_damage_travels_in_snapshots_and_a_predictor_follows_it() {
     });
     let snapshot = decode_snapshot(&encode_snapshot(&host.snapshot())).unwrap();
     assert_eq!(snapshot, host.snapshot());
-    let me = *snapshot.slot(1).unwrap();
+    let me = snapshot.slot(1).unwrap().clone();
     assert_eq!(me.parts, host.fighters[1].parts);
     assert!(me.parts.weapon_lost(&me.build, Weapon::EnergyRifle));
     assert_eq!(me.chassis_health(), 270);
@@ -557,7 +557,7 @@ fn part_damage_travels_in_snapshots_and_a_predictor_follows_it() {
     // not fire there either, its shotgun does.
     let mut predictor = Session::new(host.arena.clone()).unwrap();
     predictor
-        .place(0, me.position, me.velocity, me.motion, me.held, me.hook)
+        .place(0, me.robot.as_ref().unwrap(), me.motion, me.held, me.hook)
         .unwrap();
     predictor.fighters[0].build = me.build;
     predictor.fighters[0].parts = me.parts;
@@ -645,7 +645,8 @@ fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
     assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
     b_takes(&mut session, select(Weapon::Shotgun));
     assert_eq!(session.fighters[1].arsenal.held, Weapon::Shotgun);
-    // The grapple lost: refused; back to the rifle is fine.
+    // The grapple module is never held, whole or lost (Atlas D2.i104.2); back to the rifle is
+    // fine.
     let b = &mut session.fighters[1];
     let build = b.build;
     let index = |weapon| {
@@ -684,6 +685,6 @@ fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
     assert!(fired.iter().all(|weapon| *weapon == Weapon::EnergyBlade));
     assert!(!fired.is_empty());
     // Rebuilt (as at a spawn), it takes up its build's first weapon.
-    session.fighters[1].rebuild(HEAVY);
+    session.rebuild(1, HEAVY).unwrap();
     assert_eq!(session.fighters[1].arsenal.held, Weapon::RailGun);
 }

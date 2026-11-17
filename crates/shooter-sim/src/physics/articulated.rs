@@ -23,14 +23,29 @@
 //! hinges added in the same order and the same drives steps on bit for bit like the original:
 //! the basis of rollback, prediction and replay. The oracle does not promise that.
 //!
+//! **Driving and support.** [`Articulated::set_velocity`] sets a body's velocity and angular
+//! velocity outright (the match's movement drive, [`crate::mechanics::Mechanics::drive`]) and
+//! [`Articulated::supported`] says whether a body rests on something below it. [`rebase`],
+//! [`origin_of`] and [`motion_at`] are the backend-independent compound arithmetic: a body's
+//! authored frame from its state, its state from an authored pose, and a body's state carried
+//! over when its children change (a part shot off).
+//!
 //! Units: positions in game units (centimetres), velocities in units a second, angles in
-//! radians, rates in radians a second, masses in kilograms and torques in N·m.
+//! radians, rates in radians a second, masses in kilograms and torques in N·m; gravity is given
+//! in metres a second squared.
 
 mod engine;
 #[cfg(feature = "physics-ab")]
 mod rapier;
 
+use physics_engine::approximate::{
+    CompoundChild, PreparedCompound, Quaternion, Shape as EngineShape, Vector as EngineVector,
+};
+
 use super::{BodyId, PhysicsError, RigidBody};
+
+/// Earth's gravity (m/s²), the default.
+pub const EARTH_GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
 
 /// A child shape in its body's authored frame (units).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -79,7 +94,8 @@ pub struct Motion {
     pub angular_velocity: [f32; 3],
 }
 
-/// A body to add: its id, its children and its friction.
+/// A body to add: its id, its children and its friction (zero is frictionless against
+/// anything: the smaller coefficient of its contacts wins).
 #[derive(Clone, Copy, Debug)]
 pub struct BodySpec<'a> {
     pub id: BodyId,
@@ -177,14 +193,26 @@ impl Articulated {
     ///
     /// If a body is not static or the backend refuses one.
     pub fn new(statics: &[RigidBody]) -> Result<Self, PhysicsError> {
+        Self::with_gravity(statics, EARTH_GRAVITY)
+    }
+
+    /// [`Self::new`] under `gravity` (m/s²): the arena's, for the match's robots.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::new`], or if `gravity` is not finite.
+    pub fn with_gravity(statics: &[RigidBody], gravity: [f32; 3]) -> Result<Self, PhysicsError> {
         if statics.iter().any(RigidBody::is_moving) {
             return Err(super::error("an articulated world's statics cannot move"));
         }
+        finite(&gravity)?;
         #[cfg(feature = "physics-ab")]
         if super::BACKEND.with(std::cell::Cell::get) == super::Backend::Rapier {
-            return Ok(Self(Inner::Rapier(Box::new(rapier::World::new(statics)))));
+            return Ok(Self(Inner::Rapier(Box::new(rapier::World::new(
+                statics, gravity,
+            )))));
         }
-        engine::World::new(statics).map(|world| Self(Inner::Engine(world)))
+        engine::World::new(statics, gravity).map(|world| Self(Inner::Engine(world)))
     }
 
     #[must_use]
@@ -265,6 +293,30 @@ impl Articulated {
         dispatch!(&self.0, world => world.child_pose(id, child))
     }
 
+    /// Sets body `id`'s velocity (units a second, of its centre of mass) and angular velocity
+    /// (radians a second) for the next step.
+    ///
+    /// # Errors
+    ///
+    /// If the body is missing or a value is not finite.
+    pub fn set_velocity(
+        &mut self,
+        id: BodyId,
+        velocity: [f32; 3],
+        angular_velocity: [f32; 3],
+    ) -> Result<(), PhysicsError> {
+        finite(&velocity)?;
+        finite(&angular_velocity)?;
+        dispatch!(&mut self.0, world => world.set_velocity(id, velocity, angular_velocity))
+    }
+
+    /// Whether body `id` touched something below it (a contact whose normal is mostly up) in
+    /// the last step.
+    #[must_use]
+    pub fn supported(&self, id: BodyId) -> bool {
+        dispatch!(&self.0, world => world.supported(id))
+    }
+
     #[must_use]
     pub fn hinge(&self, hinge: HingeId) -> Option<HingeState> {
         dispatch!(&self.0, world => world.hinge(hinge))
@@ -278,4 +330,93 @@ impl Articulated {
         }
         dispatch!(&self.0, world => world.cast_ray(origin, translation))
     }
+}
+
+fn prepare(children: &[Child]) -> Result<PreparedCompound, PhysicsError> {
+    let children: Vec<CompoundChild> = children
+        .iter()
+        .map(|child| CompoundChild {
+            shape: match child.shape {
+                Shape::Box(half) => EngineShape::Box(ev(half)),
+                Shape::Sphere(radius) => EngineShape::Sphere(radius),
+                Shape::Capsule {
+                    half_segment,
+                    radius,
+                } => EngineShape::capsule(half_segment, radius),
+            },
+            position: ev(child.position),
+            orientation: eq(child.orientation),
+            mass: child.mass,
+        })
+        .collect();
+    PreparedCompound::new(&children)
+        .map_err(|failure| super::error(format!("compound mass properties failed: {failure:?}")))
+}
+
+const fn ev(value: [f32; 3]) -> EngineVector {
+    EngineVector(value[0], value[1], value[2])
+}
+
+const fn eq(value: [f32; 4]) -> Quaternion {
+    Quaternion(value[0], value[1], value[2], value[3])
+}
+
+/// The pose of the authored frame of a body of `children` in the state `motion`.
+///
+/// # Errors
+///
+/// If the children have no valid mass properties.
+pub fn origin_of(children: &[Child], motion: &Motion) -> Result<Pose, PhysicsError> {
+    let prepared = prepare(children)?;
+    let (position, orientation) =
+        prepared.origin_pose(ev(motion.pose.position), eq(motion.pose.orientation));
+    Ok(Pose {
+        position: [position.0, position.1, position.2],
+        orientation: [orientation.0, orientation.1, orientation.2, orientation.3],
+    })
+}
+
+/// The state of a body of `children` at rest with its authored frame at `origin`.
+///
+/// # Errors
+///
+/// If the children have no valid mass properties.
+pub fn motion_at(children: &[Child], origin: Pose) -> Result<Motion, PhysicsError> {
+    let prepared = prepare(children)?;
+    let (position, orientation) =
+        prepared.body_pose(ev(origin.position), eq(origin.orientation).normalized());
+    Ok(Motion {
+        pose: Pose {
+            position: [position.0, position.1, position.2],
+            orientation: [orientation.0, orientation.1, orientation.2, orientation.3],
+        },
+        velocity: [0.0; 3],
+        angular_velocity: [0.0; 3],
+    })
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// The state of a body whose children changed from `old` to `new` (in the same authored frame)
+/// while it was in the state `motion`: the same authored pose, velocity field and spin, about
+/// its new centre of mass.
+///
+/// # Errors
+///
+/// If either set of children has no valid mass properties.
+pub fn rebase(old: &[Child], motion: &Motion, new: &[Child]) -> Result<Motion, PhysicsError> {
+    let origin = origin_of(old, motion)?;
+    let mut moved = motion_at(new, origin)?;
+    let offset: [f32; 3] =
+        std::array::from_fn(|axis| moved.pose.position[axis] - motion.pose.position[axis]);
+    let spin = cross(motion.angular_velocity, offset);
+    moved.velocity = std::array::from_fn(|axis| motion.velocity[axis] + spin[axis]);
+    moved.angular_velocity = motion.angular_velocity;
+    Ok(moved)
 }

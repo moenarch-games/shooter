@@ -7,26 +7,100 @@
 //! ```
 //!
 //! writes `loadouts.ppm` (the five named loadouts and the mechanics fixtures: the biped, the
-//! robo-dog and the paired turret with its rotor and hinge turned), `poses.ppm` (the standard
-//! build idle, running, strafing, airborne, grappling, sliding, firing, swinging the blade, dead,
+//! robo-dog and the paired turret with its rotor and hinge turned by the simulation),
+//! `poses.ppm` (the standard build as the simulation poses it: standing, two moments of its
+//! walk, walking on one leg, lying on its chassis without legs; firing, swinging the blade, dead,
 //! and with its blade shot off), `weapons.ppm` (the weapons' states and the mods: the rifle
 //! held with the blade away, the rifle firing, a blade swing, the rocket pod firing, the rail gun
 //! recharging, the skirmisher's grapple hooked with its mods, the marksman's long barrel and
 //! overcharger, the pyro's flamethrower firing beside its long-barrelled laser), `close.ppm` (the
 //! heavy build close up), `mods.ppm` (the skirmisher and marksman close up), `locomotion.ppm`
-//! (the wheeled fixtures with their wheels where the simulation turned them, the mini-tank on its
-//! tracks, a car rolling at a run, a damaged wheel and a lost one, a damaged track),
+//! (the wheeled fixtures and the mini-tank as the simulation drove them, a car a second into its
+//! drive, a damaged wheel and a lost one, a damaged track),
 //! `locomotion-close.ppm` (the car and the mini-tank close up) and `locomotion-damage.ppm` (the
 //! damaged and lost wheel and the damaged track close up).
 
-use render_engine::glam::{Mat4, Vec3};
+use render_engine::glam::{Mat4, Quat, Vec3};
 use shooter_client::gpu::Gpu;
-use shooter_client::robots::{self, PartStates, RobotState, RobotView, Robots};
-use shooter_sim::mechanics::fixtures;
+use shooter_client::robots::{self, Frames, PartStates, RobotState, RobotView, Robots};
+use shooter_sim::mechanics::{Command, Controls, Layout, Mechanics, fixtures};
 use shooter_sim::robot::{HEAVY, MARKSMAN, PYRO, PartId, SKIRMISHER, STANDARD};
 use shooter_sim::{Assembly, MapId, Weapon};
 
 const SIZE: (u32, u32) = (1600, 900);
+
+/// Lost parts and where each one's robot frame lies.
+type Detached = Vec<(PartId, Mat4)>;
+
+/// `build` alone on the fixtures' floor (facing +X), the parts in `lost` (a bit per part index)
+/// severed, stepped `ticks` under `controls`: its bodies as the simulation has them, drawn with
+/// its feet at `state`'s and facing its look. Alone in the mechanics world, without the match's
+/// movement drive (which holds a fighter upright), a robot leans as its legs push it.
+fn simulated(
+    build: Assembly,
+    lost: u32,
+    ticks: u32,
+    controls: impl Fn(&Layout) -> Controls,
+    state: &RobotState,
+) -> Result<Frames, String> {
+    let error = |error: shooter_sim::physics::PhysicsError| format!("{error:?}");
+    let mut mechanics = Mechanics::new(&fixtures::floor()).map_err(error)?;
+    mechanics.spawn(build, [0.0; 3], 0).map_err(error)?;
+    if lost != 0 {
+        mechanics.sever(0, lost).map_err(error)?;
+    }
+    for _ in 0..ticks {
+        let controls = controls(&mechanics.robots()[0].layout);
+        mechanics.step(&[controls]).map_err(error)?;
+    }
+    let frames = Frames::of_robot(&mechanics, 0, Vec3::ZERO).ok_or("no robot")?;
+    let root = frames.root().w_axis.truncate();
+    let pivot = Vec3::new(root.x, 0.0, root.z);
+    let look = Vec3::new(state.forward.x, 0.0, state.forward.z).normalize_or(Vec3::X);
+    let turn = Quat::from_rotation_arc(Vec3::X, look);
+    let feet = state.center - Vec3::Y * robots::pose::HALF_HEIGHT;
+    Ok(Frames {
+        center: state.center,
+        bodies: frames
+            .bodies
+            .iter()
+            .map(|(at, rotation)| (feet + turn * (*at - pivot), turn * *rotation))
+            .collect(),
+        ..frames
+    })
+}
+
+/// Standing still on its legs (a zero stride holds them straight).
+fn stand(layout: &Layout) -> Controls {
+    Controls::IDLE.walk(layout, 0, 0)
+}
+
+/// Walking ahead at its full stride.
+fn walk(layout: &Layout) -> Controls {
+    Controls::IDLE.walk(layout, 100, 0)
+}
+
+/// The part-index bits of `build`'s legs.
+fn legs_of(build: &Assembly) -> Vec<u32> {
+    use shooter_sim::robot::{BETA, Kind, Locomotion};
+    build
+        .parts()
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| {
+            BETA.part_type(part.kind).map(|kind| kind.kind)
+                == Some(Kind::Locomotion(Locomotion::Leg))
+        })
+        .map(|(index, _)| 1 << index)
+        .collect()
+}
+
+/// A lost part's robot frame lying on its side on the floor `beside` a spot.
+fn lying(beside: Vec3) -> Mat4 {
+    Mat4::from_translation(beside + Vec3::new(-0.5, 0.12, -0.7))
+        * Mat4::from_rotation_z(-std::f32::consts::FRAC_PI_2)
+        * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.4))
+}
 
 fn standing(at: Vec3, forward: Vec3) -> RobotState {
     RobotState {
@@ -88,30 +162,47 @@ fn main() -> Result<(), String> {
         origin - Vec3::X * x
     };
 
-    let fixtures_turret = fixtures::paired_turret();
-    let lineup: [(Assembly, &[(PartId, f32)]); 8] = [
-        (STANDARD, &[]),
-        (HEAVY, &[]),
-        (SKIRMISHER, &[]),
-        (MARKSMAN, &[]),
-        (PYRO, &[]),
-        (fixtures::biped(), &[]),
-        (fixtures::dog(false), &[]),
-        (
-            fixtures_turret,
-            &[(fixtures::ROTOR_PART, 0.6), (fixtures::HINGE_PART, -0.5)],
-        ),
+    // Each as the simulation spawns it; the turret's rotor and hinge driven to about
+    // 0.6 and −0.5 rad (binary angles).
+    let lineup = [
+        STANDARD,
+        HEAVY,
+        SKIRMISHER,
+        MARKSMAN,
+        PYRO,
+        fixtures::biped(),
+        fixtures::dog(false),
+        fixtures::paired_turret(),
     ];
-    let views: Vec<RobotView> = lineup
+    let turret = |_: &Layout| {
+        Controls::IDLE
+            .with(fixtures::ROTOR_PART, Command::Angle(6_258))
+            .with(fixtures::HINGE_PART, Command::Angle(-5_215))
+    };
+    let frames: Vec<Frames> = lineup
         .iter()
         .enumerate()
-        .map(|(index, (build, joints))| RobotView {
+        .map(|(index, build)| {
+            let state = standing(at(index, 2.0), toward);
+            if index == 7 {
+                simulated(*build, 0, 90, turret, &state)
+            } else {
+                simulated(*build, 0, 0, stand, &state)
+            }
+        })
+        .collect::<Result<_, _>>()?;
+    let views: Vec<RobotView> = lineup
+        .iter()
+        .zip(&frames)
+        .enumerate()
+        .map(|(index, (build, frames))| RobotView {
             slot: u8::try_from(index).unwrap_or(0),
             build: *build,
             state: standing(at(index, 2.0), toward),
             glow: 0.0,
+            highlight: None,
             parts: PartStates {
-                joints,
+                frames: Some(frames),
                 ..PartStates::default()
             },
         })
@@ -126,108 +217,102 @@ fn main() -> Result<(), String> {
         &out.join("loadouts.ppm"),
     )?;
 
-    let run = Vec3::new(0.0, 0.0, -6.0);
-    let poses: Vec<(RobotState, f32)> = {
-        let base = |index| standing(at(index, 1.45), toward);
-        vec![
-            (base(0), 0.0),
-            (
-                RobotState {
-                    velocity: run,
-                    ..base(1)
-                },
-                0.25,
-            ),
-            (
-                RobotState {
-                    velocity: Vec3::new(6.0, 0.0, 0.0),
-                    ..base(2)
-                },
-                0.6,
-            ),
-            (
-                RobotState {
-                    velocity: Vec3::new(0.0, 5.0, 0.0),
-                    center: base(3).center + Vec3::Y * 0.5,
-                    ..base(3)
-                },
-                0.0,
-            ),
-            (
-                RobotState {
-                    hook: Some(base(4).center + Vec3::new(0.0, 3.0, -2.0)),
-                    held: Weapon::Grapple,
-                    center: base(4).center + Vec3::Y * 0.5,
-                    ..base(4)
-                },
-                0.0,
-            ),
-            (
-                RobotState {
-                    sliding: true,
-                    ..base(5)
-                },
-                0.0,
-            ),
-            (
-                RobotState {
-                    since_fired: 0.06,
-                    ..base(6)
-                },
-                0.0,
-            ),
-            (
-                RobotState {
-                    swing: Some(0.5),
-                    held: Weapon::EnergyBlade,
-                    ..base(7)
-                },
-                0.0,
-            ),
-            (
-                RobotState {
-                    dead_for: Some(3.0),
-                    ..base(8)
-                },
-                0.0,
-            ),
-            (base(9), 0.0),
-        ]
+    // The standard build as the simulation poses it, then what it does on top (the weapons'
+    // states, the procedural death, a part shot off).
+    let legs = legs_of(&STANDARD);
+    let base = |index| standing(at(index, 1.45), toward);
+    let walking = |index| RobotState {
+        velocity: toward * 1.0,
+        ..base(index)
     };
-    // The standard build's blade shot off, lying on the floor.
-    let fallen = [(
-        PartId(8),
-        Mat4::from_translation(at(9, 1.45) + Vec3::new(-0.5, 0.12, -0.7))
-            * Mat4::from_rotation_z(-std::f32::consts::FRAC_PI_2)
-            * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.4)),
-    )];
+    let poses: Vec<(RobotState, Option<Frames>, Detached)> = vec![
+        (
+            base(0),
+            Some(simulated(STANDARD, 0, 0, stand, &base(0))?),
+            vec![],
+        ),
+        (
+            walking(1),
+            Some(simulated(STANDARD, 0, 22, walk, &walking(1))?),
+            vec![],
+        ),
+        (
+            walking(2),
+            Some(simulated(STANDARD, 0, 36, walk, &walking(2))?),
+            vec![],
+        ),
+        (
+            walking(3),
+            Some(simulated(STANDARD, legs[0], 20, walk, &walking(3))?),
+            vec![(
+                STANDARD.parts()[legs[0].trailing_zeros() as usize].id,
+                lying(at(3, 1.45)),
+            )],
+        ),
+        (
+            base(4),
+            Some(simulated(STANDARD, legs[0] | legs[1], 90, stand, &base(4))?),
+            legs.iter()
+                .enumerate()
+                .map(|(n, bit)| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let along = Vec3::X * 0.4 * n as f32;
+                    (
+                        STANDARD.parts()[bit.trailing_zeros() as usize].id,
+                        lying(at(4, 1.45) + along),
+                    )
+                })
+                .collect(),
+        ),
+        (
+            RobotState {
+                since_fired: 0.06,
+                ..base(5)
+            },
+            Some(simulated(STANDARD, 0, 0, stand, &base(5))?),
+            vec![],
+        ),
+        (
+            RobotState {
+                swing: Some(0.5),
+                held: Weapon::EnergyBlade,
+                ..base(6)
+            },
+            Some(simulated(STANDARD, 0, 0, stand, &base(6))?),
+            vec![],
+        ),
+        (
+            RobotState {
+                dead_for: Some(3.0),
+                ..base(7)
+            },
+            None,
+            vec![],
+        ),
+        // Its blade shot off, lying on the floor.
+        (
+            base(8),
+            Some(simulated(STANDARD, 0, 0, stand, &base(8))?),
+            vec![(PartId(8), lying(at(8, 1.45)))],
+        ),
+    ];
     let views: Vec<RobotView> = poses
         .iter()
         .enumerate()
-        .map(|(index, (state, _))| RobotView {
+        .map(|(index, (state, frames, detached))| RobotView {
             slot: u8::try_from(index).unwrap_or(0),
             build: STANDARD,
             state: *state,
             glow: 0.0,
-            parts: if index == 9 {
-                PartStates {
-                    detached: &fallen,
-                    ..PartStates::default()
-                }
-            } else {
-                PartStates::default()
+            highlight: None,
+            parts: PartStates {
+                frames: frames.as_ref(),
+                detached,
+                ..PartStates::default()
             },
         })
         .collect();
-    // The run and strafe gaits advanced `phase` cycles (the legs cycle at their fastest).
-    robots.update(&mut gpu.world, &views, 0.0)?;
-    for (view, (_, phase)) in views.iter().zip(&poses) {
-        if *phase > 0.0 {
-            let seconds = phase / robots::pose::MAX_CYCLES_PER_SECOND;
-            robots.update(&mut gpu.world, std::slice::from_ref(view), seconds)?;
-        }
-    }
-    let middle = at(4, 1.45) + Vec3::new(-0.725, 0.9, 0.0);
+    let middle = at(4, 1.45) + Vec3::Y * 0.9;
     shoot(
         &mut gpu,
         &mut robots,
@@ -313,6 +398,7 @@ fn main() -> Result<(), String> {
             build: *build,
             state: *state,
             glow: 0.0,
+            highlight: None,
             parts: PartStates::default(),
         })
         .collect();
@@ -332,6 +418,7 @@ fn main() -> Result<(), String> {
             build: SKIRMISHER,
             state: standing(origin, Vec3::new(-0.5, 0.0, -1.0)),
             glow: 0.0,
+            highlight: None,
             parts: PartStates::default(),
         },
         RobotView {
@@ -339,6 +426,7 @@ fn main() -> Result<(), String> {
             build: MARKSMAN,
             state: standing(origin - Vec3::X * 1.6, Vec3::new(-0.5, 0.0, -1.0)),
             glow: 0.0,
+            highlight: None,
             parts: PartStates::default(),
         },
     ];
@@ -357,6 +445,7 @@ fn main() -> Result<(), String> {
         build: HEAVY,
         state: standing(origin, Vec3::new(-0.6, 0.0, -1.0)),
         glow: 0.0,
+        highlight: None,
         parts: PartStates::default(),
     }];
     let middle = origin + Vec3::Y * 1.1;
@@ -407,70 +496,44 @@ fn mini_tank() -> Assembly {
         .expect("the mini-tank is a valid build")
 }
 
-/// Every wheel's and track's angle after `ticks` of the simulation driving `build` alone on a
-/// floor under `controls`.
-fn driven(
-    build: Assembly,
-    controls: shooter_sim::mechanics::Controls,
-    ticks: u32,
-) -> Result<Vec<(PartId, f32)>, String> {
-    let mut mechanics = shooter_sim::mechanics::Mechanics::new(&fixtures::floor())
-        .map_err(|error| format!("{error:?}"))?;
-    mechanics
-        .spawn(build, [0.0, 0.0, 0.0], 0)
-        .map_err(|error| format!("{error:?}"))?;
-    for _ in 0..ticks {
-        mechanics
-            .step(&[controls])
-            .map_err(|error| format!("{error:?}"))?;
-    }
-    Ok(mechanics.robots()[0]
-        .actuators
-        .iter()
-        .map(|actuator| (actuator.part, actuator.angle))
-        .collect())
-}
-
-/// `locomotion.ppm`: the wheeled fixtures (the car and strafer with their wheels where the
-/// simulation turned them after half a second's drive, the turret), the mini-tank, a car rolling
-/// along at a run (its wheels turned by its ground motion, as in a match), a car with a damaged
-/// wheel and one lost beside it, and the mini-tank with a damaged track; `locomotion-close.ppm`
-/// the car and the mini-tank close up.
+/// `locomotion.ppm`: the wheeled fixtures (the car and strafer as the simulation drove them for
+/// half a second, the turret), the mini-tank driven alike, a car a second into its drive, a car
+/// with a damaged wheel and one lost beside it, and the mini-tank with a damaged track;
+/// `locomotion-close.ppm` the car and the mini-tank close up.
 fn locomotion(
     gpu: &mut Gpu,
     robots: &mut Robots,
     origin: Vec3,
     out: &std::path::Path,
 ) -> Result<(), String> {
-    use shooter_sim::mechanics::{Command, Controls};
     const RATE: i16 = 6_000;
     let tank = mini_tank();
-    let car_angles = driven(fixtures::car(), fixtures::wheels(RATE, -RATE), 30)?;
-    let strafer_angles = driven(fixtures::strafer(), fixtures::wheels(RATE, -RATE), 30)?;
-    let tank_angles = driven(
-        tank,
+    let wheels = |_: &Layout| fixtures::wheels(RATE, -RATE);
+    let tracks = |_: &Layout| {
         Controls::IDLE
             .with(PartId(1), Command::Rate(RATE))
-            .with(PartId(2), Command::Rate(-RATE)),
-        30,
-    )?;
+            .with(PartId(2), Command::Rate(-RATE))
+    };
+    let idle = |_: &Layout| Controls::IDLE;
     let toward = Vec3::new(-0.35, 0.0, -1.0).normalize();
     let at = |index: usize| {
         #[allow(clippy::cast_precision_loss)]
         let x = index as f32 * 1.6;
         origin - Vec3::X * x
     };
+    let state = |index| standing(at(index), toward);
     let lost_wheel = fixtures::WHEELS[1];
+    let lost_bit = fixtures::car()
+        .parts()
+        .iter()
+        .position(|part| part.id == lost_wheel)
+        .map_or(0, |index| 1 << index);
     let damaged_wheel = [fixtures::WHEELS[0]];
     let damaged_track = [PartId(1)];
     // The lost front-left wheel lying flat beside the car: the car's rest frame, turned a
     // quarter about the robot's forward axis round the wheel's centre and lowered onto the
     // floor.
-    let car_rest = robots::track::rest_frame(
-        &fixtures::car(),
-        at(5) + Vec3::Y * robots::pose::HALF_HEIGHT,
-        toward,
-    );
+    let car_rest = robots::track::rest_frame(&fixtures::car(), state(5).center, toward);
     let wheel_centre = Vec3::new(0.2, -0.4, -0.4);
     let lying = [(
         lost_wheel,
@@ -480,47 +543,23 @@ fn locomotion(
             * Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2)
             * Mat4::from_translation(-wheel_centre),
     )];
-    let lineup: Vec<(Assembly, RobotState, PartStates)> = vec![
+    let frames = [
+        simulated(fixtures::car(), 0, 30, wheels, &state(0))?,
+        simulated(fixtures::strafer(), 0, 30, wheels, &state(1))?,
+        simulated(fixtures::turret(), 0, 30, idle, &state(2))?,
+        simulated(tank, 0, 30, tracks, &state(3))?,
+        simulated(fixtures::car(), 0, 60, wheels, &state(4))?,
+        simulated(fixtures::car(), lost_bit, 30, idle, &state(5))?,
+        simulated(tank, 0, 30, tracks, &state(6))?,
+    ];
+    let lineup: Vec<(Assembly, PartStates)> = vec![
+        (fixtures::car(), PartStates::default()),
+        (fixtures::strafer(), PartStates::default()),
+        (fixtures::turret(), PartStates::default()),
+        (tank, PartStates::default()),
+        (fixtures::car(), PartStates::default()),
         (
             fixtures::car(),
-            standing(at(0), toward),
-            PartStates {
-                joints: &car_angles,
-                ..PartStates::default()
-            },
-        ),
-        (
-            fixtures::strafer(),
-            standing(at(1), toward),
-            PartStates {
-                joints: &strafer_angles,
-                ..PartStates::default()
-            },
-        ),
-        (
-            fixtures::turret(),
-            standing(at(2), toward),
-            PartStates::default(),
-        ),
-        (
-            tank,
-            standing(at(3), toward),
-            PartStates {
-                joints: &tank_angles,
-                ..PartStates::default()
-            },
-        ),
-        (
-            fixtures::car(),
-            RobotState {
-                velocity: toward * 6.0,
-                ..standing(at(4), toward)
-            },
-            PartStates::default(),
-        ),
-        (
-            fixtures::car(),
-            standing(at(5), toward),
             PartStates {
                 damaged: &damaged_wheel,
                 detached: &lying,
@@ -529,29 +568,28 @@ fn locomotion(
         ),
         (
             tank,
-            standing(at(6), toward),
             PartStates {
                 damaged: &damaged_track,
-                joints: &tank_angles,
                 ..PartStates::default()
             },
         ),
     ];
     let views: Vec<RobotView> = lineup
         .iter()
+        .zip(&frames)
         .enumerate()
-        .map(|(index, (build, state, parts))| RobotView {
+        .map(|(index, ((build, parts), frames))| RobotView {
             slot: u8::try_from(index).unwrap_or(0),
             build: *build,
-            state: *state,
+            state: state(index),
             glow: 0.0,
-            parts: *parts,
+            highlight: None,
+            parts: PartStates {
+                frames: Some(frames),
+                ..*parts
+            },
         })
         .collect();
-    // The rolling car runs for a fifth of a second first: its wheels turn by the ground it
-    // covers.
-    robots.update(&mut gpu.world, &views, 0.0)?;
-    robots.update(&mut gpu.world, &views[4..5], 0.2)?;
     let middle = at(3) + Vec3::Y * 0.5;
     shoot(
         gpu,
@@ -562,11 +600,17 @@ fn locomotion(
         &out.join("locomotion.ppm"),
     )?;
 
+    let beside = standing(at(0) - Vec3::X * 1.4, toward);
+    let tank_beside = frames[6].at(beside.center);
     let close = [
         views[0],
         RobotView {
             slot: 1,
-            state: standing(at(0) - Vec3::X * 1.4, toward),
+            state: beside,
+            parts: PartStates {
+                frames: Some(&tank_beside),
+                ..views[6].parts
+            },
             ..views[6]
         },
     ];

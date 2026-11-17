@@ -20,7 +20,7 @@ use shooter_sim::robot::{
     SocketId, Tuning, loadout,
 };
 
-use shooter_sim::trig;
+use shooter_sim::aim;
 use shooter_sim::weapons::Delivery;
 use shooter_sim::wire::{WireError, decode_input, decode_snapshot, encode_input, encode_snapshot};
 use shooter_sim::{Arena, Assembly, Event, Input, Intent, Rules, Session, Spawn, Weapon};
@@ -1022,27 +1022,22 @@ fn played_duel() -> Session {
     session
 }
 
-/// The yaw and pitch from `from`'s eye to `to`'s root chassis a cell below its middle, where the
-/// host places it (straight ahead while `to` is dead).
-#[allow(clippy::cast_possible_truncation)]
+/// The yaw and pitch that put `from`'s reticle ([`aim::at`]) on `to`'s root chassis a cell below
+/// its middle, where the host places it (straight ahead while `to` is dead).
 fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
     let target = &session.fighters[to];
     if !target.alive() {
         return (if from == 0 { 0 } else { 32_768 }, 0);
     }
-    let eye = session.fighters[from].player.eye(&session.world);
-    let parts = target.hitboxes(target.player.center(&session.world), target.intent.yaw);
+    let eye = session.fighters[from].eye();
+    let parts = target.hitboxes();
     let mut chassis = parts
         .get(PartDamage::root(&target.build).unwrap())
         .unwrap()
         .center;
     // A cell below its middle: below the weapons on a loadout's chest.
     chassis[1] -= 20.0;
-    let d = [0, 1, 2].map(|axis| chassis[axis] - eye[axis]);
-    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
-    let run = d[0].hypot(d[2]).round() as i32;
-    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
-    (yaw, pitch)
+    aim::at(Some(&session.world), eye, chassis)
 }
 
 /// Person 1 holds the rail gun's trigger for `ticks` ticks, aimed at person 2's root chassis
@@ -1135,10 +1130,11 @@ fn matches_with_configured_builds_replay_exactly() {
     let dog = BETA.validate(&robo_dog()).unwrap();
     let play = || {
         let mut session = duel();
-        session.fighters[0].rebuild(MARKSMAN);
+        session.rebuild(0, MARKSMAN).unwrap();
         session.configure(2, dog);
         let mut snapshots = Vec::new();
-        for _ in 0..600 {
+        // The rail gun's pace is the pool's: its 30 against regeneration less the legs' servos.
+        for _ in 0..900 {
             rail(&mut session, 1);
             snapshots.extend(encode_snapshot(&session.snapshot()));
         }
@@ -1153,7 +1149,7 @@ fn matches_with_configured_builds_replay_exactly() {
 /// held at person 2, and person 2's deaths.
 fn rail_record(build: Assembly, ticks: u32) -> (Vec<u32>, i32) {
     let mut session = duel();
-    session.fighters[0].rebuild(build);
+    session.rebuild(0, build).unwrap();
     let mut fired = Vec::new();
     for _ in 0..ticks {
         let tick = session.ticks();
@@ -1230,17 +1226,17 @@ fn respawned_holding(build: Assembly) -> Weapon {
 }
 
 #[test]
-fn a_robot_spawns_holding_its_first_weapon_that_is_not_the_grapple() {
-    // The grapple comes before the laser in the rotation, but the pyro spawns with the laser
-    // (shooter#96); the other loadouts with their first gun.
+fn a_robot_spawns_holding_its_first_gun_never_the_grapple_module() {
+    // The pyro spawns with the laser (shooter#96); the other loadouts with their first gun.
     assert_eq!(respawned_holding(PYRO), Weapon::Laser);
     assert_eq!(respawned_holding(STANDARD), Weapon::EnergyRifle);
     assert_eq!(respawned_holding(HEAVY), Weapon::RailGun);
-    // Nothing but the grapple and the blade: the grapple.
+    // Nothing but the grapple module and the blade: the blade; the module is never held
+    // (Atlas D2.i104.2).
     let mut hooked = PYRO.candidate();
     hooked.parts.retain(|part| part.id != 7 && part.id != 9);
     let hooked = BETA.validate(&hooked).unwrap();
-    assert_eq!(respawned_holding(hooked), Weapon::Grapple);
+    assert_eq!(respawned_holding(hooked), Weapon::EnergyBlade);
 }
 
 #[test]

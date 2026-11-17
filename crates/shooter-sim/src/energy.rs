@@ -20,11 +20,13 @@
 //!
 //! **Order within a tick** (first come, first served; provisional, Atlas Q2.i70.4): a robot's
 //! requests are granted in the order the tick resolves its actions: its jump (a thruster jump,
-//! during movement), then its blade swing, then its gun (one fires a tick; a refused swing
-//! leaves the gun its turn). Regeneration comes after every request of the tick. Robots resolve
-//! in slot order, but each has its own pool, so no robot's request ever waits on another's.
+//! during movement), then its grapple module's hook, then its blade swing, then its gun (one
+//! fires a tick; a refused swing leaves the gun its turn). Regeneration comes after every
+//! request of the tick. Robots resolve in slot order, but each has its own pool, so no robot's
+//! request ever waits on another's.
 //! A mechanical robot's motors ([`crate::mechanics`]) ask for their draw each commanded tick, in
-//! part-ID order, before its pool regenerates; repairs (shooter#61) will join this order.
+//! part-ID order, before its pool regenerates. A field repair ([`crate::repair`]) asks between
+//! the two: after the gun and every hit of the tick, before the motors.
 //!
 //! The capacities, regeneration and costs are provisional defaults (Atlas Q2.i70.1), not
 //! owner-approved balance.

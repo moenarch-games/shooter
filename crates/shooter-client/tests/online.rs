@@ -228,11 +228,11 @@ fn the_weapon_cycle_goes_through_the_host() {
         if me.arsenal.held != Weapon::EnergyRifle {
             continue;
         }
-        // Two notches down: rifle, grapple, shotgun.
+        // One notch down: rifle, shotgun (the grapple module is never in the cycle).
         let mut selection = Selection::default();
         let (build, parts) = (me.build, me.parts);
         let armed = |weapon| parts.armed(&build, weapon);
-        let select = selection.intent(None, 2, Weapon::EnergyRifle, armed);
+        let select = selection.intent(None, 1, Weapon::EnergyRifle, armed);
         assert_eq!(select, Some(Weapon::Shotgun));
         game.tick(Intent {
             select,
@@ -282,7 +282,7 @@ fn the_builder_s_builds_reach_the_host_before_the_match_and_between_lives() {
     game.configure(PYRO);
     let me = |game: &Game| {
         let slot = game.local_slot()?;
-        game.snapshot()?.slot(slot).copied()
+        game.snapshot()?.slot(slot).cloned()
     };
     let play = |game: &mut Game, intent: Intent, seconds: u64, until: &dyn Fn(&Game) -> bool| {
         let deadline = Instant::now() + Duration::from_secs(seconds);

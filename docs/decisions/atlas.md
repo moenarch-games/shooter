@@ -167,8 +167,16 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   mirrored on the Rapier oracle): every valid build becomes compound bodies on hinge, rotor,
   wheel, track and leg joints (a leg is one module: hip and knee servos and a flat foot), driven
   by per-actuator commands with stall detection, the biped and quadruped presets, per-part poses
-  and hits, and an exactly restorable state. The match's fighters still use the capsule
-  controller; moving them onto the mechanics (snapshots, prediction, replays) is its second half.
+  and hits, and an exactly restorable state.
+  Since shooter#73's match integration every living fighter is its mechanical robot (no capsule),
+  keyed by slot, with the simplest mapping of the shipped controls until the bindings
+  (shooter#74): a movement drive sets the whole robot's velocity from the D2.3 movement rules and
+  keeps it upright facing the aim, its legs stride and wheels roll along, its bodies slide
+  frictionless (the drive carries them) and its legs bend within the gaits' range; a lost part
+  leaves the bodies; snapshots, prediction and replays carry the exact state. The drive is a
+  chassis force D2.i70.7 rules out for bindings; it stands until shooter#74 replaces it. Both
+  clients draw every part where those bodies are (the legs' hip and knee, the wheels' and tracks'
+  roll and the joints' turn included; shooter#54), not from the kit's leg clips.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
   humanoids and other bipeds, four-leg robo-dogs on built-in quadruped walking presets, wheels and
   tracks, stationary platforms and grappling-only machines, all from the same part types and rules.
@@ -200,6 +208,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   healths. Field repair is shooter#61, collision damage and physical debris shooter#75.
   Since shooter#89 (D2.i89.1) lost means no longer connected to the root chassis: a destroyed
   part takes its subtree with it, and the root chassis' destruction is the kill.
+  Since shooter#73's match integration the parts are placed where the robot's bodies carry them,
+  and a lost part leaves the bodies: lost legs no longer hold the robot up, and it walks at the
+  share of its locomotion still connected.
 - **D2.i70.9** (owner, 2026-11-13 and 2026-11-14; shooter#61; answers Q2.i46.2): Repair is done by
   physically mounted repair modules (mass, health, build points) that the player activates
   manually. A module restores, over time and for energy from the shared pool (D2.i70.3), a
@@ -209,6 +220,20 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   with motors and weapons for the same energy (2026-11-14, A). No passive regeneration,
   reconstruction of destroyed parts, salvage from opponents or build change while alive. Owner:
   shooter#61.
+  A hit on the component being repaired, or on the module repairing it, pauses the repair for a
+  bounded time, keeping its progress, and it resumes by itself if still eligible; hits elsewhere
+  do not pause it (2026-11-14, B). The player picks the part from a quick-selection menu of the
+  eligible parts in reach of a working module, highlighted on the robot, while the match keeps
+  running; the host validates the part and module (2026-11-14, B).
+  Since shooter#61 it ships (`shooter_sim::repair`): the repair module (`robot.repair-module`, a
+  one-cell part, 12 kg, 8 points, 40 health; drawn as the robot kit's sensor until the kit has a
+  model, asset-tooling#742) and the `mechanic` loadout carrying one. The client sends a one-shot
+  order (start a part, or stop) through the input-bindings path (R, the wheel or Q/E in the menu);
+  the host refuses a part not eligible now. The first module by part ID that reaches the part
+  does the work; a module does not repair itself. Reach is measured from the module's centre to
+  the part's box where the robot's bodies carry them each tick. Snapshots carry each fighter's
+  repair (part, module, progress, pause) and its repairable parts; the client predicts its own;
+  bots do not repair. Tuning is provisional (Q2.i70.3).
 - **D2.i70.10** (owner, 2026-11-13; shooter#70): High-energy collisions between robots or objects,
   and high falls, damage the components actually hit, from relative impact speed, effective mass or
   impulse and contact geometry, under the same health and detachment rules as weapon hits
@@ -216,6 +241,21 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   detached pieces stay briefly physical and collidable; small shards are visual only; debris is
   retired deterministically by a bounded lifetime, sleep or budget policy. Persistent wreckage, full
   fracturing, stress and fatigue are later. Owner: shooter#75.
+  Since shooter#75 this ships, with the simplest options for what was open (`shooter_sim::impact`,
+  `shooter_sim::mechanics`): physics-engine reports contact starts, not impulses
+  (moritzbrantner/physics-engine#575), so a robot's impact is measured as a whole: the change one
+  step gave its centre of mass's velocity beyond gravity's share and beyond what only takes back
+  its own movement drive's setting that tick (walking, driving or leaning into something), which
+  carries the relative speed and both sides' masses. Above the threshold it strikes the part
+  reaching furthest toward what was hit (ties by part ID, so not by contact order) through the
+  weapons' ray resolution with no penetration (a plate there takes it all); nobody is the
+  attacker, so a collision kill costs a frag like a fall. A destroyed part shatters (cosmetic); a
+  part carried away whole when its parent breaks is large debris at or above a mass threshold,
+  one box body per part, colliding with the arena, robots and other debris (shots pass it: strikes
+  meet part boxes, not bodies), retired by lifetime, rest, its robot's respawn or the budget
+  (oldest first), always at the start of a tick; snapshots (wire 20), the prediction and replays
+  carry it exactly, and clients draw those parts where it is. A robot's death leaves no debris
+  (a dead robot leaves the world whole, as before). Defaults under Q2.i70.5 and Q2.i70.6.
 - **D2.i70.11** (owner, 2026-11-13 and 2026-11-14; shooter#57; refines D2.i46.7): The builder is a
   simplified blueprint workbench, not an elaborate 3D garage: a draggable part catalogue, a central
   blueprint surface with the rotatable chassis, its sockets, placement footprints and the real part
@@ -278,7 +318,7 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   headroom. The pinned robot kit still ships a `robot.core` model, which the client skips by name
   until a kit release drops it.
 
-- **D2.i102.1** (owner, 2026-11-16; shooter#102, option B): **Camera-targeted, muzzle-authoritative shots.** The third-person camera establishes the intended aim point, but a damaging ranged weapon's actual hit ray or projectile originates at its mounted, connected weapon muzzle and travels toward that point. Geometry between the muzzle and the aim point blocks or intercepts the shot even if the camera sees the target: camera peeking does not enable shooting through cover. The authoritative origin and intersection are simulation/host rules shared with native and WebGPU prediction, reticle and visual effects; the client renderer may not supply independent combat truth. Preserve the existing weapon damage, energy, part-loss, lag-compensation and replay contracts, reconciling muzzle transforms with the real weapon/robot kit and articulation. This applies to mounted damaging ranged weapons, with the grapple's separate movement/rope contract reconciled rather than silently changed. **Intent only; implementation/visual acceptance pending** in #102 and #49. Draft PR #84 remains its previously defined battery/laser-visual change, without this gameplay redesign unless separately integrated.
+- **D2.i102.1** (owner, 2026-11-16; shooter#102, option B): **Camera-targeted, muzzle-authoritative shots.** The third-person camera establishes the intended aim point, but a damaging ranged weapon's actual hit ray or projectile originates at its mounted, connected weapon muzzle and travels toward that point. Geometry between the muzzle and the aim point blocks or intercepts the shot even if the camera sees the target: camera peeking does not enable shooting through cover. The authoritative origin and intersection are simulation/host rules shared with native and WebGPU prediction, reticle and visual effects; the client renderer may not supply independent combat truth. Preserve the existing weapon damage, energy, part-loss, lag-compensation and replay contracts, reconciling muzzle transforms with the real weapon/robot kit and articulation. This applies to mounted damaging ranged weapons, with the grapple's separate movement/rope contract reconciled rather than silently changed. **Shipped (shooter#102):** `shooter_sim::aim` owns the camera rig (behind and over the right shoulder of the eye, pulled in front of walls at once), the camera's centre ray from level with the eye picks the target (lag-compensated among the fighters), and the rifle, rail gun, rockets, shotgun pellets, laser and flame leave the held weapon part's muzzle (the pinned weapons kit's muzzle anchor, the long barrel's, as a checked-in table the client's robot tests hold against the kit; the rocket pod always fires from its first tube) toward it; a muzzle pushed into a wall fires from its near face, and a target not ahead of the muzzle is shot along the aim. Bots aim their reticle the same way. The clients draw the reticle on the target and a red blocked marker where the muzzle's shot stops short, draw flashes, beams and pellets from the simulation's muzzle, and online prediction re-aims its hitscan beams through the same functions. The grapple and the blade keep leaving the eye. Native visual capture only; the browser build is compiled, not captured. Draft PR #84 remains its previously defined battery/laser-visual change, without this gameplay redesign unless separately integrated.
 
 
 - **D2.i104.1** (owner, 2026-11-16; shooter#104; answers Q4's movement and
@@ -303,6 +343,33 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   use interval and reach remain implementation tuning, not new product policy.
   The legacy gun remains current shipped behavior until #104 migrates both
   clients and the host, with replay, prediction and live visual acceptance.
+  **Shipped (shooter#104):** the grapple is no longer in the weapon rotation
+  (the wheel, Q/E and the 1 to 6 keys cycle and pick the guns; no robot
+  spawns holding or switches to it). The catalog's `weapon.grapple-hook` part
+  (the weapons kit's model, 10 kg, 10 build points) is the module on any free
+  socket; every named loadout keeps one. Its own key (the right mouse button
+  or F, `robot.grapple`; an input flag, wire 21, replay format 14) works
+  whatever gun is held: the host hooks only for a robot whose module is
+  intact and connected, paying 10 energy from the shared pool with its own
+  0.75 s interval, and the hook leaves the module's muzzle toward the
+  camera's target (D2.i102.1) onto arena geometry within 30 m. The existing
+  rope (reel and swing at once, tied at the eye, a velocity rule through the
+  mechanical robot's drive) is unchanged; letting go, losing the module or
+  its connection, or dying ends it. Bots never grapple (D2.8). The map routes'
+  grapple scenarios use the module's key. Native HUD capture only; no hooked
+  gameplay capture on either client yet.
+
+- **D2.i45.1** (owner, 2026-11-16; shooter#45; answers Q3, option A):
+  The **energy blade is the only quick-melee weapon for the first modular-robot
+  beta**. It remains a mounted, functional part of the robot's build, available
+  by its own quick-melee binding (V or mouse back by default) while a gun is
+  selected, rather than joining the ordinary gun rotation; retain the shipped
+  last-weapon selection fallback where it applies (D2.i46.8). No separate
+  heavy hammer or additional melee roster is a beta prerequisite. Reconsider
+  meaningfully distinct melee modules after actual native/browser match
+  playtesting, with any new part and art owned by their existing respective
+  repositories (D5.i46.1). Existing blade reach, damage, timing and shove
+  values remain provisional balancing, not separately approved numeric policy.
 
 ## 3. Platforms
 
@@ -379,14 +446,21 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
 - **Q2.i46.3**: How long pickup modules last once taken, and when they respawn (D2.i46.9).
   Owner, 2026-11-14 (shooter#62): a collected module lasts until its holder dies or the round
   ends, not on a timer, and a strong one is paid for in shared robot energy (#72) and/or limited
-  uses; values are tuning, not approved. Open: the module list, costs, respawn intervals, any
-  drop on death. Defaults in use until decided (shooter#62): `shooter_sim::pickups`, pads as map
+  uses; values are tuning, not approved. Owner, 2026-11-14 (shooter#62, death drops): a robot
+  dying with a module leaves it at its death location with its remaining uses for any living
+  robot to collect under the same universal rules; the old holder loses the effect; ties resolve
+  deterministically; drops are authoritative, visible and replayable, expire at round end and
+  after a bounded provisional ground lifetime, and never change the pad's own respawn schedule.
+  Open: the module list, costs, respawn intervals, the drop lifetime. Defaults in use until
+  decided (shooter#62): `shooter_sim::pickups`, pads as map
   data (`Arena::module_pads`); the rail capacitor (rail gun 150% damage, 75% refire time, 5
   boosted shots) and thrusters (9 m/s jumps instead of 6, 6 boosted jumps); one module per robot,
   a new one replaces it; since shooter#72 a boosted rail shot costs 150% of the shot's energy and
-  a thruster jump 15 energy (a jump the pool cannot pay is a plain one); nothing dropped on death; a
+  a thruster jump 15 energy (a jump the pool cannot pay is a plain one); a
   pad is back 30 s after it was taken and every pad is ready at a round's or map's start; a pad
-  contested in one tick goes to the nearest living robot, then the lowest slot.
+  contested in one tick goes to the nearest living robot, then the lowest slot. A death drop lies
+  at the dead robot's feet for 30 s (provisional), is contested like a pad (after the pads, oldest
+  drop first) and keeps the uses it had; a robot falling out of the arena drops nothing.
 - **Q2.i46.4**: The exact engineering budgets (weight, power, cooling), attachment rules and build
   point values (D2.i46.5).
   Defaults in use until decided (shooter#47): provisional, tunable catalog data in
@@ -426,7 +500,24 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   (4 to 12 players, 14 spawn points), point-symmetric with mezzanines and a gantry bridge at 3 m
   and crane towers at 5 m; its name, size, layout, pickup and repair anchors and destruction
   candidates (its low cover, barriers and crates) are provisional choices, to be tuned in
-  playtests. The yard stays the default.
+  playtests. The yard stays the default. Since shooter#53 the small arena is in: `proving-cell`,
+  a 32 m purpose-built combat test cell (owner decisions B and C on #53) built from the same arena
+  kit (2 to 6 players recommended, 12 spawn points so the default 12 slots still fit),
+  point-symmetric with a 2 m test stage carrying the rail capacitor in the middle, 3 m
+  observation galleries along two walls carrying thrusters, a control booth with two doorways in
+  two corners and a test bay in two side walls; its name, size, layout, spawn count, pickup and
+  repair anchors (in the booths) and destruction candidates (its low cover, open-floor barriers
+  and crates) are provisional choices, to be tuned in playtests. Since shooter#55 the large arena
+  is in: `drydock`, an 80 m repurposed spaceship shipyard (D2.i55.1) built from the same arena
+  kit (8 to 12 players recommended, 14 spawn points, all on the ground), point-symmetric: two
+  identical docked ships head to tail either side of a 32 m central corridor, each hull 12 m
+  wide and 56 m long from the kit's hull modules (no interiors) with a walkable 4 m foredeck and
+  a raised 6 m stern deck carrying thrusters; a 4 m dock gantry along each hull with a 16 m ramp
+  at either end and two gangways onto the foredeck; a 12 m outer lane behind each hull with a
+  jump pad onto the foredeck; masts for the grapple; an 8 m crane pylon in the corridor's middle
+  with the rail capacitor at its foot. Its name, size, hull heights, layout, spawn count, pickup
+  and repair anchors (under the gantries and in the outer lanes) and destruction candidates (its
+  low cover, floor barriers and crates) are provisional choices, to be tuned in playtests.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration
@@ -464,6 +555,13 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
 - **Q2.i70.3**: Repair targeting and range: the module's radius, the target-selection gesture, the
   repair rate, energy cost and cooldown, and whether incoming damage interrupts a repair
   (D2.i70.9).
+  The gesture (a quick-selection menu) and the interruption (direct hits pause it) were decided
+  2026-11-14 (D2.i70.9). Provisional defaults in use until tuned (shooter#61): a 60-unit (0.6 m)
+  radius from the module's centre to the part's box; one health point every 6 granted ticks
+  (10 a second); 250 milli-units a tick of work (15 energy a second), asked whole each tick, no
+  separate cooldown; a 45-tick (0.75 s) pause on a direct hit, started over by each further hit.
+  The menu's default binding is R (the wheel or Q/E move through it while open; no gamepad
+  default yet).
 - **Q2.i70.4**: The details of first-come-first-served energy requests: how requests in the same
   tick are ordered, how continuous motor draws and one-off activations share a tick, and whether
   a request can be granted in part (D2.i70.3).
@@ -473,12 +571,40 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   turn); regeneration follows every request of the tick. A request is granted whole or refused,
   never in part, and a refused one costs nothing and spends no cooldown. Motor draw (shooter#73)
   and repairs (shooter#61) are not ordered yet.
+  Since shooter#61 a repair asks after the gun and after every hit of the tick has landed (a
+  rocket or pellet that pauses it lands first), then the motors ask, then the pool regenerates;
+  a refused repair tick does no work and waits for the next.
 - **Q2.i70.5**: Impact thresholds: the speed, impulse and fall heights at which collisions start to
   damage, how damage scales above them, and the battery blast's radius and damage (D2.i70.3,
   D2.i70.10).
   Defaults in use until decided (shooter#56): a destroyed battery's blast reaches 80 units
   (0.8 m) from its centre and deals 40 there, falling off linearly to nothing at its edge, to
   every connected part of every robot within reach; it pushes nothing.
+  Since shooter#75 (`shooter_sim::impact`): an impact damages from a one-step velocity change
+  of 20 m/s (above a slide's 15 m/s and the bots' landings in the shipped maps, at most about
+  18 m/s measured; about a 10 m fall, a broadside ram at 20 m/s each), dealing 20 for every
+  metre a second above it, rounded down, to the one part struck (a 30 m fall breaks a leg, a
+  60 m fall onto a legless chassis kills). The grapple's pull (up to 24 m/s) can reach it: a
+  robot reeled into a wall at nearly top speed takes a little damage.
 - **Q2.i70.6**: Performance limits: parts per robot, articulated bodies and active debris per match,
   debris lifetime, and the representative multi-robot scenes they are measured on (D2.i70.1,
   D2.i70.5, D2.i70.10).
+  Defaults in use until decided (shooter#75, `shooter_sim::mechanics`): at most 16 pieces of
+  debris at once per match (the oldest retires first), each retiring 5 s after it came off or
+  after lying still (under 5 cm/s and 0.5 rad/s) 1 s, or when it falls out of the arena or its
+  robot respawns; only parts of 12 kg or more (with their mod) become debris. Measured on twelve
+  standard robots shedding their weapons once a second each (native, release, `collisions --
+  --ignored`): about 0.46 ms a tick with them shattered and about 0.61 ms with them as debris,
+  the budget full throughout.
+- **Q2.i60.1**: Arena destruction balance: which placeables of each map break, their health, what
+  damages them and how much, and whether a broken one ever comes back within a round (D2.i46.11;
+  shooter#60 leaves pieces and thresholds to map and content balance).
+  Defaults in use until decided (shooter#60, `shooter_sim::scenery`): each kit-built map's marked
+  destruction candidates break (its low cover, barriers and crates; a door once a map places one),
+  except a candidate another module rests on (the lower crate of a stack), which carries it.
+  Health: low cover 150, a barrier 250, a crate 60, a door 200. Every weapon damages them as it
+  damages a robot part it meets first: hitscan and pellets that stop on one, the flame on the one
+  it stops on, a blade swing that strikes no robot, a rocket's blast by the nearest point of its
+  pieces with the robots' falloff (100 at the blast, nothing at 3 m); a battery's blast does
+  not. Broken is final for the round (deaths and respawns keep it); a new round restores every
+  placeable.
