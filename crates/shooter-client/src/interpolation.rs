@@ -4,6 +4,9 @@
 //! fighters are drawn between the two buffered snapshots around the clock, and online shots name
 //! the clock's tick as their view tick, so the host rewinds to what the player saw.
 
+use crate::robots::Frames;
+use crate::scene::METRES_PER_UNIT;
+use render_engine::glam::Vec3;
 use shooter_sim::Snapshot;
 use std::collections::VecDeque;
 
@@ -21,6 +24,8 @@ struct Frame {
     tick: u32,
     /// Each slot's centre (units) while alive.
     centers: Vec<Option<[f32; 3]>>,
+    /// Each living slot's mechanical robot's bodies (metres).
+    robots: Vec<Option<Frames>>,
 }
 
 pub struct Interpolation {
@@ -57,12 +62,18 @@ impl Interpolation {
             return;
         }
         let mut centers = vec![None; usize::from(u8::MAX)];
+        let mut robots = vec![None; usize::from(u8::MAX)];
         for fighter in snapshot.fighters.iter().filter(|fighter| fighter.alive) {
-            centers[usize::from(fighter.slot)] = Some(fighter.position);
+            let slot = usize::from(fighter.slot);
+            centers[slot] = Some(fighter.position);
+            robots[slot] = fighter.robot.as_ref().and_then(|robot| {
+                Frames::of_state(robot, Vec3::from(fighter.position) * METRES_PER_UNIT)
+            });
         }
         self.frames.push_back(Frame {
             tick: snapshot.tick,
             centers,
+            robots,
         });
         while self.frames.len() > FRAMES {
             self.frames.pop_front();
@@ -98,10 +109,41 @@ impl Interpolation {
     /// is dead or absent there.
     #[must_use]
     pub fn center(&self, slot: u8, blend: f32) -> Option<[f32; 3]> {
+        let slot = usize::from(slot);
+        let (before, next, t) = self.around(blend)?;
+        let Some(before) = before else {
+            return next.centers[slot];
+        };
+        let from = before.centers[slot]?;
+        let Some(to) = next.centers[slot] else {
+            // Died between the two: drawn where it was until the snapshot that saw it gone.
+            return Some(from);
+        };
+        Some([0, 1, 2].map(|axis| from[axis] + (to[axis] - from[axis]) * t))
+    }
+
+    /// Where `slot`'s mechanical robot's bodies are drawn `blend` (0..1) of a tick after the
+    /// clock, between the same two snapshots as its centre ([`Self::center`]).
+    #[must_use]
+    pub fn frames(&self, slot: u8, blend: f32) -> Option<Frames> {
+        let slot = usize::from(slot);
+        let (before, next, t) = self.around(blend)?;
+        let Some(before) = before else {
+            return next.robots[slot].clone();
+        };
+        let from = before.robots[slot].as_ref()?;
+        let Some(to) = next.robots[slot].as_ref() else {
+            return Some(from.clone());
+        };
+        Some(from.blend(to, t))
+    }
+
+    /// The buffered snapshots around `blend` of a tick after the clock (the one before, unless
+    /// the clock is at or before the oldest, and the one at or after) and how far between them.
+    fn around(&self, blend: f32) -> Option<(Option<&Frame>, &Frame, f32)> {
         let newest = self.frames.back()?;
         #[allow(clippy::cast_precision_loss)]
         let at = (self.clock? + blend).min(newest.tick as f32);
-        let slot = usize::from(slot);
         let after = self
             .frames
             .iter()
@@ -113,16 +155,11 @@ impl Interpolation {
             .unwrap_or(self.frames.len() - 1);
         let next = &self.frames[after];
         let Some(before) = after.checked_sub(1).map(|index| &self.frames[index]) else {
-            return next.centers[slot];
-        };
-        let from = before.centers[slot]?;
-        let Some(to) = next.centers[slot] else {
-            // Died between the two: drawn where it was until the snapshot that saw it gone.
-            return Some(from);
+            return Some((None, next, 1.0));
         };
         #[allow(clippy::cast_precision_loss)]
         let t = (at - before.tick as f32) / (next.tick - before.tick) as f32;
-        Some([0, 1, 2].map(|axis| from[axis] + (to[axis] - from[axis]) * t))
+        Some((Some(before), next, t))
     }
 }
 
@@ -187,6 +224,31 @@ mod tests {
                 "{pattern:?}: a fighter was drawn {off} units off"
             );
         }
+    }
+
+    /// Each living fighter's robot is drawn between the same two snapshots as its centre.
+    #[test]
+    fn robots_are_drawn_where_their_fighters_are() {
+        let mut session = Session::with_rules(Arena::greybox(), Rules::deathmatch(4)).unwrap();
+        let mut interpolation = Interpolation::new(1.0);
+        for _ in 0..90 {
+            session.step().unwrap();
+            interpolation.push(&session.snapshot());
+            interpolation.advance();
+        }
+        let snapshot = session.snapshot();
+        let mut drawn = 0;
+        for fighter in snapshot.fighters.iter().filter(|fighter| fighter.alive) {
+            let Some(center) = interpolation.center(fighter.slot, 0.5) else {
+                continue;
+            };
+            let frames = interpolation.frames(fighter.slot, 0.5).unwrap();
+            let center = Vec3::from(center) * METRES_PER_UNIT;
+            assert!(frames.center.distance(center) < 1e-4, "{center}");
+            assert!(frames.root().w_axis.truncate().distance(center) < 2.0);
+            drawn += 1;
+        }
+        assert!(drawn > 0);
     }
 
     #[test]
