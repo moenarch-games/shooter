@@ -32,12 +32,14 @@ pub const PREVIOUS: &str = "weapon.previous";
 /// Field repair (shooter#61): R opens the quick repair menu and, pressed again, repairs the
 /// part chosen there (the wheel and Q/E move through it while it is open).
 pub const REPAIR: &str = "robot.repair";
+/// The grapple module (shooter#104, Atlas D2.i104.2): its own key, not a weapon in the cycle.
+/// Held, the robot's mounted grapple hooks and reels; let go, the rope goes.
+pub const GRAPPLE: &str = "robot.grapple";
 /// Select actions, in [`Weapon::ROTATION`] order.
 pub const SELECT: [&str; Weapon::ROTATION.len()] = [
     "weapon.energyRifle",
     "weapon.railGun",
     "weapon.rocketLauncher",
-    "weapon.grapple",
     "weapon.shotgun",
     "weapon.laser",
     "weapon.flamethrower",
@@ -45,6 +47,8 @@ pub const SELECT: [&str; Weapon::ROTATION.len()] = [
 
 /// W3C mouse button index of the primary (left) button...
 pub const PRIMARY_BUTTON: u16 = 0;
+/// ...of the secondary (right) button...
+pub const SECONDARY_BUTTON: u16 = 2;
 /// ...and of the thumb's back button.
 pub const BACK_BUTTON: u16 = 3;
 
@@ -153,10 +157,14 @@ pub fn action_registry() -> ActionRegistry {
         (SELECT[0], "Energy rifle", vec![key("Digit1")]),
         (SELECT[1], "Rail gun", vec![key("Digit2")]),
         (SELECT[2], "Rocket launcher", vec![key("Digit3")]),
-        (SELECT[3], "Grapple hook", vec![key("Digit4")]),
-        (SELECT[4], "Shotgun", vec![key("Digit5")]),
-        (SELECT[5], "Laser", vec![key("Digit6")]),
-        (SELECT[6], "Flamethrower", vec![key("Digit7")]),
+        (SELECT[3], "Shotgun", vec![key("Digit4")]),
+        (SELECT[4], "Laser", vec![key("Digit5")]),
+        (SELECT[5], "Flamethrower", vec![key("Digit6")]),
+        (
+            GRAPPLE,
+            "Grapple hook (mounted module)",
+            vec![mouse_button(SECONDARY_BUTTON), key("KeyF")],
+        ),
         (
             REPAIR,
             "Repair menu / repair the chosen part",
@@ -436,6 +444,11 @@ impl Controls {
         self.state.is_held(MELEE)
     }
 
+    #[must_use]
+    pub fn grapple_held(&self) -> bool {
+        self.state.is_held(GRAPPLE)
+    }
+
     /// The weapon whose select key is held, if any.
     #[must_use]
     pub fn selected(&self) -> Option<Weapon> {
@@ -693,6 +706,21 @@ mod tests {
     }
 
     #[test]
+    fn the_right_button_and_f_hold_the_grapple_module() {
+        let mut controls = Controls::new();
+        controls.mouse_down(SECONDARY_BUTTON);
+        assert!(controls.grapple_held() && !controls.fire_held());
+        controls.mouse_up(SECONDARY_BUTTON);
+        assert!(!controls.grapple_held());
+        controls.key_down(KeyCode::KeyF, false);
+        assert!(controls.grapple_held());
+        // No select key makes it a held weapon.
+        assert_eq!(controls.selected(), None);
+        controls.key_up(KeyCode::KeyF);
+        assert!(!controls.grapple_held());
+    }
+
+    #[test]
     fn the_pad_moves_and_jumps() {
         let mut controls = Controls::new();
         let mut pads = PadState::default();
@@ -759,28 +787,34 @@ mod tests {
 
     #[test]
     fn the_selection_cycles_the_carried_weapons_and_keeps_asking_for_a_while() {
-        use Weapon::{EnergyBlade, EnergyRifle, Grapple, RailGun, Shotgun};
-        let standard = |weapon| matches!(weapon, EnergyRifle | Grapple | Shotgun | EnergyBlade);
+        use Weapon::{EnergyBlade, EnergyRifle, Grapple, Laser, RailGun, Shotgun};
+        // The grapple module is carried but never in the cycle.
+        let standard = |weapon| {
+            matches!(
+                weapon,
+                EnergyRifle | Grapple | Laser | Shotgun | EnergyBlade
+            )
+        };
         let mut selection = Selection::default();
         assert_eq!(selection.intent(None, 0, EnergyRifle, standard), None);
         assert_eq!(
             selection.intent(None, 1, EnergyRifle, standard),
-            Some(Grapple)
+            Some(Shotgun)
         );
         // A second notch before the switch shows counts on from the first one's target.
         assert_eq!(
             selection.intent(None, 1, EnergyRifle, standard),
-            Some(Shotgun)
+            Some(Laser)
         );
         // Asked for until the host surely has it, then nothing.
         let mut asked = 1;
-        while selection.intent(None, 0, Shotgun, standard).is_some() {
+        while selection.intent(None, 0, Laser, standard).is_some() {
             asked += 1;
         }
         assert_eq!(asked, Selection::ASK_TICKS);
         // Wraps round; a select key wins over the cycle and ends it.
         assert_eq!(
-            selection.intent(None, 1, Shotgun, standard),
+            selection.intent(None, 1, Laser, standard),
             Some(EnergyRifle)
         );
         assert_eq!(

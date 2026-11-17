@@ -343,6 +343,21 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   use interval and reach remain implementation tuning, not new product policy.
   The legacy gun remains current shipped behavior until #104 migrates both
   clients and the host, with replay, prediction and live visual acceptance.
+  **Shipped (shooter#104):** the grapple is no longer in the weapon rotation
+  (the wheel, Q/E and the 1 to 6 keys cycle and pick the guns; no robot
+  spawns holding or switches to it). The catalog's `weapon.grapple-hook` part
+  (the weapons kit's model, 10 kg, 10 build points) is the module on any free
+  socket; every named loadout keeps one. Its own key (the right mouse button
+  or F, `robot.grapple`; an input flag, wire 21, replay format 14) works
+  whatever gun is held: the host hooks only for a robot whose module is
+  intact and connected, paying 10 energy from the shared pool with its own
+  0.75 s interval, and the hook leaves the module's muzzle toward the
+  camera's target (D2.i102.1) onto arena geometry within 30 m. The existing
+  rope (reel and swing at once, tied at the eye, a velocity rule through the
+  mechanical robot's drive) is unchanged; letting go, losing the module or
+  its connection, or dying ends it. Bots never grapple (D2.8). The map routes'
+  grapple scenarios use the module's key. Native HUD capture only; no hooked
+  gameplay capture on either client yet.
 
 - **D2.i45.1** (owner, 2026-11-16; shooter#45; answers Q3, option A):
   The **energy blade is the only quick-melee weapon for the first modular-robot

@@ -78,6 +78,10 @@ pub struct Intent {
     pub fire: bool,
     /// Melee held: swings the energy blade whenever it is ready ([`crate::melee`]).
     pub melee: bool,
+    /// Grapple held (Atlas D2.i104.2): the robot's mounted grapple module hooks whenever it is
+    /// ready, and a set hook holds (reeling and swinging) until this is let go
+    /// ([`crate::grapple`]). Its own key, whatever gun is held.
+    pub grapple: bool,
     /// Switch to this weapon (it stays held until another is selected).
     pub select: Option<Weapon>,
     /// Edit Robot held (Atlas D2.i70.11): while its robot is dead, the person is in the builder
@@ -101,6 +105,7 @@ impl Intent {
         pitch: 0,
         fire: false,
         melee: false,
+        grapple: false,
         select: None,
         edit: false,
         repair: None,

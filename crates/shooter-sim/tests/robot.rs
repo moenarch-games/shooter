@@ -1228,17 +1228,17 @@ fn respawned_holding(build: Assembly) -> Weapon {
 }
 
 #[test]
-fn a_robot_spawns_holding_its_first_weapon_that_is_not_the_grapple() {
-    // The grapple comes before the laser in the rotation, but the pyro spawns with the laser
-    // (shooter#96); the other loadouts with their first gun.
+fn a_robot_spawns_holding_its_first_gun_never_the_grapple_module() {
+    // The pyro spawns with the laser (shooter#96); the other loadouts with their first gun.
     assert_eq!(respawned_holding(PYRO), Weapon::Laser);
     assert_eq!(respawned_holding(STANDARD), Weapon::EnergyRifle);
     assert_eq!(respawned_holding(HEAVY), Weapon::RailGun);
-    // Nothing but the grapple and the blade: the grapple.
+    // Nothing but the grapple module and the blade: the blade; the module is never held
+    // (Atlas D2.i104.2).
     let mut hooked = PYRO.candidate();
     hooked.parts.retain(|part| part.id != 7 && part.id != 9);
     let hooked = BETA.validate(&hooked).unwrap();
-    assert_eq!(respawned_holding(hooked), Weapon::Grapple);
+    assert_eq!(respawned_holding(hooked), Weapon::EnergyBlade);
 }
 
 #[test]

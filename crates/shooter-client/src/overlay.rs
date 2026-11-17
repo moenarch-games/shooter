@@ -228,12 +228,17 @@ pub fn mod_name(id: ModId) -> &'static str {
     }
 }
 
-/// The key that selects `weapon`: its digit, or V for the blade.
+/// The key that selects `weapon`: its digit, V for the blade, or F for the grapple module (or the
+/// right button).
 fn key_label(weapon: Weapon) -> String {
-    Weapon::ROTATION
-        .iter()
-        .position(|held| *held == weapon)
-        .map_or_else(|| "V".to_owned(), |index| (index + 1).to_string())
+    match weapon {
+        Weapon::EnergyBlade => "V".to_owned(),
+        Weapon::Grapple => "F".to_owned(),
+        _ => Weapon::ROTATION
+            .iter()
+            .position(|held| *held == weapon)
+            .map_or_else(String::new, |index| (index + 1).to_string()),
+    }
 }
 
 /// Quads in layout units (720 lines high), scaled to the frame and snapped to whole pixels.
@@ -592,13 +597,16 @@ fn slots(painter: &mut Painter, vitals: &Vitals, right: f32, y: f32, flash: f32)
     #[allow(clippy::cast_precision_loss)]
     let count = vitals.carried.len() as f32;
     let mut x = right - count * SLOT_WIDTH - (count - 1.0).max(0.0) * SLOT_GAP;
-    // The guns in rotation order, then the blade (on its own key).
+    // The guns in rotation order, then the blade and the grapple module (on their own keys).
     let mut order: Vec<(Weapon, bool)> = vitals.carried.clone();
     order.sort_by_key(|(weapon, _)| {
         Weapon::ROTATION
             .iter()
             .position(|held| held == weapon)
-            .unwrap_or(usize::MAX)
+            .unwrap_or(match weapon {
+                Weapon::EnergyBlade => usize::MAX - 1,
+                _ => usize::MAX,
+            })
     });
     for (weapon, armed) in order {
         let held = weapon == vitals.held;

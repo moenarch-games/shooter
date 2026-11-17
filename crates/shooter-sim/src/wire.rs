@@ -36,10 +36,11 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-/// 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a repair order,
+/// 21: inputs carry the grapple module's own key (shooter#104); 20: snapshots carry the physical
+/// debris (shooter#75); 19: inputs carry a repair order,
 /// snapshots each fighter's repair and repairable parts (shooter#61); 18 added the dropped
 /// modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 20;
+pub const WIRE_VERSION: u8 = 21;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -502,6 +503,7 @@ const CROUCH: u8 = 4;
 const FIRE: u8 = 8;
 const MELEE: u8 = 16;
 const EDIT: u8 = 32;
+const GRAPPLE: u8 = 64;
 
 /// A person's command as the host decoded it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -538,6 +540,7 @@ pub fn encode_input(
         (intent.fire, FIRE),
         (intent.melee, MELEE),
         (intent.edit, EDIT),
+        (intent.grapple, GRAPPLE),
     ]
     .iter()
     .filter(|(held, _)| *held)
@@ -608,6 +611,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
         fire: flags & FIRE != 0,
         melee: flags & MELEE != 0,
         edit: flags & EDIT != 0,
+        grapple: flags & GRAPPLE != 0,
         select,
         repair,
     };

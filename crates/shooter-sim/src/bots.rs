@@ -272,7 +272,7 @@ impl Bot {
         } else {
             Weapon::ROTATION
                 .into_iter()
-                .find(|gun| *gun != Weapon::Grapple && armed(*gun))
+                .find(|gun| armed(*gun))
                 .unwrap_or(weapon)
         };
         if tick >= self.strafe_until {
@@ -300,6 +300,8 @@ impl Bot {
                 && armed(Weapon::EnergyBlade)
                 && run < MELEE_UNITS
                 && dy.abs() < crate::player::EYE_HEIGHT_UNITS,
+            // Bots never grapple (Atlas D2.8), module or not.
+            grapple: false,
             select: Some(weapon),
             edit: false,
             repair: None,

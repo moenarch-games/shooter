@@ -3,8 +3,9 @@
 //! shotgun whose blast is a fixed pattern of fast pellets that slow down (and hurt less) as they
 //! fly, a continuous laser that burns the first target in its beam every tick the trigger is held,
 //! and a flamethrower whose flame, after a short ignition, is a volume cut short by walls; the
-//! grapple hook in the same rotation ([`crate::grapple`]); and the energy
-//! blade, a quick melee swing on its own key whatever gun is held ([`crate::melee`]).
+//! energy blade, a quick melee swing on its own key whatever gun is held ([`crate::melee`]); and
+//! the grapple hook, a mounted module on its own key that is never in the rotation
+//! ([`crate::grapple`], Atlas D2.i104.2).
 //!
 //! Everything a shot decides is integer: the aim is a Q16 direction from the yaw and pitch
 //! steps (the shotgun's pellets add fixed yaw and pitch offsets, [`PELLETS`]), rockets fly in
@@ -28,7 +29,8 @@ pub enum Weapon {
     RailGun,
     /// A slow rocket that explodes on contact: splash damage and knockback.
     RocketLauncher,
-    /// A movement tool: hooks arena geometry and reels the player in while the trigger is held
+    /// The grapple module (Atlas D2.i104.2): a movement tool on its own key, never held or in
+    /// the rotation. It hooks arena geometry and reels the robot in while its key is held
     /// ([`crate::grapple`]).
     Grapple,
     /// The quick-melee energy blade: never held, swung on its own key ([`crate::melee`]).
@@ -71,12 +73,12 @@ impl Weapon {
         Self::Laser,
         Self::Flamethrower,
     ];
-    /// The weapons a player can hold (the 1 to 7 keys); the blade is swung, never held.
-    pub const ROTATION: [Self; 7] = [
+    /// The weapons a player can hold (the 1 to 6 keys); the blade is swung and the grapple
+    /// module hooked on their own keys, never held.
+    pub const ROTATION: [Self; 6] = [
         Self::EnergyRifle,
         Self::RailGun,
         Self::RocketLauncher,
-        Self::Grapple,
         Self::Shotgun,
         Self::Laser,
         Self::Flamethrower,
@@ -254,6 +256,8 @@ pub struct Arsenal {
     pub held: Weapon,
     ready_at: u32,
     blade_ready_at: u32,
+    /// When the grapple module may hook again ([`Arsenal::hook`]).
+    grapple_ready_at: u32,
     /// Ticks in a row the flamethrower has fired.
     flaming: u32,
 }
@@ -310,6 +314,24 @@ impl Arsenal {
         fired
     }
 
+    /// The grapple module's key at `tick` (Atlas D2.i104.2): it hooks when ready and `spend`
+    /// pays its activation from the shared pool ([`crate::energy`]), then waits `refire` ticks.
+    /// Independent of the held gun and the blade; a refused activation spends no cooldown.
+    pub fn hook(&mut self, tick: u32, refire: u32, spend: impl FnOnce() -> bool) -> bool {
+        if tick >= self.grapple_ready_at && spend() {
+            self.grapple_ready_at = tick + refire;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Ticks from `tick` until the grapple module may hook again: 0 when it is ready.
+    #[must_use]
+    pub const fn grapple_cooldown(&self, tick: u32) -> u32 {
+        self.grapple_ready_at.saturating_sub(tick)
+    }
+
     /// An arsenal holding `held`, ready at once (a fighter's at spawn).
     #[must_use]
     pub fn holding(held: Weapon) -> Self {
@@ -349,13 +371,9 @@ pub fn holdable(armed: impl Fn(Weapon) -> bool) -> impl Iterator<Item = Weapon> 
 }
 
 /// The weapon a fighter takes up at spawn: the first [`holdable`] one in [`Weapon::ROTATION`]
-/// order that is not the grapple, else the grapple, else the blade (shooter#96). `None` if
-/// nothing is holdable.
+/// order, else the blade. `None` if nothing is holdable (the grapple module never is).
 pub fn spawn_weapon(armed: impl Fn(Weapon) -> bool) -> Option<Weapon> {
-    let mut held = holdable(armed);
-    held.clone()
-        .find(|weapon| *weapon != Weapon::Grapple)
-        .or_else(|| held.next())
+    holdable(armed).next()
 }
 
 /// The weapon `steps` places on from `from` among the [`holdable`] ones (next for positive
@@ -751,26 +769,32 @@ mod tests {
     #[test]
     fn the_cycle_runs_through_the_armed_guns_in_rotation_order_and_wraps() {
         use Weapon::{EnergyBlade, EnergyRifle, Grapple, Laser, RailGun, RocketLauncher, Shotgun};
-        // The standard build's guns; the blade stays on its own key.
-        let standard = |weapon| matches!(weapon, EnergyRifle | Grapple | Shotgun | EnergyBlade);
+        // The standard build's guns; the blade and the grapple module stay on their own keys.
+        let standard = |weapon| {
+            matches!(
+                weapon,
+                EnergyRifle | Grapple | Shotgun | Laser | EnergyBlade
+            )
+        };
         let cycle: Vec<Weapon> = holdable(standard).collect();
-        assert_eq!(cycle, [EnergyRifle, Grapple, Shotgun]);
-        assert_eq!(cycled(EnergyRifle, 1, standard), Some(Grapple));
-        assert_eq!(cycled(Grapple, 1, standard), Some(Shotgun));
-        assert_eq!(cycled(Shotgun, 1, standard), Some(EnergyRifle));
-        assert_eq!(cycled(EnergyRifle, -1, standard), Some(Shotgun));
-        assert_eq!(cycled(Shotgun, -1, standard), Some(Grapple));
+        assert_eq!(cycle, [EnergyRifle, Shotgun, Laser]);
+        assert_eq!(cycled(EnergyRifle, 1, standard), Some(Shotgun));
+        assert_eq!(cycled(Shotgun, 1, standard), Some(Laser));
+        assert_eq!(cycled(Laser, 1, standard), Some(EnergyRifle));
+        assert_eq!(cycled(EnergyRifle, -1, standard), Some(Laser));
+        assert_eq!(cycled(Laser, -1, standard), Some(Shotgun));
         // Several notches at once, either way.
-        assert_eq!(cycled(EnergyRifle, 2, standard), Some(Shotgun));
-        assert_eq!(cycled(EnergyRifle, -4, standard), Some(Shotgun));
+        assert_eq!(cycled(EnergyRifle, 2, standard), Some(Laser));
+        assert_eq!(cycled(EnergyRifle, -4, standard), Some(Laser));
         assert_eq!(cycled(EnergyRifle, 0, standard), None);
-        // The grapple lost: skipped, and from it (still held) one step reaches a neighbour.
-        let lost = |weapon| standard(weapon) && weapon != Grapple;
-        assert_eq!(cycled(EnergyRifle, 1, lost), Some(Shotgun));
-        assert_eq!(cycled(Grapple, 1, lost), Some(Shotgun));
-        assert_eq!(cycled(Grapple, -1, lost), Some(EnergyRifle));
+        // The shotgun lost: skipped, and from it (still held) one step reaches a neighbour.
+        let lost = |weapon| standard(weapon) && weapon != Shotgun;
+        assert_eq!(cycled(EnergyRifle, 1, lost), Some(Laser));
+        assert_eq!(cycled(Shotgun, 1, lost), Some(Laser));
+        assert_eq!(cycled(Shotgun, -1, lost), Some(EnergyRifle));
         // A held weapon past the last armed one wraps to the first.
-        assert_eq!(cycled(Laser, 1, lost), Some(EnergyRifle));
+        let rifle_and_shotgun = |weapon| matches!(weapon, EnergyRifle | Shotgun);
+        assert_eq!(cycled(Laser, 1, rifle_and_shotgun), Some(EnergyRifle));
         assert_eq!(
             cycled(RailGun, -1, |w| w == RocketLauncher),
             Some(RocketLauncher)
@@ -781,25 +805,41 @@ mod tests {
         assert_eq!(cycled(EnergyRifle, 1, blade), Some(EnergyBlade));
         assert_eq!(cycled(EnergyBlade, -1, blade), Some(EnergyBlade));
         assert_eq!(cycled(EnergyRifle, 1, |_| false), None);
+        // The grapple module is never held (Atlas D2.i104.2).
+        assert_eq!(cycled(EnergyRifle, 1, |w| w == Grapple), None);
     }
 
     #[test]
-    fn a_fighter_spawns_holding_its_first_weapon_that_is_not_the_grapple() {
+    fn a_fighter_spawns_holding_its_first_gun_never_the_grapple() {
         use Weapon::{EnergyBlade, EnergyRifle, Flamethrower, Grapple, Laser};
         let pyro = |weapon| matches!(weapon, Laser | Flamethrower | Grapple | EnergyBlade);
         assert_eq!(spawn_weapon(pyro), Some(Laser));
         let standard = |weapon| matches!(weapon, EnergyRifle | Grapple | EnergyBlade);
         assert_eq!(spawn_weapon(standard), Some(EnergyRifle));
-        // Nothing but the grapple and the blade: the grapple; the blade alone: the blade.
+        // Nothing but the grapple and the blade: the blade; the grapple alone: nothing.
         assert_eq!(
             spawn_weapon(|weapon| matches!(weapon, Grapple | EnergyBlade)),
-            Some(Grapple)
-        );
-        assert_eq!(
-            spawn_weapon(|weapon| weapon == EnergyBlade),
             Some(EnergyBlade)
         );
+        assert_eq!(spawn_weapon(|weapon| weapon == Grapple), None);
         assert_eq!(spawn_weapon(|_| false), None);
+    }
+
+    #[test]
+    fn the_grapple_module_has_its_own_cooldown_and_pays_first() {
+        let mut arsenal = Arsenal::default();
+        // Refused energy: no hook and no cooldown.
+        assert!(!arsenal.hook(0, 45, || false));
+        assert_eq!(arsenal.grapple_cooldown(0), 0);
+        assert!(arsenal.hook(0, 45, || true));
+        assert_eq!(arsenal.grapple_cooldown(10), 35);
+        assert!(!arsenal.hook(44, 45, || true));
+        // The gun fires meanwhile: the two do not share a cooldown.
+        assert_eq!(
+            arsenal.trigger(None, false, true, 1),
+            Some(Weapon::EnergyRifle)
+        );
+        assert!(arsenal.hook(45, 45, || true));
     }
 
     #[test]

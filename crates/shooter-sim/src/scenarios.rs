@@ -256,13 +256,14 @@ pub const ROCKET_JUMP: Scenario = Scenario {
     ],
 };
 
-/// Pitch steps from the grapple scenario's eye (0, 165, -600) up to the pillar's face at
-/// (0, 500, 650): atan(335 / 1250) ≈ 15.0°.
-const PILLAR_PITCH: i16 = 2_731;
+/// Pitch steps from the grapple scenario's eye (0, 165, -600) that put the camera's target, and
+/// so the line from the grapple module's muzzle (a hand left of, below and ahead of the eye),
+/// on the pillar's face at (0, 500, 650): about 16.1°.
+const PILLAR_PITCH: i16 = 2_931;
 
 /// A 3 m ledge 9 m south (beyond a double jump and a rocket jump) with an 8 m pillar on it.
-/// Take the grapple, hook the pillar's face 5 m up over the ledge's edge, get reeled up and over
-/// the edge, let go and step onto the ledge.
+/// Aim the grapple module (its own key; the standard build mounts it), hook the pillar's face
+/// 5 m up over the ledge's edge, get reeled up and over the edge, let go and step onto the ledge.
 pub const GRAPPLE: Scenario = Scenario {
     name: "grapple onto a ledge",
     arena: || {
@@ -276,11 +277,10 @@ pub const GRAPPLE: Scenario = Scenario {
     },
     legs: &[
         hold(
-            "take the grapple",
+            "aim the grapple",
             Intent {
                 yaw: SOUTH,
                 pitch: PILLAR_PITCH,
-                select: Some(Weapon::Grapple),
                 ..Intent::IDLE
             },
             15,
@@ -290,7 +290,7 @@ pub const GRAPPLE: Scenario = Scenario {
             Intent {
                 yaw: SOUTH,
                 pitch: PILLAR_PITCH,
-                fire: true,
+                grapple: true,
                 ..Intent::IDLE
             },
             90,
@@ -532,25 +532,25 @@ pub const WORKS_STEPS: Scenario = Scenario {
     ],
 };
 
-/// Pitch steps from the tower grapple's eye (2350, 165, -1450) up to the crane mast's ring.
-const MAST_PITCH: i16 = 6_200;
+/// Pitch steps from the tower grapple's eye (2330, 165, -1450) that put the line from the grapple
+/// module's muzzle on the crane mast's ring, over the tower's lip.
+const MAST_PITCH: i16 = 6_400;
 
 /// The assembly works' crane mast from the floor south of the tower: hook its ring, reel up the
 /// tower's face and over its edge, and let go onto the top.
 pub const WORKS_GRAPPLE: Scenario = Scenario {
     name: "the works' grapple onto the crane tower",
     arena: || Arena {
-        spawn: Vec3i::new(2_350, 0, -1_450),
+        spawn: Vec3i::new(2_330, 0, -1_450),
         spawn_yaw: NORTH,
         ..Arena::assembly_works()
     },
     legs: &[
         hold(
-            "take the grapple",
+            "aim the grapple",
             Intent {
                 yaw: NORTH,
                 pitch: MAST_PITCH,
-                select: Some(Weapon::Grapple),
                 ..Intent::IDLE
             },
             15,
@@ -560,7 +560,7 @@ pub const WORKS_GRAPPLE: Scenario = Scenario {
             Intent {
                 yaw: NORTH,
                 pitch: MAST_PITCH,
-                fire: true,
+                grapple: true,
                 ..Intent::IDLE
             },
             90,
@@ -640,11 +640,10 @@ pub const CELL_GRAPPLE: Scenario = Scenario {
     },
     legs: &[
         hold(
-            "take the grapple",
+            "aim the grapple",
             Intent {
                 yaw: NORTH,
                 pitch: GALLERY_PITCH,
-                select: Some(Weapon::Grapple),
                 ..Intent::IDLE
             },
             15,
@@ -654,7 +653,7 @@ pub const CELL_GRAPPLE: Scenario = Scenario {
             Intent {
                 yaw: NORTH,
                 pitch: GALLERY_PITCH,
-                fire: true,
+                grapple: true,
                 ..Intent::IDLE
             },
             90,
@@ -717,8 +716,9 @@ pub const DOCK_PAD: Scenario = Scenario {
 };
 
 /// Pitch steps from the outer lane's eye (-3300, 165, -2200) up to the bow mast's top on the
-/// foredeck, (-2200, 670, -2200): atan(505 / 1100) ≈ 24.7°.
-const BOW_MAST_PITCH: i16 = 4_497;
+/// foredeck, (-2200, 670, -2200): atan(505 / 1100) ≈ 24.7°, raised about 1.6° so the line from
+/// the grapple module's muzzle (below the eye) still meets the mast's top.
+const BOW_MAST_PITCH: i16 = 4_797;
 
 /// The drydock's west outer lane: hook the bow mast over the hull, get reeled up over the
 /// shoulder and flung toward the mast, let go and step back to land on the foredeck short of
@@ -732,11 +732,10 @@ pub const DOCK_GRAPPLE: Scenario = Scenario {
     },
     legs: &[
         hold(
-            "take the grapple",
+            "aim the grapple",
             Intent {
                 yaw: EAST,
                 pitch: BOW_MAST_PITCH,
-                select: Some(Weapon::Grapple),
                 ..Intent::IDLE
             },
             15,
@@ -746,7 +745,7 @@ pub const DOCK_GRAPPLE: Scenario = Scenario {
             Intent {
                 yaw: EAST,
                 pitch: BOW_MAST_PITCH,
-                fire: true,
+                grapple: true,
                 ..Intent::IDLE
             },
             95,
@@ -805,6 +804,8 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
         pitch: 0,
         fire: (tick + 20 * person) % 60 < 40,
         melee: (tick + 50 * person).is_multiple_of(200),
+        // The grapple module's own key, a second held every four (shooter#104).
+        grapple: (tick + 70 * person) % 240 < 60,
         select: tick
             .is_multiple_of(300)
             .then(|| weapons[(tick / 300 + person) as usize % weapons.len()]),
