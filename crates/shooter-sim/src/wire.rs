@@ -4,8 +4,8 @@
 //! off, the gait clock: what a client resumes prediction from), their robot builds, the charge in each
 //! one's energy pool, every part's health (what it has lost follows from them,
 //! [`crate::damage`]) and the module each carries, the rockets, the shotgun pellets, the module
-//! pads, the arena placeables' health ([`crate::scenery`]: the damaged ones, by stable ID) and the
-//! tick's events). Robot builds travel as raw codes and are decoded
+//! pads, the modules dropped at deaths, the arena placeables' health ([`crate::scenery`]: the
+//! damaged ones, by stable ID) and the tick's events). Robot builds travel as raw codes and are decoded
 //! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored; a
 //! part health above its catalog health, or a charge above the capacity of the parts still
 //! connected, is malformed.
@@ -23,7 +23,7 @@ use crate::mechanics::{
 };
 use crate::physics::Vec3i;
 use crate::physics::articulated::{Motion as BodyMotion, Pose};
-use crate::pickups::{ArenaModule, Carried};
+use crate::pickups::{ArenaModule, Carried, DROP_LIFETIME_TICKS, Drop};
 use crate::player::{Intent, Motion};
 use crate::robot::{Assembly, AssemblyError, BETA, Candidate, PartId, RawMount, RawPart};
 use crate::scenery::PlaceableState;
@@ -31,7 +31,7 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::Weapon;
 use std::fmt;
 
-pub const WIRE_VERSION: u8 = 17;
+pub const WIRE_VERSION: u8 = 18;
 const NONE: u8 = u8::MAX;
 
 /// A build part's flags: it has a parent, it is turned, it carries a mod.
@@ -151,6 +151,8 @@ pub struct Snapshot {
     pub pellets: Vec<PelletState>,
     /// The module pads, in the map's order.
     pub pickups: Vec<PickupState>,
+    /// The modules dead carriers dropped, oldest first, exact (a client predicts taking them).
+    pub drops: Vec<Drop>,
     /// The arena's damaged placeables by ascending stable ID, at what health they have left (0:
     /// broken); every other one is whole ([`crate::scenery`]).
     pub scenery: Vec<PlaceableState>,
@@ -270,6 +272,7 @@ impl Session {
                     ready_in: pickup.ready_in,
                 })
                 .collect(),
+            drops: self.drops.clone(),
             scenery: self.scenery.state(),
             events: self.events.clone(),
             names: self
@@ -311,6 +314,10 @@ impl Out {
     }
     fn module(&mut self, module: ArenaModule) {
         self.u8(module.tag());
+    }
+    fn carried(&mut self, carried: Carried) {
+        self.module(carried.module);
+        self.u8(carried.uses_left);
     }
     /// A robot build's component tree in canonical (part ID) order: a part count, then per part
     /// its ID, its part type code and a flags byte, then its parent's ID and socket if it is
@@ -396,6 +403,15 @@ impl In<'_> {
     }
     fn module(&mut self) -> Result<ArenaModule, WireError> {
         ArenaModule::from_tag(self.u8()?).ok_or(WireError::Malformed("unknown module"))
+    }
+    /// A module and its uses left: at least one, at most a fresh one's.
+    fn carried(&mut self) -> Result<Carried, WireError> {
+        let module = self.module()?;
+        let uses_left = self.u8()?;
+        if !(1..=module.uses()).contains(&uses_left) {
+            return Err(WireError::Malformed("a module's uses out of range"));
+        }
+        Ok(Carried { module, uses_left })
     }
     fn text(&mut self) -> Result<String, WireError> {
         let length = usize::from(self.u8()?);
@@ -679,6 +695,21 @@ fn encode_event(out: &mut Out, event: &Event) {
             out.u8(slot);
             out.module(module);
         }
+        Event::ModuleDropped { slot, carried } => {
+            out.u8(12);
+            out.u8(slot);
+            out.carried(carried);
+        }
+        Event::DropTaken {
+            slot,
+            from,
+            carried,
+        } => {
+            out.u8(13);
+            out.u8(slot);
+            out.u8(from);
+            out.carried(carried);
+        }
     }
 }
 
@@ -747,6 +778,15 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
             slot: input.u8()?,
             part: PartId(input.u8()?),
             destroyed: input.u8()? != 0,
+        },
+        12 => Event::ModuleDropped {
+            slot: input.u8()?,
+            carried: input.carried()?,
+        },
+        13 => Event::DropTaken {
+            slot: input.u8()?,
+            from: input.u8()?,
+            carried: input.carried()?,
         },
         _ => return Err(WireError::Malformed("unknown event")),
     })
@@ -817,8 +857,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         match fighter.carried {
             Some(carried) => {
                 out.u8(1);
-                out.module(carried.module);
-                out.u8(carried.uses_left);
+                out.carried(carried);
             }
             None => out.u8(0),
         }
@@ -852,6 +891,15 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         }
         out.module(pickup.module);
         out.u32(pickup.ready_in);
+    }
+    out.u8(count(snapshot.drops.len()));
+    for drop in snapshot.drops.iter().take(usize::from(u8::MAX)) {
+        for axis in [drop.center.x, drop.center.y, drop.center.z] {
+            out.i32(axis);
+        }
+        out.carried(drop.carried);
+        out.u8(drop.from);
+        out.u32(drop.expires_in);
     }
     let scenery = &snapshot.scenery[..snapshot.scenery.len().min(usize::from(u16::MAX))];
     out.u16(u16::try_from(scenery.len()).unwrap_or(u16::MAX));
@@ -935,10 +983,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
             };
             fighter.carried = match input.u8()? {
                 0 => None,
-                1 => Some(Carried {
-                    module: input.module()?,
-                    uses_left: input.u8()?,
-                }),
+                1 => Some(input.carried()?),
                 _ => return Err(WireError::Malformed("unknown module state")),
             };
             fighter.energy = input.u32()?;
@@ -993,6 +1038,20 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
             })
         })
         .collect::<Result<Vec<_>, WireError>>()?;
+    let drops = (0..input.u8()?)
+        .map(|_| {
+            let drop = Drop {
+                center: Vec3i::new(input.i32()?, input.i32()?, input.i32()?),
+                carried: input.carried()?,
+                from: input.u8()?,
+                expires_in: input.u32()?,
+            };
+            if !(1..=DROP_LIFETIME_TICKS).contains(&drop.expires_in) {
+                return Err(WireError::Malformed("a drop's lifetime out of range"));
+            }
+            Ok(drop)
+        })
+        .collect::<Result<Vec<_>, WireError>>()?;
     let scenery = (0..input.u16()?)
         .map(|_| {
             Ok(PlaceableState {
@@ -1020,6 +1079,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
         rockets,
         pellets,
         pickups,
+        drops,
         scenery,
         events,
         names,

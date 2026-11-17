@@ -570,7 +570,8 @@ pub mod online {
                 return Ok(());
             }
             // Predicted shots fire at the host's pace for this life's build (its weapon mods)
-            // and module, and jumps leave as the host's do; the pads are as the host has them.
+            // and module, and jumps leave as the host's do; the pads and the dropped modules are
+            // as the host has them.
             // The energy pool is predicted like the body: reset to the host's charge with it. The
             // part damage is the host's: a lost weapon does not fire and a robot without
             // connected locomotion does not walk in the prediction either.
@@ -582,6 +583,7 @@ pub mod online {
                 for (pickup, host) in predictor.pickups.iter_mut().zip(&snapshot.pickups) {
                     pickup.ready_in = host.ready_in;
                 }
+                predictor.drops.clone_from(&snapshot.drops);
             }
             let place = |predictor: &mut Session| {
                 // Its robot resumes in the host's exact state (bodies, lost parts, gait clock).

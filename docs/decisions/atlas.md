@@ -402,14 +402,21 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
 - **Q2.i46.3**: How long pickup modules last once taken, and when they respawn (D2.i46.9).
   Owner, 2026-11-14 (shooter#62): a collected module lasts until its holder dies or the round
   ends, not on a timer, and a strong one is paid for in shared robot energy (#72) and/or limited
-  uses; values are tuning, not approved. Open: the module list, costs, respawn intervals, any
-  drop on death. Defaults in use until decided (shooter#62): `shooter_sim::pickups`, pads as map
+  uses; values are tuning, not approved. Owner, 2026-11-14 (shooter#62, death drops): a robot
+  dying with a module leaves it at its death location with its remaining uses for any living
+  robot to collect under the same universal rules; the old holder loses the effect; ties resolve
+  deterministically; drops are authoritative, visible and replayable, expire at round end and
+  after a bounded provisional ground lifetime, and never change the pad's own respawn schedule.
+  Open: the module list, costs, respawn intervals, the drop lifetime. Defaults in use until
+  decided (shooter#62): `shooter_sim::pickups`, pads as map
   data (`Arena::module_pads`); the rail capacitor (rail gun 150% damage, 75% refire time, 5
   boosted shots) and thrusters (9 m/s jumps instead of 6, 6 boosted jumps); one module per robot,
   a new one replaces it; since shooter#72 a boosted rail shot costs 150% of the shot's energy and
-  a thruster jump 15 energy (a jump the pool cannot pay is a plain one); nothing dropped on death; a
+  a thruster jump 15 energy (a jump the pool cannot pay is a plain one); a
   pad is back 30 s after it was taken and every pad is ready at a round's or map's start; a pad
-  contested in one tick goes to the nearest living robot, then the lowest slot.
+  contested in one tick goes to the nearest living robot, then the lowest slot. A death drop lies
+  at the dead robot's feet for 30 s (provisional), is contested like a pad (after the pads, oldest
+  drop first) and keeps the uses it had; a robot falling out of the arena drops nothing.
 - **Q2.i46.4**: The exact engineering budgets (weight, power, cooling), attachment rules and build
   point values (D2.i46.5).
   Defaults in use until decided (shooter#47): provisional, tunable catalog data in
