@@ -253,6 +253,49 @@ fn the_proving_cell_routes_reach_its_high_ground() {
     assert!(on_gallery(hung) && !hung.hooked, "{hung:?}");
 }
 
+/// The drydock's routes onto the ships' hulls: the gantry's ramp climbs to the 4 m gantry and a
+/// gangway carries a fighter over the hull's shoulder onto the foredeck; the foredeck's ramp
+/// climbs onto the 6 m stern deck; the outer lane's pad and a grapple on the bow mast each put a
+/// fighter on the foredeck.
+#[test]
+fn the_drydock_routes_reach_the_hulls() {
+    use shooter_sim::drydock::{FOREDECK_TOP, GANTRY_TOP, SHIP_X, STERN_DECK_Z, STERN_TOP};
+    let on_foredeck = |sample: &Sample| {
+        sample.grounded
+            && (sample.center[1] - (FOREDECK_TOP as f32 + HALF)).abs() < STAND
+            && (sample.center[0] - SHIP_X as f32).abs() < 400.0
+    };
+    let samples = run(scenarios::DOCK_GANTRY);
+    let gantry = end_of(&samples, "on the gantry").unwrap();
+    assert!(
+        gantry.grounded
+            && (gantry.center[1] - (GANTRY_TOP as f32 + HALF)).abs() < STAND
+            && (-1_200.0..=-800.0).contains(&gantry.center[2]),
+        "{gantry:?}"
+    );
+    let deck = end_of(&samples, "on the foredeck").unwrap();
+    assert!(on_foredeck(deck), "{deck:?}");
+
+    let samples = run(scenarios::DOCK_STERN);
+    let stern = end_of(&samples, "on the stern deck").unwrap();
+    assert!(
+        stern.grounded
+            && (stern.center[1] - (STERN_TOP as f32 + HALF)).abs() < STAND
+            && stern.center[2] > STERN_DECK_Z as f32,
+        "{stern:?}"
+    );
+
+    let samples = run(scenarios::DOCK_PAD);
+    assert_eq!(samples.iter().filter(|s| s.launched).count(), 1);
+    let landed = end_of(&samples, "on the foredeck").unwrap();
+    assert!(on_foredeck(landed), "{landed:?}");
+
+    let samples = run(scenarios::DOCK_GRAPPLE);
+    assert!(samples.iter().any(|s| s.hooked));
+    let hung = end_of(&samples, "on the foredeck").unwrap();
+    assert!(on_foredeck(hung) && !hung.hooked, "{hung:?}");
+}
+
 #[test]
 fn a_slide_climbs_the_ramp_and_runs_down_it() {
     let samples = run(scenarios::RAMP_SLIDE);

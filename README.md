@@ -54,8 +54,8 @@ same simulation in-process: you in slot 0 against eleven bots, no server needed.
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID, its arena
 (geometry, collision, spawn points, jump pads, module pickup pads, bot waypoints) and the player
-count it is laid out for. Two of the beta's three arenas, the medium and the small one, are in,
-built from asset-tooling's arena kit; two interim greybox maps stay:
+count it is laid out for. The beta's three arenas, the medium, the small and the large one, are
+in, built from asset-tooling's arena kit; two interim greybox maps stay:
 
 - `assembly-works`, the medium arena (shooter#52; 4 to 12 players, 14 spawn points): a multilevel
   robotic assembly factory repurposed for combat (the owner's choice of setting), a 56 m hall
@@ -92,6 +92,26 @@ built from asset-tooling's arena kit; two interim greybox maps stay:
   barriers and crates are destruction candidates for shooter#60 (the blast screens stay, the
   booths' spawn points rely on them) and a repair anchor in each booth is data for shooter#61.
   Views and frames: [docs/captures/53](docs/captures/53).
+- `drydock`, the large long-sightline arena (shooter#55; 8 to 12 players, 14 spawn points): a
+  repurposed spaceship shipyard (the owner's choice, Atlas D2.i55.1), an 80 m square inside 10 m
+  walls, point-symmetric, from the same kit. Two docked spacecraft lie head to tail either side
+  of a 32 m central industrial corridor; there are no ship interiors. Each hull, 12 m wide and
+  56 m long, is built from the kit's hull modules: 2 m sides, a 45° shoulder up to a walkable
+  4 m foredeck, 8 m wide, with staggered 80 cm hull ribs as low cover and a sensor mast at the
+  bow, and a raised 6 m stern deck, 16 m long, with a rib, a mast and the thrusters, climbed from
+  the foredeck by an 8 m ramp. Along each hull's corridor side runs a 4 m dock gantry with a
+  16 m ramp down from either end and two gangways over the shoulder onto the foredeck; behind
+  each hull a 12 m outer lane along the perimeter has containers, a barrier and a jump pad that
+  throws a fighter over the shoulder onto the foredeck (15 m/s up, 9 m/s toward it), and a lane
+  round each bow and stern joins it to the corridor. The corridor's floor has containers,
+  barriers, low cover, crates and an 8 m crane pylon in the middle, with the rail capacitor at
+  its foot. Every hull top has several routes up (the gantry's two ramps for wheels and tracks,
+  the gangways, the pad, the grapple on a mast); each stern deck is in sight of the other ship's
+  hull and of the gantries, and the pylon cuts the line between the two stern decks, so no hull
+  top is an unanswered perch. All spawn points are on the ground and none is in sight of another.
+  Its low cover, floor barriers and crates are destruction candidates for shooter#60 and four
+  repair anchors (under the gantries and in the outer lanes) are data for shooter#61. Views and
+  frames: [docs/captures/55](docs/captures/55).
 - `greybox-yard`, the default for hosted matches and practice (6 to 12 players, 14 spawn points):
   a 76 m square with 5 m walls, point-symmetric (the north half turned half a turn is the south
   half). A raised walkway crosses the middle, a 3 m deck on two pillars that you can walk under,
@@ -116,11 +136,11 @@ pieces of their own. The proxies come from the pinned kit's descriptor through a
 simulation reads no files. Both clients draw each placement's kit mesh where the simulation puts
 it and lay the floor with the kit's 2 m plates; until the kit is read a kit-built map waits, and
 if it cannot be read the map is drawn as boxes with a note in the HUD. The greybox maps are
-unchanged. The small arena uses the same path, as will the large one (#55).
+unchanged. The small and the large arena use the same path.
 `cargo test -p shooter-client --test arena` checks the table against the pinned kit, the kit's
 decoding and that every placed module is drawn inside the box its collision comes from;
 `scripts/gen-arena-kit.py` rewrites the table after a pin bump; `cargo run -p shooter-client
---release --example arena_views -- assembly-works DIR` (or `proving-cell`) renders a map's overview and route views
+--release --example arena_views -- assembly-works DIR` (or `proving-cell`, `drydock`) renders a map's overview and route views
 offscreen.
 
 The recommended capacity never changes the slot count (12 unless the host sets another per

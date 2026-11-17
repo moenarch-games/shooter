@@ -965,6 +965,13 @@ fn bots_keep_moving_and_scoring_on_the_proving_cell() {
     bots_keep_moving_and_scoring_on(MapId::ProvingCell, 1_500.0);
 }
 
+/// The same on the drydock (shooter#55), the large map: twelve bots find each other across its
+/// 80 m, and none is stranded on its hulls, on its gantries or in its outer lanes.
+#[test]
+fn bots_keep_moving_and_scoring_on_the_drydock() {
+    bots_keep_moving_and_scoring_on(MapId::Drydock, 2_000.0);
+}
+
 /// Twelve bots for 90 s on `map`: plenty of shots, at least ten kills, every bot at least
 /// `roams` units from where it started and none idle (alive, mobile, not firing, within 1 m of
 /// one spot) for 5 s.
@@ -1218,4 +1225,25 @@ fn a_build_configured_before_playing_applies_at_once() {
     assert!(session.configure(2, HEAVY));
     let b = &session.fighters[1];
     assert_eq!((b.build, b.configured), (PYRO, HEAVY));
+}
+
+/// A bot match on the drydock replays exactly from its seed, at its fewest recommended eight
+/// slots and at the default twelve, and another seed plays out differently.
+#[test]
+fn a_bot_match_on_the_drydock_replays_exactly() {
+    let play = |seed, slots| {
+        let rules = Rules {
+            slots,
+            ..Rules::deathmatch(seed)
+        };
+        let mut session = Session::on_map(MapId::Drydock, rules).unwrap();
+        for _ in 0..1_200 {
+            session.step().unwrap();
+        }
+        encode_snapshot(&session.snapshot())
+    };
+    for slots in [8, 12] {
+        assert_eq!(play(3, slots), play(3, slots));
+        assert_ne!(play(3, slots), play(4, slots));
+    }
 }
