@@ -146,7 +146,7 @@ fn main() -> Result<(), String> {
     let mut builder = Builder::new(shooter_sim::robot::RAIL_RACK, Stage::Setup);
     builder.bench.selected = Some(PartId(3));
     builder.look_from(0.6, 0.25);
-    shoot(&mut gpu, &mut robots, &mut builder, &out.join("rails.ppm"))?;
+    shoot(&mut builder, "rails.ppm")?;
 
     // The controls panel (shooter#74) on the standard build's preset, its W binding selected.
     let mut builder = Builder::new(STANDARD, Stage::Setup);
