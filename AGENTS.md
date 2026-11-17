@@ -52,10 +52,12 @@ cargo run -p shooter-client --release -- --frames 600 [--capture DIR]      # nat
 scripts/profile.sh [OUT] [native|web|all]                                  # runtime-profiler bundles: bot match, offscreen native client, browser (?frames=120)
 ```
 
-CI (`.github/workflows/validate.yml`) runs fmt, Clippy, the kits' fetch and the full test suite with `physics-ab`, the
-native build, a `wasm32` check and the native-vs-`wasm32` state hash comparison
-(`scripts/cross-build-hashes.sh`, 1800 ticks on every map); `pages.yml` builds and deploys `web/dist` from `main`;
-`profile.yml` uploads the bot-match and native-client (lavapipe) profiles, and in a second job the
+CI (`.github/workflows/validate.yml`) runs fmt, Clippy, the kits' fetch, the full test suite with
+`physics-ab`, the native build and the native-vs-`wasm32` state hash comparison
+(`scripts/cross-build-hashes.sh`, 1800 ticks on every map) in one cached Rust job; an
+independently cached `wasm32` check runs in parallel. Both are required for merge readiness and superseded runs are cancelled.
+`pages.yml` builds and deploys `web/dist` from `main`; the nightly or manually dispatched
+`profile.yml` uploads bot-match and native-client (lavapipe) profiles, and in a second job the
 browser client's (headless Chromium, SwiftShader WebGPU), as artifacts (no thresholds).
 
 ## Foundations
