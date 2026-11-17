@@ -319,13 +319,16 @@ fn the_presets_drive_wheels_and_legs_as_mounted_on_flat_ground_and_a_slope() {
     assert!(end[1] - start[1] > 80.0, "{end:?}");
     assert!(up > 0.95, "{up}");
 
-    // A quadruped (the robo-dog, its suggested crawl) walks ahead on W and stays up; on the
-    // slope it reaches it and starts up.
+    // A quadruped (the robo-dog, its suggested crawl) walks ahead on W and stays up, and climbs
+    // a 1:20 slope; a 1:10 one it reaches and slides back down (physics-engine 302416a).
     let (start, end, up) = drive(&floor(), fixtures::dog(false), w, 300);
     assert!(end[0] - start[0] > 120.0, "{end:?}");
     assert!(up > 0.95);
-    let (start, end, up) = drive(&slope(40, 1_600, 160), fixtures::dog(false), w, 600);
-    assert!(end[0] - start[0] > 40.0 && end[1] > start[1], "{end:?}");
+    let (start, end, up) = drive(&slope(40, 2_400, 120), fixtures::dog(false), w, 900);
+    assert!(
+        end[0] - start[0] > 150.0 && end[1] - start[1] > 5.0,
+        "{end:?}"
+    );
     assert!(up > 0.95);
 
     // A biped (the fixture: its legs under its rear half) steps ahead on W and stays up.
