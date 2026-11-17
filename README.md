@@ -54,8 +54,8 @@ same simulation in-process: you in slot 0 against eleven bots, no server needed.
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID, its arena
 (geometry, collision, spawn points, jump pads, module pickup pads, bot waypoints) and the player
-count it is laid out for. Two of the beta's three arenas, the medium and the small one, are in,
-built from asset-tooling's arena kit; two interim greybox maps stay:
+count it is laid out for. The beta's three arenas, the medium, the small and the large one, are
+in, built from asset-tooling's arena kit; two interim greybox maps stay:
 
 - `assembly-works`, the medium arena (shooter#52; 4 to 12 players, 14 spawn points): a multilevel
   robotic assembly factory repurposed for combat (the owner's choice of setting), a 56 m hall
@@ -72,7 +72,7 @@ built from asset-tooling's arena kit; two interim greybox maps stay:
   by a jump pad at its foot that throws 15 m/s up, or by the grapple on its 3 m mast. 4 m deep
   charging bays in the side walls, the bay walls, the tower and the floor's 4 m pillars break
   the long lines; no spawn point is in sight of another, and none is a dead end. Its low cover,
-  barriers and crates are marked as destruction candidates for shooter#60 (nothing breaks yet)
+  barriers and crates are destruction candidates that break (shooter#60, below)
   and four repair anchors (under the mezzanines and in the bays) are data for shooter#61. Plan,
   views and frames: [docs/captures/52](docs/captures/52).
 - `proving-cell`, the small close-quarters arena (shooter#53; 2 to 6 players, 12 spawn points so
@@ -92,6 +92,26 @@ built from asset-tooling's arena kit; two interim greybox maps stay:
   barriers and crates are destruction candidates for shooter#60 (the blast screens stay, the
   booths' spawn points rely on them) and a repair anchor in each booth is data for shooter#61.
   Views and frames: [docs/captures/53](docs/captures/53).
+- `drydock`, the large long-sightline arena (shooter#55; 8 to 12 players, 14 spawn points): a
+  repurposed spaceship shipyard (the owner's choice, Atlas D2.i55.1), an 80 m square inside 10 m
+  walls, point-symmetric, from the same kit. Two docked spacecraft lie head to tail either side
+  of a 32 m central industrial corridor; there are no ship interiors. Each hull, 12 m wide and
+  56 m long, is built from the kit's hull modules: 2 m sides, a 45° shoulder up to a walkable
+  4 m foredeck, 8 m wide, with staggered 80 cm hull ribs as low cover and a sensor mast at the
+  bow, and a raised 6 m stern deck, 16 m long, with a rib, a mast and the thrusters, climbed from
+  the foredeck by an 8 m ramp. Along each hull's corridor side runs a 4 m dock gantry with a
+  16 m ramp down from either end and two gangways over the shoulder onto the foredeck; behind
+  each hull a 12 m outer lane along the perimeter has containers, a barrier and a jump pad that
+  throws a fighter over the shoulder onto the foredeck (15 m/s up, 9 m/s toward it), and a lane
+  round each bow and stern joins it to the corridor. The corridor's floor has containers,
+  barriers, low cover, crates and an 8 m crane pylon in the middle, with the rail capacitor at
+  its foot. Every hull top has several routes up (the gantry's two ramps for wheels and tracks,
+  the gangways, the pad, the grapple on a mast); each stern deck is in sight of the other ship's
+  hull and of the gantries, and the pylon cuts the line between the two stern decks, so no hull
+  top is an unanswered perch. All spawn points are on the ground and none is in sight of another.
+  Its low cover, floor barriers and crates are destruction candidates for shooter#60 and four
+  repair anchors (under the gantries and in the outer lanes) are data for shooter#61. Views and
+  frames: [docs/captures/55](docs/captures/55).
 - `greybox-yard`, the default for hosted matches and practice (6 to 12 players, 14 spawn points):
   a 76 m square with 5 m walls, point-symmetric (the north half turned half a turn is the south
   half). A raised walkway crosses the middle, a 3 m deck on two pillars that you can walk under,
@@ -116,11 +136,11 @@ pieces of their own. The proxies come from the pinned kit's descriptor through a
 simulation reads no files. Both clients draw each placement's kit mesh where the simulation puts
 it and lay the floor with the kit's 2 m plates; until the kit is read a kit-built map waits, and
 if it cannot be read the map is drawn as boxes with a note in the HUD. The greybox maps are
-unchanged. The small arena uses the same path, as will the large one (#55).
+unchanged. The small and the large arena use the same path.
 `cargo test -p shooter-client --test arena` checks the table against the pinned kit, the kit's
 decoding and that every placed module is drawn inside the box its collision comes from;
 `scripts/gen-arena-kit.py` rewrites the table after a pin bump; `cargo run -p shooter-client
---release --example arena_views -- assembly-works DIR` (or `proving-cell`) renders a map's overview and route views
+--release --example arena_views -- assembly-works DIR` (or `proving-cell`, `drydock`) renders a map's overview and route views
 offscreen.
 
 The recommended capacity never changes the slot count (12 unless the host sets another per
@@ -129,6 +149,32 @@ match, at most one per spawn point). The host picks each match's map
 so a joining client builds and predicts on that map; practice takes `--map <id>` natively or
 `?map=<id>` in the browser. Replays record their map and restore it; an unknown map ID is
 refused everywhere.
+
+**Arena destruction** (shooter#60). On a kit-built map the placements its map marks as
+destruction candidates (low cover, barriers, crates; doors once a map places one) are damageable
+placeables (`shooter_sim::scenery`), each with a stable ID, its placement's index in the map.
+The host alone damages them, through the hit queries that already hurt robots: a hitscan ray or
+a pellet that stops on one, the flame burning on one, a blade swing that meets one instead of a
+robot, a rocket's blast by the point of its pieces nearest the blast (the same falloff as on
+robot parts). At zero health it breaks: its placement turns to the kit's broken variant and its
+collision to that variant's proxies, at the end of the tick that broke it, so from the next
+tick on the physics world, the robots' world, every ray, projectile and flame, hooks (one set on
+it lets go) and the bots' sight and walks all meet the broken pieces. Only the candidates break:
+floors, decks, platforms, ramps, walls and the blast screens never do, and a candidate something
+else rests on (the lower crate of a stack) carries it and never breaks either. Each candidate
+keeps a run of body IDs of its own, so breaking one moves no other body. A broken placeable stays
+broken through deaths and respawns until the round restarts, which brings every one back whole.
+Health is provisional (Atlas Q2.i60.1): low cover 150, a barrier 250, a crate 60, a door 200.
+The snapshot carries the damaged placeables' health by ID (wire 17), so replays verify it tick
+for tick; a predicting client stands its arena as the host's last snapshot has it before every
+predicted tick, so what its own predicted shots do to the arena lasts one tick at most, and both clients draw each placeable as
+the kit's intact or broken mesh from the snapshot alone (no damage rule of their own, no rubble
+or placeholder art; the box fallback for a kit that cannot be read stays whole).
+`cargo test -p shooter-sim --test destruction` covers hitscan and blast destruction, overlapping
+cover, a shot and a jump blocked before and open after, restoration, the wire, a predictor and
+replays; `physics_ab` checks broken collision on the Rapier oracle;
+`cargo run -p shooter-client --release --example arena_views -- MAP DIR broken` draws a map with
+every placeable broken ([docs/captures/60](docs/captures/60)).
 
 ```sh
 scripts/fetch-robot-kit.sh                 # the pinned robot, weapons, locomotion and arena kits into target/*-kit
@@ -402,7 +448,7 @@ as its bodies (its guns reach over a 1.2 m cover and stop it a little further fr
 the capsule did; two of the capsule-tuned routes, the works' 4 m step from the 2 m one and the
 thruster jump onto a 2 m ledge, no longer land for the standard robot). Snapshots carry each
 living robot's exact state (every body's motion, its lost parts, its gait clock; wire version
-16), from which a client resumes its prediction: bit for bit like the host, whole or one-legged
+18), from which a client resumes its prediction: bit for bit like the host, whole or one-legged
 (`cargo test -p shooter-sim --test match_robots`). Both clients draw each robot where those
 bodies are (below).
 
@@ -497,17 +543,23 @@ on the assembly works the capacitor lies on the gantry bridge's middle and thrus
 tower; on the proving cell the capacitor lies on the test stage's middle and thrusters on each
 gallery.
 A module lasts until its uses are spent, its holder dies or the round ends (owner decision on
-#62); nothing drops. A robot carries one module, and taking another replaces it. A pad is back
-30 s after it was taken; every pad is ready at the start of a round. When several robots reach a
-ready pad in the same tick the nearest (feet to pad centre) takes it, then the lowest slot. The
-host owns all of it; snapshots carry the pads and each fighter's module, the HUD's status line
-shows the carried module and its uses left, the feed announces pickups, and the pads are drawn
-as tinted plates with the module floating over them while it is there. Values are provisional
-(Atlas Q2.i46.3); the boosts are paid from the robot's shared energy pool (owner option B on #62).
+#62). A robot that dies carrying one drops it where it fell, with the uses it had left (a robot
+falling out of the arena takes it along); any living robot, whatever its build, takes the drop
+by walking onto it, the dead holder's effect is gone, and an untaken drop is gone after 30 s or
+at the round's end. A robot carries one module, and taking another replaces it. A pad is back
+30 s after it was taken, whatever happens to its module; every pad is ready at the start of a
+round. When several robots reach a ready pad or a drop in the same tick the nearest (feet to its
+centre) takes it, then the lowest slot (pads first, then drops, oldest first). The host owns all
+of it; snapshots carry the pads, the drops and each fighter's module (wire version 18), clients
+predict taking a drop, the HUD's status line shows the carried module and its uses left, the
+feed announces pickups, drops and who took a drop with how many uses, and the pads are drawn as
+tinted plates with the module floating over them while it is there, a drop as the same module
+floating where it lies. Values are provisional (Atlas Q2.i46.3); the boosts are paid from the
+robot's shared energy pool (owner option B on #62).
 
 Bots are deliberately beatable and fully deterministic (seeded): they walk between spawn points
 and the map's waypoints (wall gaps, doorways, ramp ends, the decks, the platforms), taking only straight
-walks no wall or ramp side blocks,
+walks no wall or ramp side blocks (pressed against a wall, with no such walk, the nearest point),
 spot the nearest fighter in sight, react after 0.35 s, turn at most 360°/s and aim with a few
 degrees of wandering error, strafing as they fire; the flamethrower inside 5 m, the rifle (even
 slots) or the shotgun (odd slots) up close, rockets or the laser at mid range, the rail gun far off,
@@ -536,9 +588,10 @@ builds of every form (the loadouts, a mini-tank, a robo-dog, a humanoid, station
 grappling-only machines), every rejection (the retired core code, cycles, double parents, overlaps, the part
 ceiling, mods), the budgets at their limits, tampered builds on the wire, modded fire and builds
 through a replayed match; the A/B also runs the shooting and close ranges as the modded loadouts.
-`cargo test -p shooter-sim --test pickups` checks contested pads, pad respawn, modules lasting a
-life until spent or death, round and map starts, the rail capacitor's lag-compensated hits and
-frags, thrusters, robots of different builds and the wire.
+`cargo test -p shooter-sim --test pickups` checks contested pads and drops, pad respawn, modules lasting a
+life until spent or death, the drop at death with its uses left and its pickup by another build,
+the drops' lifetime, round ends and map starts, the rail capacitor's lag-compensated hits and
+frags, thrusters, robots of different builds, a client predicting a drop's pickup and the wire.
 `cargo test -p shooter-sim --test deathmatch` checks bot matches (and that they replay exactly),
 lag compensation of shots and swings, that the reticle's aim ends where the hosted beam does, blade kills, scoring and rounds, input backlog trimming, and a hosted grapple carried in snapshots and predicted; `cargo test -p shooter-client --test online` plays two
 clients through a real game-server host on loopback, resumes a severed connection in its slot and

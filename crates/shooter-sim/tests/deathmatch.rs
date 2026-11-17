@@ -37,7 +37,7 @@ fn bots_fight_score_and_respawn() {
     };
     let mut session = Session::with_rules(Arena::greybox(), rules).unwrap();
     assert_eq!(session.fighters.len(), 12);
-    let (mut kills, mut shots, mut spawns, mut modules) = (0, 0, 0, 0);
+    let (mut kills, mut shots, mut spawns, mut modules, mut drops) = (0, 0, 0, 0, 0);
     for _ in 0..90 * 60 {
         session.step().unwrap();
         for event in &session.events {
@@ -46,16 +46,21 @@ fn bots_fight_score_and_respawn() {
                 Event::Fired { .. } => shots += 1,
                 Event::Spawned { .. } => spawns += 1,
                 Event::ModuleTaken { .. } => modules += 1,
+                Event::ModuleDropped { .. } => drops += 1,
                 _ => {}
             }
         }
     }
-    println!("{shots} shots, {kills} kills, {spawns} respawns, {modules} modules taken");
+    println!(
+        "{shots} shots, {kills} kills, {spawns} respawns, {modules} modules taken, {drops} dropped"
+    );
     assert!(shots > 100, "{shots} shots");
     assert!(kills >= 3, "{kills} kills in 90 s");
     assert!(spawns >= kills - 12, "{spawns} respawns for {kills} kills");
     // Bots do not seek the module pads, but they cross them.
     assert!(modules > 0, "no module taken");
+    // And a carrier dies with one, dropping it where it fell.
+    assert!(drops > 0, "no module dropped");
     let deaths: i32 = session.fighters.iter().map(|f| f.deaths).sum();
     assert!(deaths > 0);
     for fighter in &session.fighters {
@@ -968,6 +973,13 @@ fn bots_keep_moving_and_scoring_on_the_proving_cell() {
     bots_keep_moving_and_scoring_on(MapId::ProvingCell, 1_500.0);
 }
 
+/// The same on the drydock (shooter#55), the large map: twelve bots find each other across its
+/// 80 m, and none is stranded on its hulls, on its gantries or in its outer lanes.
+#[test]
+fn bots_keep_moving_and_scoring_on_the_drydock() {
+    bots_keep_moving_and_scoring_on(MapId::Drydock, 2_000.0);
+}
+
 /// Twelve bots for 90 s on `map`: plenty of shots, at least ten kills, every bot at least
 /// `roams` units from where it started and none idle (alive, mobile, not firing, within 1 m of
 /// one spot) for 5 s.
@@ -1221,4 +1233,25 @@ fn a_build_configured_before_playing_applies_at_once() {
     assert!(session.configure(2, HEAVY));
     let b = &session.fighters[1];
     assert_eq!((b.build, b.configured), (PYRO, HEAVY));
+}
+
+/// A bot match on the drydock replays exactly from its seed, at its fewest recommended eight
+/// slots and at the default twelve, and another seed plays out differently.
+#[test]
+fn a_bot_match_on_the_drydock_replays_exactly() {
+    let play = |seed, slots| {
+        let rules = Rules {
+            slots,
+            ..Rules::deathmatch(seed)
+        };
+        let mut session = Session::on_map(MapId::Drydock, rules).unwrap();
+        for _ in 0..1_200 {
+            session.step().unwrap();
+        }
+        encode_snapshot(&session.snapshot())
+    };
+    for slots in [8, 12] {
+        assert_eq!(play(3, slots), play(3, slots));
+        assert_ne!(play(3, slots), play(4, slots));
+    }
 }

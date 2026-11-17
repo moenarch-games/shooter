@@ -5,17 +5,20 @@
 //! (up its ramp, along and off it) and its jump pad onto it, and the assembly works' routes (its
 //! ramp, mezzanine and bridge, its cover, and its pad, work platforms and crane mast onto the
 //! crane tower), and the proving cell's (its ramp and gallery, its stage, its pad and a grapple
-//! from the stage onto the gallery). The movement and weapon tests check
+//! from the stage onto the gallery), and the drydock's (its gantry ramp and a gangway onto a
+//! foredeck, the stern ramp, the outer lane's pad and a grapple on the bow mast). The movement
+//! and weapon tests check
 //! what each one does and the Rapier A/B test runs each on both backends.
 
 use crate::arena::{Arena, Piece, Post};
+use crate::drydock::{FOREDECK_TOP, GANTRY_X, SHIP_X};
 use crate::physics::RampRise;
 use crate::physics::Vec3i;
 use crate::pickups::{ArenaModule, ModulePad};
 use crate::player::Intent;
 use crate::proving_cell::STAGE_TOP;
 use crate::robot::{Assembly, HEAVY, SKIRMISHER};
-use crate::tour::{EAST, Leg, NORTH, SOUTH, hold, stand, walk};
+use crate::tour::{EAST, Leg, NORTH, SOUTH, WEST, hold, stand, walk};
 use crate::weapons::{MAX_PITCH, Weapon};
 
 /// One scripted scenario.
@@ -659,6 +662,98 @@ pub const CELL_GRAPPLE: Scenario = Scenario {
     ],
 };
 
+/// The drydock from the foot of its west gantry's north ramp: south up the 16 m ramp onto the
+/// 4 m gantry, along it to the north gangway, then west over the gangway and the hull's
+/// shoulder onto the foredeck.
+pub const DOCK_GANTRY: Scenario = Scenario {
+    name: "the dock's gantry and gangway",
+    arena: || Arena {
+        spawn: Vec3i::new(GANTRY_X, 0, -3_200),
+        spawn_yaw: SOUTH,
+        ..Arena::drydock()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the ramp", SOUTH, 160),
+        walk("along the gantry", SOUTH, 30),
+        stand("on the gantry", 10),
+        walk("over the gangway", WEST, 70),
+        stand("on the foredeck", 20),
+    ],
+};
+
+/// The drydock's west foredeck: south up the 8 m ramp onto the 6 m stern deck, and along it.
+pub const DOCK_STERN: Scenario = Scenario {
+    name: "the dock's stern ramp",
+    arena: || Arena {
+        spawn: Vec3i::new(SHIP_X, FOREDECK_TOP, 0),
+        spawn_yaw: SOUTH,
+        ..Arena::drydock()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the ramp", SOUTH, 110),
+        stand("on the stern deck", 20),
+    ],
+};
+
+/// The drydock's west outer lane: onto its jump pad, thrown east over the hull's shoulder onto
+/// the foredeck.
+pub const DOCK_PAD: Scenario = Scenario {
+    name: "the dock's pad onto the foredeck",
+    arena: || Arena {
+        spawn: Vec3i::new(-3_650, 0, -600),
+        spawn_yaw: EAST,
+        ..Arena::drydock()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("onto the pad", EAST, 25),
+        stand("thrown", 100),
+        stand("on the foredeck", 20),
+    ],
+};
+
+/// Pitch steps from the outer lane's eye (-3300, 165, -2200) up to the bow mast's top on the
+/// foredeck, (-2200, 670, -2200): atan(505 / 1100) ≈ 24.7°.
+const BOW_MAST_PITCH: i16 = 4_497;
+
+/// The drydock's west outer lane: hook the bow mast over the hull, get reeled up over the
+/// shoulder and flung toward the mast, let go and step back to land on the foredeck short of
+/// the mast's foot.
+pub const DOCK_GRAPPLE: Scenario = Scenario {
+    name: "the dock's grapple onto the foredeck",
+    arena: || Arena {
+        spawn: Vec3i::new(-3_300, 0, -2_200),
+        spawn_yaw: EAST,
+        ..Arena::drydock()
+    },
+    legs: &[
+        hold(
+            "take the grapple",
+            Intent {
+                yaw: EAST,
+                pitch: BOW_MAST_PITCH,
+                select: Some(Weapon::Grapple),
+                ..Intent::IDLE
+            },
+            15,
+        ),
+        hold(
+            "hook and reel in",
+            Intent {
+                yaw: EAST,
+                pitch: BOW_MAST_PITCH,
+                fire: true,
+                ..Intent::IDLE
+            },
+            95,
+        ),
+        walk("let go onto the foredeck", WEST, 10),
+        stand("on the foredeck", 90),
+    ],
+};
+
 pub const ALL: &[Scenario] = &[
     SPRINT_AND_SLIDE,
     DOUBLE_JUMP,
@@ -682,6 +777,10 @@ pub const ALL: &[Scenario] = &[
     CELL_STAGE,
     CELL_PAD,
     CELL_GRAPPLE,
+    DOCK_GANTRY,
+    DOCK_STERN,
+    DOCK_PAD,
+    DOCK_GRAPPLE,
 ];
 
 /// This tick's controls for scripted person `index`: run and strafe in turns, sweep the view

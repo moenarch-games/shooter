@@ -37,8 +37,17 @@
 //! they fly through the world as it is each tick and meet fighters' parts where they are then,
 //! like the flame.
 //!
-//! Module pickups lie on the map's pads; the host resolves who takes them, applies, expires and
-//! clears their effects and brings the pads back ([`crate::pickups`] has the rules).
+//! Module pickups lie on the map's pads and where their carriers died; the host resolves who takes
+//! them, applies, expires and clears their effects, drops a dead carrier's module, removes the
+//! drops and brings the pads back ([`crate::pickups`] has the rules).
+//!
+//! **Arena destruction** (shooter#60). A kit-built map's marked cover, barriers and crates are
+//! damageable placeables ([`Session::scenery`]): a ray, a pellet or the flame that stops on one,
+//! a blade swing that strikes no robot but meets one, and a rocket's blast hurt it as they hurt
+//! robot parts, and at zero health it breaks. The break lands last in the tick (after the robots'
+//! changes), in the arena, the physics world and the robots' world at once, so every query of
+//! the next tick meets the broken pieces; a new round restores every placeable
+//! ([`crate::scenery`] has the rules).
 //!
 //! Every fighter has a shared energy pool from its build; its jumps, swings and shots ask it for
 //! energy first come, first served and it regenerates after them each tick ([`crate::energy`]).
@@ -61,13 +70,16 @@ use crate::mechanics::{self, Controls, Footing as RobotFooting, Mechanics, Robot
 use crate::melee;
 use crate::physics::articulated::Pose;
 use crate::physics::{BodyId, PhysicsError, RayHit, SUBUNITS_PER_UNIT, Vec3i, World};
-use crate::pickups::{self, ArenaModule, Carried, PAD_RESPAWN_TICKS, Pickup};
+use crate::pickups::{
+    self, ArenaModule, Carried, DROP_LIFETIME_TICKS, Drop, PAD_RESPAWN_TICKS, Pickup,
+};
 use crate::player::{
     Footing, GRAVITY, Intent, KILL_HEIGHT_UNITS, Motion, PLAYER_HALF_EXTENTS, STEP_UP, Traction,
     eye_height,
 };
 use crate::repair::{self, Order, Outcome, Repair};
 use crate::robot::{Assembly, BETA, Kind, PartId, Tuning};
+use crate::scenery::{PlaceableState, Scenery};
 use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
 use std::collections::VecDeque;
 
@@ -731,6 +743,14 @@ pub enum Event {
     },
     /// `slot` spent its module's last use.
     ModuleSpent { slot: u8, module: ArenaModule },
+    /// `slot` died carrying `carried`, and left it where its feet were.
+    ModuleDropped { slot: u8, carried: Carried },
+    /// `slot` took `carried` (the uses it had left) from where `from` dropped it.
+    DropTaken {
+        slot: u8,
+        from: u8,
+        carried: Carried,
+    },
 }
 
 /// What a hitscan ray struck.
@@ -739,6 +759,8 @@ enum Target {
     /// A fighter's parts, each with its share of the damage.
     Fighter(usize, Vec<Blow>),
     Dummy(usize),
+    /// A damageable placeable of the arena ([`Scenery::of_body`]).
+    Placeable(usize),
     Nothing,
 }
 
@@ -771,7 +793,11 @@ struct Blast {
 pub struct Session {
     /// The catalogued map `arena` is ([`Session::on_map`]); `None` for a scripted arena.
     pub map: Option<MapId>,
+    /// The arena as it stands: a broken placeable's placement in its broken variant, and its
+    /// broken pieces among [`Arena::pieces`] ([`crate::scenery`]).
     pub arena: Arena,
+    /// The arena's damageable placeables and their health.
+    pub scenery: Scenery,
     /// The arena's scenery and the target dummies: what rays, hooks and flames meet besides
     /// the robots.
     pub world: World,
@@ -787,6 +813,8 @@ pub struct Session {
     pub pellets: Vec<Pellet>,
     /// The module pads, in the map's order ([`Arena::module_pads`]).
     pub pickups: Vec<Pickup>,
+    /// The modules dead carriers dropped, oldest first.
+    pub drops: Vec<Drop>,
     /// What the last tick did, in order.
     pub events: Vec<Event>,
     tick: u32,
@@ -820,11 +848,16 @@ impl Session {
 
     /// A match in `arena`, outside the catalog (the scripted moves and test arenas).
     pub fn with_rules(arena: Arena, rules: Rules) -> Result<Self, PhysicsError> {
-        let mut world = arena.build_world(GRAVITY)?;
+        let scenery = Scenery::of(&arena);
+        let statics = scenery.statics(&arena);
+        let mut world = World::new(GRAVITY);
+        for body in &statics {
+            world.add_body(body.clone())?;
+        }
         world.set_step_up(Some(STEP_UP));
         #[allow(clippy::cast_precision_loss)]
         let gravity = per_second(GRAVITY).map(|axis| axis * f32::from(crate::TICK_HZ) / 100.0);
-        let mechanics = Mechanics::for_match(&arena.statics(), gravity)?;
+        let mechanics = Mechanics::for_match(&statics, gravity)?;
         let fighters = (0..rules.slots)
             .map(|slot| {
                 let pilot = if rules.local && slot == 0 {
@@ -840,6 +873,7 @@ impl Session {
         let mut session = Self {
             map: None,
             arena,
+            scenery,
             world,
             mechanics,
             rules,
@@ -851,6 +885,7 @@ impl Session {
             rockets: Vec::new(),
             pellets: Vec::new(),
             pickups: Vec::new(),
+            drops: Vec::new(),
             events: Vec::new(),
             tick: 0,
             history: VecDeque::new(),
@@ -973,6 +1008,48 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// The arena catches up with its placeables ([`crate::scenery`]): each one that broke (or
+    /// came back whole) this tick takes its new pieces in the arena, the physics world and the
+    /// robots' world, and a hook set on one that broke lets go. Last in the tick, like the
+    /// robots' changes: from the next tick on every query meets the new pieces.
+    fn settle_scenery(&mut self) -> Result<(), PhysicsError> {
+        let changed = self.scenery.settle(&mut self.arena);
+        if changed.is_empty() {
+            return Ok(());
+        }
+        for &index in &changed {
+            for id in self.scenery.body_ids(index) {
+                self.world.remove_body(id);
+            }
+            for body in self.scenery.bodies(&self.arena, index) {
+                self.world.add_body(body)?;
+            }
+            if self.scenery.placeables()[index].broken() {
+                for fighter in &mut self.fighters {
+                    if fighter.hook.is_some_and(|hook| {
+                        self.scenery.holds(&self.arena, index, hook.anchor_units())
+                    }) {
+                        fighter.hook = None;
+                    }
+                }
+            }
+        }
+        // The robots stand as they stood: only the scenery under them changes.
+        self.mechanics.reshape(&self.scenery.statics(&self.arena))
+    }
+
+    /// The host's word on the arena's placeables (a snapshot's [`crate::Snapshot::scenery`]),
+    /// for a predicting client: they stand as the host has them from here on.
+    ///
+    /// # Errors
+    ///
+    /// If the state names placeables this map does not break, or the physics world refuses the
+    /// new pieces.
+    pub fn adopt_scenery(&mut self, state: &[PlaceableState]) -> Result<(), PhysicsError> {
+        self.scenery.adopt(state).map_err(crate::physics::error)?;
+        self.settle_scenery()
     }
 
     fn spawn(&mut self, slot: usize, at: Spawn) -> Result<(), PhysicsError> {
@@ -1464,6 +1541,7 @@ impl Session {
             }
         }
         self.settle_robots()?;
+        self.settle_scenery()?;
         if playing {
             self.run_pickups();
         }
@@ -1621,6 +1699,8 @@ impl Session {
             winner,
             restarts_at: self.tick + self.rules.intermission_ticks,
         };
+        // The round's drops end with it.
+        self.drops.clear();
         self.events.push(Event::RoundOver { winner });
     }
 
@@ -1636,6 +1716,9 @@ impl Session {
         self.rockets.clear();
         self.pellets.clear();
         self.reset_pickups();
+        // Every placeable comes back whole for the new round.
+        self.scenery.restore();
+        self.settle_scenery()?;
         self.phase = Phase::Playing {
             ends_at: (self.rules.time_limit_ticks > 0)
                 .then_some(self.tick + self.rules.time_limit_ticks),
@@ -1643,8 +1726,9 @@ impl Session {
         self.spawn_everyone()
     }
 
-    /// Every pad of the map ready again, as at the start of a round.
+    /// Every pad of the map ready again and nothing dropped, as at the start of a round.
     fn reset_pickups(&mut self) {
+        self.drops.clear();
         self.pickups = self
             .arena
             .module_pads
@@ -1681,6 +1765,33 @@ impl Session {
                 pad: index as u8,
                 module: pad.module,
             });
+        }
+        // Then the drops, oldest first, by the same rule; one not taken lies a tick less.
+        let mut index = 0;
+        while index < self.drops.len() {
+            let drop = self.drops[index];
+            let taker = self
+                .fighters
+                .iter()
+                .filter(|fighter| fighter.alive())
+                .filter_map(|fighter| Some((drop.reach(whole(fighter.feet()))?, fighter.slot)))
+                .min();
+            if let Some((_, slot)) = taker {
+                self.drops.remove(index);
+                self.fighters[usize::from(slot)].carried = Some(drop.carried);
+                self.events.push(Event::DropTaken {
+                    slot,
+                    from: drop.from,
+                    carried: drop.carried,
+                });
+                continue;
+            }
+            self.drops[index].expires_in -= 1;
+            if self.drops[index].expires_in == 0 {
+                self.drops.remove(index);
+            } else {
+                index += 1;
+            }
         }
     }
 
@@ -1747,6 +1858,18 @@ impl Session {
 
     fn dummy_of(&self, body: BodyId) -> Option<usize> {
         self.dummies.iter().position(|dummy| dummy.body == body)
+    }
+
+    /// What a ray that stopped on `body` (not a fighter's) strikes: a dummy, a damageable
+    /// placeable or nothing that takes damage.
+    fn target_of(&self, body: BodyId) -> Target {
+        if let Some(dummy) = self.dummy_of(body) {
+            Target::Dummy(dummy)
+        } else if let Some(placeable) = self.scenery.of_body(body) {
+            Target::Placeable(placeable)
+        } else {
+            Target::Nothing
+        }
     }
 
     fn hurt_dummy(&mut self, index: usize, attacker: usize, damage: i32, at: [f32; 3]) {
@@ -1866,9 +1989,26 @@ impl Session {
         // Its robot leaves the world once this tick's step is done ([`Session::settle_robots`]).
         let fighter = &mut self.fighters[victim];
         fighter.hook = None;
-        // A carried module ends with its carrier; nothing is dropped.
-        fighter.carried = None;
         fighter.repair = None;
+        // A carried module's effect ends with its carrier, and the module (its uses left) lies
+        // where its feet were, while a round is played and unless it fell out of the arena.
+        #[allow(clippy::cast_precision_loss)]
+        if let Some(carried) = fighter.carried.take()
+            && matches!(self.phase, Phase::Playing { .. })
+            && fighter.feet()[1] >= KILL_HEIGHT_UNITS as f32
+        {
+            self.drops.push(Drop {
+                center: whole(fighter.feet()),
+                carried,
+                from: fighter.slot,
+                expires_in: DROP_LIFETIME_TICKS,
+            });
+            self.events.push(Event::ModuleDropped {
+                slot: fighter.slot,
+                carried,
+            });
+        }
+        let fighter = &mut self.fighters[victim];
         fighter.respawn_at = Some(self.tick + self.rules.respawn_ticks);
         fighter.deaths += 1;
         match killer.filter(|killer| *killer != victim) {
@@ -1995,8 +2135,7 @@ impl Session {
             },
             target: scenery
                 .hit
-                .and_then(|hit| self.dummy_of(hit.body))
-                .map_or(Target::Nothing, Target::Dummy),
+                .map_or(Target::Nothing, |hit| self.target_of(hit.body)),
             at: scenery.end,
         }
     }
@@ -2046,8 +2185,14 @@ impl Session {
                     if let Some(victim) = victim {
                         self.strike(victim, attacker, &blows, Weapon::Shotgun);
                         boxes = self.hitboxes_now();
-                    } else if let Some(dummy) = self.dummy_of(body) {
-                        self.hurt_dummy(dummy, attacker, damage, at);
+                    } else {
+                        match self.target_of(body) {
+                            Target::Dummy(dummy) => self.hurt_dummy(dummy, attacker, damage, at),
+                            Target::Placeable(index) => {
+                                self.scenery.hurt(index, damage);
+                            }
+                            Target::Fighter(..) | Target::Nothing => {}
+                        }
                     }
                 }
             }
@@ -2060,6 +2205,9 @@ impl Session {
         match shot.target {
             Target::Fighter(victim, blows) => self.strike(victim, slot, &blows, weapon),
             Target::Dummy(index) => self.hurt_dummy(index, slot, damage, shot.at),
+            Target::Placeable(index) => {
+                self.scenery.hurt(index, damage);
+            }
             Target::Nothing => {}
         }
     }
@@ -2111,10 +2259,19 @@ impl Session {
                 melee::contact(eye, center),
             ))
         }));
+        // The placeable the flame stops on burns too.
+        if let Some(hit) = flame.hit
+            && let Some(index) = self.scenery.of_body(hit.body)
+        {
+            targets.push((Target::Placeable(index), flame.end));
+        }
         for (target, at) in targets {
             match target {
                 Target::Fighter(victim, blows) => self.strike(victim, slot, &blows, weapon),
                 Target::Dummy(index) => self.hurt_dummy(index, slot, damage, at),
+                Target::Placeable(index) => {
+                    self.scenery.hurt(index, damage);
+                }
                 Target::Nothing => {}
             }
         }
@@ -2190,6 +2347,10 @@ impl Session {
                     normal: hit.normal,
                     struck: true,
                 });
+                // A placeable within reach takes the blade.
+                if let Some(index) = self.scenery.of_body(hit.body) {
+                    self.scenery.hurt(index, melee::DAMAGE);
+                }
             }
             return Ok(());
         }
@@ -2219,6 +2380,23 @@ impl Session {
             };
             if let Some((damage, _)) = weapons::splash(at, center) {
                 self.hurt_dummy(index, attacker, damage, center);
+            }
+        }
+        // Every damageable placeable in reach, by the point of its pieces nearest the blast.
+        for index in 0..self.scenery.placeables().len() {
+            if !self.scenery.placeables()[index].damageable() {
+                continue;
+            }
+            let Some(point) = self.scenery.nearest(&self.arena, index, at) else {
+                continue;
+            };
+            if let Some(damage) = weapons::falloff(
+                at,
+                point,
+                weapons::SPLASH_RADIUS_UNITS,
+                weapons::SPLASH_DAMAGE,
+            ) {
+                self.scenery.hurt(index, damage);
             }
         }
         for slot in 0..self.fighters.len() {

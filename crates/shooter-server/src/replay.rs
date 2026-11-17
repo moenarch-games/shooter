@@ -25,13 +25,16 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
-/// 10: the logged commands are wire-17 inputs (a repair order) and the digests cover wire-17
-/// snapshots (each fighter's repair and repairable parts, shooter#61); 9 carried wire 14 (builds
-/// without the retired control core, the root chassis the vital part); 8 carried wire 13 (each
+/// 12: the logged commands are wire-19 inputs (a repair order) and the digests cover wire-19
+/// snapshots (each fighter's repair and repairable parts, shooter#61); 11 carried wire 18 (the
+/// modules dead carriers dropped, shooter#62); 10
+/// carried wire 17 (the arena placeables' health, shooter#60); 9: the logged commands are wire-14
+/// inputs and the digests cover wire-14 snapshots (builds without the retired control core, the
+/// root chassis the vital part); 8 carried wire 13 (each
 /// robot's part healths, part hits and detachments); 7 carried wire 12 (shared energy charge,
 /// batteries, no heat), 6 wire 11 (robot builds as socket-grid component trees), 5 wire 10
 /// (module pickups), 4 wire 9 (robot builds with weapon mods).
-const FORMAT: u8 = 10;
+const FORMAT: u8 = 12;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 
@@ -322,10 +325,11 @@ mod tests {
     }
 
     /// A scripted match on each kit-built map (the assembly works, shooter#52; the proving cell,
-    /// shooter#53) records, round-trips, replays tick for tick and restores its map.
+    /// shooter#53; the drydock, shooter#55) records, round-trips, replays tick for tick and
+    /// restores its map.
     #[test]
     fn a_replay_on_a_kit_built_map_reproduces_every_tick() {
-        for map in [MapId::AssemblyWorks, MapId::ProvingCell] {
+        for map in [MapId::AssemblyWorks, MapId::ProvingCell, MapId::Drydock] {
             let script = Script { map, ..short() };
             let replay = record(script).unwrap();
             let bytes = replay.encode().unwrap();
@@ -399,6 +403,40 @@ mod tests {
             charges
         };
         assert_eq!(pools(), pools());
+    }
+
+    /// Arena destruction replays (shooter#60): a minute on the proving cell breaks some of its
+    /// cover, every tick (the placeables' health in each snapshot digest) verifies, and a replay
+    /// breaks the same placeables on the same ticks.
+    #[test]
+    fn a_replay_reproduces_every_broken_placeable() {
+        let script = Script {
+            map: MapId::ProvingCell,
+            ticks: 3_600,
+            ..Script::DEFAULT
+        };
+        let replay = record(script).unwrap();
+        assert_eq!(verify(&replay).unwrap().checkpoints_verified, 3_600);
+        let breaks = || {
+            let mut states = Vec::new();
+            replay
+                .play(u64::MAX, |session| {
+                    let state = session.scenery.state();
+                    if states.last().is_none_or(|(_, last)| *last != state) {
+                        states.push((session.ticks(), state));
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            states
+        };
+        let states = breaks();
+        let (_, last) = states.last().unwrap();
+        assert!(
+            last.iter().any(|placeable| placeable.health == 0),
+            "nothing broke: {last:?}"
+        );
+        assert_eq!(states, breaks());
     }
 
     #[test]
