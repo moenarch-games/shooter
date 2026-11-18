@@ -440,9 +440,15 @@ fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_t
             killed = true;
             break;
         }
-        assert!(session.fighters[1].alive(), "only the root chassis is vital");
+        assert!(
+            session.fighters[1].alive(),
+            "only the root chassis is vital"
+        );
     }
-    assert!(killed, "the exposed root chassis must eventually be destroyable");
+    assert!(
+        killed,
+        "the exposed root chassis must eventually be destroyable"
+    );
     assert_eq!(root_hits, 4);
     assert_eq!(session.fighters[1].chassis_health(), 0);
     assert_eq!(session.fighters[0].frags, 1);
