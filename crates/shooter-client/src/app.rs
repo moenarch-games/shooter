@@ -29,7 +29,7 @@ use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{
-    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
+    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -160,7 +160,11 @@ pub struct App {
     /// Whether the page shows the builder (the browser hides its own overlays then).
     #[cfg(target_arch = "wasm32")]
     builder_shown: bool,
-    /// The pointer is locked to the game (native: grabbed; web: Pointer Lock).
+    /// The page's touch controls held as keys and buttons (phones and tablets).
+    #[cfg(target_arch = "wasm32")]
+    touch: crate::touch::Touch,
+    /// The pointer is locked to the game (native: grabbed; web: Pointer Lock), or the touch
+    /// controls play.
     captured: bool,
     /// The person's control layout for the robot's actuators (shooter#74).
     driver: Driver,
@@ -288,6 +292,8 @@ impl App {
             builder: None,
             #[cfg(target_arch = "wasm32")]
             builder_shown: false,
+            #[cfg(target_arch = "wasm32")]
+            touch: crate::touch::Touch::default(),
             captured: false,
             driver: Driver::default(),
             #[cfg(target_arch = "wasm32")]
@@ -615,6 +621,47 @@ impl App {
         self.captured = captured;
     }
 
+    /// The page's touch controls ([`crate::touch`]): their stick and buttons pressed and released
+    /// as keys and the primary mouse button, their look pad's drag as mouse movement.
+    #[cfg(target_arch = "wasm32")]
+    fn poll_touch(&mut self) {
+        let mut frame = crate::web::touch();
+        // The builder has the screen while it is open: the touch controls let go until it closes.
+        frame.on &= self.builder.is_none();
+        if frame.on != self.touch.on() {
+            // Tapping to play is the touch controls' capture: no pointer to lock.
+            self.captured = frame.on;
+            if frame.on {
+                self.sounds.unlock();
+            }
+        }
+        let changes = self.touch.update(&frame);
+        for key in changes.released {
+            self.controls.key_up(key);
+        }
+        for key in changes.pressed {
+            self.controls.key_down(key, false);
+        }
+        match changes.fire {
+            Some(true) => self.controls.mouse_down(PRIMARY_BUTTON),
+            Some(false) => self.controls.mouse_up(PRIMARY_BUTTON),
+            None => {}
+        }
+        if changes.edit && self.local_dead() {
+            self.edit_robot();
+        }
+        if frame.on {
+            self.board = self.touch.board();
+            let [dx, dy] = frame
+                .look
+                .map(|pixels| pixels * crate::touch::LOOK_COUNTS_PER_PIXEL);
+            if dx != 0.0 || dy != 0.0 {
+                self.look.mouse(dx, dy);
+                self.driver.mouse(dx, dy);
+            }
+        }
+    }
+
     fn poll_pads(&mut self) -> PadState {
         let mut state = PadState::default();
         let Some(pads) = &mut self.pads else {
@@ -850,10 +897,12 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         self.poll_arena();
         #[cfg(target_arch = "wasm32")]
-        if self.captured && !crate::web::pointer_locked() {
+        if self.captured && !self.touch.on() && !crate::web::pointer_locked() {
             // The browser let go of the pointer (Escape): stop playing until the next click.
             self.capture(false);
         }
+        #[cfg(target_arch = "wasm32")]
+        self.poll_touch();
 
         let pads = self.poll_pads();
         self.controls.poll_pads(&pads);
@@ -1414,6 +1463,19 @@ impl ApplicationHandler<GpuReady> for App {
                     }
                     _ => None,
                 };
+                self.builder_action(action);
+            }
+            // On a touch screen a finger is the left button: tap to pick and press, drag to place.
+            WindowEvent::Touch(touch) if self.builder.is_some() => {
+                let action = self.builder.as_mut().and_then(|builder| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    builder.cursor_moved(touch.location.x as f32, touch.location.y as f32);
+                    match touch.phase {
+                        TouchPhase::Started => builder.mouse(false, true),
+                        TouchPhase::Ended | TouchPhase::Cancelled => builder.mouse(false, false),
+                        TouchPhase::Moved => None,
+                    }
+                });
                 self.builder_action(action);
             }
             WindowEvent::MouseWheel { delta, .. } if self.builder.is_some() => {

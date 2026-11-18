@@ -2,7 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#10131a" />
     <title>shooter</title>
     <style>
       html,
@@ -13,6 +19,7 @@
         background: #10131a;
         color: #e6e9ef;
         font: 15px/1.5 system-ui, sans-serif;
+        overscroll-behavior: none;
       }
       canvas {
         position: fixed;
@@ -21,6 +28,166 @@
         height: 100%;
         display: block;
         outline: none;
+        /* Fingers on the canvas (the builder) are the game's, not the page's scroll or zoom. */
+        touch-action: none;
+      }
+      /* Touch controls (phones and tablets, or ?touch=1): a move stick wherever the left thumb
+         lands, a look pad on the rest of the screen and buttons over it. They write
+         window.shooterTouch, which the wasm reads every frame (crates/shooter-client/src/touch.rs). */
+      #touch {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 2;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+      body[data-touch][data-playing] #touch {
+        display: block;
+      }
+      body[data-builder] #touch {
+        display: none;
+      }
+      #touch-look {
+        position: absolute;
+        inset: 0;
+      }
+      #touch-move {
+        position: absolute;
+        left: 0;
+        top: 15%;
+        bottom: 0;
+        width: 42%;
+      }
+      #touch-stick {
+        position: absolute;
+        pointer-events: none;
+        width: 120px;
+        height: 120px;
+        margin: -60px 0 0 -60px;
+        border: 2px solid rgb(255 255 255 / 30%);
+        border-radius: 50%;
+        background: rgb(255 255 255 / 6%);
+        left: calc(env(safe-area-inset-left) + 110px);
+        bottom: 60px;
+        top: auto;
+        opacity: 0.5;
+      }
+      #touch-stick[data-active] {
+        bottom: auto;
+        opacity: 1;
+      }
+      #touch-knob {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 52px;
+        height: 52px;
+        margin: -26px 0 0 -26px;
+        border-radius: 50%;
+        background: rgb(255 255 255 / 35%);
+      }
+      #touch button {
+        position: absolute;
+        width: 58px;
+        height: 58px;
+        padding: 0;
+        border: 2px solid rgb(255 255 255 / 35%);
+        border-radius: 50%;
+        background: rgb(16 19 26 / 40%);
+        color: #e6e9ef;
+        font: 600 11px/1.1 system-ui, sans-serif;
+        letter-spacing: 0.02em;
+        touch-action: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #touch button[data-held] {
+        background: rgb(61 111 216 / 70%);
+        border-color: rgb(255 255 255 / 70%);
+      }
+      /* The right thumb's cluster, above the drawn weapon panel in the bottom right corner. */
+      #touch .fire {
+        width: 86px;
+        height: 86px;
+        right: calc(env(safe-area-inset-right) + 30px);
+        bottom: 112px;
+        font-size: 14px;
+        background: rgb(200 60 60 / 45%);
+      }
+      #touch .jump {
+        right: calc(env(safe-area-inset-right) + 132px);
+        bottom: 104px;
+      }
+      #touch .crouch {
+        right: calc(env(safe-area-inset-right) + 214px);
+        bottom: 108px;
+      }
+      #touch .sprint {
+        right: calc(env(safe-area-inset-right) + 150px);
+        bottom: 176px;
+      }
+      #touch .melee {
+        right: calc(env(safe-area-inset-right) + 84px);
+        bottom: 212px;
+      }
+      #touch .grapple {
+        right: calc(env(safe-area-inset-right) + 18px);
+        bottom: 212px;
+      }
+      #touch .previous,
+      #touch .next {
+        width: 46px;
+        height: 46px;
+        bottom: 282px;
+        font-size: 20px;
+      }
+      #touch .previous {
+        right: calc(env(safe-area-inset-right) + 74px);
+      }
+      #touch .next {
+        right: calc(env(safe-area-inset-right) + 18px);
+      }
+      /* Small buttons in a row along the top. */
+      #touch-bar {
+        position: absolute;
+        left: 50%;
+        top: calc(env(safe-area-inset-top) + 10px);
+        display: flex;
+        gap: 8px;
+        transform: translateX(-50%);
+      }
+      #touch #touch-bar button {
+        position: static;
+        width: auto;
+        min-width: 46px;
+        height: 34px;
+        padding: 0 10px;
+        border-radius: 6px;
+      }
+      #touch-play {
+        display: none;
+        margin: 16px auto 0;
+        padding: 14px 34px;
+        border: 0;
+        border-radius: 6px;
+        background: #3d6fd8;
+        color: #fff;
+        font: 600 18px system-ui, sans-serif;
+        pointer-events: auto;
+      }
+      body[data-touch] #touch-play {
+        display: block;
+      }
+      body[data-touch] #keys-help {
+        display: none;
+      }
+      #touch-help {
+        display: none;
+      }
+      body[data-touch] #touch-help {
+        display: inline;
       }
       /* winit appends the canvas last; the overlays stay above it. */
       #overlay,
@@ -163,13 +330,21 @@
     <div id="overlay">
       <div>
         <strong id="mode">Click to play: practice deathmatch against bots</strong><br />
-        WASD to move · mouse to look · Space to jump, again in the air to double jump · Shift to
-        sprint · C while sprinting to slide · left mouse to fire · mouse wheel or Q / E to cycle the
-        weapons your robot carries, or 1 to 6 for rifle, rail gun, rockets, shotgun, laser,
-        flamethrower · right mouse (or F) held to grapple, with a grapple module mounted · V (or
-        the mouse's back button) to swing the energy blade
-        · Tab for the scores · Esc to release the mouse · when destroyed, B to edit the robot
-        (the respawn waits until Ready)
+        <span id="keys-help">
+          WASD to move · mouse to look · Space to jump, again in the air to double jump · Shift to
+          sprint · C while sprinting to slide · left mouse to fire · mouse wheel or Q / E to cycle
+          the weapons your robot carries, or 1 to 6 for rifle, rail gun, rockets, shotgun, laser,
+          flamethrower · right mouse (or F) held to grapple, with a grapple module mounted · V (or
+          the mouse's back button) to swing the energy blade · Tab for the scores · Esc to release
+          the mouse · when destroyed, B to edit the robot (the respawn waits until Ready)
+        </span>
+        <span id="touch-help">
+          Best in landscape. Left thumb anywhere on the left to move · drag the rest of the screen
+          to look (also while holding Fire) · Jump twice in the air to double jump · Sprint
+          toggles, Slide while sprinting · ‹ › cycle the weapons · Edit rebuilds the robot when
+          destroyed
+        </span>
+        <button id="touch-play" type="button">Tap to play</button>
         <form id="join" method="get">
           <input
             name="name"
@@ -201,6 +376,26 @@
           <button>Join match</button>
           <a id="practice" href="?" hidden>Practice offline</a>
         </form>
+      </div>
+    </div>
+    <div id="touch">
+      <div id="touch-look"></div>
+      <div id="touch-move"></div>
+      <div id="touch-stick"><div id="touch-knob"></div></div>
+      <!-- data-bit: crates/shooter-client/src/touch.rs `bit`. -->
+      <button class="fire" data-bit="1" data-look aria-label="Fire">FIRE</button>
+      <button class="jump" data-bit="2" aria-label="Jump">JUMP</button>
+      <button class="sprint" data-bit="4" data-toggle aria-label="Sprint">SPRINT</button>
+      <button class="crouch" data-bit="8" aria-label="Slide">SLIDE</button>
+      <button class="melee" data-bit="16" aria-label="Energy blade">BLADE</button>
+      <button class="grapple" data-bit="32" data-look aria-label="Grapple">HOOK</button>
+      <button class="next" data-bit="64" aria-label="Next weapon">›</button>
+      <button class="previous" data-bit="128" aria-label="Previous weapon">‹</button>
+      <div id="touch-bar">
+        <button class="pause" aria-label="Pause">❚❚</button>
+        <button class="board" data-bit="512" aria-label="Scores">Scores</button>
+        <button class="repair" data-bit="256" aria-label="Repair">Repair</button>
+        <button class="edit" data-bit="1024" aria-label="Edit robot">Edit</button>
       </div>
     </div>
     <div id="error"></div>
@@ -243,6 +438,136 @@
       }
       // ?frames=<n> is the profile run: a scripted practice match, nobody to click.
       if (query.get("frames")) overlay.hidden = true;
+      // Touch controls on a touch screen (?touch=1 forces them, ?touch=0 keeps them off).
+      const touchState = (window.shooterTouch = {
+        on: false,
+        stickX: 0,
+        stickY: 0,
+        lookX: 0,
+        lookY: 0,
+        held: 0,
+      });
+      const touchWanted =
+        query.get("touch") === "1" ||
+        (query.get("touch") !== "0" && matchMedia("(pointer: coarse)").matches);
+      if (touchWanted && !query.get("frames")) {
+        document.body.setAttribute("data-touch", "");
+        const mode = document.getElementById("mode");
+        mode.textContent = mode.textContent.replace(/^Click to play: /, "");
+        const stick = document.getElementById("touch-stick");
+        const knob = document.getElementById("touch-knob");
+        const STICK_RADIUS = 52;
+        // Each finger on the layer: what it holds (the stick, the look pad or a button).
+        const fingers = new Map();
+        const setStick = (x, y) => {
+          touchState.stickX = x;
+          touchState.stickY = y;
+          knob.style.transform = `translate(${x * STICK_RADIUS}px, ${y * STICK_RADIUS}px)`;
+        };
+        const releaseAll = () => {
+          fingers.clear();
+          touchState.held = 0;
+          setStick(0, 0);
+          stick.removeAttribute("data-active");
+          stick.style.left = stick.style.top = "";
+          for (const button of document.querySelectorAll("#touch button[data-held]")) {
+            button.removeAttribute("data-held");
+          }
+        };
+        const press = (button, down) => {
+          const bit = Number(button.dataset.bit);
+          if (down) touchState.held |= bit;
+          else touchState.held &= ~bit;
+          button.toggleAttribute("data-held", down);
+        };
+        const layer = document.getElementById("touch");
+        layer.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          const target = event.target;
+          let finger = { x: event.clientX, y: event.clientY, look: false };
+          if (target.closest(".pause")) {
+            stop();
+            return;
+          } else if (target.dataset.bit) {
+            if (target.hasAttribute("data-toggle")) {
+              press(target, !(touchState.held & Number(target.dataset.bit)));
+              return;
+            }
+            press(target, true);
+            finger = { ...finger, button: target, look: target.hasAttribute("data-look") };
+          } else if (target.closest("#touch-move")) {
+            stick.setAttribute("data-active", "");
+            stick.style.left = `${event.clientX}px`;
+            stick.style.top = `${event.clientY}px`;
+            finger = { ...finger, stick: true };
+          } else {
+            finger.look = true;
+          }
+          fingers.set(event.pointerId, finger);
+          target.setPointerCapture?.(event.pointerId);
+        });
+        layer.addEventListener("pointermove", (event) => {
+          const finger = fingers.get(event.pointerId);
+          if (!finger) return;
+          event.preventDefault();
+          if (finger.stick) {
+            let x = (event.clientX - finger.x) / STICK_RADIUS;
+            let y = (event.clientY - finger.y) / STICK_RADIUS;
+            const length = Math.hypot(x, y);
+            if (length > 1) {
+              x /= length;
+              y /= length;
+            }
+            setStick(x, y);
+          } else if (finger.look) {
+            touchState.lookX += event.clientX - finger.x;
+            touchState.lookY += event.clientY - finger.y;
+            finger.x = event.clientX;
+            finger.y = event.clientY;
+          }
+        });
+        const lift = (event) => {
+          const finger = fingers.get(event.pointerId);
+          if (!finger) return;
+          fingers.delete(event.pointerId);
+          if (finger.button) press(finger.button, false);
+          if (finger.stick) {
+            setStick(0, 0);
+            stick.removeAttribute("data-active");
+            stick.style.left = stick.style.top = "";
+          }
+        };
+        layer.addEventListener("pointerup", lift);
+        layer.addEventListener("pointercancel", lift);
+        layer.addEventListener("contextmenu", (event) => event.preventDefault());
+        // The builder takes the screen (between lives): nothing stays held under it.
+        new MutationObserver(() => {
+          if (document.body.hasAttribute("data-builder")) releaseAll();
+        }).observe(document.body, { attributes: true, attributeFilter: ["data-builder"] });
+        const start = () => {
+          touchState.on = true;
+          document.body.setAttribute("data-playing", "");
+          overlay.hidden = true;
+          // Full screen and landscape where the browser allows it (Android); iOS keeps the bars.
+          const root = document.documentElement;
+          if (!document.fullscreenElement && root.requestFullscreen) {
+            root
+              .requestFullscreen({ navigationUI: "hide" })
+              .then(() => screen.orientation?.lock?.("landscape"))
+              .catch(() => {});
+          }
+        };
+        const stop = () => {
+          releaseAll();
+          touchState.on = false;
+          document.body.removeAttribute("data-playing");
+          overlay.hidden = false;
+        };
+        document.getElementById("touch-play").addEventListener("click", start);
+        document.addEventListener("visibilitychange", () => {
+          if (document.hidden && touchState.on) stop();
+        });
+      }
       document.addEventListener("pointerlockchange", () => {
         overlay.hidden = document.pointerLockElement !== null;
       });
