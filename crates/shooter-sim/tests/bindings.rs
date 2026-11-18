@@ -507,7 +507,7 @@ fn layouts_travel_exactly_and_tampered_bytes_are_refused() {
     assert!(tamper(2, 7).is_err(), "unknown source");
     assert!(tamper(3, 200).is_err(), "no such key");
     assert!(tamper(4, 2).is_err(), "a key read as a mouse offset");
-    assert!(tamper(5, 4).is_err(), "unknown output");
+    assert!(tamper(5, 5).is_err(), "unknown output");
     assert!(tamper(6, 2).is_err(), "unknown flag");
     assert!(tamper(7, 0).is_err(), "no strength");
     assert!(tamper(8, 9).is_err(), "too many parts");
