@@ -215,8 +215,8 @@ move smoothly; hitscan hits and blade swings are checked where the attacker saw 
 connection (not a closed one) shows "reconnecting" and rejoins the same slot, score kept, within
 the host's reconnect grace. A public host is described in [docs/hosting.md](docs/hosting.md).
 
-Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
-double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
+Click to capture the mouse. WASD moves, the mouse aims, Space jumps if the robot has a working leg
+(press again in the air to double jump under the interim drive), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
 mouse. Steer in the air with WASD. R opens the quick repair menu (below, **Field repair**). The
 same keys and the mouse drive the robot's actuators through its control layout (below,
 **Control layouts**), edited in the builder's controls panel (K).
@@ -542,7 +542,8 @@ actuator, and fires only guns the robot still has, so a tampered input moves or 
 a layout could not. Bots press their build's preset from their movement. The layout lives for
 the session (not saved yet).
 What it does not do yet: **the bindings do not carry a robot.** The movement drive below still
-moves every robot by the fast-movement rules (WASD, Space, Shift, C), and the same keys stride
+moves robots by the fast-movement rules (WASD, Shift, C), but Space only jumps with connected legs,
+and the camera only turns the chassis of legged robots. The same keys stride
 its legs and roll its wheels through the preset, which with the drive is mostly seen, not felt;
 the joints (turrets) are moved by the layout alone. Driving robots by their actuators only
 waits on an owner decision (Atlas Q2.i74.1): measured on physics-engine without the drive, five
@@ -579,9 +580,12 @@ slot (its bodies' ids follow from the slot; an open slot has none): no capsule. 
 standing at its spawn point, a death or a slot changing hands removes it, and a part shot off
 leaves its bodies (it no longer weighs, touches or drives anything; what stays keeps its pose and
 motion); each change rebuilds the world from its exact state, so the host, a predicting client and
-a replay hold the same world. The fast-movement rules (sprint, slide, double jump, jump pads, air
-control, the grapple's rope) give the velocity a movement drive sets on the whole robot's centre
-of mass, which also keeps it upright and turns it to face the aim (at most 16 rad/s); its legs
+a replay hold the same world. The fast-movement rules (sprint, slide, jumps for connected legs,
+jump pads, air control, the grapple's rope) give the velocity a movement drive sets on the whole robot's centre
+of mass. For a robot with working legs it also keeps it upright and turns it to face the aim
+(at most 16 rad/s); for wheels, tracks or a stationary chassis it preserves angular momentum
+instead of providing a free camera-driven turn. Differential wheel/track steering still awaits
+actuator-driven locomotion (Atlas Q2.i74.1). Its legs
 stride and its wheels and tracks roll as its control layout tells them (above, **Control layouts**; until #74 at the rate its speed gave them), and
 every motor draws from the pool after the tick's jumps, swings and shots (two legs: 8 a second
 against the chassis' 24, so weapons recharge a third slower; provisional). The simplest mapping

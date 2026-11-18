@@ -6,12 +6,14 @@
 // The platform's floats only check results here; the simulation uses libm (clippy.toml).
 #![allow(clippy::disallowed_methods)]
 
+use shooter_sim::mechanics::fixtures;
 use shooter_sim::mechanics::{BODIES_PER_ROBOT, FIRST_ROBOT_BODY, Layout};
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::STANDARD;
 use shooter_sim::robot::parts::LEG;
+use shooter_sim::session::LOCAL_PLAYER;
 use shooter_sim::wire::{decode_snapshot, encode_snapshot};
-use shooter_sim::{Arena, Event, Input, Intent, Rules, Session, Spawn};
+use shooter_sim::{Arena, Event, Input, Intent, JumpPad, Rules, Session, Spawn};
 
 /// An open floor with two spawn points 12 m apart, no pads.
 fn floor() -> Arena {
@@ -80,6 +82,61 @@ fn input(session: &mut Session, id: u32, sequence: u32, intent: Intent) {
             intent,
             view_tick,
         },
+    );
+}
+
+#[test]
+fn wheeled_and_tracked_robots_do_not_jump_or_turn_toward_the_camera() {
+    // Even with a working wheel/track on the floor, Space is not a jump actuator and changing
+    // the aim does not give a chassis without legs a free turning motor.
+    for build in [fixtures::car(), fixtures::tank(), fixtures::turret()] {
+        let mut session = Session::with_rules(floor(), Rules::solo()).unwrap();
+        assert!(session.configure(LOCAL_PLAYER, build));
+        assert_eq!(session.fighters[0].build, build);
+        for _ in 0..12 {
+            let report = session
+                .tick(Intent {
+                    yaw: 16_384,
+                    jump: true,
+                    ..Intent::IDLE
+                })
+                .unwrap();
+            assert!(!report.jumped && !report.air_jumped, "{build:?}");
+            let spin = session.mechanics.root_motion(0).unwrap().angular_velocity;
+            assert!(spin[1].abs() < 0.1, "{build:?}: {spin:?}");
+        }
+    }
+}
+
+#[test]
+fn a_robot_with_connected_legs_can_still_jump_and_face_its_aim() {
+    let mut session = Session::with_rules(floor(), Rules::solo()).unwrap();
+    let report = session
+        .tick(Intent {
+            yaw: 16_384,
+            jump: true,
+            ..Intent::IDLE
+        })
+        .unwrap();
+    assert!(report.jumped);
+    let spin = session.mechanics.root_motion(0).unwrap().angular_velocity;
+    assert!(spin[1].abs() > 0.1, "{spin:?}");
+}
+
+#[test]
+fn a_wheeled_robot_can_still_be_launched_by_an_arena_jump_pad() {
+    let mut arena = floor();
+    arena.pads.push(JumpPad {
+        center: Vec3i::new(0, 0, -600),
+        half: [100, 100],
+        launch: Vec3i::new(0, 1_200, 0),
+    });
+    let mut session = Session::with_rules(arena, Rules::solo()).unwrap();
+    assert!(session.configure(LOCAL_PLAYER, fixtures::car()));
+    let launched = (0..30).any(|_| session.tick(Intent::IDLE).unwrap().launched);
+    assert!(
+        launched,
+        "arena jump pads remain independent of built-in jumping"
     );
 }
 
