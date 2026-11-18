@@ -1555,8 +1555,7 @@ impl Session {
                     .root_motion(slot)
                     .map_or([0.0; 3], |root| root.angular_velocity)
             };
-            self.mechanics
-                .drive(id, velocity, angular_velocity)?;
+            self.mechanics.drive(id, velocity, angular_velocity)?;
             if let Some(robot) = self.mechanics.robot(id) {
                 // Its actuators take what its control layout resolved (shooter#74), as far as
                 // they can: the host's word on the input ([`crate::bindings::Motors::controls`]).

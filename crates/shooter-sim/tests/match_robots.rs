@@ -134,7 +134,10 @@ fn a_wheeled_robot_can_still_be_launched_by_an_arena_jump_pad() {
     let mut session = Session::with_rules(arena, Rules::solo()).unwrap();
     assert!(session.configure(LOCAL_PLAYER, fixtures::car()));
     let launched = (0..30).any(|_| session.tick(Intent::IDLE).unwrap().launched);
-    assert!(launched, "arena jump pads remain independent of built-in jumping");
+    assert!(
+        launched,
+        "arena jump pads remain independent of built-in jumping"
+    );
 }
 
 #[test]
