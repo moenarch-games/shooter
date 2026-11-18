@@ -539,8 +539,9 @@ pub(crate) mod web {
             self.work.len() >= self.frames as usize
         }
 
-        /// Sets `window.shooterProfile` to the frame times.
-        pub fn finish(&self) {
+        /// Sets `window.shooterProfile` to the frame times and the IDs of the placeables
+        /// broken at the end (`broken`, shooter#60).
+        pub fn finish(&self, broken: &[u16]) {
             let total = self.last.zip(self.first).map_or(0.0, |(l, f)| l - f) / 1_000.0;
             let json = |stats: crate::FrameStats| {
                 format!(
@@ -557,7 +558,7 @@ pub(crate) mod web {
                 })
                 .unwrap_or_default();
             publish(&format!(
-                r#"{{"frames":{},"map":"{}","width":{width},"height":{height},"seconds":{total:.3},"workMs":{},"intervalMs":{}}}"#,
+                r#"{{"frames":{},"map":"{}","width":{width},"height":{height},"seconds":{total:.3},"workMs":{},"intervalMs":{},"broken":{broken:?}}}"#,
                 self.work.len(),
                 self.map,
                 json(crate::FrameStats::of(self.work.clone())),

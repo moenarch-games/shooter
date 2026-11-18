@@ -69,6 +69,17 @@ real players.
    and `bunx playwright install chromium`. `profile.yml` runs it as a second job and uploads the
    `validate-repo-artifacts-web-profile` artifact.
 
+   Browser captures reuse the same run: `node scripts/capture-web.mjs OUT MAP:FRAMES[:NAME] ...`
+   (after `scripts/build-web.sh`) opens `?frames=<n>&map=<id>` for each shot in headless
+   Chromium at 1280x720 and screenshots the run's last frame as `OUT/NAME.png`; the run is
+   deterministic, so a map and frame count always draw the same frame, and
+   `window.shooterProfile.broken` lists the placements broken by then (shooter#60). It needs a
+   GPU (Vulkan): SwiftShader's WebGPU frames do not reach Chromium's page screenshot (the canvas
+   comes out blank), so the CI profile flags cannot capture. The browser captures in
+   `docs/captures/{49,53,55,60}/browser-*.png` came from it. The browser run is not the native
+   `--frames` run frame for frame: the two clients draw the same frames for about 120 ticks,
+   then the matches part.
+
 ```sh
 cargo run --release -p shooter-server --bin shooter-replay -- record --ticks 1200 -o dm.shrp
 cargo run --release -p shooter-server --bin shooter-replay -- verify dm.shrp
@@ -77,6 +88,7 @@ cargo run --release -p shooter-server --bin shooter-replay -- promote dm.shrp --
 cargo run --release -p shooter-server --bin shooter-replay -- promote dm.shrp --target render --to 900 -o frame.json
 cargo run --release -p shooter-client -- --frames 600
 scripts/profile.sh                       # all lanes; `scripts/profile.sh target/profile web` for the browser only
+node scripts/capture-web.mjs docs/captures/53 proving-cell:120:browser-match-test-bay  # browser captures (needs a GPU)
 ```
 
 ## Where the data went
