@@ -127,7 +127,7 @@ fn a_robot_with_connected_legs_can_still_jump_and_face_its_aim() {
 fn a_wheeled_robot_can_still_be_launched_by_an_arena_jump_pad() {
     let mut arena = floor();
     arena.pads.push(JumpPad {
-        center: Vec3i::new(0, 0, 600),
+        center: Vec3i::new(0, 0, -600),
         half: [100, 100],
         launch: Vec3i::new(0, 1_200, 0),
     });
