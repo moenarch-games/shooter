@@ -504,8 +504,10 @@ whether resupply locks movement or firing (Q2.i123.3).
   alone do not. Dedicated jump jets, springs or other jump modules can grant a jump without legs,
   depending on the actual build, mass and energy. Arena jump pads and the grapple (D2.i104.1,
   D2.i104.2) stay as separate world and mobility mechanics. Owner: shooter#58, on the mechanics
-  of D2.i70.5. Today every robot with a connected locomotion part jumps and double jumps by the
-  interim movement drive's D2.3 rules. This bears on shooter#74's open question on the interim
+  of D2.i70.5. The interim movement drive now allows natural jumping (including its remaining
+  air jump) only with a connected leg; wheels and tracks alone cannot jump. Camera yaw no longer
+  spins a wheel/track-only chassis; actual differential steering still needs actuator-driven
+  movement. This bears on shooter#74's open question on the interim
   drive (Q2.i74.1, proposed with shooter#74): whatever replaces the drive must derive the jump from
   the build's legs or jump modules, not grant it to every robot, and a jump module's thrust is
   the part's own force, not a fake chassis force (D2.i70.7).
