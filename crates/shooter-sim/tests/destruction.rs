@@ -107,6 +107,19 @@ fn fire_at(session: &mut Session, weapon: Weapon, point: [f32; 3]) -> Vec<Event>
             break;
         }
     }
+    // Its guns are fixed on its front (shooter#132): it turns to the point before it fires.
+    for _ in 0..30 {
+        let (yaw, pitch) = aim_at(session, point);
+        step(
+            session,
+            Intent {
+                yaw,
+                pitch,
+                select: Some(weapon.into()),
+                ..Intent::IDLE
+            },
+        );
+    }
     for _ in 0..240 {
         let (yaw, pitch) = aim_at(session, point);
         step(
@@ -243,7 +256,7 @@ fn hitscan_breaks_a_barrier_and_opens_the_line() {
     );
 }
 
-/// Overlapping cover: low cover with a barrier right behind it. A rocket at the low cover's foot
+/// Overlapping cover: low cover with a barrier right behind it. A rocket at the low cover's face
 /// hurts both through its blast (the nearer more); rail shots stop on the nearer one first, and
 /// once it breaks the barrier behind it takes them.
 #[test]
@@ -252,7 +265,7 @@ fn blasts_and_shots_break_overlapping_cover_front_first() {
         Placement::new(Module::CoverLow, [0, 0, -100], Turn::None).destructible(),
         Placement::new(Module::Barrier, [0, 0, 0], Turn::None).destructible(),
     ]);
-    let events = fire_at(&mut session, Weapon::RocketLauncher, [0.0, 10.0, -140.0]);
+    let events = fire_at(&mut session, Weapon::RocketLauncher, [0.0, 90.0, -140.0]);
     assert!(events.iter().any(|e| matches!(e, Event::Fired { .. })));
     for _ in 0..60 {
         if session
@@ -298,7 +311,7 @@ fn a_blast_breaks_a_crate_but_not_the_one_under_a_stack() {
         Placement::new(Module::Crate, [200, 80, 0], Turn::None).destructible(),
     ]);
     for x in [-200.0, 200.0] {
-        fire_at(&mut session, Weapon::RocketLauncher, [x, 40.0, -40.0]);
+        fire_at(&mut session, Weapon::RocketLauncher, [x, 70.0, -40.0]);
         for _ in 0..60 {
             if session
                 .events
@@ -361,7 +374,7 @@ fn a_new_round_restores_every_placeable() {
     );
     let whole_arena = session.arena.clone();
     let whole_statics = session.scenery.statics(&session.arena);
-    fire_at(&mut session, Weapon::RocketLauncher, [0.0, 40.0, -40.0]);
+    fire_at(&mut session, Weapon::RocketLauncher, [0.0, 70.0, -40.0]);
     for _ in 0..60 {
         step(&mut session, Intent::IDLE);
     }

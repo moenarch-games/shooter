@@ -6,7 +6,7 @@ use shooter_sim::aim;
 use shooter_sim::dummies::DUMMY_HEALTH;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::player::PLAYER_HALF_EXTENTS;
-use shooter_sim::robot::ARMORY;
+use shooter_sim::robot::{ARMORY, ROCKET_JUMPER};
 use shooter_sim::scenarios::{self, Scenario};
 use shooter_sim::tour::{Sample, end_of, run_legs};
 use shooter_sim::weapons::{self, FLAME_IGNITION_TICKS, PELLETS};
@@ -22,6 +22,15 @@ fn armory(arena: Arena) -> Session {
 
 fn run(scenario: Scenario) -> (Session, Vec<Sample>) {
     let mut session = armory((scenario.arena)());
+    let samples = run_legs(&mut session, scenario.legs).expect("scenario runs");
+    (session, samples)
+}
+
+/// The rocket jump on its own build: a launcher a hinge turns to the floor (shooter#132).
+fn run_jumper(scenario: Scenario) -> (Session, Vec<Sample>) {
+    let mut session = Session::new((scenario.arena)()).expect("arena builds");
+    session.fighters[0].configured = ROCKET_JUMPER;
+    session.rebuild(0, ROCKET_JUMPER).unwrap();
     let samples = run_legs(&mut session, scenario.legs).expect("scenario runs");
     (session, samples)
 }
@@ -49,7 +58,7 @@ fn damage_in(samples: &[Sample], leg: &str) -> i32 {
 
 #[test]
 fn a_rocket_jump_reaches_a_ledge_a_double_jump_cannot() {
-    let (_, samples) = run(scenarios::ROCKET_JUMP);
+    let (_, samples) = run_jumper(scenarios::ROCKET_JUMP);
     assert_eq!(samples.iter().filter(|s| s.exploded).count(), 1);
     let peak = samples.iter().map(|s| s.center[1]).fold(f32::MIN, f32::max);
     assert!(peak - HALF > 300.0, "apex {}", peak - HALF);
