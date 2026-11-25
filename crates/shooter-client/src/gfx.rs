@@ -14,6 +14,7 @@
 //! so the same code builds content for either.
 
 pub mod lite;
+pub mod ui;
 
 use render_engine::glam::{Mat4, Vec3, Vec4};
 pub use render_engine::material::AlphaMode;

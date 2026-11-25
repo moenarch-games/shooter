@@ -21,6 +21,7 @@ pub mod overlay;
 pub mod repair_menu;
 pub mod robots;
 pub mod scene;
+pub mod ui;
 
 use shooter_sim::MapId;
 
