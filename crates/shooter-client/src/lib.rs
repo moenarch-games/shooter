@@ -1,5 +1,6 @@
 //! The shooter's client: one crate for the native window (wgpu on Vulkan/Metal/DX12) and the
-//! browser (WebGPU, `wasm32`), rendered by render-engine, with input-bindings controls and
+//! browser (`wasm32`: WebGPU, else WebGL 2 through the lite renderer, [`gfx`]), rendered by
+//! render-engine, with input-bindings controls and
 //! game-audio footsteps and gunfire, render-engine weapon lights and particles over the shared
 //! `shooter-sim` simulation.
 
@@ -11,6 +12,7 @@ pub mod camera;
 pub mod controls;
 pub mod effects;
 pub mod game;
+pub mod gfx;
 pub mod gpu;
 pub mod hud;
 pub mod interpolation;
@@ -20,6 +22,7 @@ pub mod repair_menu;
 pub mod robots;
 pub mod scene;
 pub mod touch;
+pub mod ui;
 
 use shooter_sim::MapId;
 

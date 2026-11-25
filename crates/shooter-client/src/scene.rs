@@ -6,13 +6,13 @@
 use crate::arena_art::{ArenaArt, Placed};
 use crate::camera::{self, basis};
 use crate::effects::tint;
+use crate::gfx::StandardMaterial;
+use crate::gfx::{Instance, InstanceId, MaterialId, MeshId, World};
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
-use render_engine::material::StandardMaterial;
 use render_engine::mesh::{MeshData, Shape};
 use render_engine::scene::{
     Ambient, Camera, PointLight, Scene, ShadowFilter, ShadowMapSizes, Sun, SunShadows, Tonemapping,
 };
-use render_engine::world::{Instance, InstanceId, MaterialId, MeshId, World};
 use shooter_sim::physics::RampRise;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::pickups::REACH_UNITS;
@@ -116,7 +116,7 @@ fn floor(half_size: f32) -> MeshData {
     mesh
 }
 
-fn material(world: &mut World, rgb: [f32; 3], roughness: f32) -> render_engine::world::MaterialId {
+fn material(world: &mut World, rgb: [f32; 3], roughness: f32) -> crate::gfx::MaterialId {
     world.add_material(&StandardMaterial {
         base_color: Vec4::new(rgb[0], rgb[1], rgb[2], 1.0),
         perceptual_roughness: roughness,

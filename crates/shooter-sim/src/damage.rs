@@ -42,7 +42,8 @@
 //! sets off a small blast ([`BATTERY_BLAST_RADIUS_UNITS`], [`BATTERY_BLAST_DAMAGE`]) that
 //! damages nearby parts through the same resolution (another battery it destroys blasts in turn,
 //! at most once each; no chain-reaction subsystem); and a robot with no connected locomotion
-//! part (legs, wheels, tracks) cannot walk, jump or slide ([`PartDamage::mobile`]). A lost leg,
+//! part (legs, wheels, tracks) cannot walk or slide ([`PartDamage::mobile`]); natural jumping
+//! additionally requires an operational leg. A lost leg,
 //! wheel or track leaves its robot's bodies (shooter#73, [`crate::mechanics::Mechanics::sever`]): it
 //! no longer holds the robot up, and the robot walks at the share of its locomotion it still has
 //! ([`crate::player::Traction`]); a robot left on its chassis lies where it fell.
@@ -234,7 +235,8 @@ impl PartDamage {
         weapons::holdable(&armed)
     }
 
-    /// It still has a connected leg, wheel or track: it may walk, jump and slide.
+    /// It still has a connected leg, wheel or track: it may walk and slide. Natural jumping
+    /// additionally requires an operational leg ([`crate::session`]).
     #[must_use]
     pub fn mobile(&self, build: &Assembly) -> bool {
         build.parts().iter().enumerate().any(|(index, part)| {

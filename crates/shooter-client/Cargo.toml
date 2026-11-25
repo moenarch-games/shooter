@@ -1,6 +1,6 @@
 [package]
 name = "shooter-client"
-description = "The shooter's client: native (wgpu) and browser (WebGPU, wasm32) from one crate, rendered by render-engine"
+description = "The shooter's client: native (wgpu) and browser (WebGPU, or WebGL 2 through its lite renderer; wasm32) from one crate, rendered by render-engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +14,10 @@ crate-type = ["cdylib", "rlib"]
 shooter-sim.workspace = true
 render-engine.workspace = true
 input-bindings-core.workspace = true
+# The lite renderer's vertex and uniform layouts (`gfx::lite`).
+bytemuck = { version = "1.25.2", features = ["derive"] }
+# The drawn UI's font (`ui`): glyphs rasterized into an atlas, metrics for layout.
+fontdue = "0.9.5"
 winit = "0.30.13"
 gilrs = "0.11.2"
 web-time = "1.1.0"
@@ -45,6 +49,9 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["AbortSignal", "Document", "Element", "Headers", "HtmlElement", "Location", "Performance", "Request", "RequestInit", "Response", "Storage", "UrlSearchParams", "Window", "console"] }
 console_error_panic_hook = "0.1.7"
+# WebGL 2 beside WebGPU: the lite renderer where the browser has no WebGPU (`gfx::lite`). The same
+# wgpu as render-engine's, so the feature reaches its instance.
+wgpu = { version = "30.0.1", default-features = false, features = ["webgl"] }
 
 [lints]
 workspace = true

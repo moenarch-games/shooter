@@ -952,8 +952,8 @@ impl App {
             }
             let (width, height) = gpu.size();
             let robots = self.robots.as_mut().map(|robots| (&mut gpu.world, robots));
-            let scene = builder.frame(robots, width, height, seconds);
-            if let Err(error) = gpu.render(&scene, ticks) {
+            let (mut scene, ui) = builder.frame(robots, width, height, seconds);
+            if let Err(error) = gpu.render(&mut scene, &ui, ticks) {
                 crate::log(&error);
             }
             return true;
@@ -1321,12 +1321,12 @@ impl App {
             return true;
         };
         let (width, height) = gpu.size();
-        scene.overlay = self.overlay.draw(vitals.as_ref(), width, height, seconds);
+        let mut ui = self.overlay.draw(vitals.as_ref(), width, height, seconds);
         if let Some(repair) = &repair {
-            scene.overlay.extend(repair_panel(repair, height));
+            ui.extend(repair_panel(repair, height));
         }
         if let Some(ticks) = respawn_in {
-            scene.overlay.extend(death_prompt(
+            ui.extend(death_prompt(
                 f32::from(u16::try_from(ticks).unwrap_or(u16::MAX)) / f32::from(TICK_HZ),
                 width,
                 height,
@@ -1335,7 +1335,7 @@ impl App {
         if let Some(actors) = &mut self.actors {
             actors.update(&mut gpu.world, &fighters, &rockets, &modules, reticle);
         }
-        if let Err(error) = gpu.render(&scene, ticks) {
+        if let Err(error) = gpu.render(&mut scene, &ui, ticks) {
             crate::log(&error);
         }
         true

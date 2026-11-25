@@ -61,6 +61,17 @@ in `window.shooterTouch` and the client presses the same keys and mouse buttons 
 mouse would (`shooter-client`'s `touch`), so layouts, the host's checks and prediction see nothing
 new. In the builder a finger is the left mouse button (tap Ready to start).
 
+**Without WebGPU.** The browser build draws with render-engine on WebGPU where the browser has
+it, and otherwise with the client's lite renderer on WebGL 2 (`shooter_client::gfx::lite`;
+render-engine has no WebGL 2 backend). The lite renderer draws the same arenas, robots, effects
+and HUD with the sun, ambient and point lights, but without shadows, normal maps or MSAA.
+`?renderer=lite` forces it in the browser, `SHOOTER_RENDERER=lite` natively (with
+`WGPU_BACKEND=gl` it runs on OpenGL under WebGL 2's limits, as in the browser). In the browser
+it scales the 3D scene's resolution to the frame rate (down to 0.3 of the window; the HUD is
+drawn at full size, or at half size once the scene is at half or below), so WebGL 2 drawn in
+software without a GPU stays close to 60 frames a second; with a GPU it stays at full size.
+`?scale=0.5` fixes the scene's scale (`SHOOTER_RENDER_SCALE` natively).
+
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID, its arena
 (geometry, collision, spawn points, jump pads, module pickup pads, bot waypoints) and the player
@@ -189,7 +200,7 @@ every placeable broken ([docs/captures/60](docs/captures/60)).
 ```sh
 scripts/fetch-robot-kit.sh                 # the pinned robot, weapons, locomotion and arena kits into target/*-kit
 cargo run -p shooter-client --release      # native window, practice
-scripts/build-web.sh                       # browser build (and the kit) into web/dist (needs a WebGPU browser)
+scripts/build-web.sh                       # browser build (and the kit) into web/dist (WebGPU, else WebGL 2)
 python3 -m http.server -d web/dist
 ```
 
@@ -225,27 +236,31 @@ move smoothly; hitscan hits and blade swings are checked where the attacker saw 
 connection (not a closed one) shows "reconnecting" and rejoins the same slot, score kept, within
 the host's reconnect grace. A public host is described in [docs/hosting.md](docs/hosting.md).
 
-Click to capture the mouse. WASD moves, the mouse aims, Space jumps (press again in the air to
-double jump), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
+Click to capture the mouse. WASD moves, the mouse aims, Space jumps if the robot has a working leg
+(press again in the air to double jump under the interim drive), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
 mouse. Steer in the air with WASD. R opens the quick repair menu (below, **Field repair**). The
 same keys and the mouse drive the robot's actuators through its control layout (below,
 **Control layouts**), edited in the builder's controls panel (K).
 
-**HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser:
-render-engine's screen-overlay quads in the robot kits' palette (pale grey on graphite, olive, an
-orange accent), in the bottom corners clear of the reticle, laid out for 720 lines and scaled with
-the window. Bottom right, the held weapon: its silhouette, name and mod, the energy a shot costs
-(a second, for the laser and the flamethrower), whether it is ready, recharging (a bar filling to
-its next shot), short of energy or lost, and above it a slot for every weapon copy the build
-carries with its key (lost ones red and struck out), each with its own readiness bar along its
-foot whether held or not (olive ready, filling orange while it recharges or waits out its
-family's salvo spacing, red when the pool cannot pay it, #127); a switch flashes the panel and
-sweeps a highlight across it. Bottom left, the root chassis' health and the energy pool, with the share one shot of
-the held weapon takes marked in orange, and above them, in teal, the field repair panel (the
-quick repair menu while it is open, else the repair under way, else how many parts may be
-repaired). render-engine's overlay draws solid rectangles only, so
-the text is a 5×7 bitmap font and the weapons are pixel silhouettes, both drawn as quads in the
-client. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
+**HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser, in
+the bottom corners clear of the reticle, laid out for 720 lines and scaled with the window. It
+has no panels: text floats over the scene on a soft shadow, bars are pills on a dark track and
+the weapons are rounded chips. Bottom right, a chip for every weapon copy the build carries (its
+key on a badge, its short name and copy number; lost ones red and struck out), each with its own
+readiness bar whether held or not (olive ready, filling orange while it recharges or waits out
+its family's salvo spacing, red when the pool cannot pay it, #127), the held one opaque with an
+orange badge and glowing for a moment after a switch; under them the held weapon's name, its
+refire filling while it recharges, and a line with its mod and, when it cannot fire, why (lost,
+low energy). Bottom left, the root chassis' health as a large reading over its bar (red under a
+third) and the energy pool as a thin blue bar under it, with the share one shot of the held
+weapon takes marked in orange, and above them, in teal, the field repair panel (the quick repair
+menu while it is open, else the repair under way, else how many parts may be repaired).
+The client's UI (the HUD, the builder and the death prompt) is drawn as the renderer's screen
+overlay (`ui`): rounded rectangles, and text as quads showing glyphs of an atlas texture in the
+frame's world (render-engine's `OverlayQuad` corner radius and images, render-engine#163; the lite renderer
+draws the same on WebGL 2), the text in Barlow Semi Condensed SemiBold (SIL Open Font License,
+`crates/shooter-client/assets/fonts/OFL.txt`) rasterized into the atlas at the size it is
+drawn. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
 the carried module and its uses left, the kill and pickup feed, banners and the scoreboard) is
 still text: the page's overlay in the browser and the window title natively.
 
@@ -552,7 +567,8 @@ actuator, and fires only guns the robot still has, so a tampered input moves or 
 a layout could not. Bots press their build's preset from their movement. The layout lives for
 the session (not saved yet).
 What it does not do yet: **the bindings do not carry a robot.** The movement drive below still
-moves every robot by the fast-movement rules (WASD, Space, Shift, C), and the same keys stride
+moves robots by the fast-movement rules (WASD, Shift, C), but Space only jumps with connected legs,
+and the camera only turns the chassis of legged robots. The same keys stride
 its legs and roll its wheels through the preset, which with the drive is mostly seen, not felt;
 the joints (turrets) are moved by the layout alone. Driving robots by their actuators only
 waits on an owner decision (Atlas Q2.i74.1): measured on physics-engine without the drive, five
@@ -589,9 +605,12 @@ slot (its bodies' ids follow from the slot; an open slot has none): no capsule. 
 standing at its spawn point, a death or a slot changing hands removes it, and a part shot off
 leaves its bodies (it no longer weighs, touches or drives anything; what stays keeps its pose and
 motion); each change rebuilds the world from its exact state, so the host, a predicting client and
-a replay hold the same world. The fast-movement rules (sprint, slide, double jump, jump pads, air
-control, the grapple's rope) give the velocity a movement drive sets on the whole robot's centre
-of mass, which also keeps it upright and turns it to face the aim (at most 16 rad/s); its legs
+a replay hold the same world. The fast-movement rules (sprint, slide, jumps for connected legs,
+jump pads, air control, the grapple's rope) give the velocity a movement drive sets on the whole robot's centre
+of mass. For a robot with working legs it also keeps it upright and turns it to face the aim
+(at most 16 rad/s); for wheels, tracks or a stationary chassis it preserves angular momentum
+instead of providing a free camera-driven turn. Differential wheel/track steering still awaits
+actuator-driven locomotion (Atlas Q2.i74.1). Its legs
 stride and its wheels and tracks roll as its control layout tells them (above, **Control layouts**; until #74 at the rate its speed gave them), and
 every motor draws from the pool after the tick's jumps, swings and shots (two legs: 8 a second
 against the chassis' 24, so weapons recharge a third slower; provisional). The simplest mapping
@@ -685,7 +704,7 @@ repair module on the chassis' back, **Field repair**),
 each a two-legged component tree with a sensor
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads
-them too. The weapon panel shows the held
+them too. The HUD shows the held
 weapon's mod and the status line every equipped one.
 
 **Module pickups.** A few powerful modules lie on pads at contested points of a map, placed in
