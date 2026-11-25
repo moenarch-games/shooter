@@ -232,21 +232,25 @@ mouse. Steer in the air with WASD. R opens the quick repair menu (below, **Field
 same keys and the mouse drive the robot's actuators through its control layout (below,
 **Control layouts**), edited in the builder's controls panel (K).
 
-**HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser:
-render-engine's screen-overlay quads in the robot kits' palette (pale grey on graphite, olive, an
-orange accent), in the bottom corners clear of the reticle, laid out for 720 lines and scaled with
-the window. Bottom right, the held weapon: its silhouette, name and mod, the energy a shot costs
-(a second, for the laser and the flamethrower), whether it is ready, recharging (a bar filling to
-its next shot), short of energy or lost, and above it a slot for every weapon copy the build
-carries with its key (lost ones red and struck out), each with its own readiness bar along its
-foot whether held or not (olive ready, filling orange while it recharges or waits out its
-family's salvo spacing, red when the pool cannot pay it, #127); a switch flashes the panel and
-sweeps a highlight across it. Bottom left, the root chassis' health and the energy pool, with the share one shot of
-the held weapon takes marked in orange, and above them, in teal, the field repair panel (the
-quick repair menu while it is open, else the repair under way, else how many parts may be
-repaired). render-engine's overlay draws solid rectangles only, so
-the text is a 5×7 bitmap font and the weapons are pixel silhouettes, both drawn as quads in the
-client. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
+**HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser, in
+the bottom corners clear of the reticle, laid out for 720 lines and scaled with the window. It
+has no panels: text floats over the scene on a soft shadow, bars are pills on a dark track and
+the weapons are rounded chips. Bottom right, a chip for every weapon copy the build carries (its
+key on a badge, its short name and copy number; lost ones red and struck out), each with its own
+readiness bar whether held or not (olive ready, filling orange while it recharges or waits out
+its family's salvo spacing, red when the pool cannot pay it, #127), the held one opaque with an
+orange badge and glowing for a moment after a switch; under them the held weapon's name, its
+refire filling while it recharges, and a line with its mod and, when it cannot fire, why (lost,
+low energy). Bottom left, the root chassis' health as a large reading over its bar (red under a
+third) and the energy pool as a thin blue bar under it, with the share one shot of the held
+weapon takes marked in orange, and above them, in teal, the field repair panel (the quick repair
+menu while it is open, else the repair under way, else how many parts may be repaired).
+The client's UI (the HUD, the builder and the death prompt) is drawn as the renderer's screen
+overlay (`ui`): rounded rectangles, and text as quads showing glyphs of an atlas texture in the
+frame's world (render-engine's `OverlayQuad` corner radius and images, render-engine#163; the lite renderer
+draws the same on WebGL 2), the text in Barlow Semi Condensed SemiBold (SIL Open Font License,
+`crates/shooter-client/assets/fonts/OFL.txt`) rasterized into the atlas at the size it is
+drawn. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
 the carried module and its uses left, the kill and pickup feed, banners and the scoreboard) is
 still text: the page's overlay in the browser and the window title natively.
 
@@ -267,6 +271,28 @@ camera sees past stops it: a red marker then shows where the shot will really la
 resolves every shot with the same functions (`shooter_sim::aim`), lag-compensated as before, and
 draws its flash, beam, pellets and rockets from that muzzle. The grapple module's hook leaves its
 own muzzle toward the same point (#104; its rope is tied at the eye), the blade the feet.
+
+**Guns keep their mounts** (#132, Atlas D2.i123.8). A gun's shot flies toward the camera's
+target only when the target lies within 10° of the gun's barrel as mounted (its part's own
+outward axis, turned with every joint that carries it); otherwise it flies straight along the
+barrel. A gun fixed on the chassis front therefore hits what the robot faces (the robot turns
+to face your aim) but not a target well above, below or to the side of where it points, nor, up
+close, a point the camera's right-shoulder view sees but the gun's offset mount cannot: a rocket
+jump needs a launcher a joint can turn to the floor (the `ROCKET_JUMPER` fixture: the launcher
+on a hinge). Every gun the robot still has draws its own small mark where its shot would land
+now: green on the target, red where cover stops it short, amber where its mount cannot point at
+the target and the shot goes elsewhere, so a weapon group's guns each show whether they reach.
+The 10° cone is provisional (Atlas Q2.i123.2).
+
+**Precision aim** (#132, Atlas D2.i123.8). Hold the right mouse button (`weapon.aim`, rebindable
+like every action) with the pointer captured: the view zooms in twice over (the field of view's
+half-angle tangent halved, eased in and out over 0.12 s), the mouse turns half as fast, and a
+scope frames the reticle (the frame shaded round a square sight with fine cross hairs). The
+camera itself stays where it is, so what you aim at and where every shot goes are the same as
+unzoomed. The same button, through every preset control layout, makes the robot's turret joints
+track the camera's target (**Control layouts** below). Zoom factor, slowdown and scope style are
+provisional. Screenshots: [docs/captures/132](docs/captures/132) (normal and precision view, a
+turret tracking a point up a wall, fixed guns' amber marks under an unreachable reticle).
 
 The left mouse button fires. The mouse wheel steps through the weapons your robot carries and
 still has (down or E for the next, up or Q for the previous), in the order below, wrapping round
@@ -305,12 +331,14 @@ same per-copy requests.
 | 5 | Laser | A continuous beam while the trigger is down: 2 damage a tick (120 a second) to the first target within 30 m |
 | 6 | Flamethrower | A 6 m flame, 1.2 m across, cut short by walls: after a 0.25 s ignition, 3 damage a tick (180 a second) to everyone in it |
 
-Rocket jump by firing at your feet as you jump: the blast throws you about 5 m up. Your own
+Rocket jump by firing at your feet as you jump, with a launcher a hinge has turned down (#132;
+a fixed launcher keeps pointing ahead): the blast throws you about 5 m up. Your own
 rocket hurts you at half damage (a rocket jump costs every part near your feet up to 50, the legs most).
 
 **The grapple module** (#104, Atlas D2.i104.1, D2.i104.2) is an optional robot part, not a gun: a
 build mounts the grapple hook on any free socket like any part (10 kg, 10 build points), and only
-a robot whose module is still on and connected can grapple. Hold the right mouse button (or F),
+a robot whose module is still on and connected can grapple. Hold F (the right mouse button is
+precision aim's since #132),
 whatever gun you hold, and the hook leaves the module's muzzle toward what the camera targets and
 sets on arena geometry within 30 m (not on fighters): it reels you toward the hook at up to 24 m/s
 and the rope never lets you further away than you have come, so running or falling across it
@@ -538,7 +566,16 @@ so), A and D differentially; the mouse's horizontal offset turns every rotor and
 offset every hinge, so two joint axes aim a turret. A binding may instead fire guns (#127): one
 gun is a direct weapon button, several a weapon group (keys and mouse buttons only, held or
 toggled; the blade and the grapple stay on their own keys); the preset's is every gun on the
-middle mouse button. In the builder K (or Controls) opens the
+middle mouse button. A binding may also make joints **track the aim** (#132, keys and mouse
+buttons only, held or toggled): while it is on, each joint in its group is told to track
+instead of whatever else binds it, and the host, from its own state, turns that word into the
+servo angle that points the first gun the joint carries at the camera's target, as far as the
+joint's own axis can and clamped to its limits (a hinge a quarter turn either way, a rotor
+without end); the joint gets there at its servo's speed and torque, paying its draw from the
+pool, and a joint that has lost its gun holds where it is, a lost or unpowered one aims nothing.
+Every preset tracks with every rotor and hinge on the right mouse button, the precision aim's,
+so holding it zooms and turns the turret onto the reticle together; let go, the mouse offset
+steers them again. In the builder K (or Controls) opens the
 controls panel in the inspector's place: pick a binding, press Key... and a key (or Mouse to cycle
 the mouse inputs), change its mode, command, inversion and strength, click a part on the robot
 and Part +/- or Flip Part, New for a new binding on the selected part (on a gun: a fire binding),
@@ -547,7 +584,8 @@ simulation and refused with its reason.
 Ready takes the layout with the build; while you have not edited it, it follows your build's
 preset. The client resolves the layout every tick and its input carries the resulting
 per-actuator commands and the guns asked to fire (wire 22 and on; wire 23 and replay format 16
-address weapons by copy, #125; wire 24 and replay format 17 carry the fire requests, #127); the
+address weapons by copy, #125; wire 24 and replay format 17 carry the fire requests, #127; wire
+25 and replay format 18 a joint's track word, which carries no angle, #132); the
 host takes only commands the robot's connected actuators can take and rests every other
 actuator, and fires only guns the robot still has, so a tampered input moves or fires nothing
 a layout could not. Bots press their build's preset from their movement. The layout lives for
@@ -690,7 +728,7 @@ repair module on the chassis' back, **Field repair**),
 each a two-legged component tree with a sensor
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads
-them too. The weapon panel shows the held
+them too. The HUD shows the held
 weapon's mod and the status line every equipped one.
 
 **Module pickups.** A few powerful modules lie on pads at contested points of a map, placed in

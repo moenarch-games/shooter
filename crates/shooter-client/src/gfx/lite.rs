@@ -72,6 +72,11 @@ struct ParticleInstance {
 struct OverlayVertex {
     position: [f32; 2],
     color: [f32; 4],
+    /// Pixels from the quad's centre.
+    local: [f32; 2],
+    /// Half width, half height, corner radius (pixels), unused.
+    shape: [f32; 4],
+    uv: [f32; 2],
 }
 
 /// A skinned vertex's `JOINTS_0` and `WEIGHTS_0` (`lite.wgsl` `SkinIn`).
@@ -101,7 +106,10 @@ struct Mesh {
 }
 
 struct Texture {
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
+    /// Its overlay bind group (texture and sampler), made on first use.
+    overlay: Option<wgpu::BindGroup>,
     sampler: Sampler,
 }
 
@@ -315,7 +323,7 @@ impl LiteWorld {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: texture.format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::MipMajor,
@@ -323,8 +331,87 @@ impl LiteWorld {
         );
         self.textures.insert(Texture {
             view: gpu.create_view(&wgpu::TextureViewDescriptor::default()),
+            texture: gpu,
             sampler: texture.sampler,
+            overlay: None,
         })
+    }
+
+    /// Overwrites a `size` region of `id`'s level 0 at `origin` with tightly packed `pixels`.
+    pub(super) fn write_texture(
+        &mut self,
+        id: u32,
+        origin: (u32, u32),
+        size: (u32, u32),
+        pixels: &[u8],
+    ) {
+        let Some(texture) = self.textures.get(id) else {
+            return;
+        };
+        let block = texture.texture.format().block_copy_size(None).unwrap_or(4);
+        if size.0 == 0 || size.1 == 0 {
+            return;
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: origin.0,
+                    y: origin.1,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size.0 * block),
+                rows_per_image: Some(size.1),
+            },
+            wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    /// The overlay bind group of texture `id` (white for none or a removed one), made once.
+    fn overlay_group(
+        &mut self,
+        id: Option<u32>,
+        layout: &wgpu::BindGroupLayout,
+    ) -> wgpu::BindGroup {
+        if let Some(group) = id
+            .and_then(|id| self.textures.get(id))
+            .and_then(|texture| texture.overlay.clone())
+        {
+            return group;
+        }
+        let (view, sampler) = match id.and_then(|id| self.textures.get(id)) {
+            Some(texture) => (texture.view.clone(), texture.sampler),
+            None => (self.white.clone(), Sampler::default()),
+        };
+        let sampler = self.sampler(sampler);
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("lite overlay image"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        if let Some(texture) = id.and_then(|id| self.textures.get_mut(id)) {
+            texture.overlay = Some(group.clone());
+        }
+        group
     }
 
     fn sampler(&mut self, sampler: Sampler) -> wgpu::Sampler {
@@ -721,14 +808,18 @@ fn perspective(fov_y: f32, aspect: f32, near: f32) -> Mat4 {
 }
 
 /// A buffer that grows to what a frame needs.
-struct Growing {
-    buffer: wgpu::Buffer,
+pub(super) struct Growing {
+    pub(super) buffer: wgpu::Buffer,
     usage: wgpu::BufferUsages,
     label: &'static str,
 }
 
 impl Growing {
-    fn new(device: &wgpu::Device, label: &'static str, usage: wgpu::BufferUsages) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        label: &'static str,
+        usage: wgpu::BufferUsages,
+    ) -> Self {
         let usage = usage | wgpu::BufferUsages::COPY_DST;
         Self {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
@@ -742,7 +833,7 @@ impl Growing {
         }
     }
 
-    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
+    pub(super) fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
@@ -785,6 +876,8 @@ pub struct LiteRenderer {
     /// Additive, then alpha-blended.
     particle_pipelines: [wgpu::RenderPipeline; 2],
     overlay_pipeline: wgpu::RenderPipeline,
+    /// An overlay image's texture and sampler.
+    overlay_image_layout: wgpu::BindGroupLayout,
     depth: Option<((u32, u32), wgpu::TextureView)>,
     instances: Growing,
     particles: Growing,
@@ -1066,13 +1159,49 @@ impl LiteRenderer {
                 cache: None,
             })
         };
-        let overlay_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
+        // The overlay: its own shader (`lite_overlay.wgsl`), its image at group 0.
+        let overlay_shader = device.create_shader_module(wgpu::include_wgsl!("lite_overlay.wgsl"));
+        let overlay_image_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("lite overlay image"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let overlay_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("lite overlay"),
+            bind_group_layouts: &[Some(&overlay_image_layout)],
+            immediate_size: 0,
+        });
+        let overlay_attributes = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32x4, 2 => Float32x2, 3 => Float32x4, 4 => Float32x2
+        ];
+        let encode_constant = [("ENCODE_SRGB", if format.is_srgb() { 0.0 } else { 1.0 })];
         let overlay = |depth_stencil: Option<wgpu::DepthStencilState>| {
+            let options = wgpu::PipelineCompilationOptions {
+                constants: &encode_constant,
+                ..Default::default()
+            };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("lite overlay"),
-                layout: Some(&frame_only),
+                layout: Some(&overlay_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: &overlay_shader,
                     entry_point: Some("overlay_vs"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
@@ -1085,9 +1214,9 @@ impl LiteRenderer {
                 depth_stencil,
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: &overlay_shader,
                     entry_point: Some("overlay_fs"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    compilation_options: options,
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         blend: alpha,
@@ -1173,6 +1302,7 @@ impl LiteRenderer {
             palette_group: None,
             particle_pipelines: [particle_pipeline(additive), particle_pipeline(alpha)],
             overlay_pipeline,
+            overlay_image_layout,
             depth: None,
             instances: Growing::new(device, "lite instances", wgpu::BufferUsages::VERTEX),
             particles: Growing::new(device, "lite particles", wgpu::BufferUsages::VERTEX),
@@ -1218,6 +1348,7 @@ impl LiteRenderer {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         sizes: FrameSizes,
+        overlay_quads: &[super::OverlayQuad],
     ) {
         let FrameSizes {
             target: target_size,
@@ -1438,30 +1569,61 @@ impl LiteRenderer {
         self.particles
             .write(&device, &queue, bytemuck::cast_slice(&all_particles));
 
-        // The overlay, in clip space.
+        // The overlay, in clip space, in runs of quads sharing an image; its signed distances in
+        // target pixels (the overlay is laid out at the layout size).
         #[allow(clippy::cast_precision_loss)]
         let (width, height) = (size.0.max(1) as f32, size.1.max(1) as f32);
-        let mut overlay = Vec::with_capacity(scene.overlay.len() * 6);
-        for quad in &scene.overlay {
+        #[allow(clippy::cast_precision_loss)]
+        let pixels = target_size.1.max(1) as f32 / height;
+        let mut overlay = Vec::with_capacity(overlay_quads.len() * 6);
+        let mut overlay_batches: Vec<(Option<u32>, std::ops::Range<u32>)> = Vec::new();
+        for quad in overlay_quads {
+            let texture = quad.image.map(|image| image.texture.0);
+            let start = u32::try_from(overlay.len()).unwrap_or(u32::MAX);
+            match overlay_batches.last_mut() {
+                Some((batch, _)) if *batch == texture => {}
+                _ => overlay_batches.push((texture, start..start)),
+            }
             let clip = |p: Vec2| [p.x / width * 2.0 - 1.0, 1.0 - p.y / height * 2.0];
-            let (a, b) = (quad.position, quad.position + quad.size);
+            let half = quad.size / 2.0;
+            let radius = quad.corner_radius.clamp(0.0, half.x.min(half.y));
+            let shape = [half.x * pixels, half.y * pixels, radius * pixels, 0.0];
+            let (uv_min, uv_max) = quad
+                .image
+                .map_or((Vec2::ZERO, Vec2::ZERO), |i| (i.uv_min, i.uv_max));
             let color = quad.color.to_array();
-            for corner in [
-                Vec2::new(a.x, a.y),
-                Vec2::new(b.x, a.y),
-                Vec2::new(b.x, b.y),
-                Vec2::new(a.x, a.y),
-                Vec2::new(b.x, b.y),
-                Vec2::new(a.x, b.y),
+            for (cx, cy) in [
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
             ] {
+                let corner = Vec2::new(cx, cy);
                 overlay.push(OverlayVertex {
-                    position: clip(corner),
+                    position: clip(quad.position + quad.size * corner),
                     color,
+                    local: ((corner - 0.5) * quad.size * pixels).to_array(),
+                    shape,
+                    uv: (uv_min + (uv_max - uv_min) * corner).to_array(),
                 });
+            }
+            if let Some((_, vertices)) = overlay_batches.last_mut() {
+                vertices.end = u32::try_from(overlay.len()).unwrap_or(u32::MAX);
             }
         }
         self.overlay
             .write(&device, &queue, bytemuck::cast_slice(&overlay));
+        let overlay_draws: Vec<(wgpu::BindGroup, std::ops::Range<u32>)> = overlay_batches
+            .into_iter()
+            .map(|(texture, vertices)| {
+                (
+                    world.overlay_group(texture, &self.overlay_image_layout),
+                    vertices,
+                )
+            })
+            .collect();
 
         // Dynamic resolution: a scene smaller than the target goes into its own texture,
         // upscaled before the overlay.
@@ -1550,12 +1712,14 @@ impl LiteRenderer {
             pass.set_vertex_buffer(0, self.particles.buffer.slice(u64::from(first) * stride..));
             pass.draw(0..6, 0..count);
         }
-        let overlay_vertices = u32::try_from(overlay.len()).unwrap_or(u32::MAX);
         let Some((_, blit_group)) = scaled else {
-            if overlay_vertices > 0 {
+            if !overlay_draws.is_empty() {
                 pass.set_pipeline(&self.overlay_pipeline);
                 pass.set_vertex_buffer(0, self.overlay.buffer.slice(..));
-                pass.draw(0..overlay_vertices, 0..1);
+                for (group, vertices) in &overlay_draws {
+                    pass.set_bind_group(0, group, &[]);
+                    pass.draw(vertices.clone(), 0..1);
+                }
             }
             return;
         };
@@ -1581,11 +1745,13 @@ impl LiteRenderer {
         pass.set_pipeline(&self.blit_pipeline);
         pass.set_bind_group(0, &blit_group, &[]);
         pass.draw(0..3, 0..1);
-        if overlay_vertices > 0 {
+        if !overlay_draws.is_empty() {
             pass.set_pipeline(&self.overlay_flat);
-            pass.set_bind_group(0, &self.frame_group, &[]);
             pass.set_vertex_buffer(0, self.overlay.buffer.slice(..));
-            pass.draw(0..overlay_vertices, 0..1);
+            for (group, vertices) in &overlay_draws {
+                pass.set_bind_group(0, group, &[]);
+                pass.draw(vertices.clone(), 0..1);
+            }
         }
     }
 

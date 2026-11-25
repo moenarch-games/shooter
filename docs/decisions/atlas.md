@@ -31,7 +31,8 @@ implemented yet.
   jumping and air control. No aim-down-sights; large health pools.
   Superseded in intent (owner, 2026-11-17; shooter#123): the fast pacing by D2.i123.7, no
   aim-down-sights by D2.i123.8, the universal (double) jump by D2.i123.9; jump pads stay. Shipped
-  movement remains D2.3's until those land.
+  movement remains D2.3's until those land; precision aim shipped (shooter#132), and rocket
+  jumping now needs a launcher a joint can turn down (D2.i123.8).
 - **D2.4** (owner, 2026-11-11): Stylized sci-fi look: a clean modular arena (panels, ramps, jump
   pads, glowing trims), energy weapons (energy rifle, rail gun, rockets). No realistic gore.
   Styling superseded by D2.i46.2.
@@ -374,7 +375,7 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   The root chassis' regeneration is superseded in intent by D2.i123.1 (owner, 2026-11-17;
   component-driven recovery, shooter#128); the root chassis as the vital part stands.
 
-- **D2.i102.1** (owner, 2026-11-16; shooter#102, option B): **Camera-targeted, muzzle-authoritative shots.** The third-person camera establishes the intended aim point, but a damaging ranged weapon's actual hit ray or projectile originates at its mounted, connected weapon muzzle and travels toward that point. Geometry between the muzzle and the aim point blocks or intercepts the shot even if the camera sees the target: camera peeking does not enable shooting through cover. The authoritative origin and intersection are simulation/host rules shared with native and WebGPU prediction, reticle and visual effects; the client renderer may not supply independent combat truth. Preserve the existing weapon damage, energy, part-loss, lag-compensation and replay contracts, reconciling muzzle transforms with the real weapon/robot kit and articulation. This applies to mounted damaging ranged weapons, with the grapple's separate movement/rope contract reconciled rather than silently changed. **Shipped (shooter#102):** `shooter_sim::aim` owns the camera rig (behind and over the right shoulder of the eye, pulled in front of walls at once), the camera's centre ray from level with the eye picks the target (lag-compensated among the fighters), and the rifle, rail gun, rockets, shotgun pellets, laser and flame leave the held weapon part's muzzle (the pinned weapons kit's muzzle anchor, the long barrel's, as a checked-in table the client's robot tests hold against the kit; the rocket pod always fires from its first tube) toward it; a muzzle pushed into a wall fires from its near face, and a target not ahead of the muzzle is shot along the aim. Bots aim their reticle the same way. The clients draw the reticle on the target and a red blocked marker where the muzzle's shot stops short, draw flashes, beams and pellets from the simulation's muzzle, and online prediction re-aims its hitscan beams through the same functions. The grapple and the blade keep leaving the eye. Native visual capture only; the browser build is compiled, not captured. Draft PR #84 remains its previously defined battery/laser-visual change, without this gameplay redesign unless separately integrated.
+- **D2.i102.1** (owner, 2026-11-16; shooter#102, option B): **Camera-targeted, muzzle-authoritative shots.** The third-person camera establishes the intended aim point, but a damaging ranged weapon's actual hit ray or projectile originates at its mounted, connected weapon muzzle and travels toward that point. Geometry between the muzzle and the aim point blocks or intercepts the shot even if the camera sees the target: camera peeking does not enable shooting through cover. The authoritative origin and intersection are simulation/host rules shared with native and WebGPU prediction, reticle and visual effects; the client renderer may not supply independent combat truth. Preserve the existing weapon damage, energy, part-loss, lag-compensation and replay contracts, reconciling muzzle transforms with the real weapon/robot kit and articulation. This applies to mounted damaging ranged weapons, with the grapple's separate movement/rope contract reconciled rather than silently changed. **Shipped (shooter#102):** `shooter_sim::aim` owns the camera rig (behind and over the right shoulder of the eye, pulled in front of walls at once), the camera's centre ray from level with the eye picks the target (lag-compensated among the fighters), and the rifle, rail gun, rockets, shotgun pellets, laser and flame leave the held weapon part's muzzle (the pinned weapons kit's muzzle anchor, the long barrel's, as a checked-in table the client's robot tests hold against the kit; the rocket pod always fires from its first tube) toward it; a muzzle pushed into a wall fires from its near face, and a target not ahead of the muzzle is shot along the aim (since shooter#132, D2.i123.8: a gun flies toward the target only within its 10° convergence cone about its mount, else along the mount). Bots aim their reticle the same way. The clients draw the reticle on the target and a red blocked marker where the muzzle's shot stops short, draw flashes, beams and pellets from the simulation's muzzle, and online prediction re-aims its hitscan beams through the same functions. The grapple and the blade keep leaving the eye. Native visual capture only; the browser build is compiled, not captured. Draft PR #84 remains its previously defined battery/laser-visual change, without this gameplay redesign unless separately integrated.
 
 
 - **D2.i104.1** (owner, 2026-11-16; shooter#104; answers Q4's movement and
@@ -414,7 +415,8 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   its connection, or dying ends it. Bots never grapple (D2.8). The map routes'
   grapple scenarios use the module's key. Native HUD capture only; no hooked
   gameplay capture on either client yet.
-  Its right mouse button default is to move to precision aim (D2.i123.8, shooter#132); F stays.
+  **Moved (shooter#132):** the right mouse button is precision aim's now (D2.i123.8); the
+  grapple's key is F alone, rebindable like every action.
 
 - **D2.i45.1** (owner, 2026-11-16; shooter#45; answers Q3, option A):
   The **energy blade is the only quick-melee weapon for the first modular-robot
@@ -533,6 +535,31 @@ whether resupply locks movement or firing (Q2.i123.3).
   or F; shooter#132 moves precision aim onto the right mouse button by default, so the grapple's
   default binding changes with it (F stays), through shooter#74's layouts. No binding changes
   until shooter#132 lands.
+  **Shipped (shooter#132):** *Precision aim* is the input-bindings action `weapon.aim`, the
+  right mouse button by default (the grapple keeps F alone): held with the pointer captured, the
+  client zooms the view (field of view only: the camera does not move, so the simulation's
+  target and every shot are unchanged), slows the mouse and frames the reticle in a scope.
+  *Tracking joints:* a control-layout binding may track the aim (`bindings::Output::Track`, keys
+  and buttons); every preset tracks with every rotor and hinge on the right mouse button. The
+  input carries only a track word per joint (wire 25, replay format 18); the host resolves it
+  from its own state into the servo angle that turns the first gun the joint carries toward the
+  camera's target about the joint's own axis, clamped to its limits (`aim::track`), and the joint
+  moves there at its servo's speed and torque on the pool's energy like any command: a target
+  past a hinge's quarter turn holds it at the limit, a joint that has lost its gun holds, a lost
+  or unpowered joint aims nothing. *Fixed guns and D2.i102.1:* every gun's shot still leaves its
+  muzzle; it flies toward the camera's target only when that lies within a provisional 10° cone
+  about the gun's barrel as mounted (its part's own outward axis, turned with every joint that
+  carries it), else straight along the barrel; the grapple's hook (not a gun) still turns freely
+  toward a target ahead. So a fixed gun on the chassis hits what the robot faces (the movement
+  drive turns it to the aim's yaw) but not a target far above, below or beside its mount; up
+  close the camera's right-shoulder offset and an off-centre mount can put the target outside the
+  cone. Rocket jumps therefore need a launcher a joint can turn down (the scenario's
+  `robot::ROCKET_JUMPER`: the launcher on a hinge); the shooting and close ranges turn the robot
+  before they fire. *Reticle:* every gun the robot still has marks where its own shot would land
+  now (`aim::Shot::lands`): on the target, blocked short of it, or unreachable and where its
+  mount sends it, so a weapon group's guns each show theirs. Host, prediction and replay run the
+  same functions. Native captures only (`docs/captures/132`); the browser build is compiled, not
+  run. Numbers in Q2.i123.2; optics modules that change the zoom are not modelled.
 - **D2.i123.9** (owner, 2026-11-17; shooter#123, decision 9, B; supersedes D2.3's universal
   double jump): Operational leg modules suited to it give a robot a natural jump; wheels or tracks
   alone do not. Dedicated jump jets, springs or other jump modules can grant a jump without legs,
@@ -821,6 +848,10 @@ whether resupply locks movement or firing (Q2.i123.3).
   playtests set them (shooter#128 to shooter#133); implementations record provisional defaults
   here, none owner-approved. Provisional (shooter#127): the rocket launchers' family salvo limit
   is at most 1 launch per tick per robot and 6 ticks (0.1 s) between launches, so a pod of four
-  staggers over 18 ticks (`Weapon::salvo`); every other family has none.
+  staggers over 18 ticks (`Weapon::salvo`); every other family has none. Provisional
+  (shooter#132): a gun's convergence cone is 10° about its mount (`aim::CONVERGENCE_COS`),
+  precision aim zooms 2× (the field of view's half-angle tangent halved, eased over 0.12 s) and
+  slows the mouse to half; the scope is a shaded square sight with cross hairs; no optics module
+  changes the zoom yet.
 - **Q2.i123.3**: Whether holding a resupply interaction locks the robot's ordinary movement or
   firing (D2.i123.6). Not prescribed until assessed in shooter#129.

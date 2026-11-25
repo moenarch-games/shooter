@@ -403,6 +403,11 @@ pub struct Actors {
     reticle: InstanceId,
     /// Where the muzzle's shot really stops when cover beside the robot blocks it.
     blocked: InstanceId,
+    /// Each gun's mark ([`camera::Reticle::guns`], shooter#132), reused frame to frame (hidden
+    /// when unused), and its mesh and materials: on the target, blocked, unreachable.
+    gun_marks: Vec<InstanceId>,
+    gun_mark_mesh: MeshId,
+    gun_mark_materials: [MaterialId; 3],
 }
 
 fn glowing(rgb: Vec3, nits: f32) -> StandardMaterial {
@@ -420,6 +425,8 @@ fn gun_material(materials: &[MaterialId; Weapon::ALL.len()], held: Weapon) -> Ma
 
 /// The reticle's radius (metres, [`camera::RETICLE_DISTANCE`] ahead of the camera).
 const RETICLE_RADIUS: f32 = 0.0009;
+/// A gun's mark's radius (metres, likewise): smaller than the reticle.
+const GUN_MARK_RADIUS: f32 = 0.0007;
 
 impl Actors {
     pub fn new(world: &mut World) -> Self {
@@ -459,6 +466,19 @@ impl Actors {
         // White on the camera's target, red where cover beside the robot stops the shot.
         let reticle = marker(Vec3::ONE);
         let blocked = marker(Vec3::new(1.0, 0.1, 0.05));
+        // Each gun's mark, smaller: green on the target, red blocked, amber where a mount that
+        // cannot point at the target sends the shot.
+        let gun_mark_mesh = world.add_mesh(&MeshData::shape(Shape::Sphere {
+            radius: GUN_MARK_RADIUS,
+            sectors: 8,
+            stacks: 6,
+        }));
+        let gun_mark_materials = [
+            Vec3::new(0.2, 1.0, 0.35),
+            Vec3::new(1.0, 0.1, 0.05),
+            Vec3::new(1.0, 0.6, 0.0),
+        ]
+        .map(|rgb| world.add_material(&glowing(rgb, 40_000.0)));
         Self {
             fighters: Vec::new(),
             fighter_mesh,
@@ -482,6 +502,9 @@ impl Actors {
             modules: Vec::new(),
             reticle,
             blocked,
+            gun_marks: Vec::new(),
+            gun_mark_mesh,
+            gun_mark_materials,
         }
     }
 
@@ -655,12 +678,38 @@ impl Actors {
             Self::place(world, *instance, self.module_mesh, material, at);
         }
         for (instance, at) in [
-            (self.reticle, reticle.map(|reticle| reticle.at)),
-            (self.blocked, reticle.and_then(|reticle| reticle.blocked)),
+            (self.reticle, reticle.as_ref().map(|reticle| reticle.at)),
+            (
+                self.blocked,
+                reticle.as_ref().and_then(|reticle| reticle.blocked),
+            ),
         ] {
             let mut placed = world.instance(instance);
             placed.world_from_local = at.map_or(HIDDEN, Mat4::from_translation);
             world.set_instance(instance, placed);
+        }
+        let guns = reticle.map(|reticle| reticle.guns).unwrap_or_default();
+        while self.gun_marks.len() < guns.len() {
+            let instance = world.add_instance(Instance {
+                mesh: self.gun_mark_mesh,
+                material: self.gun_mark_materials[0],
+                world_from_local: HIDDEN,
+                skin: None,
+            });
+            self.gun_marks.push(instance);
+        }
+        for (index, instance) in self.gun_marks.iter().enumerate() {
+            let (at, material) =
+                guns.get(index)
+                    .map_or((HIDDEN, self.gun_mark_materials[0]), |(at, mark)| {
+                        let material = match mark {
+                            camera::Mark::Target => self.gun_mark_materials[0],
+                            camera::Mark::Blocked => self.gun_mark_materials[1],
+                            camera::Mark::Unreachable => self.gun_mark_materials[2],
+                        };
+                        (Mat4::from_translation(*at), material)
+                    });
+            Self::place(world, *instance, self.gun_mark_mesh, material, at);
         }
     }
 }
