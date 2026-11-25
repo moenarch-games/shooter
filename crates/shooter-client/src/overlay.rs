@@ -1,23 +1,24 @@
-//! The drawn HUD: the weapon panel and the chassis and energy bars, as render-engine screen
-//! overlay quads ([`render_engine::scene::Scene::overlay`]), the same natively and in the browser.
+//! The drawn HUD: the weapons and the chassis and energy, as render-engine screen overlay quads
+//! ([`render_engine::scene::Scene::overlay`]), the same natively and in the browser.
 //!
 //! render-engine's overlay draws solid rectangles only, so the text is a 5×7 bitmap font and the
 //! weapon silhouettes are pixel art, both drawn here as quads (each lit row run one quad). The
-//! look follows the robot kits' palette: pale grey on graphite panels, olive for the mods and the
-//! chassis, an orange accent for the held weapon, energy and the switch highlight. Everything
-//! sits in the bottom corners, clear of the reticle; the layout is for 720 lines and scales with
-//! the frame's height.
+//! HUD has no panels: text and silhouettes float over the scene on a drop shadow, and bars sit on
+//! a dark track. Pale grey for what matters, muted grey for the rest, olive for mods and ready
+//! weapons, orange for the held weapon's key, a refire and a shot's cost, blue for energy and red
+//! for what is lost or short. Everything sits in the bottom corners, clear of the reticle; the
+//! layout is for 720 lines and scales with the frame's height.
 //!
-//! The bottom right shows the held weapon (its silhouette, name and mod, the energy one shot
-//! costs, and whether it is ready, recharging, short of energy or lost) over a row of slots for
-//! every weapon copy the build carries (its select key, the blade's V; lost ones struck out red),
-//! each with its own readiness bar (ready, recharging, short of energy: every copy may fire,
-//! shooter#127); a switch flashes the panel and sweeps a highlight across it. The bottom left
-//! shows the root chassis' health and the energy pool, the share one shot of the held weapon
-//! takes marked on it, and above them, in teal, field repair ([`repair_panel`],
+//! The bottom right shows a row of silhouettes, one for every weapon copy the build carries (its
+//! select key, the blade's V, its copy number; lost ones dim red and struck out), each with its
+//! own readiness bar (ready, recharging, short of energy: every copy may fire, shooter#127), the
+//! held one bright and lit up for a moment by a switch. Under it the held weapon's name, its
+//! refire filling while it recharges, and a line with its mod and, when it cannot fire, why
+//! (lost, low energy). The bottom left shows the root chassis' health as a large reading over its
+//! bar and the energy pool as a thin bar under it, the share one shot of the held weapon takes
+//! marked on it, and above them, in teal, field repair ([`repair_panel`],
 //! [`crate::repair_menu`]): the quick repair menu while it is open, else the repair under way,
 //! else how many parts may be repaired.
-
 use render_engine::glam::{Vec2, Vec4};
 use render_engine::scene::OverlayQuad;
 use shooter_sim::energy::MILLI;
@@ -50,9 +51,13 @@ pub(crate) mod palette {
     pub const RED: u32 = 0xE0_4A_2F;
     /// Field repair: the menu, the part under repair and its glow on the robot.
     pub const TEAL: u32 = 0x4F_D1_A5;
+    /// The energy pool in the HUD.
+    pub const ENERGY: u32 = 0x5C_C8_FF;
+    /// Behind the HUD's text and bars: a drop shadow and the empty part of a bar.
+    pub const SHADOW: u32 = 0x0B_0D_0F;
 }
 use crate::repair_menu::{Entry, RepairView};
-use palette::{GRAPHITE, MUTED, OLIVE, ORANGE, PALE, RED, STEEL, TEAL};
+use palette::{ENERGY, MUTED, OLIVE, ORANGE, PALE, RED, SHADOW, TEAL};
 
 /// The 5×7 glyphs, rows top down, the leftmost column the highest of five bits.
 fn glyph(character: char) -> [u8; 7] {
@@ -349,6 +354,28 @@ impl Painter {
         self.text(right - width, y, cell, text, color);
     }
 
+    /// `text` over a drop shadow half a font cell down and right (whole pixels), legible on any
+    /// part of the scene without a panel; its width.
+    pub(crate) fn label(&mut self, x: f32, y: f32, cell: f32, text: &str, color: Vec4) -> f32 {
+        let offset = (cell * self.scale * 0.5).round().max(1.0) / self.scale;
+        let shadow = srgb(SHADOW, 0.6 * color.w);
+        self.text(x + offset, y + offset, cell, text, shadow);
+        self.text(x, y, cell, text, color)
+    }
+
+    /// [`Self::label`] right-aligned to `right`; its width.
+    pub(crate) fn label_right(
+        &mut self,
+        right: f32,
+        y: f32,
+        cell: f32,
+        text: &str,
+        color: Vec4,
+    ) -> f32 {
+        let width = text_width(text, self.snap_cell(cell));
+        self.label(right - width, y, cell, text, color)
+    }
+
     /// A font cell as a whole number of pixels (crisp glyphs at any height), back in units.
     pub(crate) fn snap_cell(&self, cell: f32) -> f32 {
         (cell * self.scale).round().max(1.0) / self.scale
@@ -525,14 +552,18 @@ pub struct Overlay {
 }
 
 /// Layout units (the frame is 720 high in them).
-const MARGIN: f32 = 24.0;
-const PANEL_WIDTH: f32 = 364.0;
-const PANEL_HEIGHT: f32 = 104.0;
-const SLOT_WIDTH: f32 = 54.0;
-const SLOT_HEIGHT: f32 = 38.0;
-const SLOT_GAP: f32 = 6.0;
-const VITALS_WIDTH: f32 = 272.0;
-const VITALS_HEIGHT: f32 = 84.0;
+const MARGIN: f32 = 28.0;
+const BOTTOM: f32 = 720.0 - MARGIN;
+/// The chassis and energy bars' width.
+const BAR_WIDTH: f32 = 240.0;
+/// The top of the bottom left block (the chassis reading): the repair panel sits above it.
+const VITALS_TOP: f32 = BOTTOM - 52.0;
+/// The weapon slots: a silhouette at three units a cell (60 wide), one every `SLOT_PITCH`.
+const SLOT_PITCH: f32 = 72.0;
+const SLOT_ICON: f32 = 60.0;
+const SLOTS_TOP: f32 = BOTTOM - 108.0;
+/// The refire bar under the held weapon's name.
+const REFIRE_WIDTH: f32 = 200.0;
 
 impl Overlay {
     /// The quads for a `width`×`height` frame `seconds` after the last; nothing while the local
@@ -573,21 +604,9 @@ impl Overlay {
             scale,
         };
         let right = width / scale - MARGIN;
-        let bottom = 720.0 - MARGIN;
-        self.weapon_panel(
-            &mut painter,
-            vitals,
-            right - PANEL_WIDTH,
-            bottom - PANEL_HEIGHT,
-        );
-        slots(
-            &mut painter,
-            vitals,
-            right,
-            bottom - PANEL_HEIGHT - SLOT_GAP - SLOT_HEIGHT,
-            self.highlight(),
-        );
-        bars(&mut painter, vitals, MARGIN, bottom - VITALS_HEIGHT);
+        slots(&mut painter, vitals, right, self.highlight());
+        self.held_weapon(&mut painter, vitals, right);
+        bars(&mut painter, vitals, MARGIN);
         painter.quads
     }
 
@@ -596,103 +615,52 @@ impl Overlay {
         (1.0 - self.since_switch / SWITCH_SECONDS).clamp(0.0, 1.0)
     }
 
-    fn weapon_panel(&self, painter: &mut Painter, vitals: &Vitals, x: f32, y: f32) {
-        let flash = self.highlight();
-        painter.rect(x, y, PANEL_WIDTH, PANEL_HEIGHT, srgb(GRAPHITE, 0.82));
-        painter.rect(x, y, PANEL_WIDTH, 2.0, srgb(STEEL, 1.0));
-        // The accent bar on its left edge widens with a switch.
-        painter.rect(x, y, 4.0 + 6.0 * flash, PANEL_HEIGHT, srgb(ORANGE, 1.0));
-        if flash > 0.0 {
-            painter.rect(x, y, PANEL_WIDTH, PANEL_HEIGHT, srgb(ORANGE, 0.18 * flash));
-            // A band sweeping across, left to right.
-            let sweep = 1.0 - flash;
-            painter.rect(
-                x + (PANEL_WIDTH - 40.0) * sweep,
-                y,
-                40.0,
-                PANEL_HEIGHT,
-                srgb(PALE, 0.16 * flash),
-            );
-        }
+    /// The held weapon, right-aligned to `right`: its name, the refire bar while it recharges,
+    /// and a line with its mod and what keeps it from firing (nothing when it is ready).
+    fn held_weapon(&self, painter: &mut Painter, vitals: &Vitals, right: f32) {
         let armed = vitals.armed();
-        let tone = if armed { PALE } else { MUTED };
-        // The silhouette in a recessed bay.
-        painter.rect(x + 16.0, y + 14.0, 96.0, 50.0, srgb(STEEL, 0.55));
-        painter.icon(x + 24.0, y + 23.0, 4.0, vitals.held.weapon, srgb(tone, 1.0));
-        let text_x = x + 126.0;
-        painter.text(text_x, y + 14.0, 3.0, &vitals.held_name(), srgb(tone, 1.0));
-        let modded = vitals
-            .held_mod
-            .map_or_else(|| "no mod".to_owned(), |id| format!("+ {}", mod_name(id)));
-        let mod_color = if vitals.held_mod.is_some() {
-            OLIVE
-        } else {
-            MUTED
-        };
-        painter.text(text_x, y + 43.0, 2.0, &modded, srgb(mod_color, 1.0));
-        // The cost of a shot (a second, for the continuous weapons).
-        #[allow(clippy::cast_precision_loss)]
-        let cost = if vitals.continuous {
-            format!(
-                "{}/s",
-                units(vitals.cost.saturating_mul(u32::from(TICK_HZ)))
-            )
-        } else {
-            format!("{}/shot", units(vitals.cost))
-        };
-        painter.text(text_x, y + 62.0, 2.0, &cost, srgb(ORANGE, 1.0));
-        // Ready, recharging, starved or lost: a label and the refire bar under it all.
         let short = vitals.energy < vitals.cost;
-        let (label, color) = if !armed {
-            ("lost", RED)
-        } else if short {
-            ("low energy", RED)
-        } else if vitals.cooldown > 0 {
-            ("recharging", MUTED)
-        } else {
-            ("ready", OLIVE)
-        };
-        painter.text_right(
-            x + PANEL_WIDTH - 14.0,
-            y + 62.0,
-            2.0,
-            label,
-            srgb(color, 1.0),
+        let name = vitals.held_name();
+        painter.label_right(
+            right,
+            BOTTOM - 48.0,
+            3.0,
+            &name,
+            srgb(if armed { PALE } else { MUTED }, 1.0),
         );
-        let (bar_x, bar_y, bar_width) = (x + 16.0, y + PANEL_HEIGHT - 16.0, PANEL_WIDTH - 30.0);
-        painter.rect(bar_x, bar_y, bar_width, 5.0, srgb(STEEL, 1.0));
-        #[allow(clippy::cast_precision_loss)]
-        let ready = if !armed {
-            0.0
-        } else if self.period == 0 {
-            1.0
+        if armed && !short && vitals.cooldown > 0 && self.period > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            let over = 1.0 - vitals.cooldown as f32 / self.period as f32;
+            let (x, y) = (right - REFIRE_WIDTH, BOTTOM - 21.0);
+            painter.rect(x, y, REFIRE_WIDTH, 3.0, srgb(SHADOW, 0.5));
+            painter.rect(x, y, REFIRE_WIDTH * over, 3.0, srgb(ORANGE, 1.0));
+        }
+        let state = if !armed {
+            Some(("lost", RED))
+        } else if short {
+            Some(("low energy", RED))
         } else {
-            1.0 - vitals.cooldown as f32 / self.period as f32
+            None
         };
-        let fill = if ready >= 1.0 && !short {
-            OLIVE
-        } else {
-            ORANGE
-        };
-        painter.rect(bar_x, bar_y, bar_width * ready, 5.0, srgb(fill, 1.0));
+        let mut at = right;
+        if let Some((label, color)) = state {
+            at -= painter.label_right(at, BOTTOM - 12.0, 2.0, label, srgb(color, 1.0)) + 16.0;
+        }
+        if let Some(id) = vitals.held_mod {
+            painter.label_right(at, BOTTOM - 12.0, 2.0, mod_name(id), srgb(OLIVE, 1.0));
+        }
     }
 }
 
-/// Milli-units as whole units, or tenths below 10.
-fn units(milli: u32) -> String {
-    if milli < 10 * MILLI && !milli.is_multiple_of(MILLI) {
-        format!("{}.{}", milli / MILLI, milli % MILLI / (MILLI / 10))
-    } else {
-        (milli / MILLI).to_string()
-    }
-}
-
-/// The carried weapon copies as small slots in a row ending at `right`, the held one lit; a
-/// weapon mounted more than once has a slot for every copy, numbered (shooter#125).
-fn slots(painter: &mut Painter, vitals: &Vitals, right: f32, y: f32, flash: f32) {
+/// The carried weapon copies as silhouettes in a row ending at `right`, the held one bright with
+/// its key in the accent; a weapon mounted more than once has one for every copy, numbered
+/// (shooter#125). Under each, its key and its own readiness (shooter#127: every copy may fire,
+/// held or not): olive when ready, the refire filling orange, red when the pool cannot pay it;
+/// lost ones dim red and struck out.
+fn slots(painter: &mut Painter, vitals: &Vitals, right: f32, flash: f32) {
     #[allow(clippy::cast_precision_loss)]
     let count = vitals.carried.len() as f32;
-    let mut x = right - count * SLOT_WIDTH - (count - 1.0).max(0.0) * SLOT_GAP;
+    let mut x = right - SLOT_ICON - (count - 1.0).max(0.0) * SLOT_PITCH;
     // The guns in rotation order (copies by part), then the blade and the grapple module (on
     // their own keys).
     let mut order: Vec<Mounted> = vitals.carried.clone();
@@ -707,59 +675,50 @@ fn slots(painter: &mut Painter, vitals: &Vitals, right: f32, y: f32, flash: f32)
             });
         (place, mounted.instance.part)
     });
+    let y = SLOTS_TOP;
     for mounted in order {
         let (weapon, armed) = (mounted.instance.weapon, mounted.armed);
         let held = mounted.instance == vitals.held;
-        let background = if held {
-            srgb(GRAPHITE, 0.9)
-        } else {
-            srgb(GRAPHITE, 0.62)
-        };
-        painter.rect(x, y, SLOT_WIDTH, SLOT_HEIGHT, background);
-        if held {
-            let line = 2.0 + 2.0 * flash;
-            painter.frame(x, y, SLOT_WIDTH, SLOT_HEIGHT, line, srgb(ORANGE, 1.0));
+        if held && flash > 0.0 {
+            painter.rect(
+                x - 6.0,
+                y - 5.0,
+                SLOT_ICON + 12.0,
+                34.0,
+                srgb(ORANGE, 0.35 * flash),
+            );
         }
         let tone = match (armed, held) {
-            (false, _) => srgb(RED, 0.75),
+            (false, _) => srgb(RED, 0.55),
             (true, true) => srgb(PALE, 1.0),
-            (true, false) => srgb(MUTED, 1.0),
+            (true, false) => srgb(MUTED, 0.8),
         };
-        painter.icon(x + 7.0, y + 8.0, 2.0, weapon, tone);
-        painter.text(x + 7.0, y + 27.0, 1.0, &key_label(weapon), srgb(MUTED, 1.0));
+        painter.icon(x + 1.5, y + 1.5, 3.0, weapon, srgb(SHADOW, 0.5 * tone.w));
+        painter.icon(x, y, 3.0, weapon, tone);
         if !armed {
-            // Struck out.
-            painter.rect(
-                x + 4.0,
-                y + SLOT_HEIGHT / 2.0 - 1.0,
-                SLOT_WIDTH - 8.0,
-                2.0,
-                srgb(RED, 1.0),
-            );
-            painter.text_right(x + SLOT_WIDTH - 5.0, y + 27.0, 1.0, "lost", srgb(RED, 1.0));
-        } else if let Some(number) = mounted.number() {
-            painter.text_right(x + SLOT_WIDTH - 5.0, y + 27.0, 1.0, &number, tone);
+            painter.rect(x - 2.0, y + 11.0, SLOT_ICON + 4.0, 2.0, srgb(RED, 0.9));
         }
-        // Its own readiness along its foot (shooter#127: every copy may fire, held or not):
-        // olive when ready, the refire filling orange, red when the pool cannot pay it.
-        let (bar_x, bar_y, bar_width) = (x + 4.0, y + SLOT_HEIGHT - 5.0, SLOT_WIDTH - 8.0);
+        let bar = (x, y + 28.0, SLOT_ICON);
         match mounted.readiness(vitals.energy) {
             Readiness::Lost => {}
-            Readiness::LowEnergy => {
-                painter.rect(bar_x, bar_y, bar_width, 3.0, srgb(RED, 0.9));
-            }
+            Readiness::LowEnergy => painter.rect(bar.0, bar.1, bar.2, 2.0, srgb(RED, 0.9)),
             Readiness::Recharging(over) => {
-                painter.rect(bar_x, bar_y, bar_width, 3.0, srgb(STEEL, 1.0));
-                painter.rect(bar_x, bar_y, bar_width * over, 3.0, srgb(ORANGE, 1.0));
+                painter.rect(bar.0, bar.1, bar.2, 2.0, srgb(SHADOW, 0.5));
+                painter.rect(bar.0, bar.1, bar.2 * over, 2.0, srgb(ORANGE, 1.0));
             }
-            Readiness::Ready => painter.rect(bar_x, bar_y, bar_width, 3.0, srgb(OLIVE, 1.0)),
+            Readiness::Ready => painter.rect(bar.0, bar.1, bar.2, 2.0, srgb(OLIVE, 0.9)),
         }
-        x += SLOT_WIDTH + SLOT_GAP;
+        let key = if held { ORANGE } else { MUTED };
+        painter.label(x, y + 34.0, 2.0, &key_label(weapon), srgb(key, 1.0));
+        if let Some(number) = mounted.number() {
+            painter.label_right(x + SLOT_ICON, y + 34.0, 2.0, &number, srgb(MUTED, 1.0));
+        }
+        x += SLOT_PITCH;
     }
 }
 
 /// The field repair panel's width, a line's height and its padding (layout units).
-const REPAIR_WIDTH: f32 = 340.0;
+const REPAIR_WIDTH: f32 = 320.0;
 const REPAIR_LINE: f32 = 20.0;
 const REPAIR_PAD: f32 = 10.0;
 
@@ -777,33 +736,13 @@ pub fn repair_panel(view: &RepairView, height: u32) -> Vec<OverlayQuad> {
         scale,
     };
     let x = MARGIN;
-    let bottom = 720.0 - MARGIN - VITALS_HEIGHT - SLOT_GAP;
-    let line = |painter: &mut Painter, y: f32, entry: &Entry, color: Vec4| match entry {
-        Entry::Part {
-            name,
-            health,
-            whole,
-            ..
-        } => {
-            painter.text(x + REPAIR_PAD, y + 3.0, 2.0, name, color);
-            painter.text_right(
-                x + REPAIR_WIDTH - REPAIR_PAD,
-                y + 3.0,
-                2.0,
-                &format!("{health}/{whole}"),
-                color,
-            );
-        }
-        Entry::Stop => {
-            painter.text(x + REPAIR_PAD, y + 3.0, 2.0, "stop repair", color);
-        }
-    };
+    let bottom = VITALS_TOP - 12.0;
     if let Some((entries, cursor)) = &view.menu {
+        // The menu is a list over the scene: the one block with a backdrop.
         #[allow(clippy::cast_precision_loss)]
         let panel = REPAIR_LINE * (entries.len() + 1) as f32 + REPAIR_PAD;
         let top = bottom - panel;
-        painter.rect(x, top, REPAIR_WIDTH, panel, srgb(GRAPHITE, 0.88));
-        painter.rect(x, top, REPAIR_WIDTH, 2.0, srgb(TEAL, 1.0));
+        painter.rect(x, top, REPAIR_WIDTH, panel, srgb(SHADOW, 0.6));
         painter.text(x + REPAIR_PAD, top + 8.0, 2.0, "repair", srgb(TEAL, 1.0));
         painter.text_right(
             x + REPAIR_WIDTH - REPAIR_PAD,
@@ -817,46 +756,48 @@ pub fn repair_panel(view: &RepairView, height: u32) -> Vec<OverlayQuad> {
             let y = top + REPAIR_LINE * (row + 1) as f32 + 4.0;
             let chosen = row == *cursor;
             if chosen {
-                painter.rect(x, y, REPAIR_WIDTH, REPAIR_LINE, srgb(ORANGE, 0.22));
-                painter.rect(x, y, 4.0, REPAIR_LINE, srgb(ORANGE, 1.0));
+                painter.rect(x, y, REPAIR_WIDTH, REPAIR_LINE, srgb(TEAL, 0.22));
+                painter.rect(x, y, 3.0, REPAIR_LINE, srgb(TEAL, 1.0));
             }
-            let color = if chosen { PALE } else { MUTED };
-            line(&mut painter, y, entry, srgb(color, 1.0));
+            let color = srgb(if chosen { PALE } else { MUTED }, 1.0);
+            entry_line(
+                &mut painter,
+                x + REPAIR_PAD,
+                REPAIR_WIDTH - 2.0 * REPAIR_PAD,
+                y + 3.0,
+                entry,
+                color,
+            );
         }
     } else if let Some((repair, entry)) = &view.active {
-        let panel = 2.0 * REPAIR_LINE + REPAIR_PAD;
-        let top = bottom - panel;
-        painter.rect(x, top, REPAIR_WIDTH, panel, srgb(GRAPHITE, 0.82));
-        painter.rect(x, top, 4.0, panel, srgb(TEAL, 1.0));
         let paused = repair.paused > 0;
-        painter.text(
-            x + REPAIR_PAD,
-            top + 8.0,
+        let top = bottom - 2.0 * REPAIR_LINE - 4.0;
+        painter.label(
+            x,
+            top,
             2.0,
             if paused { "repair paused" } else { "repairing" },
             srgb(if paused { RED } else { TEAL }, 1.0),
         );
-        line(
+        entry_line(
             &mut painter,
-            top + REPAIR_LINE + 2.0,
+            x,
+            BAR_WIDTH,
+            top + REPAIR_LINE,
             entry,
             srgb(PALE, 1.0),
         );
         if let Entry::Part { health, whole, .. } = entry {
             #[allow(clippy::cast_precision_loss)]
             let share = (f32::from(*health) / f32::from((*whole).max(1))).clamp(0.0, 1.0);
-            let inner = REPAIR_WIDTH - 2.0 * REPAIR_PAD;
-            let y = top + panel - 6.0;
-            painter.rect(x + REPAIR_PAD, y, inner, 3.0, srgb(STEEL, 1.0));
-            painter.rect(x + REPAIR_PAD, y, inner * share, 3.0, srgb(TEAL, 1.0));
+            let y = bottom - 3.0;
+            painter.rect(x, y, BAR_WIDTH, 3.0, srgb(SHADOW, 0.5));
+            painter.rect(x, y, BAR_WIDTH * share, 3.0, srgb(TEAL, 1.0));
         }
     } else if view.repairable > 0 {
-        let top = bottom - REPAIR_LINE - 4.0;
-        painter.rect(x, top, REPAIR_WIDTH, REPAIR_LINE + 4.0, srgb(GRAPHITE, 0.7));
-        painter.rect(x, top, 4.0, REPAIR_LINE + 4.0, srgb(TEAL, 1.0));
-        painter.text(
-            x + REPAIR_PAD,
-            top + 5.0,
+        painter.label(
+            x,
+            bottom - 14.0,
             2.0,
             &format!("r  repair ({})", view.repairable),
             srgb(TEAL, 1.0),
@@ -865,30 +806,59 @@ pub fn repair_panel(view: &RepairView, height: u32) -> Vec<OverlayQuad> {
     painter.quads
 }
 
-/// The root chassis' health and the energy pool, at `x`, `y`.
-fn bars(painter: &mut Painter, vitals: &Vitals, x: f32, y: f32) {
-    painter.rect(x, y, VITALS_WIDTH, VITALS_HEIGHT, srgb(GRAPHITE, 0.82));
-    painter.rect(x, y, VITALS_WIDTH, 2.0, srgb(STEEL, 1.0));
-    let inner = VITALS_WIDTH - 28.0;
+/// A repair entry as a line from `x`, `width` wide: the part's name and its health, or "stop
+/// repair".
+fn entry_line(painter: &mut Painter, x: f32, width: f32, y: f32, entry: &Entry, color: Vec4) {
+    match entry {
+        Entry::Part {
+            name,
+            health,
+            whole,
+            ..
+        } => {
+            painter.label(x, y, 2.0, name, color);
+            painter.label_right(x + width, y, 2.0, &format!("{health}/{whole}"), color);
+        }
+        Entry::Stop => {
+            painter.label(x, y, 2.0, "stop repair", color);
+        }
+    }
+}
+
+/// The root chassis' health (a large reading over its bar) and the energy pool (a thin bar under
+/// it, the share one shot of the held weapon takes marked at its end), from `x`.
+fn bars(painter: &mut Painter, vitals: &Vitals, x: f32) {
     let share = |value: u32, whole: u32| {
         #[allow(clippy::cast_precision_loss)]
         let share = value as f32 / whole.max(1) as f32;
         share.clamp(0.0, 1.0)
     };
-    // The chassis: olive, orange once under a third.
     let health = share(u32::from(vitals.chassis), u32::from(vitals.chassis_whole));
-    painter.text(x + 14.0, y + 12.0, 2.0, "chassis", srgb(MUTED, 1.0));
-    painter.text_right(
-        x + VITALS_WIDTH - 14.0,
-        y + 12.0,
-        2.0,
-        &format!("{}/{}", vitals.chassis, vitals.chassis_whole),
-        srgb(PALE, 1.0),
+    let tone = if health < 1.0 / 3.0 { RED } else { PALE };
+    let reading = painter.label(
+        x,
+        VITALS_TOP,
+        4.0,
+        &vitals.chassis.to_string(),
+        srgb(tone, 1.0),
     );
-    painter.rect(x + 14.0, y + 29.0, inner, 7.0, srgb(STEEL, 1.0));
-    let tone = if health < 1.0 / 3.0 { ORANGE } else { OLIVE };
-    painter.rect(x + 14.0, y + 29.0, inner * health, 7.0, srgb(tone, 1.0));
-    // The energy, with the share one shot of the held weapon takes marked at its end.
+    painter.label(
+        x + reading + 8.0,
+        VITALS_TOP + 14.0,
+        2.0,
+        &format!("/{}", vitals.chassis_whole),
+        srgb(MUTED, 1.0),
+    );
+    painter.label_right(
+        x + BAR_WIDTH,
+        VITALS_TOP + 14.0,
+        2.0,
+        &(vitals.energy / MILLI).to_string(),
+        srgb(ENERGY, 1.0),
+    );
+    let chassis_y = VITALS_TOP + 36.0;
+    painter.rect(x, chassis_y, BAR_WIDTH, 6.0, srgb(SHADOW, 0.5));
+    painter.rect(x, chassis_y, BAR_WIDTH * health, 6.0, srgb(tone, 1.0));
     let charge = share(vitals.energy, vitals.capacity);
     let shot = if vitals.continuous {
         vitals.cost.saturating_mul(u32::from(TICK_HZ))
@@ -896,26 +866,21 @@ fn bars(painter: &mut Painter, vitals: &Vitals, x: f32, y: f32) {
         vitals.cost
     };
     let cost = share(shot.min(vitals.energy), vitals.capacity);
-    painter.text(x + 14.0, y + 46.0, 2.0, "energy", srgb(MUTED, 1.0));
-    painter.text_right(
-        x + VITALS_WIDTH - 14.0,
-        y + 46.0,
-        2.0,
-        &format!("{}/{}", vitals.energy / MILLI, vitals.capacity / MILLI),
-        srgb(PALE, 1.0),
-    );
-    painter.rect(x + 14.0, y + 63.0, inner, 7.0, srgb(STEEL, 1.0));
-    painter.rect(x + 14.0, y + 63.0, inner * charge, 7.0, srgb(PALE, 0.85));
+    let energy_y = chassis_y + 10.0;
+    let track = if vitals.energy < vitals.cost {
+        srgb(RED, 0.6)
+    } else {
+        srgb(SHADOW, 0.5)
+    };
+    painter.rect(x, energy_y, BAR_WIDTH, 4.0, track);
+    painter.rect(x, energy_y, BAR_WIDTH * charge, 4.0, srgb(ENERGY, 1.0));
     painter.rect(
-        x + 14.0 + inner * (charge - cost),
-        y + 63.0,
-        inner * cost,
-        7.0,
+        x + BAR_WIDTH * (charge - cost),
+        energy_y,
+        BAR_WIDTH * cost,
+        4.0,
         srgb(ORANGE, 1.0),
     );
-    if vitals.energy < vitals.cost {
-        painter.frame(x + 13.0, y + 62.0, inner + 2.0, 9.0, 1.0, srgb(RED, 1.0));
-    }
 }
 
 #[cfg(test)]
@@ -953,9 +918,6 @@ mod tests {
         assert_eq!(vitals.held_name(), "Energy rifle");
         assert_eq!(vitals.cost, 2_000);
         assert!(!vitals.continuous);
-        assert_eq!(units(2_000), "2");
-        assert_eq!(units(600), "0.6");
-        assert_eq!(units(36_000), "36");
     }
 
     /// The rocket pod (shooter#125): a slot for each of its four launchers, numbered, the held
@@ -1082,7 +1044,7 @@ mod tests {
         vitals.held = Instance::new(10, Weapon::Shotgun);
         let switched = overlay.draw(Some(&vitals), 1280, 720, 0.016);
         let settled = overlay.draw(Some(&vitals), 1280, 720, 1.0);
-        // The flash over the panel and the sweeping band, then neither.
-        assert_eq!(switched.len(), settled.len() + 2);
+        // The glow behind the held silhouette, then none.
+        assert_eq!(switched.len(), settled.len() + 1);
     }
 }
