@@ -26,6 +26,8 @@ rm -rf web/dist
 "$bindgen" --target web --no-typescript --out-dir web/dist \
   target/wasm32-unknown-unknown/release/shooter_client.wasm
 cp web/index.html web/dist/
+mkdir -p web/dist/fonts
+cp crates/shooter-client/assets/fonts/BarlowSemiCondensed-SemiBold.ttf crates/shooter-client/assets/fonts/OFL.txt web/dist/fonts/
 # The pinned kits' tars beside the page: the client fetches robot-kit/kit.tar,
 # weapon-kit/kit.tar, locomotion-kit/kit.tar and arena-kit/kit.tar (one request a kit,
 # shooter#85) and checks them against their pins.
