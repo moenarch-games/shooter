@@ -2,7 +2,7 @@
 //! shaders, storage buffers, cube-array textures or indirect draws, so wgpu runs it on WebGL 2
 //! (and on any native adapter). It is the browser's fallback where WebGPU is missing
 //! ([`super`]): one pass into the target with the sun, the ambient light and up to
-//! [`MAX_LIGHTS`] point lights, textures, CPU-skinned meshes, CPU-simulated particles and the
+//! [`MAX_LIGHTS`] point lights, textures, meshes skinned from a uniform joint palette, CPU-simulated particles and the
 //! overlay; no shadows, sky, fog, normal maps or MSAA.
 //!
 //! Draws are batched: opaque instances of one mesh and material are one instanced draw, and
@@ -74,12 +74,20 @@ struct OverlayVertex {
     color: [f32; 4],
 }
 
-/// What a skinned mesh is posed from on the CPU.
-struct SkinSource {
-    rest: Vec<Vertex>,
-    joints: Vec<[u16; 4]>,
-    weights: Vec<Vec4>,
+/// A skinned vertex's `JOINTS_0` and `WEIGHTS_0` (`lite.wgsl` `SkinIn`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct SkinVertex {
+    joints: [u16; 4],
+    weights: [f32; 4],
 }
+
+/// Joints a skin's palette holds (`lite.wgsl` `MAX_JOINTS`): the kits' rigs have at most 31.
+pub const MAX_JOINTS: usize = 32;
+
+/// One palette in the frame's joint buffer: [`MAX_JOINTS`] matrices, a multiple of the 256-byte
+/// uniform offset alignment.
+const PALETTE_BYTES: u64 = (MAX_JOINTS * 64) as u64;
 
 struct Mesh {
     vertices: wgpu::Buffer,
@@ -88,7 +96,8 @@ struct Mesh {
     /// Bounding sphere in the mesh's space.
     center: Vec3,
     radius: f32,
-    skin: Option<SkinSource>,
+    /// A skinned mesh's joints and weights, posed on the GPU.
+    skin: Option<wgpu::Buffer>,
 }
 
 struct Texture {
@@ -130,8 +139,6 @@ pub struct LiteWorld {
     materials: Slab<Material>,
     skins: Slab<Vec<Mat4>>,
     instances: Slab<Instance>,
-    /// Each skinned instance's posed vertices.
-    posed: HashMap<u32, wgpu::Buffer>,
     emitters: Slab<CpuEmitter>,
 }
 
@@ -215,7 +222,6 @@ impl LiteWorld {
             materials: Slab::default(),
             skins: Slab::default(),
             instances: Slab::default(),
-            posed: HashMap::new(),
             emitters: Slab::default(),
         }
     }
@@ -252,18 +258,30 @@ impl LiteWorld {
             .map(|p| p.distance(center))
             .fold(0.0, f32::max);
         let skinned = !mesh.joints.is_empty() && mesh.joints.len() == mesh.positions.len();
-        let usage = if skinned {
-            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
-        } else {
-            wgpu::BufferUsages::VERTEX
-        };
         let buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("lite vertices"),
                 contents: bytemuck::cast_slice(&vertices),
-                usage,
+                usage: wgpu::BufferUsages::VERTEX,
             });
+        let skin = skinned.then(|| {
+            let skin: Vec<SkinVertex> = mesh
+                .joints
+                .iter()
+                .enumerate()
+                .map(|(i, joints)| SkinVertex {
+                    joints: *joints,
+                    weights: mesh.weights.get(i).copied().unwrap_or(Vec4::X).to_array(),
+                })
+                .collect();
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("lite skin"),
+                    contents: bytemuck::cast_slice(&skin),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+        });
         let index_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -277,17 +295,7 @@ impl LiteWorld {
             index_count: u32::try_from(indices.len()).unwrap_or(u32::MAX),
             center,
             radius,
-            skin: skinned.then(|| SkinSource {
-                rest: vertices,
-                joints: mesh.joints.clone(),
-                weights: mesh
-                    .weights
-                    .iter()
-                    .copied()
-                    .chain(std::iter::repeat(Vec4::X))
-                    .take(mesh.positions.len())
-                    .collect(),
-            }),
+            skin,
         })
     }
 
@@ -494,7 +502,6 @@ impl LiteWorld {
 
     pub(super) fn remove_instance(&mut self, id: u32) {
         self.instances.remove(id);
-        self.posed.remove(&id);
     }
 
     pub(super) fn add_emitter(&mut self, emitter: &Emitter) -> u32 {
@@ -757,8 +764,8 @@ struct Draw {
     pipeline: usize,
     material: u32,
     mesh: u32,
-    /// The skinned instance whose posed vertices are drawn instead of the mesh's.
-    posed: Option<u32>,
+    /// A skinned draw's palette, its index in the frame's joint buffer.
+    palette: Option<u32>,
     /// First and count of its model matrices in the instance buffer.
     first: u32,
     count: u32,
@@ -768,8 +775,13 @@ struct Draw {
 pub struct LiteRenderer {
     frame_buffer: wgpu::Buffer,
     frame_group: wgpu::BindGroup,
-    /// Index: `blend * 4 + double_sided * 2 + mirrored`.
+    /// Index: `skinned * 8 + blend * 4 + double_sided * 2 + mirrored`.
     mesh_pipelines: Vec<wgpu::RenderPipeline>,
+    skin_layout: wgpu::BindGroupLayout,
+    /// The frame's joint palettes ([`PALETTE_BYTES`] each) and their bind group, remade when the
+    /// buffer grows.
+    palettes: Growing,
+    palette_group: Option<(u64, wgpu::BindGroup)>,
     /// Additive, then alpha-blended.
     particle_pipelines: [wgpu::RenderPipeline; 2],
     overlay_pipeline: wgpu::RenderPipeline,
@@ -817,6 +829,28 @@ impl LiteRenderer {
             bind_group_layouts: &[Some(&frame_layout), Some(&world.material_layout)],
             immediate_size: 0,
         });
+        let skin_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("lite skin"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(PALETTE_BYTES),
+                },
+                count: None,
+            }],
+        });
+        let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("lite skinned mesh"),
+            bind_group_layouts: &[
+                Some(&frame_layout),
+                Some(&world.material_layout),
+                Some(&skin_layout),
+            ],
+            immediate_size: 0,
+        });
         let frame_only = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("lite frame only"),
             bind_group_layouts: &[Some(&frame_layout)],
@@ -848,30 +882,46 @@ impl LiteRenderer {
         let model_attributes = wgpu::vertex_attr_array![
             4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4
         ];
-        let mesh_pipelines = (0..8)
+        let skin_attributes = wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4];
+        let mesh_pipelines = (0..16)
             .map(|index| {
+                let skinned = index & 8 != 0;
                 let blend = index & 4 != 0;
                 let double_sided = index & 2 != 0;
                 let mirrored = index & 1 != 0;
+                let buffers = [
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &mesh_attributes,
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: 64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &model_attributes,
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<SkinVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &skin_attributes,
+                    }),
+                ];
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some("lite mesh"),
-                    layout: Some(&mesh_layout),
+                    layout: Some(if skinned {
+                        &skinned_layout
+                    } else {
+                        &mesh_layout
+                    }),
                     vertex: wgpu::VertexState {
                         module: &shader,
-                        entry_point: Some("mesh_vs"),
+                        entry_point: Some(if skinned {
+                            "mesh_skinned_vs"
+                        } else {
+                            "mesh_vs"
+                        }),
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
-                        buffers: &[
-                            Some(wgpu::VertexBufferLayout {
-                                array_stride: std::mem::size_of::<Vertex>() as u64,
-                                step_mode: wgpu::VertexStepMode::Vertex,
-                                attributes: &mesh_attributes,
-                            }),
-                            Some(wgpu::VertexBufferLayout {
-                                array_stride: 64,
-                                step_mode: wgpu::VertexStepMode::Instance,
-                                attributes: &model_attributes,
-                            }),
-                        ],
+                        buffers: if skinned { &buffers } else { &buffers[..2] },
                     },
                     primitive: wgpu::PrimitiveState {
                         topology: wgpu::PrimitiveTopology::TriangleList,
@@ -968,6 +1018,9 @@ impl LiteRenderer {
             frame_buffer,
             frame_group,
             mesh_pipelines,
+            skin_layout,
+            palettes: Growing::new(device, "lite palettes", wgpu::BufferUsages::UNIFORM),
+            palette_group: None,
             particle_pipelines: [particle_pipeline(additive), particle_pipeline(alpha)],
             overlay_pipeline,
             depth: None,
@@ -1074,19 +1127,21 @@ impl LiteRenderer {
         queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&frame));
 
         // The meshes: opaque ones batched by pipeline, material and mesh, blended ones back to
-        // front, skinned ones posed on the CPU.
+        // front, skinned ones each with its palette.
         struct Item {
             pipeline: usize,
             material: u32,
             mesh: u32,
-            posed: Option<u32>,
+            palette: Option<u32>,
             model: Mat4,
             distance: f32,
         }
         let mut opaque = Vec::new();
         let mut blended = Vec::new();
-        let mut to_pose = Vec::new();
-        for (key, instance) in world.instances.iter() {
+        // The palettes of the skins drawn this frame, each once.
+        let mut palettes: Vec<[f32; 16]> = Vec::new();
+        let mut palette_of: HashMap<u32, u32> = HashMap::new();
+        for (_, instance) in world.instances.iter() {
             let (Some(mesh), Some(material)) = (
                 world.meshes.get(instance.mesh.0),
                 world.materials.get(instance.material.0),
@@ -1101,22 +1156,37 @@ impl LiteRenderer {
                 .max(model.y_axis.truncate().length())
                 .max(model.z_axis.truncate().length());
             let center = model.transform_point3(mesh.center);
-            let skinned = mesh.skin.is_some() && instance.skin.is_some();
-            if !skinned && !visible(&planes, center, mesh.radius * scale) {
+            let skin = instance
+                .skin
+                .filter(|_| mesh.skin.is_some())
+                .and_then(|skin| Some((skin.0, world.skins.get(skin.0)?)));
+            // A posed mesh can leave its rest bounds: skinned ones are not culled.
+            if skin.is_none() && !visible(&planes, center, mesh.radius * scale) {
                 continue;
             }
+            let palette = skin.map(|(id, joints)| {
+                *palette_of.entry(id).or_insert_with(|| {
+                    let index = u32::try_from(palettes.len() / MAX_JOINTS).unwrap_or(u32::MAX);
+                    palettes.extend(
+                        joints
+                            .iter()
+                            .map(Mat4::to_cols_array)
+                            .chain(std::iter::repeat(Mat4::IDENTITY.to_cols_array()))
+                            .take(MAX_JOINTS),
+                    );
+                    index
+                })
+            });
             let blend = matches!(material.desc.alpha_mode, AlphaMode::Blend);
-            let pipeline = usize::from(blend) * 4
+            let pipeline = usize::from(palette.is_some()) * 8
+                + usize::from(blend) * 4
                 + usize::from(material.desc.double_sided) * 2
                 + usize::from(model.determinant() < 0.0);
-            if skinned {
-                to_pose.push(key);
-            }
             let item = Item {
                 pipeline,
                 material: instance.material.0,
                 mesh: instance.mesh.0,
-                posed: skinned.then_some(key),
+                palette,
                 model,
                 distance: center.distance_squared(camera.eye),
             };
@@ -1126,10 +1196,7 @@ impl LiteRenderer {
                 opaque.push(item);
             }
         }
-        for key in to_pose {
-            world.pose(key);
-        }
-        opaque.sort_by_key(|item| (item.pipeline, item.material, item.mesh, item.posed));
+        opaque.sort_by_key(|item| (item.pipeline, item.material, item.mesh, item.palette));
         blended.sort_by(|a, b| b.distance.total_cmp(&a.distance));
         let mut models: Vec<[f32; 16]> = Vec::with_capacity(opaque.len() + blended.len());
         let mut draws: Vec<Draw> = Vec::new();
@@ -1147,8 +1214,7 @@ impl LiteRenderer {
                     ) && last.pipeline == item.pipeline
                         && last.material == item.material
                         && last.mesh == item.mesh
-                        && last.posed.is_none()
-                        && item.posed.is_none()
+                        && last.palette == item.palette
                         && last.first + last.count == first =>
                 {
                     last.count += 1;
@@ -1157,7 +1223,7 @@ impl LiteRenderer {
                     pipeline: item.pipeline,
                     material: item.material,
                     mesh: item.mesh,
-                    posed: item.posed,
+                    palette: item.palette,
                     first,
                     count: 1,
                 }),
@@ -1165,6 +1231,30 @@ impl LiteRenderer {
         }
         self.instances
             .write(&device, &queue, bytemuck::cast_slice(&models));
+        if !palettes.is_empty() {
+            self.palettes
+                .write(&device, &queue, bytemuck::cast_slice(&palettes));
+            let size = self.palettes.buffer.size();
+            if self
+                .palette_group
+                .as_ref()
+                .is_none_or(|(at, _)| *at != size)
+            {
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("lite palettes"),
+                    layout: &self.skin_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.palettes.buffer,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(PALETTE_BYTES),
+                        }),
+                    }],
+                });
+                self.palette_group = Some((size, group));
+            }
+        }
 
         // The particles, additive first.
         let mut particles: [Vec<ParticleInstance>; 2] = [Vec::new(), Vec::new()];
@@ -1261,19 +1351,23 @@ impl LiteRenderer {
             ) else {
                 continue;
             };
-            let vertices = match draw.posed.and_then(|key| world.posed.get(&key)) {
-                Some(posed) => posed,
-                None => &mesh.vertices,
-            };
             if bound_pipeline != draw.pipeline {
                 pass.set_pipeline(&self.mesh_pipelines[draw.pipeline]);
                 bound_pipeline = draw.pipeline;
+                bound_material = u32::MAX;
             }
             if bound_material != draw.material {
                 pass.set_bind_group(1, &material.bind_group, &[]);
                 bound_material = draw.material;
             }
-            pass.set_vertex_buffer(0, vertices.slice(..));
+            if let (Some(palette), Some(skin), Some((_, group))) =
+                (draw.palette, &mesh.skin, &self.palette_group)
+            {
+                let offset = u64::from(palette) * PALETTE_BYTES;
+                pass.set_bind_group(2, group, &[u32::try_from(offset).unwrap_or(u32::MAX)]);
+                pass.set_vertex_buffer(2, skin.slice(..));
+            }
+            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             let offset = u64::from(draw.first) * 64;
             pass.set_vertex_buffer(1, self.instances.buffer.slice(offset..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -1296,69 +1390,6 @@ impl LiteRenderer {
             pass.set_vertex_buffer(0, self.overlay.buffer.slice(..));
             pass.draw(0..u32::try_from(overlay.len()).unwrap_or(u32::MAX), 0..1);
         }
-    }
-}
-
-impl LiteWorld {
-    /// Writes a skinned instance's vertices posed by its skin (in the mesh's space).
-    fn pose(&mut self, key: u32) {
-        let Some(instance) = self.instances.get(key) else {
-            return;
-        };
-        let (Some(mesh), Some(palette)) = (
-            self.meshes.get(instance.mesh.0),
-            instance.skin.and_then(|skin| self.skins.get(skin.0)),
-        ) else {
-            return;
-        };
-        let Some(source) = &mesh.skin else {
-            return;
-        };
-        let posed: Vec<Vertex> = source
-            .rest
-            .iter()
-            .zip(&source.joints)
-            .zip(&source.weights)
-            .map(|((vertex, joints), weights)| {
-                let mut skin = Mat4::ZERO;
-                for (joint, weight) in joints.iter().zip(weights.to_array()) {
-                    if weight != 0.0
-                        && let Some(matrix) = palette.get(usize::from(*joint))
-                    {
-                        skin += *matrix * weight;
-                    }
-                }
-                Vertex {
-                    position: skin
-                        .transform_point3(Vec3::from(vertex.position))
-                        .to_array(),
-                    normal: skin
-                        .transform_vector3(Vec3::from(vertex.normal))
-                        .normalize_or(Vec3::Y)
-                        .to_array(),
-                    ..*vertex
-                }
-            })
-            .collect();
-        let bytes: &[u8] = bytemuck::cast_slice(&posed);
-        let device = &self.device;
-        let buffer = self.posed.entry(key).or_insert_with(|| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("lite posed vertices"),
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        });
-        if buffer.size() < bytes.len() as u64 {
-            *buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("lite posed vertices"),
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        self.queue.write_buffer(buffer, 0, bytes);
     }
 }
 

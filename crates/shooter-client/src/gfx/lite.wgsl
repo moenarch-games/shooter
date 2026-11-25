@@ -97,6 +97,37 @@ struct MeshOut {
 @vertex
 fn mesh_vs(in: MeshIn) -> MeshOut {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
+    return mesh_out(in, model);
+}
+
+// A skinned instance's joint palette, in the mesh's space (render-engine's `skin_model`): the
+// instance's model matrix then places the posed mesh.
+const MAX_JOINTS: u32 = 32u;
+
+struct Skin {
+    joints: array<mat4x4<f32>, 32>,
+}
+
+@group(2) @binding(0) var<uniform> skin: Skin;
+
+struct SkinIn {
+    @location(8) joints: vec4<u32>,
+    @location(9) weights: vec4<f32>,
+}
+
+fn joint(index: u32) -> mat4x4<f32> {
+    return skin.joints[min(index, MAX_JOINTS - 1u)];
+}
+
+@vertex
+fn mesh_skinned_vs(in: MeshIn, s: SkinIn) -> MeshOut {
+    let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
+    let posed = s.weights.x * joint(s.joints.x) + s.weights.y * joint(s.joints.y)
+        + s.weights.z * joint(s.joints.z) + s.weights.w * joint(s.joints.w);
+    return mesh_out(in, model * posed);
+}
+
+fn mesh_out(in: MeshIn, model: mat4x4<f32>) -> MeshOut {
     let world = model * vec4(in.position, 1.0);
     var out: MeshOut;
     out.clip = frame.clip_from_world * world;
