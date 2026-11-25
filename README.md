@@ -51,6 +51,13 @@ until asset-tooling delivers them.
 **Practice offline.** The native client without arguments, and the browser build (Pages), run the
 same simulation in-process: you in slot 0 against eleven bots, no server needed.
 
+**Without WebGPU.** The browser build draws with render-engine on WebGPU where the browser has
+it, and otherwise with the client's lite renderer on WebGL 2 (`shooter_client::gfx::lite`;
+render-engine has no WebGL 2 backend). The lite renderer draws the same arenas, robots, effects
+and HUD with the sun, ambient and point lights, but without shadows, normal maps or MSAA.
+`?renderer=lite` forces it in the browser, `SHOOTER_RENDERER=lite` natively (with
+`WGPU_BACKEND=gl` it runs on OpenGL under WebGL 2's limits, as in the browser).
+
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID, its arena
 (geometry, collision, spawn points, jump pads, module pickup pads, bot waypoints) and the player
@@ -179,7 +186,7 @@ every placeable broken ([docs/captures/60](docs/captures/60)).
 ```sh
 scripts/fetch-robot-kit.sh                 # the pinned robot, weapons, locomotion and arena kits into target/*-kit
 cargo run -p shooter-client --release      # native window, practice
-scripts/build-web.sh                       # browser build (and the kit) into web/dist (needs a WebGPU browser)
+scripts/build-web.sh                       # browser build (and the kit) into web/dist (WebGPU, else WebGL 2)
 python3 -m http.server -d web/dist
 ```
 

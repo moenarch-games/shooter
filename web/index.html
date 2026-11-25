@@ -268,11 +268,8 @@
           event.preventDefault();
         }
       });
-      if (!navigator.gpu) {
-        const error = document.getElementById("error");
-        error.textContent = "This browser has no WebGPU. Try a current Chrome, Edge, Firefox or Safari.";
-        error.setAttribute("data-shown", "");
-      }
+      // Without WebGPU the client draws with its lite renderer on WebGL 2 (?renderer=lite forces
+      // it); it reports an error itself when the browser has neither.
       import init from "./shooter_client.js";
       await init();
     </script>
