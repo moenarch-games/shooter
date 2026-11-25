@@ -16,18 +16,26 @@
 //! the long barrel's when it has one. It flies toward the intended target ([`aimed`]), so cover
 //! between the muzzle and the target stops it though the camera sees past: peeking with the
 //! camera never shoots through cover. A muzzle pushed into a wall fires from the wall's near
-//! face. A target not ahead of the muzzle (closer than the muzzle reaches) is shot along the aim.
-//! The grapple module's hook leaves its own muzzle toward the target the same way (shooter#104;
-//! its rope is still tied at the eye, [`crate::grapple`]); the blade keeps leaving the eye along
-//! the aim (its own contract).
+//! face. The grapple module's hook leaves its own muzzle toward a target ahead of it the same way
+//! (shooter#104; its rope is still tied at the eye, [`crate::grapple`]), turning freely; the
+//! blade keeps leaving the eye along the aim (its own contract).
 //!
-//! The reticle covers the intended target, and when the muzzle's own line meets something short
-//! of it a second, blocked marker shows where the shot will really land ([`Shot::blocked`]).
+//! **Mount-bound** (Atlas D2.i123.8, shooter#132). A gun keeps its mount's direction: its shot
+//! flies toward the target only when the target lies within [`CONVERGENCE_COS`] (10°,
+//! provisional) of its barrel as mounted ([`Muzzle::axis`]: the part's own +Z, turned with
+//! every joint that carries it); otherwise it flies along the barrel ([`Reach::Mount`]). A fixed
+//! gun therefore fires only where its mount points, and a gun on a turret reaches further only
+//! as its joints really turn it: a joint bound to track the aim ([`track`]) is told the servo
+//! angle, within its limits, that turns the gun it carries toward the target, and gets there at
+//! its servo's speed on the pool's energy.
+//!
+//! The reticle covers the intended target, and for each gun marks whether its shot lands on it,
+//! is blocked short of it, or cannot reach it and where it lands instead ([`Shot::lands`]).
 
 use crate::arena::FIRST_PLAYER_BODY;
 use crate::damage::Hitboxes;
 use crate::physics::{BodyId, World};
-use crate::robot::{Assembly, BETA, Kind, LONG_BARREL, ModId};
+use crate::robot::{Assembly, BETA, Joint, Kind, LONG_BARREL, ModId, PartId};
 use crate::trig::{self, TRIG_ONE};
 use crate::weapons::{self, Instance, MAX_PITCH, Trace, Weapon};
 
@@ -44,6 +52,13 @@ pub const CAMERA_LIFT_UNITS: f32 = 30.0;
 pub const CAMERA_CLEARANCE_UNITS: f32 = 20.0;
 /// A shot that stops more than this (units) short of the intended target is blocked.
 pub const BLOCKED_UNITS: f32 = 10.0;
+/// A gun's convergence cone (Atlas D2.i123.8, shooter#132): its shot leaves the muzzle toward
+/// the camera's target only when that lies within this cosine of its barrel's mount direction
+/// (10°, provisional: Q2.i123.2); beyond, along the mount. A fixed gun keeps its mount's
+/// direction; a turret's joints turn the mount itself ([`track`]).
+pub const CONVERGENCE_COS: f32 = 0.984_807_7;
+/// [`CONVERGENCE_COS`] as an angle (binary, 65 536 a turn): 10°.
+pub const CONVERGENCE_ANGLE: u16 = 1_820;
 
 /// Each weapon's muzzle in its glTF part frame (millimetres; the weapons kit's descriptor
 /// `anchors[]`: `muzzle`, the rocket pod's `muzzle-a`), and with a mod that has its own muzzle
@@ -283,6 +298,11 @@ pub struct Muzzle {
     pub mount: [f32; 3],
     /// The muzzle.
     pub at: [f32; 3],
+    /// The way its barrel points as mounted (a unit vector: the part's own +Z, out of the face
+    /// it is mounted on, turned with every joint that carries it), for a gun: its shots converge
+    /// on the target only within [`CONVERGENCE_COS`] of it ([`aimed`]). `None` turns freely
+    /// toward the target: the grapple module's hook (its own contract, shooter#104).
+    pub axis: Option<[f32; 3]>,
 }
 
 /// The muzzle of the weapon copy `instance` of `build` in `parts` (its connected parts where
@@ -315,6 +335,7 @@ pub fn muzzle(build: &Assembly, parts: &Hitboxes, instance: Instance) -> Option<
         Some(Muzzle {
             mount: part.center,
             at,
+            axis: weapon.gun().then_some(part.axes[2]),
         })
     })
 }
@@ -337,6 +358,29 @@ pub fn angles(direction: [f32; 3]) -> Option<(u16, i16)> {
     Some((yaw, (pitch as i16).clamp(-MAX_PITCH, MAX_PITCH)))
 }
 
+/// Whether a shot can fly toward the intended target ([`aimed`]).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub enum Reach {
+    /// Toward the target (or along the aim, from the eye).
+    #[default]
+    Target,
+    /// The target is outside its gun's convergence cone ([`CONVERGENCE_COS`]): the shot flies
+    /// along the gun's mount instead.
+    Mount,
+}
+
+/// Where a shot really lands against the intended target ([`Shot::lands`]): what the reticle
+/// marks for each gun.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Lands {
+    /// On the target.
+    Target,
+    /// Stopped short of the target by something else, there.
+    Blocked([f32; 3]),
+    /// The gun cannot point at the target: its shot flies along its mount and lands there.
+    Unreachable([f32; 3]),
+}
+
 /// One shot as fired: the intended target, where it leaves and the aim it flies along.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shot {
@@ -347,6 +391,8 @@ pub struct Shot {
     /// The yaw and pitch it flies along from there.
     pub yaw: u16,
     pub pitch: i16,
+    /// Toward the target, or along its gun's mount.
+    pub reach: Reach,
 }
 
 impl Shot {
@@ -371,6 +417,22 @@ impl Shot {
         let reach = length(sub(actual.end, self.from));
         let wanted = length(sub(self.target.end, self.from));
         (reach + BLOCKED_UNITS < wanted).then_some(actual.end)
+    }
+
+    /// Where the shot lands (`actual`: its own ray from [`Shot::from`]): on the target, blocked
+    /// short of it, or, its gun unable to point at the target, wherever its mount sends it.
+    #[must_use]
+    pub fn lands(&self, actual: &Sight) -> Lands {
+        if self.reach == Reach::Mount {
+            let on_target = matches!(
+                (actual.fighter, self.target.fighter),
+                (Some((hit, _)), Some((wanted, _))) if hit == wanted
+            );
+            if !on_target {
+                return Lands::Unreachable(actual.end);
+            }
+        }
+        self.blocked(actual).map_or(Lands::Target, Lands::Blocked)
     }
 }
 
@@ -409,6 +471,7 @@ pub fn aimed<'a>(
             from: eye,
             yaw,
             pitch,
+            reach: Reach::Target,
         };
     };
     // A muzzle in a wall fires from the wall's near face.
@@ -420,17 +483,129 @@ pub fn aimed<'a>(
             add(muzzle.mount, scale(barrel, (hit.fraction - back).max(0.0)))
         });
     let toward = sub(target.end, from);
-    let (yaw, pitch) = if dot(toward, forward) > 1.0 {
-        angles(toward).unwrap_or((yaw, pitch))
-    } else {
-        (yaw, pitch)
+    let ((yaw, pitch), reach) = match muzzle.axis {
+        // A gun converges on the target only within its cone about its mount; past it the shot
+        // flies along the mount (Atlas D2.i123.8).
+        Some(axis) => {
+            if converges(axis, toward) {
+                (angles(toward).unwrap_or((yaw, pitch)), Reach::Target)
+            } else {
+                (angles(axis).unwrap_or((yaw, pitch)), Reach::Mount)
+            }
+        }
+        // The grapple's hook turns freely toward a target ahead, else along the aim.
+        None if dot(toward, forward) > 1.0 => {
+            (angles(toward).unwrap_or((yaw, pitch)), Reach::Target)
+        }
+        None => ((yaw, pitch), Reach::Target),
     };
     Shot {
         target,
         from,
         yaw,
         pitch,
+        reach,
     }
+}
+
+/// Whether a gun whose barrel points along the unit `axis` can send a shot along `toward`:
+/// within [`CONVERGENCE_COS`] of it (and not nearer than a unit). Arithmetic and a square root
+/// only, so every platform agrees.
+#[must_use]
+pub fn converges(axis: [f32; 3], toward: [f32; 3]) -> bool {
+    let distance = length(toward);
+    distance > 1.0 && dot(toward, axis) >= CONVERGENCE_COS * distance
+}
+
+/// The binary angle (65 536 a turn, right-handed about `axis`) that turns `from` to point as
+/// nearly as a turn about `axis` can along `to`: both seen square to the axis. `None` when
+/// either lies along the axis. Arithmetic, square roots and the integer angle search
+/// ([`trig::yaw_from_vector`]) only, so every platform agrees.
+#[must_use]
+pub fn turn_about(axis: [f32; 3], from: [f32; 3], to: [f32; 3]) -> Option<i32> {
+    const SCALE: f32 = 1_000_000.0;
+    let axis = normalize_or(axis, [0.0; 3]);
+    let square = |vector: [f32; 3]| sub(vector, scale(axis, dot(vector, axis)));
+    let along = square(from);
+    if length(along) < 1e-3 {
+        return None;
+    }
+    let u = scale(along, 1.0 / length(along));
+    let v = cross(axis, u);
+    let to = square(to);
+    let length = length(to);
+    if length < 1e-3 {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let [x, y] = [dot(to, u), dot(to, v)].map(|axis| (axis / length * SCALE).round() as i32);
+    // atan2(y, x): the yaw search's angle has its sine along its first argument.
+    let angle = trig::yaw_from_vector(y, x)?;
+    #[allow(clippy::cast_possible_wrap)]
+    Some(i32::from(angle as i16))
+}
+
+/// The servo angle (binary, 65 536 a turn) a tracking joint is told this tick (shooter#132,
+/// [`crate::mechanics::Command::Track`]): the angle that turns the first connected gun it
+/// carries (in part-ID order) to point from its muzzle at `point` (the camera's target), as
+/// far as a turn about its own axis can, from its `angle` now (radians, from its bodies) and
+/// within its `limits` (radians; a hinge's, none for a rotor). A target beyond its limits holds
+/// it at the nearer limit: the joint refuses the rest, and the gun's shots then converge only
+/// within their cone ([`aimed`]). A joint that carries no connected gun, or whose gun or target
+/// lies along its axis, holds where it is. `None` when `joint` is not a connected joint in
+/// `parts` (its robot's connected parts where they are, [`crate::Fighter::hitboxes`]).
+///
+/// The joint turns toward the angle at its servo's speed and torque and only while the pool
+/// pays its draw ([`crate::mechanics`]): the angle is a target, never a pose.
+#[must_use]
+pub fn track(
+    build: &Assembly,
+    parts: &Hitboxes,
+    joint: PartId,
+    angle: f32,
+    limits: Option<[f32; 2]>,
+    point: [f32; 3],
+) -> Option<i16> {
+    let built = build.part(joint)?;
+    let Kind::Joint(kind) = BETA.part_type(built.kind)?.kind else {
+        return None;
+    };
+    let joint_box = parts.boxes.iter().find(|part| part.part == joint)?;
+    let axis = match kind {
+        Joint::Hinge => joint_box.axes[0],
+        Joint::Rotor => joint_box.axes[2],
+    };
+    let binary = |radians: f32| -> i32 {
+        #[allow(clippy::cast_possible_truncation)]
+        let turns = (radians * (32_768.0 / std::f32::consts::PI)).round() as i32;
+        turns
+    };
+    let now = binary(angle);
+    let carried = |part: PartId| {
+        let mut at = build.part(part);
+        while let Some(mount) = at.and_then(|part| part.mount) {
+            if mount.parent == joint {
+                return true;
+            }
+            at = build.part(mount.parent);
+        }
+        false
+    };
+    let turn = BETA
+        .weapons(build)
+        .filter(|instance| instance.weapon.gun() && carried(instance.part))
+        .find_map(|instance| muzzle(build, parts, instance))
+        .and_then(|gun| turn_about(axis, gun.axis?, sub(point, gun.at)))
+        .unwrap_or(0);
+    // A joint's angle grows turning what it carries right-handed about its part's axis.
+    let wanted = now + turn;
+    let wanted = match limits {
+        Some([low, high]) => wanted.clamp(binary(low), binary(high)),
+        None => wanted,
+    };
+    // A rotor turns without end: the angle wraps like the servo's.
+    #[allow(clippy::cast_possible_truncation)]
+    Some(wanted as i16)
 }
 
 /// The yaw and pitch that put the camera's centre ray (the reticle) on `point` from a fighter
@@ -450,7 +625,7 @@ pub fn at(world: Option<&World>, eye: [f32; 3], point: [f32; 3]) -> (u16, i16) {
 mod tests {
     use super::*;
     use crate::damage::PartDamage;
-    use crate::robot::{MARKSMAN, PartId, ROCKET_POD, STANDARD, TWIN_RAIL};
+    use crate::robot::{MARKSMAN, ROCKET_POD, STANDARD, TWIN_RAIL};
 
     fn placed(build: &Assembly, damage: &PartDamage) -> Hitboxes {
         Hitboxes::place(build, damage, [0.0, 100.0, 0.0], 0)
@@ -590,6 +765,34 @@ mod tests {
             None
         );
         assert!(muzzle(&STANDARD, &parts, first(&STANDARD, Weapon::Shotgun)).is_some());
+    }
+
+    #[test]
+    fn a_gun_converges_within_its_cone_and_a_turn_about_an_axis_is_signed() {
+        let ahead = [0.0, 0.0, 1.0];
+        // 5° off: in; 15° off: out; behind and at the muzzle: out.
+        let at = |degrees: f32| {
+            let radians = degrees.to_radians();
+            [
+                0.0,
+                libm::sinf(radians) * 100.0,
+                libm::cosf(radians) * 100.0,
+            ]
+        };
+        assert!(converges(ahead, at(5.0)));
+        assert!(!converges(ahead, at(15.0)));
+        assert!(!converges(ahead, [0.0, 0.0, -100.0]));
+        assert!(!converges(ahead, [0.0, 0.0, 0.5]));
+        // A quarter turn about +Y takes +Z to +X (right-handed).
+        let quarter = turn_about([0.0, 1.0, 0.0], ahead, [1.0, 0.0, 0.0]).unwrap();
+        assert!((quarter - 16_384).abs() <= 1, "{quarter}");
+        let back = turn_about([0.0, 1.0, 0.0], ahead, [-1.0, 0.0, 0.0]).unwrap();
+        assert!((back + 16_384).abs() <= 1, "{back}");
+        // Only the part square to the axis counts; along the axis there is no turn.
+        let slanted = turn_about([0.0, 1.0, 0.0], ahead, [1.0, 5.0, 0.0]).unwrap();
+        assert!((slanted - 16_384).abs() <= 1, "{slanted}");
+        assert_eq!(turn_about([0.0, 1.0, 0.0], ahead, [0.0, 3.0, 0.0]), None);
+        assert_eq!(turn_about([0.0, 1.0, 0.0], [0.0, 1.0, 0.0], ahead), None);
     }
 
     #[test]

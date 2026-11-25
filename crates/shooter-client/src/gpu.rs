@@ -6,6 +6,8 @@
 
 use crate::gfx::World;
 use crate::gfx::lite::{FrameSizes, LiteRenderer, LiteWorld, RenderScale};
+use crate::ui::Atlas;
+use crate::ui::Item;
 use render_engine::renderer::{Renderer, Viewport};
 use render_engine::scene::Scene;
 use render_engine::wgpu;
@@ -52,6 +54,8 @@ pub struct Gpu {
     /// The lite renderer's dynamic resolution in the browser and when the last frame was drawn;
     /// `None` keeps `scale` fixed.
     render_scale: Option<(RenderScale, Option<web_time::Instant>)>,
+    /// The UI's glyph atlas in `world`: the UI drawn as either renderer's overlay.
+    ui: Atlas,
 }
 
 /// A fixed scene scale for the lite renderer: `?scale=0.5` in the browser,
@@ -314,11 +318,12 @@ impl Gpu {
         let canvas = canvas_for(scale);
         (config.width, config.height) = scaled(size, canvas);
         surface.configure(&device, &config);
-        let (backend, world) = if lite {
+        let (backend, mut world) = if lite {
             self::lite(&device, &queue, view_format)
         } else {
             engine(&device, &queue, view_format, config.width, config.height)
         };
+        let ui = Atlas::new(&mut world);
         Ok(Self {
             size,
             scale,
@@ -329,6 +334,7 @@ impl Gpu {
             view_format,
             device,
             queue,
+            ui,
             backend,
             world,
         })
@@ -385,16 +391,18 @@ impl Gpu {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let (backend, world) = if lite {
+        let (backend, mut world) = if lite {
             self::lite(&device, &queue, view_format)
         } else {
             engine(&device, &queue, view_format, width, height)
         };
+        let ui = Atlas::new(&mut world);
         Ok(Self {
             target: Target::Offscreen(texture),
             view_format,
             device,
             queue,
+            ui,
             backend,
             world,
             size: (width, height),
@@ -468,12 +476,25 @@ impl Gpu {
         }
     }
 
-    /// Draws `scene`, first stepping the particles `particle_steps` simulation ticks (they run
-    /// at the simulation's fixed rate, so effects look the same at any frame rate).
-    pub fn render(&mut self, scene: &Scene, particle_steps: u32) -> Result<(), String> {
+    /// Draws `scene` and over it the UI `ui` ([`crate::ui`], as the overlay: `scene.overlay` is
+    /// replaced), first stepping the particles
+    /// `particle_steps` simulation ticks (they run at the simulation's fixed rate, so effects look
+    /// the same at any frame rate).
+    pub fn render(
+        &mut self,
+        scene: &mut Scene,
+        ui: &[Item],
+        particle_steps: u32,
+    ) -> Result<(), String> {
         self.follow_frame_rate();
         let scene_size = scaled(self.size, self.scale);
         let target_size = self.target_size();
+        // The UI as overlay quads, its glyphs at the target's pixel size.
+        #[allow(clippy::cast_precision_loss)]
+        let pixels = target_size.1.max(1) as f32 / self.size.1.max(1) as f32;
+        let overlay = self.ui.quads(&mut self.world, ui, pixels);
+        // render-engine draws it as the scene's overlay, the lite renderer as its own.
+        scene.overlay = self.world.engine_overlay(&overlay);
         let view_of = |texture: &wgpu::Texture| {
             texture.create_view(&wgpu::TextureViewDescriptor {
                 format: Some(self.view_format),
@@ -527,6 +548,7 @@ impl Gpu {
                         layout: self.size,
                         scene: scene_size,
                     },
+                    &overlay,
                 );
             }
             _ => unreachable!("a world is made with its renderer"),

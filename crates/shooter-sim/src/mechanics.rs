@@ -916,6 +916,11 @@ pub enum Command {
     /// A leg's stride through its gait, in percent of the full stride (negative walks back);
     /// zero stands. Other actuators treat it as idle.
     Stride(i8),
+    /// A joint aims the gun it carries at its person's camera target (shooter#132,
+    /// [`crate::bindings::Output::Track`]). The match resolves it into an [`Command::Angle`]
+    /// within the joint's limits before the step ([`crate::aim::track`]); unresolved, every
+    /// actuator treats it as idle.
+    Track,
 }
 
 /// Part IDs a robot's controls address: every `u8`.
@@ -1305,6 +1310,20 @@ impl Mechanics {
     #[must_use]
     pub fn robot(&self, slot: u8) -> Option<&Robot> {
         self.robots.iter().find(|robot| robot.slot == slot)
+    }
+
+    /// The joint `part` of the robot in `slot` as its bodies stand now: its angle (radians,
+    /// from its bodies' poses, so a restored world reads the same) and its limits, if any.
+    /// `None` when that robot has no such connected joint.
+    #[must_use]
+    pub fn joint(&self, slot: u8, part: PartId) -> Option<(f32, Option<[f32; 2]>)> {
+        let robot = self.robot(slot)?;
+        let actuator = robot.layout.actuators.iter().find(|actuator| {
+            actuator.part == part && matches!(actuator.kind, Actuator::Joint(_))
+        })?;
+        let at = *actuator.hinges.first()?;
+        let state = self.world.hinge(*robot.hinges.get(at)?)?;
+        Some((state.angle, robot.layout.hinges.get(at)?.limits))
     }
 
     /// The robot in `slot`, to set its charge before a step.
@@ -1956,7 +1975,7 @@ impl Mechanics {
                     0
                 };
                 let active = match command {
-                    Command::Idle => false,
+                    Command::Idle | Command::Track => false,
                     Command::Stride(_) => is_leg,
                     Command::Rate(_) | Command::Angle(_) => true,
                 };
@@ -1994,7 +2013,9 @@ impl Mechanics {
                                 leg_targets(stride, robot.clock.wrapping_add(offset), cycle);
                             vec![servo(hip), servo(knee)]
                         }
-                        Command::Idle => unreachable!("idle actuators are not powered"),
+                        Command::Idle | Command::Track => {
+                            unreachable!("idle actuators are not powered")
+                        }
                     }
                 } else {
                     vec![MotorDrive::Off; actuator.hinges.len()]

@@ -50,8 +50,9 @@ use crate::overlay::{Painter, mod_name, srgb, text_width};
 use crate::robots::track::rest_frame;
 use crate::robots::{RobotState, RobotView, Robots};
 use crate::scene::{self, METRES_PER_UNIT};
+use crate::ui::Item;
 use render_engine::glam::{Quat, Vec2, Vec3, Vec4};
-use render_engine::scene::{OverlayQuad, Scene};
+use render_engine::scene::Scene;
 use shooter_sim::bindings::Bindings;
 use shooter_sim::mechanics::{Placement, placement_of, placements, sockets};
 use shooter_sim::robot::{
@@ -1215,14 +1216,14 @@ impl Builder {
 
     /// The frame: the robot on the bench (or what a placement would make, while the pointer is
     /// on a socket it fits) drawn by `robots` in their world, if the kit is in, the camera round
-    /// it and the panels for a `width` × `height` frame.
+    /// it and the panels for a `width` × `height` frame: the scene and the UI over it.
     pub fn frame(
         &mut self,
         robots: Option<(&mut World, &mut Robots)>,
         width: u32,
         height: u32,
         seconds: f32,
-    ) -> Scene {
+    ) -> (Scene, Vec<Item>) {
         self.size = (width.max(1), height.max(1));
         let draft = *self.bench.draft();
         self.controls.follow(&draft);
@@ -1340,8 +1341,7 @@ impl Builder {
 
         let mut scene = scene::frame(self.eye, (target - self.eye).normalize(), Vec::new());
         scene.clear_color = Vec3::new(0.05, 0.09, 0.16);
-        scene.overlay = painter.quads;
-        scene
+        (scene, painter.quads)
     }
 
     /// The sockets the camera sees (those the part in hand fits lit), the placement under the
@@ -1973,22 +1973,15 @@ fn wrap(text: &str, width: f32, cell: f32) -> Vec<String> {
     lines
 }
 
-/// A panel's background and edge.
+/// A panel's background: a rounded, translucent graphite card.
 fn panel_back(painter: &mut Painter, rect: Rect) {
-    painter.rect(
+    painter.round_rect(
         rect.x,
         rect.y,
         rect.width,
         rect.height,
-        srgb(GRAPHITE, 0.88),
-    );
-    painter.frame(
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        1.0,
-        srgb(STEEL, 1.0),
+        10.0,
+        srgb(GRAPHITE, 0.86),
     );
 }
 
@@ -2000,7 +1993,7 @@ fn button(painter: &mut Painter, rect: Rect, label: &str, hovered: bool, strong:
         (false, true) => srgb(STEEL, 1.0),
         (false, false) => srgb(STEEL, 0.6),
     };
-    painter.rect(rect.x, rect.y, rect.width, rect.height, fill);
+    painter.round_rect(rect.x, rect.y, rect.width, rect.height, 6.0, fill);
     let cell = if rect.height > 40.0 { 3.0 } else { SMALL };
     let width = text_width(label, painter.snap_cell(cell));
     let colour = if strong { GRAPHITE } else { PALE };
@@ -2052,7 +2045,7 @@ fn dotted_box(
 /// The prompt while the local robot is dead and the builder closed: the respawn countdown and
 /// Edit Robot (B), centred low on a `width` × `height` frame.
 #[must_use]
-pub fn death_prompt(respawn_in: f32, width: u32, height: u32) -> Vec<OverlayQuad> {
+pub fn death_prompt(respawn_in: f32, width: u32, height: u32) -> Vec<Item> {
     #[allow(clippy::cast_precision_loss)]
     let (width, height) = (width as f32, height as f32);
     let scale = height / 720.0;
