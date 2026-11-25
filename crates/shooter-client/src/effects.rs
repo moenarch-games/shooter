@@ -9,6 +9,7 @@
 //! ([`crate::robots::Muzzle`]; a fighter not drawn as a robot from the stand-in gun's barrel,
 //! [`gun_pose`]).
 
+use crate::gfx::{EmitterId, World};
 use crate::robots::Muzzle;
 use crate::scene::{METRES_PER_UNIT, gun_pose};
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
@@ -17,7 +18,6 @@ use render_engine::particles::{
     ShapeDimension, Spawner, Value,
 };
 use render_engine::scene::PointLight;
-use render_engine::world::{EmitterId, World};
 use shooter_sim::wire::{PelletState, RocketState};
 use shooter_sim::{Event, Weapon};
 

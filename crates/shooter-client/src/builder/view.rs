@@ -44,6 +44,7 @@ use super::{
     Axis, BENCH, FINE, Proposal, Refusal, Step, Workbench, degrees, describe, part_name, weapon_of,
 };
 use crate::camera::FOV_Y;
+use crate::gfx::World;
 use crate::overlay::palette::{GRAPHITE, MUTED, OLIVE, ORANGE, PALE, RED, STEEL};
 use crate::overlay::{Painter, mod_name, srgb, text_width};
 use crate::robots::track::rest_frame;
@@ -51,7 +52,6 @@ use crate::robots::{RobotState, RobotView, Robots};
 use crate::scene::{self, METRES_PER_UNIT};
 use render_engine::glam::{Quat, Vec2, Vec3, Vec4};
 use render_engine::scene::{OverlayQuad, Scene};
-use render_engine::world::World;
 use shooter_sim::bindings::Bindings;
 use shooter_sim::mechanics::{Placement, placement_of, placements, sockets};
 use shooter_sim::robot::{

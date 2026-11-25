@@ -1,10 +1,14 @@
 //! The GPU: a window's surface (or an offscreen texture for the profile run), the device and
-//! render-engine's renderer, world and viewport.
+//! the renderer drawing the client's [`World`]: render-engine where the adapter has what it needs
+//! (WebGPU in the browser, Vulkan, Metal or DX12 natively), else the lite renderer
+//! ([`crate::gfx::lite`]) on WebGL 2. The browser falls back by itself where WebGPU is missing;
+//! `?renderer=lite` in the browser and `SHOOTER_RENDERER=lite` natively force the lite one.
 
+use crate::gfx::World;
+use crate::gfx::lite::{LiteRenderer, LiteWorld};
 use render_engine::renderer::{Renderer, Viewport};
 use render_engine::scene::Scene;
 use render_engine::wgpu;
-use render_engine::world::World;
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -21,15 +25,35 @@ enum Target {
     Offscreen(wgpu::Texture),
 }
 
+/// What draws the world.
+enum Backend {
+    Engine {
+        renderer: Box<Renderer>,
+        viewport: Box<Viewport>,
+    },
+    Lite(Box<LiteRenderer>),
+}
+
 pub struct Gpu {
     target: Target,
     /// The sRGB view of the target the renderer writes (WebGPU canvases are not sRGB).
     view_format: wgpu::TextureFormat,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    renderer: Renderer,
+    backend: Backend,
     pub world: World,
-    viewport: Viewport,
+    size: (u32, u32),
+}
+
+/// Whether the lite renderer is asked for: `SHOOTER_RENDERER=lite` natively, `?renderer=lite`
+/// in the browser.
+#[must_use]
+pub fn lite_requested() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    let requested = std::env::var("SHOOTER_RENDERER").ok();
+    #[cfg(target_arch = "wasm32")]
+    let requested = crate::web::query("renderer");
+    requested.is_some_and(|renderer| renderer.eq_ignore_ascii_case("lite"))
 }
 
 /// The adapter's device, with unclipped sun-shadow depth where it has it (render-engine falls
@@ -45,52 +69,211 @@ async fn device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), 
         .map_err(|error| format!("no GPU device: {error}"))
 }
 
+/// The lite renderer's device: WebGL 2's limits (so a native run checks the same), at the
+/// adapter's texture sizes.
+async fn lite_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), String> {
+    adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("shooter lite"),
+            required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                .using_resolution(adapter.limits()),
+            ..Default::default()
+        })
+        .await
+        .map_err(|error| format!("no GPU device: {error}"))
+}
+
+/// The render-engine backend and its world for `view_format` at `width`×`height`.
+fn engine(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    view_format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> (Backend, World) {
+    let renderer = Renderer::new(device, queue, view_format);
+    let world = World::engine(render_engine::world::World::new(&renderer));
+    let viewport = Viewport::new(&renderer, width, height);
+    (
+        Backend::Engine {
+            renderer: Box::new(renderer),
+            viewport: Box::new(viewport),
+        },
+        world,
+    )
+}
+
+/// The lite backend and its world.
+fn lite(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    view_format: wgpu::TextureFormat,
+) -> (Backend, World) {
+    let world = LiteWorld::new(device, queue);
+    let renderer = LiteRenderer::new(device, &world, view_format);
+    (
+        Backend::Lite(Box::new(renderer)),
+        World::Lite(Box::new(world)),
+    )
+}
+
+/// Whether the page has `navigator.gpu`.
+#[cfg(target_arch = "wasm32")]
+fn has_webgpu() -> bool {
+    web_sys::window().is_some_and(|window| {
+        js_sys::Reflect::get(&window.navigator(), &"gpu".into())
+            .is_ok_and(|gpu| !gpu.is_undefined() && !gpu.is_null())
+    })
+}
+
 impl Gpu {
+    /// The GPU of `window`: render-engine unless the lite renderer is asked for or, in the
+    /// browser, WebGPU has no adapter or device (then WebGL 2 and the lite renderer).
     pub async fn new(window: Arc<Window>) -> Result<Self, String> {
-        let size = window.inner_size();
-        let instance = wgpu::Instance::default();
+        #[cfg(target_arch = "wasm32")]
+        {
+            if !lite_requested() && has_webgpu() {
+                // The adapter and device come before the surface: a canvas that once gave a
+                // WebGPU context cannot give a WebGL one.
+                let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    backends: wgpu::Backends::BROWSER_WEBGPU,
+                    ..wgpu::InstanceDescriptor::new_without_display_handle()
+                });
+                let adapter = instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        ..Default::default()
+                    })
+                    .await;
+                match adapter {
+                    Ok(adapter) => match device(&adapter).await {
+                        Ok((device, queue)) => {
+                            return Self::on_surface(
+                                window, &instance, &adapter, device, queue, false,
+                            );
+                        }
+                        Err(error) => crate::log(&format!("WebGPU: {error}; trying WebGL 2")),
+                    },
+                    Err(error) => {
+                        crate::log(&format!("WebGPU: no adapter ({error}); trying WebGL 2"))
+                    }
+                }
+            }
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::GL,
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            });
+            let surface = instance
+                .create_surface(window.clone())
+                .map_err(|error| format!("no WebGL 2 surface: {error}"))?;
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|error| {
+                    format!("no GPU adapter: this browser has neither WebGPU nor WebGL 2 ({error})")
+                })?;
+            let (device, queue) = lite_device(&adapter).await?;
+            Self::configure(window, surface, &adapter, device, queue, true)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let instance = wgpu::Instance::default();
+            let lite = lite_requested();
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    ..Default::default()
+                })
+                .await
+                .map_err(|error| format!("no GPU adapter: {error}"))?;
+            let (device, queue) = if lite {
+                lite_device(&adapter).await?
+            } else {
+                device(&adapter).await?
+            };
+            Self::on_surface(window, &instance, &adapter, device, queue, lite)
+        }
+    }
+
+    fn on_surface(
+        window: Arc<Window>,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        lite: bool,
+    ) -> Result<Self, String> {
         let surface = instance
-            .create_surface(window)
+            .create_surface(window.clone())
             .map_err(|error| format!("no GPU surface: {error}"))?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await
-            .map_err(|error| format!("no GPU adapter (WebGPU needed in the browser): {error}"))?;
-        let (device, queue) = device(&adapter).await?;
+        Self::configure(window, surface, adapter, device, queue, lite)
+    }
+
+    fn configure(
+        window: Arc<Window>,
+        surface: wgpu::Surface<'static>,
+        adapter: &wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        lite: bool,
+    ) -> Result<Self, String> {
+        let size = window.inner_size();
+        let info = adapter.get_info();
+        crate::log(&format!(
+            "{} renderer on {} ({:?})",
+            if lite { "lite" } else { "render-engine" },
+            info.name,
+            info.backend
+        ));
         let mut config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
+            .get_default_config(adapter, size.width.max(1), size.height.max(1))
             .ok_or("the surface has no format the adapter supports")?;
-        let capabilities = surface.get_capabilities(&adapter);
+        let capabilities = surface.get_capabilities(adapter);
         if let Some(srgb) = capabilities.formats.iter().copied().find(|f| f.is_srgb()) {
             config.format = srgb;
         }
-        let view_format = config.format.add_srgb_suffix();
+        // The lite renderer encodes sRGB itself where the surface has no sRGB format (WebGL 2
+        // has no view formats).
+        let view_format = if lite {
+            config.format
+        } else {
+            config.format.add_srgb_suffix()
+        };
         if view_format != config.format {
             config.view_formats = vec![view_format];
         }
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
-        let renderer = Renderer::new(&device, &queue, view_format);
-        let world = World::new(&renderer);
-        let viewport = Viewport::new(&renderer, config.width, config.height);
+        let (backend, world) = if lite {
+            self::lite(&device, &queue, view_format)
+        } else {
+            engine(&device, &queue, view_format, config.width, config.height)
+        };
         Ok(Self {
+            size: (config.width, config.height),
             target: Target::Surface { surface, config },
             view_format,
             device,
             queue,
-            renderer,
+            backend,
             world,
-            viewport,
         })
+    }
+
+    /// Whether the lite renderer draws.
+    #[must_use]
+    pub fn is_lite(&self) -> bool {
+        matches!(self.backend, Backend::Lite(_))
     }
 
     /// A `width`×`height` offscreen target on the adapter wgpu picks without a window. As in
     /// render-engine's headless renderer, `WGPU_FORCE_FALLBACK_ADAPTER=1` picks the software
-    /// one (lavapipe, as on a GPU-less Linux runner).
+    /// one (lavapipe, as on a GPU-less Linux runner); `SHOOTER_RENDERER=lite` draws with the
+    /// lite renderer (`WGPU_BACKEND=gl` puts it on OpenGL, as WebGL 2 is).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn offscreen(width: u32, height: u32) -> Result<Self, String> {
         let instance =
@@ -103,12 +286,20 @@ impl Gpu {
             ..Default::default()
         }))
         .map_err(|error| format!("no GPU adapter: {error}"))?;
+        let lite = lite_requested();
         let info = adapter.get_info();
         crate::log(&format!(
-            "offscreen on {} ({:?}, {})",
-            info.name, info.backend, info.driver
+            "offscreen {} on {} ({:?}, {})",
+            if lite { "lite" } else { "render-engine" },
+            info.name,
+            info.backend,
+            info.driver
         ));
-        let (device, queue) = pollster::block_on(device(&adapter))?;
+        let (device, queue) = if lite {
+            pollster::block_on(lite_device(&adapter))?
+        } else {
+            pollster::block_on(device(&adapter))?
+        };
         let view_format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen frame"),
@@ -124,24 +315,26 @@ impl Gpu {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let renderer = Renderer::new(&device, &queue, view_format);
-        let world = World::new(&renderer);
-        let viewport = Viewport::new(&renderer, width, height);
+        let (backend, world) = if lite {
+            self::lite(&device, &queue, view_format)
+        } else {
+            engine(&device, &queue, view_format, width, height)
+        };
         Ok(Self {
             target: Target::Offscreen(texture),
             view_format,
             device,
             queue,
-            renderer,
+            backend,
             world,
-            viewport,
+            size: (width, height),
         })
     }
 
     /// The drawn frame's width and height in pixels.
     #[must_use]
     pub fn size(&self) -> (u32, u32) {
-        self.viewport.size()
+        self.size
     }
 
     /// An offscreen target keeps its size.
@@ -157,8 +350,10 @@ impl Gpu {
         config.width = width.min(limit);
         config.height = height.min(limit);
         surface.configure(&self.device, config);
-        self.viewport
-            .resize(&self.renderer, config.width, config.height);
+        self.size = (config.width, config.height);
+        if let Backend::Engine { renderer, viewport } = &mut self.backend {
+            viewport.resize(renderer, config.width, config.height);
+        }
     }
 
     /// Draws `scene`, first stepping the particles `particle_steps` simulation ticks (they run
@@ -191,17 +386,26 @@ impl Gpu {
             #[cfg(not(target_arch = "wasm32"))]
             Target::Offscreen(texture) => (view_of(texture), None),
         };
-        self.renderer
-            .prepare(&mut self.viewport, &self.world, scene, &[]);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let tick = 1.0 / f32::from(shooter_sim::TICK_HZ);
-        for _ in 0..particle_steps {
-            self.world.step_particles(&mut encoder, tick, None);
+        match (&mut self.backend, &mut self.world) {
+            (Backend::Engine { renderer, viewport }, World::Engine(world)) => {
+                renderer.prepare(viewport, &world.world, scene, &[]);
+                for _ in 0..particle_steps {
+                    world.world.step_particles(&mut encoder, tick, None);
+                }
+                renderer.encode(&mut encoder, viewport, &world.world, &view, None);
+            }
+            (Backend::Lite(renderer), World::Lite(world)) => {
+                for _ in 0..particle_steps {
+                    world.step_particles(tick);
+                }
+                renderer.encode(world, scene, &mut encoder, &view, self.size);
+            }
+            _ => unreachable!("a world is made with its renderer"),
         }
-        self.renderer
-            .encode(&mut encoder, &self.viewport, &self.world, &view, None);
         self.queue.submit([encoder.finish()]);
         match frame {
             Some(frame) => self.queue.present(frame),
