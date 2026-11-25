@@ -3,8 +3,9 @@
 //! shotgun whose blast is a fixed pattern of fast pellets that slow down (and hurt less) as they
 //! fly, a continuous laser that burns the first target in its beam every tick the trigger is held,
 //! and a flamethrower whose flame, after a short ignition, is a volume cut short by walls; the
-//! grapple hook in the same rotation ([`crate::grapple`]); and the energy
-//! blade, a quick melee swing on its own key whatever gun is held ([`crate::melee`]).
+//! energy blade, a quick melee swing on its own key whatever gun is held ([`crate::melee`]); and
+//! the grapple hook, a mounted module on its own key that is never in the rotation
+//! ([`crate::grapple`], Atlas D2.i104.2).
 //!
 //! Everything a shot decides is integer: the aim is a Q16 direction from the yaw and pitch
 //! steps (the shotgun's pellets add fixed yaw and pitch offsets, [`PELLETS`]), rockets fly in
@@ -16,6 +17,7 @@
 
 use crate::fixed::subunits_per_tick;
 use crate::physics::{BodyId, PhysicsError, RayHit, SUBUNITS_PER_UNIT, World};
+use crate::robot::{MAX_PARTS, PartId};
 use crate::trig;
 
 /// The guns a player carries.
@@ -28,7 +30,8 @@ pub enum Weapon {
     RailGun,
     /// A slow rocket that explodes on contact: splash damage and knockback.
     RocketLauncher,
-    /// A movement tool: hooks arena geometry and reels the player in while the trigger is held
+    /// The grapple module (Atlas D2.i104.2): a movement tool on its own key, never held or in
+    /// the rotation. It hooks arena geometry and reels the robot in while its key is held
     /// ([`crate::grapple`]).
     Grapple,
     /// The quick-melee energy blade: never held, swung on its own key ([`crate::melee`]).
@@ -71,12 +74,12 @@ impl Weapon {
         Self::Laser,
         Self::Flamethrower,
     ];
-    /// The weapons a player can hold (the 1 to 7 keys); the blade is swung, never held.
-    pub const ROTATION: [Self; 7] = [
+    /// The weapons a player can hold (the 1 to 6 keys); the blade is swung and the grapple
+    /// module hooked on their own keys, never held.
+    pub const ROTATION: [Self; 6] = [
         Self::EnergyRifle,
         Self::RailGun,
         Self::RocketLauncher,
-        Self::Grapple,
         Self::Shotgun,
         Self::Laser,
         Self::Flamethrower,
@@ -181,6 +184,28 @@ impl Weapon {
         matches!(self, Self::Laser | Self::Flamethrower)
     }
 
+    /// Its family's shared salvo limit on one robot (shooter#127, Atlas D2.i123.5), if it has
+    /// one: four rocket launchers do not launch four rockets at once. Every other gun fires
+    /// alongside its copies, bound only by its own refire and energy. Provisional (Atlas
+    /// Q2.i123.2).
+    #[must_use]
+    pub const fn salvo(self) -> Option<Salvo> {
+        match self {
+            Self::RocketLauncher => Some(Salvo {
+                per_tick: 1,
+                spacing: 6,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether it may be bound to fire directly, alone or in a group (shooter#127): the guns.
+    /// The blade and the grapple module act on their own keys.
+    #[must_use]
+    pub fn gun(self) -> bool {
+        Self::ROTATION.contains(&self)
+    }
+
     /// The share of a strike's damage (percent) that passes an armor plate to the part behind
     /// it ([`crate::damage`]): the hitscan beams pierce, the rail gun most; pellets, rockets,
     /// the flame and the blade do not. Provisional (Atlas Q2.i70.1).
@@ -228,8 +253,16 @@ pub const FLAME_REACH_UNITS: i32 = 600;
 /// ...and is 1.2 m across: everything within 60 units of its axis burns.
 pub const FLAME_RADIUS_UNITS: i32 = 60;
 
-/// Ticks after a switch before the new weapon can fire: 0.2 s.
-pub const SWITCH_TICKS: u32 = 12;
+/// A weapon family's shared salvo limit on one robot (shooter#127): at most `per_tick` of its
+/// copies fire in one tick, and after a tick in which any did, the family waits `spacing` ticks
+/// before the next. Each copy keeps its own refire on top. The numbers are provisional (Atlas
+/// Q2.i123.2): rockets launch one a tick, 0.1 s apart, so a pod of four staggers over 0.3 s.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Salvo {
+    pub per_tick: u8,
+    pub spacing: u32,
+}
+
 /// Rocket speed: 24 m/s.
 pub const ROCKET_SPEED_UNITS_PER_SECOND: i32 = 2_400;
 pub const ROCKET_SPEED_SUBUNITS_PER_TICK: i32 = subunits_per_tick(ROCKET_SPEED_UNITS_PER_SECOND);
@@ -247,141 +280,445 @@ pub const SPLASH_KNOCKBACK_SUBUNITS_PER_TICK: i32 =
 /// Pitch steps (`crate::trig` angle units) of straight up; straight down is the negative.
 pub const MAX_PITCH: i16 = trig::YAW_QUARTER_TURN as i16;
 
-/// The weapon a player holds and when it (and the blade) may fire next: part of the simulation
-/// state.
+/// One mounted weapon (shooter#125): the part that is it in its robot's build (a stable handle
+/// within the build) and the weapon it is. Copies of one weapon on one robot are distinct
+/// instances, each with its own mount, mod, health, cooldown and muzzle.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Instance {
+    pub part: PartId,
+    pub weapon: Weapon,
+}
+
+impl Instance {
+    #[must_use]
+    pub const fn new(part: u8, weapon: Weapon) -> Self {
+        Self {
+            part: PartId(part),
+            weapon,
+        }
+    }
+}
+
+/// A weapon switch request: a weapon (the copy held if it is one, else its first holdable
+/// copy, [`resolve`]) or one exact mounted copy.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Select {
+    Weapon(Weapon),
+    Part(PartId),
+}
+
+impl From<Weapon> for Select {
+    fn from(weapon: Weapon) -> Self {
+        Self::Weapon(weapon)
+    }
+}
+
+impl From<Instance> for Select {
+    fn from(instance: Instance) -> Self {
+        Self::Part(instance.part)
+    }
+}
+
+/// Fire requests for exact mounted copies, by part (shooter#127): what a person's direct weapon
+/// bindings and weapon groups resolved this tick ([`crate::bindings`]), or what a bot asks. Each
+/// part at most once, in ascending part ID order (the order the host grants them in), at most
+/// [`MAX_PARTS`]. The host fires only the guns the robot still has; any other part is ignored.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Triggers {
+    len: u8,
+    parts: [PartId; MAX_PARTS],
+}
+
+impl Default for Triggers {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl Triggers {
+    /// No copy asked to fire.
+    pub const NONE: Self = Self {
+        len: 0,
+        parts: [PartId(0); MAX_PARTS],
+    };
+
+    /// These requests with `part` asked to fire too; false (and unchanged) if it already is
+    /// or there is no room.
+    pub fn press(&mut self, part: PartId) -> bool {
+        let len = usize::from(self.len);
+        if len >= MAX_PARTS {
+            return false;
+        }
+        match self.parts[..len].binary_search(&part) {
+            Ok(_) => false,
+            Err(at) => {
+                self.parts.copy_within(at..len, at + 1);
+                self.parts[at] = part;
+                self.len += 1;
+                true
+            }
+        }
+    }
+
+    /// The parts asked to fire, ascending.
+    #[must_use]
+    pub fn parts(&self) -> &[PartId] {
+        &self.parts[..usize::from(self.len)]
+    }
+
+    #[must_use]
+    pub fn contains(&self, part: PartId) -> bool {
+        self.parts().binary_search(&part).is_ok()
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl FromIterator<PartId> for Triggers {
+    fn from_iter<I: IntoIterator<Item = PartId>>(parts: I) -> Self {
+        let mut triggers = Self::NONE;
+        for part in parts {
+            triggers.press(part);
+        }
+        triggers
+    }
+}
+
+/// The copies that fired in one tick, in the order they were granted (the hook, the swing, then
+/// the guns by part ID): at most one entry per mounted part.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Volley {
+    len: u8,
+    shots: [Instance; MAX_PARTS],
+}
+
+impl Default for Volley {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            shots: [Instance::new(0, Weapon::EnergyRifle); MAX_PARTS],
+        }
+    }
+}
+
+impl Volley {
+    /// This volley with `instance` too, if there is room.
+    pub fn push(&mut self, instance: Instance) {
+        if let Some(slot) = self.shots.get_mut(usize::from(self.len)) {
+            *slot = instance;
+            self.len += 1;
+        }
+    }
+
+    /// The copies that fired, in order.
+    #[must_use]
+    pub fn shots(&self) -> &[Instance] {
+        &self.shots[..usize::from(self.len)]
+    }
+
+    /// The first copy that fired, if any.
+    #[must_use]
+    pub fn first(&self) -> Option<Instance> {
+        self.shots().first().copied()
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// The weapon copy a player holds (what the primary trigger fires, a convenience: shooter#127)
+/// and when each mounted gun, its salvo-limited families, the blade and the grapple module may
+/// fire next: part of the simulation state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Arsenal {
-    pub held: Weapon,
-    ready_at: u32,
+    pub held: Instance,
+    /// A swing keeps every gun down until then.
+    guns_ready_at: u32,
+    /// When each mounted gun may fire again after its own last shot, by part (an entry with no
+    /// shot is ready at once, [`Arsenal::refire_at`]).
+    refire: [(PartId, u32); MAX_PARTS],
+    /// When each weapon family with a salvo limit ([`Weapon::salvo`]) may fire again, by
+    /// [`Weapon::index`].
+    family_ready_at: [u32; Weapon::ALL.len()],
     blade_ready_at: u32,
-    /// Ticks in a row the flamethrower has fired.
+    /// When the grapple module may hook again ([`Arsenal::hook`]).
+    grapple_ready_at: u32,
+    /// Ticks in a row a flamethrower has fired.
     flaming: u32,
 }
 
+/// The blade [`Arsenal::trigger`] swings: one on part 8, as the named loadouts mount it.
+const TEST_BLADE: Instance = Instance::new(8, Weapon::EnergyBlade);
+
 impl Arsenal {
-    /// Applies a switch request, the melee key and the trigger at `tick`: the weapon that fires,
-    /// if any, with every rotation weapon to hold (the blade is never held). A swing goes first and
-    /// keeps the gun down for [`crate::melee::GUN_LOCKOUT_TICKS`].
+    /// Applies a switch request, the melee key and the primary trigger (the held copy) at
+    /// `tick`: what fired, with every rotation weapon to hold (the blade is never held) and the
+    /// blade on part 8. A swing goes first and keeps the guns down for
+    /// [`crate::melee::GUN_LOCKOUT_TICKS`].
     pub fn trigger(
         &mut self,
-        select: Option<Weapon>,
+        select: Option<Instance>,
         melee: bool,
         fire: bool,
         tick: u32,
-    ) -> Option<Weapon> {
-        let select = select.filter(|weapon| Weapon::ROTATION.contains(weapon));
-        self.trigger_tuned(select, melee, fire, tick, Weapon::refire_ticks, |_| true)
+    ) -> Option<Instance> {
+        let select = select.filter(|held| held.weapon.gun());
+        if let Some(held) = select {
+            self.held = held;
+        }
+        let requests = if fire { vec![self.held] } else { Vec::new() };
+        self.trigger_tuned(
+            None,
+            melee.then_some(TEST_BLADE),
+            &requests,
+            tick,
+            |held| held.weapon.refire_ticks(),
+            |_| true,
+        )
+        .first()
     }
 
-    /// [`Arsenal::trigger`] with each weapon's refire from `refire` (its mod's,
-    /// [`crate::robot::Tuning::refire_ticks`]), and each activation first asking `spend` for its
-    /// energy ([`crate::energy`]): the swing first, then the gun. A refused activation does not
-    /// happen and spends no cooldown; a refused swing leaves the gun its turn.
+    /// The tick's switch (`select`: a copy to hold, the caller has checked it may), swing and
+    /// gun requests (shooter#127): the blade `blade` swings if the melee key is down and the
+    /// robot still has one, then every copy in `requests` (any order, repeats count once) fires
+    /// if it is ready, its family's salvo limit allows ([`Weapon::salvo`]) and `spend` grants
+    /// its energy ([`crate::energy`]). The requests are granted first come, first served in
+    /// ascending part ID order: the swing first, then the guns by part. A refused activation
+    /// does not happen and spends no cooldown, and refuses only itself: each copy keeps its own
+    /// refire from `refire` (its mod's, [`crate::robot::Tuning::refire_ticks`]), so two rail guns
+    /// fire together and a rifle fires beside a rocket launcher. Holding a copy is a convenience
+    /// for the primary trigger: a switch delays nothing.
     pub fn trigger_tuned(
         &mut self,
-        select: Option<Weapon>,
-        melee: bool,
-        fire: bool,
+        select: Option<Instance>,
+        blade: Option<Instance>,
+        requests: &[Instance],
         tick: u32,
-        refire: impl Fn(Weapon) -> u32,
-        mut spend: impl FnMut(Weapon) -> bool,
-    ) -> Option<Weapon> {
+        refire: impl Fn(Instance) -> u32,
+        mut spend: impl FnMut(Instance) -> bool,
+    ) -> Volley {
         // Which weapons this fighter may hold is the caller's to check ([`holdable`]); the blade
         // is held only when it is the last weapon.
-        if let Some(weapon) = select.filter(|weapon| *weapon != self.held) {
-            self.held = weapon;
-            self.ready_at = self.ready_at.max(tick + SWITCH_TICKS);
+        if let Some(instance) = select {
+            self.held = instance;
         }
-        let fired = if melee && tick >= self.blade_ready_at && spend(Weapon::EnergyBlade) {
-            self.blade_ready_at = tick + refire(Weapon::EnergyBlade);
-            self.ready_at = self.ready_at.max(tick + crate::melee::GUN_LOCKOUT_TICKS);
-            Some(Weapon::EnergyBlade)
-        } else if fire && tick >= self.ready_at && spend(self.held) {
-            self.ready_at = tick + refire(self.held);
-            Some(self.held)
-        } else {
-            None
-        };
-        self.flaming = if fired == Some(Weapon::Flamethrower) {
+        let mut volley = Volley::default();
+        if let Some(blade) = blade.filter(|blade| tick >= self.blade_ready_at && spend(*blade)) {
+            self.blade_ready_at = tick + refire(blade);
+            self.guns_ready_at = self
+                .guns_ready_at
+                .max(tick + crate::melee::GUN_LOCKOUT_TICKS);
+            volley.push(blade);
+        }
+        let mut requests = requests.to_vec();
+        requests.sort_by_key(|instance| instance.part);
+        requests.dedup_by_key(|instance| instance.part);
+        let mut launched = [0u8; Weapon::ALL.len()];
+        for instance in requests {
+            let family = usize::from(instance.weapon.index());
+            let salvo = instance.weapon.salvo();
+            let family_open = salvo.is_none_or(|salvo| {
+                tick >= self.family_ready_at[family] && launched[family] < salvo.per_tick
+            });
+            if tick >= self.guns_ready_at
+                && tick >= self.refire_at(instance.part)
+                && family_open
+                && spend(instance)
+            {
+                self.set_refire(instance.part, tick + refire(instance));
+                launched[family] += 1;
+                volley.push(instance);
+            }
+        }
+        for weapon in Weapon::ALL {
+            let family = usize::from(weapon.index());
+            if let Some(salvo) = weapon.salvo()
+                && launched[family] > 0
+            {
+                self.family_ready_at[family] = tick + salvo.spacing;
+            }
+        }
+        self.flaming = if volley
+            .shots()
+            .iter()
+            .any(|fired| fired.weapon == Weapon::Flamethrower)
+        {
             self.flaming.saturating_add(1)
         } else {
             0
         };
-        fired
+        volley
+    }
+
+    /// When the gun on `part` may fire again after its own last shot (0: it has not fired).
+    #[must_use]
+    pub fn refire_at(&self, part: PartId) -> u32 {
+        self.refire
+            .iter()
+            .find(|(at, _)| *at == part)
+            .map_or(0, |(_, ready)| *ready)
+    }
+
+    /// Records the gun on `part` ready again at `ready`, in its own entry or the one that
+    /// constrains least (a build has fewer weapon parts than entries, so no live entry goes).
+    fn set_refire(&mut self, part: PartId, ready: u32) {
+        let entry = self
+            .refire
+            .iter()
+            .position(|(at, _)| *at == part)
+            .or_else(|| (0..self.refire.len()).min_by_key(|index| self.refire[*index].1))
+            .unwrap_or(0);
+        self.refire[entry] = (part, ready);
+    }
+
+    /// The grapple module's key at `tick` (Atlas D2.i104.2): it hooks when ready and `spend`
+    /// pays its activation from the shared pool ([`crate::energy`]), then waits `refire` ticks.
+    /// Independent of the guns and the blade; a refused activation spends no cooldown.
+    pub fn hook(&mut self, tick: u32, refire: u32, spend: impl FnOnce() -> bool) -> bool {
+        if tick >= self.grapple_ready_at && spend() {
+            self.grapple_ready_at = tick + refire;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Ticks from `tick` until the grapple module may hook again: 0 when it is ready.
+    #[must_use]
+    pub const fn grapple_cooldown(&self, tick: u32) -> u32 {
+        self.grapple_ready_at.saturating_sub(tick)
+    }
+
+    /// Ticks from `tick` until the blade may swing again: 0 when it is ready.
+    #[must_use]
+    pub const fn blade_cooldown(&self, tick: u32) -> u32 {
+        self.blade_ready_at.saturating_sub(tick)
     }
 
     /// An arsenal holding `held`, ready at once (a fighter's at spawn).
     #[must_use]
-    pub fn holding(held: Weapon) -> Self {
+    pub fn holding(held: Instance) -> Self {
         Self {
             held,
             ..Self::default()
         }
     }
 
-    /// Ticks from `tick` until the held weapon may fire again (its refire or a switch): 0 when
+    /// Ticks from `tick` until the held copy may fire again ([`Arsenal::cooldown_of`]): 0 when
     /// it is ready.
     #[must_use]
-    pub const fn cooldown(&self, tick: u32) -> u32 {
-        self.ready_at.saturating_sub(tick)
+    pub fn cooldown(&self, tick: u32) -> u32 {
+        self.cooldown_of(self.held, tick)
     }
 
-    /// Whether the flame burns this tick: it has fired for more than [`FLAME_IGNITION_TICKS`]
-    /// ticks in a row. Before that it is still igniting.
+    /// Ticks from `tick` until the copy `instance` may fire again: its own refire, its family's
+    /// salvo spacing ([`Weapon::salvo`]) and a swing's lockout. 0 when it is ready (energy
+    /// permitting).
+    #[must_use]
+    pub fn cooldown_of(&self, instance: Instance, tick: u32) -> u32 {
+        let family = instance.weapon.salvo().map_or(0, |_| {
+            self.family_ready_at[usize::from(instance.weapon.index())]
+        });
+        self.guns_ready_at
+            .max(self.refire_at(instance.part))
+            .max(family)
+            .saturating_sub(tick)
+    }
+
+    /// Ticks from `tick` until the gun on `part` may fire again after its own last shot: 0 when
+    /// it is ready.
+    #[must_use]
+    pub fn refire_left(&self, part: PartId, tick: u32) -> u32 {
+        self.refire_at(part).saturating_sub(tick)
+    }
+
+    /// Whether the flame burns this tick: a flamethrower has fired for more than
+    /// [`FLAME_IGNITION_TICKS`] ticks in a row. Before that it is still igniting.
     #[must_use]
     pub const fn ignited(&self) -> bool {
         self.flaming > FLAME_IGNITION_TICKS
     }
 }
 
-/// The weapons a fighter may hold, in [`Weapon::ROTATION`] order: those `armed` says its build
-/// mounts and still has ([`crate::damage::PartDamage::armed`]). The blade is swung on its own key
-/// and is not among them, unless it is the only weapon left: then it is held and the trigger
-/// swings it.
-pub fn holdable(armed: impl Fn(Weapon) -> bool) -> impl Iterator<Item = Weapon> + Clone {
-    let guns = Weapon::ROTATION.map(&armed);
-    let blade_only = !guns.contains(&true) && armed(Weapon::EnergyBlade);
-    Weapon::ROTATION
-        .into_iter()
-        .zip(guns)
-        .filter_map(|(weapon, armed)| armed.then_some(weapon))
-        .chain(blade_only.then_some(Weapon::EnergyBlade))
+/// Its place in the cycle: guns in [`Weapon::ROTATION`] order, copies of one gun by part; the
+/// blade (never in the rotation) first.
+fn place(instance: Instance) -> (i32, PartId) {
+    let rotation = Weapon::ROTATION
+        .iter()
+        .position(|weapon| *weapon == instance.weapon)
+        .map_or(-1, |index| i32::try_from(index).unwrap_or(0));
+    (rotation, instance.part)
 }
 
-/// The weapon a fighter takes up at spawn: the first [`holdable`] one in [`Weapon::ROTATION`]
-/// order that is not the grapple, else the grapple, else the blade (shooter#96). `None` if
-/// nothing is holdable.
-pub fn spawn_weapon(armed: impl Fn(Weapon) -> bool) -> Option<Weapon> {
-    let mut held = holdable(armed);
-    held.clone()
-        .find(|weapon| *weapon != Weapon::Grapple)
-        .or_else(|| held.next())
+/// The weapons a fighter may hold among `armed` (the instances its build mounts and still has,
+/// [`crate::damage::PartDamage::instances`]): its guns in [`Weapon::ROTATION`] order, copies of
+/// one gun by part. The blade is swung on its own key and is not among them, unless it is the
+/// only weapon left: then its first copy is held and the trigger swings it.
+#[must_use]
+pub fn holdable(armed: &[Instance]) -> Vec<Instance> {
+    let mut guns: Vec<Instance> = armed
+        .iter()
+        .copied()
+        .filter(|instance| Weapon::ROTATION.contains(&instance.weapon))
+        .collect();
+    if guns.is_empty() {
+        return armed
+            .iter()
+            .copied()
+            .filter(|instance| instance.weapon == Weapon::EnergyBlade)
+            .min_by_key(|instance| instance.part)
+            .into_iter()
+            .collect();
+    }
+    guns.sort_by_key(|instance| place(*instance));
+    guns
 }
 
-/// The weapon `steps` places on from `from` among the [`holdable`] ones (next for positive
-/// steps, previous for negative), wrapping round. A `from` no longer holdable (lost, say) counts
-/// from where it stands in [`Weapon::ROTATION`], so one step goes to its nearest holdable
-/// neighbour that way. `None` if nothing is holdable or `steps` is 0.
-pub fn cycled(from: Weapon, steps: i32, armed: impl Fn(Weapon) -> bool) -> Option<Weapon> {
-    let cycle: Vec<Weapon> = holdable(armed).collect();
+/// The weapon a fighter takes up at spawn: the first [`holdable`] one, else the blade. `None`
+/// if nothing is holdable (the grapple module never is).
+#[must_use]
+pub fn spawn_weapon(armed: &[Instance]) -> Option<Instance> {
+    holdable(armed).first().copied()
+}
+
+/// The instance `select` asks for among `armed`, if it may be held: an exact copy, or for a
+/// weapon the copy `held` if it is one (and still holdable), else that weapon's first holdable
+/// copy. `None`: the switch is refused.
+#[must_use]
+pub fn resolve(select: Select, held: Instance, armed: &[Instance]) -> Option<Instance> {
+    let holdable = holdable(armed);
+    match select {
+        Select::Part(part) => holdable.into_iter().find(|instance| instance.part == part),
+        Select::Weapon(weapon) if held.weapon == weapon && holdable.contains(&held) => Some(held),
+        Select::Weapon(weapon) => holdable
+            .into_iter()
+            .find(|instance| instance.weapon == weapon),
+    }
+}
+
+/// The instance `steps` places on from `from` among the [`holdable`] ones (next for positive
+/// steps, previous for negative), wrapping round: every copy of a gun is its own place. A `from`
+/// no longer holdable (lost, say) counts from where it stands in the cycle, so one step goes to
+/// its nearest holdable neighbour that way. `None` if nothing is holdable or `steps` is 0.
+#[must_use]
+pub fn cycled(from: Instance, steps: i32, armed: &[Instance]) -> Option<Instance> {
+    let cycle = holdable(armed);
     let len = i32::try_from(cycle.len()).ok().filter(|len| *len > 0)?;
     if steps == 0 {
         return None;
     }
-    // Rotation places, the blade first (it is never among the rotation's).
-    let place = |weapon: Weapon| {
-        Weapon::ROTATION
-            .iter()
-            .position(|held| *held == weapon)
-            .map_or(-1, |index| i32::try_from(index).unwrap_or(0))
-    };
-    let start = if let Some(index) = cycle.iter().position(|weapon| *weapon == from) {
+    let start = if let Some(index) = cycle.iter().position(|instance| *instance == from) {
         i32::try_from(index).unwrap_or(0)
     } else {
         // Between two holdable weapons: the first step lands on the neighbour that way.
         let after = cycle
             .iter()
-            .position(|weapon| place(*weapon) > place(from))
+            .position(|instance| place(*instance) > place(from))
             .map_or(len, |index| i32::try_from(index).unwrap_or(0));
         if steps > 0 { after - 1 } else { after }
     };
@@ -751,55 +1088,130 @@ mod tests {
     #[test]
     fn the_cycle_runs_through_the_armed_guns_in_rotation_order_and_wraps() {
         use Weapon::{EnergyBlade, EnergyRifle, Grapple, Laser, RailGun, RocketLauncher, Shotgun};
-        // The standard build's guns; the blade stays on its own key.
-        let standard = |weapon| matches!(weapon, EnergyRifle | Grapple | Shotgun | EnergyBlade);
-        let cycle: Vec<Weapon> = holdable(standard).collect();
-        assert_eq!(cycle, [EnergyRifle, Grapple, Shotgun]);
-        assert_eq!(cycled(EnergyRifle, 1, standard), Some(Grapple));
-        assert_eq!(cycled(Grapple, 1, standard), Some(Shotgun));
-        assert_eq!(cycled(Shotgun, 1, standard), Some(EnergyRifle));
-        assert_eq!(cycled(EnergyRifle, -1, standard), Some(Shotgun));
-        assert_eq!(cycled(Shotgun, -1, standard), Some(Grapple));
-        // Several notches at once, either way.
-        assert_eq!(cycled(EnergyRifle, 2, standard), Some(Shotgun));
-        assert_eq!(cycled(EnergyRifle, -4, standard), Some(Shotgun));
-        assert_eq!(cycled(EnergyRifle, 0, standard), None);
-        // The grapple lost: skipped, and from it (still held) one step reaches a neighbour.
-        let lost = |weapon| standard(weapon) && weapon != Grapple;
-        assert_eq!(cycled(EnergyRifle, 1, lost), Some(Shotgun));
-        assert_eq!(cycled(Grapple, 1, lost), Some(Shotgun));
-        assert_eq!(cycled(Grapple, -1, lost), Some(EnergyRifle));
-        // A held weapon past the last armed one wraps to the first.
-        assert_eq!(cycled(Laser, 1, lost), Some(EnergyRifle));
-        assert_eq!(
-            cycled(RailGun, -1, |w| w == RocketLauncher),
-            Some(RocketLauncher)
+        let at = Instance::new;
+        let (rifle, blade, grapple, shotgun, laser) = (
+            at(7, EnergyRifle),
+            at(8, EnergyBlade),
+            at(9, Grapple),
+            at(10, Shotgun),
+            at(11, Laser),
         );
+        // The blade and the grapple module stay on their own keys.
+        let standard = [rifle, blade, grapple, shotgun, laser];
+        assert_eq!(holdable(&standard), [rifle, shotgun, laser]);
+        assert_eq!(cycled(rifle, 1, &standard), Some(shotgun));
+        assert_eq!(cycled(shotgun, 1, &standard), Some(laser));
+        assert_eq!(cycled(laser, 1, &standard), Some(rifle));
+        assert_eq!(cycled(rifle, -1, &standard), Some(laser));
+        assert_eq!(cycled(laser, -1, &standard), Some(shotgun));
+        // Several notches at once, either way.
+        assert_eq!(cycled(rifle, 2, &standard), Some(laser));
+        assert_eq!(cycled(rifle, -4, &standard), Some(laser));
+        assert_eq!(cycled(rifle, 0, &standard), None);
+        // The shotgun lost: skipped, and from it (still held) one step reaches a neighbour.
+        let lost = [rifle, blade, grapple, laser];
+        assert_eq!(cycled(rifle, 1, &lost), Some(laser));
+        assert_eq!(cycled(shotgun, 1, &lost), Some(laser));
+        assert_eq!(cycled(shotgun, -1, &lost), Some(rifle));
+        // A held weapon past the last armed one wraps to the first.
+        assert_eq!(cycled(laser, 1, &[rifle, shotgun]), Some(rifle));
+        let rockets = at(3, RocketLauncher);
+        assert_eq!(cycled(at(2, RailGun), -1, &[rockets]), Some(rockets));
         // Only the blade left: it is the cycle; nothing at all: no cycle.
-        let blade = |weapon| weapon == EnergyBlade;
-        assert_eq!(holdable(blade).collect::<Vec<_>>(), [EnergyBlade]);
-        assert_eq!(cycled(EnergyRifle, 1, blade), Some(EnergyBlade));
-        assert_eq!(cycled(EnergyBlade, -1, blade), Some(EnergyBlade));
-        assert_eq!(cycled(EnergyRifle, 1, |_| false), None);
+        assert_eq!(holdable(&[blade]), [blade]);
+        assert_eq!(cycled(rifle, 1, &[blade]), Some(blade));
+        assert_eq!(cycled(blade, -1, &[blade]), Some(blade));
+        assert_eq!(cycled(rifle, 1, &[]), None);
+        // The grapple module is never held (Atlas D2.i104.2).
+        assert_eq!(cycled(rifle, 1, &[grapple]), None);
     }
 
     #[test]
-    fn a_fighter_spawns_holding_its_first_weapon_that_is_not_the_grapple() {
+    fn every_copy_of_a_gun_is_its_own_place_in_the_cycle() {
+        use Weapon::{EnergyBlade, RailGun, RocketLauncher};
+        let at = Instance::new;
+        // Two rail guns, four rocket launchers and two blades, mounted in any part order.
+        let (rail_a, rail_b) = (at(12, RailGun), at(7, RailGun));
+        let pods = [9, 3, 14, 10].map(|part| at(part, RocketLauncher));
+        let mut armed = vec![rail_a, at(8, EnergyBlade), rail_b, at(2, EnergyBlade)];
+        armed.extend(pods);
+        let cycle = holdable(&armed);
+        assert_eq!(
+            cycle,
+            [
+                rail_b,
+                rail_a,
+                at(3, RocketLauncher),
+                at(9, RocketLauncher),
+                at(10, RocketLauncher),
+                at(14, RocketLauncher),
+            ]
+        );
+        assert_eq!(spawn_weapon(&armed), Some(rail_b));
+        assert_eq!(cycled(rail_b, 1, &armed), Some(rail_a));
+        assert_eq!(cycled(rail_b, -1, &armed), Some(at(14, RocketLauncher)));
+        // One rail gun lost: the other stays in the cycle, and from the lost one a step reaches
+        // its neighbours.
+        let lost: Vec<Instance> = armed.iter().copied().filter(|i| *i != rail_b).collect();
+        assert_eq!(cycled(rail_b, 1, &lost), Some(rail_a));
+        assert_eq!(cycled(rail_b, -1, &lost), Some(at(14, RocketLauncher)));
+        // A weapon selects the copy held if it is one, else its first holdable copy; a part
+        // selects exactly that copy; anything not holdable is refused.
+        let rockets = Select::Weapon(RocketLauncher);
+        assert_eq!(
+            resolve(rockets, rail_b, &armed),
+            Some(at(3, RocketLauncher))
+        );
+        assert_eq!(
+            resolve(rockets, at(10, RocketLauncher), &armed),
+            Some(at(10, RocketLauncher))
+        );
+        assert_eq!(resolve(RailGun.into(), rail_b, &lost), Some(rail_a));
+        assert_eq!(resolve(rail_a.into(), rail_b, &armed), Some(rail_a));
+        assert_eq!(resolve(Select::Part(PartId(8)), rail_b, &armed), None);
+        assert_eq!(resolve(rail_b.into(), rail_a, &lost), None);
+        // Nothing but blades: the first is held.
+        let blades = [at(8, EnergyBlade), at(2, EnergyBlade)];
+        assert_eq!(spawn_weapon(&blades), Some(at(2, EnergyBlade)));
+    }
+
+    #[test]
+    fn a_fighter_spawns_holding_its_first_gun_never_the_grapple() {
         use Weapon::{EnergyBlade, EnergyRifle, Flamethrower, Grapple, Laser};
-        let pyro = |weapon| matches!(weapon, Laser | Flamethrower | Grapple | EnergyBlade);
-        assert_eq!(spawn_weapon(pyro), Some(Laser));
-        let standard = |weapon| matches!(weapon, EnergyRifle | Grapple | EnergyBlade);
-        assert_eq!(spawn_weapon(standard), Some(EnergyRifle));
-        // Nothing but the grapple and the blade: the grapple; the blade alone: the blade.
+        let at = Instance::new;
+        let pyro = [
+            at(7, Laser),
+            at(8, EnergyBlade),
+            at(9, Flamethrower),
+            at(10, Grapple),
+        ];
+        assert_eq!(spawn_weapon(&pyro), Some(at(7, Laser)));
+        let standard = [at(7, EnergyRifle), at(8, EnergyBlade), at(9, Grapple)];
+        assert_eq!(spawn_weapon(&standard), Some(at(7, EnergyRifle)));
+        // Nothing but the grapple and the blade: the blade; the grapple alone: nothing.
         assert_eq!(
-            spawn_weapon(|weapon| matches!(weapon, Grapple | EnergyBlade)),
-            Some(Grapple)
+            spawn_weapon(&[at(8, EnergyBlade), at(9, Grapple)]),
+            Some(at(8, EnergyBlade))
         );
+        assert_eq!(spawn_weapon(&[at(9, Grapple)]), None);
+        assert_eq!(spawn_weapon(&[]), None);
+    }
+
+    #[test]
+    fn the_grapple_module_has_its_own_cooldown_and_pays_first() {
+        let mut arsenal = Arsenal::default();
+        // Refused energy: no hook and no cooldown.
+        assert!(!arsenal.hook(0, 45, || false));
+        assert_eq!(arsenal.grapple_cooldown(0), 0);
+        assert!(arsenal.hook(0, 45, || true));
+        assert_eq!(arsenal.grapple_cooldown(10), 35);
+        assert!(!arsenal.hook(44, 45, || true));
+        // The gun fires meanwhile: the two do not share a cooldown.
         assert_eq!(
-            spawn_weapon(|weapon| weapon == EnergyBlade),
-            Some(EnergyBlade)
+            arsenal.trigger(None, false, true, 1),
+            Some(Instance::default())
         );
-        assert_eq!(spawn_weapon(|_| false), None);
+        assert!(arsenal.hook(45, 45, || true));
     }
 
     #[test]
@@ -811,36 +1223,127 @@ mod tests {
     }
 
     #[test]
-    fn the_trigger_respects_refire_and_switch_delays() {
+    fn the_trigger_respects_refire_and_a_switch_delays_nothing() {
         let mut arsenal = Arsenal::default();
-        assert_eq!(
-            arsenal.trigger(None, false, true, 0),
-            Some(Weapon::EnergyRifle)
-        );
+        let rifle = Some(Instance::default());
+        assert_eq!(arsenal.trigger(None, false, true, 0), rifle);
         assert_eq!(arsenal.trigger(None, false, true, 5), None);
-        assert_eq!(
-            arsenal.trigger(None, false, true, 6),
-            Some(Weapon::EnergyRifle)
+        assert_eq!(arsenal.trigger(None, false, true, 6), rifle);
+        // Every mounted gun is out: the primary trigger fires the newly held one at once.
+        let rail = Some(Instance::new(13, Weapon::RailGun));
+        assert_eq!(arsenal.trigger(rail, false, true, 7), rail);
+        assert_eq!(arsenal.trigger(None, false, true, 8), None);
+    }
+
+    /// Fires `requests` at `tick` with every activation granted: the copies that fired.
+    fn fire(arsenal: &mut Arsenal, requests: &[Instance], tick: u32) -> Vec<Instance> {
+        arsenal
+            .trigger_tuned(
+                None,
+                None,
+                requests,
+                tick,
+                |instance| instance.weapon.refire_ticks(),
+                |_| true,
+            )
+            .shots()
+            .to_vec()
+    }
+
+    #[test]
+    fn each_copy_of_a_gun_keeps_its_own_refire_and_they_fire_together() {
+        let (first, second) = (
+            Instance::new(7, Weapon::RailGun),
+            Instance::new(9, Weapon::RailGun),
         );
-        assert_eq!(arsenal.trigger(Some(Weapon::RailGun), false, true, 7), None);
-        assert_eq!(
-            arsenal.trigger(None, false, true, 19),
-            Some(Weapon::RailGun)
+        let mut arsenal = Arsenal::holding(first);
+        // Asked in any order, granted by part.
+        assert_eq!(fire(&mut arsenal, &[second, first], 0), [first, second]);
+        assert_eq!(arsenal.refire_left(first.part, 0), 72);
+        assert_eq!(arsenal.refire_left(second.part, 0), 72);
+        assert_eq!(fire(&mut arsenal, &[first, second], 71), []);
+        // A copy that is ready fires alone while the other recovers.
+        assert_eq!(fire(&mut arsenal, &[first], 72), [first]);
+        assert_eq!(fire(&mut arsenal, &[first, second], 100), [second]);
+        assert_eq!(arsenal.cooldown_of(first, 100), 44);
+        assert_eq!(arsenal.cooldown_of(second, 100), 72);
+        // Repeats are one request.
+        assert_eq!(fire(&mut arsenal, &[first, first, first], 144), [first]);
+    }
+
+    #[test]
+    fn a_refused_copy_refuses_only_itself() {
+        let rail = Instance::new(7, Weapon::RailGun);
+        let rifle = Instance::new(9, Weapon::EnergyRifle);
+        let mut arsenal = Arsenal::default();
+        let volley = arsenal.trigger_tuned(
+            None,
+            None,
+            &[rail, rifle],
+            0,
+            |instance| instance.weapon.refire_ticks(),
+            |instance| instance.weapon != Weapon::RailGun,
         );
-        assert_eq!(arsenal.trigger(None, false, true, 20), None);
+        assert_eq!(volley.shots(), [rifle]);
+        // The refused rail gun spent no cooldown.
+        assert_eq!(arsenal.cooldown_of(rail, 0), 0);
+        assert_eq!(arsenal.cooldown_of(rifle, 0), 6);
+    }
+
+    #[test]
+    fn rocket_launchers_share_a_salvo_limit_and_other_guns_do_not() {
+        let pods = [7, 8, 9, 10].map(|part| Instance::new(part, Weapon::RocketLauncher));
+        let rifle = Instance::new(11, Weapon::EnergyRifle);
+        let salvo = Weapon::RocketLauncher.salvo().unwrap();
+        let mut arsenal = Arsenal::default();
+        let mut all = pods.to_vec();
+        all.push(rifle);
+        let mut launches = Vec::new();
+        for tick in 0..120 {
+            let fired = fire(&mut arsenal, &all, tick);
+            let rockets: Vec<Instance> = fired
+                .iter()
+                .copied()
+                .filter(|fired| fired.weapon == Weapon::RocketLauncher)
+                .collect();
+            assert!(
+                rockets.len() <= usize::from(salvo.per_tick),
+                "{tick}: {fired:?}"
+            );
+            launches.extend(rockets.iter().map(|rocket| (tick, rocket.part.0)));
+            // The rifle is no rocket: it keeps its own cadence beside them.
+            assert_eq!(fired.contains(&rifle), tick % 6 == 0, "{tick}");
+        }
+        // Staggered `spacing` apart, by part, each launcher then on its own refire.
+        let spacing = salvo.spacing;
+        assert_eq!(
+            launches[..5],
+            [
+                (0, 7),
+                (spacing, 8),
+                (2 * spacing, 9),
+                (3 * spacing, 10),
+                (48, 7)
+            ]
+        );
+        // A launcher that has not fired waits out its family's spacing.
+        let mut fresh = Arsenal::default();
+        assert_eq!(fire(&mut fresh, &pods, 0), [pods[0]]);
+        assert_eq!(fresh.cooldown_of(pods[1], 1), spacing - 1);
+        assert_eq!(fresh.refire_left(pods[1].part, 1), 0);
     }
 
     #[test]
     fn the_blade_swings_over_any_gun_and_is_never_held() {
         let mut arsenal = Arsenal::default();
-        let blade = Some(Weapon::EnergyBlade);
+        let blade = Some(TEST_BLADE);
         assert_eq!(arsenal.trigger(blade, true, true, 0), blade);
-        assert_eq!(arsenal.held, Weapon::EnergyRifle);
+        assert_eq!(arsenal.held, Instance::default());
         // The gun waits out the lockout; the blade its own refire.
         assert_eq!(arsenal.trigger(None, false, true, 17), None);
         assert_eq!(
             arsenal.trigger(None, true, true, 18),
-            Some(Weapon::EnergyRifle)
+            Some(Instance::default())
         );
         assert_eq!(arsenal.trigger(None, true, false, 29), None);
         assert_eq!(arsenal.trigger(None, true, false, 30), blade);
@@ -849,9 +1352,9 @@ mod tests {
     #[test]
     fn the_flame_ignites_while_the_trigger_stays_down() {
         let mut arsenal = Arsenal::default();
-        let flame = Some(Weapon::Flamethrower);
+        let flame = Some(Instance::new(12, Weapon::Flamethrower));
         arsenal.trigger(flame, false, false, 0);
-        let mut tick = SWITCH_TICKS;
+        let mut tick = 0;
         for _ in 0..FLAME_IGNITION_TICKS {
             assert_eq!(arsenal.trigger(None, false, true, tick), flame);
             assert!(!arsenal.ignited(), "tick {tick}");

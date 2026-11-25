@@ -1,23 +1,25 @@
-//! How a player's body moves: walk, sprint, slide, step-up, jump, double jump, jump pads, air
-//! control and the grapple's rope.
-//! The physics world (physics-engine, or the Rapier oracle under `physics-ab`) resolves contact,
-//! slopes and support; this module only turns the player's intent and the body's realized
-//! velocity into the velocity it asks for each tick.
+//! How a fighter moves: walk, sprint, slide, jump, double jump, jump pads, air control and the
+//! grapple's rope. Since shooter#73 the body these rules move is the fighter's mechanical robot
+//! ([`crate::mechanics`]): [`Motion::drive`] turns the intent and the velocity its root body
+//! realized into the velocity the movement drive sets ([`crate::mechanics::Mechanics::drive`]);
+//! the articulated world (physics-engine, or the Rapier oracle under `physics-ab`) resolves
+//! contact, slopes and support.
 //!
 //! Every rule is integer: velocities are subunits per tick, directions Q16
 //! (`crate::trig`), lengths integer square roots.
 
 use crate::arena::Arena;
 use crate::fixed::{subunits_per_tick, subunits_per_tick_squared};
-use crate::physics::{BodyId, PhysicsError, RigidBody, StepUp, Vec3i, World};
+use crate::physics::{StepUp, Vec3i};
 use crate::trig;
-use crate::weapons::Weapon;
+use crate::weapons::{Select, Triggers};
 
-/// The player's collision box, 0.6 m × 1.8 m × 0.6 m (an upright capsule in physics).
+/// The reference fighter box, 0.6 m × 1.8 m × 0.6 m: the dummies' bodies, and how high above its feet
+/// a robot's centre is.
 pub const PLAYER_HALF_EXTENTS: Vec3i = Vec3i::new(30, 90, 30);
 /// Eye height above the feet.
 pub const EYE_HEIGHT_UNITS: i32 = 165;
-/// Eye height above the feet while sliding (presentation only: the capsule keeps its height).
+/// Eye height above the feet while sliding.
 pub const SLIDE_EYE_HEIGHT_UNITS: i32 = 100;
 /// Walking speed in every direction: 7.2 m/s.
 pub const WALK_SPEED_UNITS_PER_SECOND: i32 = 720;
@@ -72,16 +74,35 @@ pub struct Intent {
     /// Where the player aims up (positive) or down, in `trig` angle steps within
     /// ±[`crate::weapons::MAX_PITCH`].
     pub pitch: i16,
-    /// Trigger held: fires whenever the held weapon is ready.
+    /// The primary trigger held: fires the held weapon copy whenever it is ready (a convenience
+    /// beside the direct weapon bindings, shooter#127).
     pub fire: bool,
     /// Melee held: swings the energy blade whenever it is ready ([`crate::melee`]).
     pub melee: bool,
-    /// Switch to this weapon (it stays held until another is selected).
-    pub select: Option<Weapon>,
+    /// Grapple held (Atlas D2.i104.2): the robot's mounted grapple module hooks whenever it is
+    /// ready, and a set hook holds (reeling and swinging) until this is let go
+    /// ([`crate::grapple`]). Its own key, whatever gun is held.
+    pub grapple: bool,
+    /// Switch to this weapon copy, or to a copy of this weapon ([`crate::weapons::resolve`]); it
+    /// stays held until another is selected.
+    pub select: Option<Select>,
     /// Edit Robot held (Atlas D2.i70.11): while its robot is dead, the person is in the builder
     /// and it does not come back until this is released (Ready). It does nothing while the
     /// robot is alive: a living robot is never rebuilt (D2.i46.7).
     pub edit: bool,
+    /// Start or stop a field repair ([`crate::repair`]): sent once, like a weapon switch; the
+    /// host checks it and refuses a part that is not eligible.
+    pub repair: Option<crate::repair::Order>,
+    /// What the person's control layout tells the robot's actuators this tick (Atlas D2.i70.7,
+    /// [`crate::bindings`]): its joints, legs, wheels and tracks. The host keeps only commands
+    /// its connected actuators take ([`crate::bindings::Motors::controls`]); the rest stand at
+    /// rest.
+    pub motors: crate::bindings::Motors,
+    /// The weapon copies its direct weapon bindings and weapon groups ask to fire this tick
+    /// (shooter#127, [`crate::bindings`]), beside the primary trigger: each fires if it is ready,
+    /// its family's salvo limit allows and the pool grants its energy
+    /// ([`crate::weapons::Arsenal::trigger_tuned`]).
+    pub triggers: Triggers,
 }
 
 impl Intent {
@@ -96,8 +117,12 @@ impl Intent {
         pitch: 0,
         fire: false,
         melee: false,
+        grapple: false,
         select: None,
         edit: false,
+        repair: None,
+        motors: crate::bindings::Motors::REST,
+        triggers: Triggers::NONE,
     };
 }
 
@@ -110,6 +135,8 @@ pub struct Motion {
     slide_ready: bool,
     air_jumps: u8,
     jump_held: bool,
+    /// It was off its feet last tick: on the tick it lands, its legs do not throw it back up.
+    airborne: bool,
 }
 
 impl Motion {
@@ -119,7 +146,8 @@ impl Motion {
         (self.sliding as u8)
             | (self.slide_ready as u8) << 1
             | (self.jump_held as u8) << 2
-            | (self.air_jumps & 0x1f) << 3
+            | (self.air_jumps & 0x0f) << 3
+            | (self.airborne as u8) << 7
     }
 
     #[must_use]
@@ -128,12 +156,13 @@ impl Motion {
             sliding: bits & 1 != 0,
             slide_ready: bits & 2 != 0,
             jump_held: bits & 4 != 0,
-            air_jumps: bits >> 3,
+            air_jumps: (bits >> 3) & 0x0f,
+            airborne: bits & 0x80 != 0,
         }
     }
 }
 
-/// What [`Player::apply`] did this tick.
+/// What [`Motion::drive`] did this tick.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Moves {
     pub jumped: bool,
@@ -141,11 +170,38 @@ pub struct Moves {
     pub launched: bool,
 }
 
-/// One player's body in the arena's physics world and its movement state.
+/// How much of its locomotion a robot still has: the connected legs, wheels and tracks out of
+/// those its build mounts ([`crate::damage`]). The wished walking and sprinting speeds scale by
+/// it (a robot on one of its two legs walks at half speed).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Player {
-    pub body: BodyId,
-    pub motion: Motion,
+pub struct Traction {
+    pub connected: u8,
+    pub mounted: u8,
+}
+
+impl Traction {
+    pub const FULL: Self = Self {
+        connected: 1,
+        mounted: 1,
+    };
+
+    const fn scale(self, speed: i32) -> i32 {
+        if self.mounted == 0 {
+            return 0;
+        }
+        speed * self.connected as i32 / self.mounted as i32
+    }
+}
+
+/// What the movement rules see of a body this tick.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Footing {
+    /// The velocity the last step realized, subunits per tick.
+    pub velocity: Vec3i,
+    /// It stands on its feet (legs, wheels or tracks on ground).
+    pub grounded: bool,
+    /// Its feet, in whole units.
+    pub feet: Vec3i,
 }
 
 /// The yaw offset of a forward/strafe combination: strafing right turns away from +X, the way
@@ -227,105 +283,90 @@ fn air_control(velocity: [i32; 2], intent: Intent) -> [i32; 2] {
     }
 }
 
-impl Player {
-    /// Adds a player standing at `feet` to `world`.
-    pub fn spawn(world: &mut World, body: BodyId, feet: Vec3i) -> Result<Self, PhysicsError> {
-        let center = Vec3i::new(feet.x, feet.y + PLAYER_HALF_EXTENTS.y, feet.z);
-        world.add_body(RigidBody::dynamic(
-            body,
-            center,
-            Vec3i::ZERO,
-            PLAYER_HALF_EXTENTS,
-        ))?;
-        Ok(Self {
-            body,
-            motion: Motion::default(),
-        })
-    }
-
-    /// The feet, in whole units.
-    fn feet_units(&self, world: &World) -> Vec3i {
-        let center = world
-            .body(self.body)
-            .map_or(Vec3i::ZERO, RigidBody::position);
-        Vec3i::new(center.x, center.y - PLAYER_HALF_EXTENTS.y, center.z)
-    }
-
-    /// Sets the velocity `intent` asks for before the world steps, from the velocity the last
-    /// step realized (walls and ceilings have already taken their share of it).
+impl Motion {
+    /// The velocity (subunits per tick) a body standing as `footing` says asks for this tick,
+    /// with `intent`: the movement rules, whatever body carries them (the match's mechanical
+    /// robots, [`crate::mechanics::Mechanics::drive`]).
     ///
-    /// - A jump pad under a grounded player throws it with the pad's velocity.
-    /// - On ground: walking or sprinting sets the horizontal velocity outright; crouching while
-    ///   faster than [`SLIDE_ENTRY_SUBUNITS_PER_TICK`] starts a slide, which keeps its direction
-    ///   and decays to walking speed. A jump keeps the horizontal velocity (slide jumps carry).
+    /// - A jump pad under a grounded body throws it with the pad's velocity.
+    /// - On ground: walking or sprinting sets the horizontal velocity outright (at the share of
+    ///   its locomotion it still has, [`Traction`]); crouching while faster than
+    ///   [`SLIDE_ENTRY_SUBUNITS_PER_TICK`] starts a slide, which keeps its direction and decays
+    ///   to walking speed. A jump keeps the horizontal velocity (slide jumps carry).
     /// - In the air: air control steers, and a fresh jump press spends the air jump, turning the
     ///   momentum toward the wished direction.
-    /// - On a grapple's rope (`hooked`), the player moves as in the air even on ground: the
-    ///   rope's pull drags it along instead of the feet stopping it.
+    /// - On a grapple's rope (`hooked`), it moves as in the air even on ground: the rope's pull
+    ///   drags it along instead of the feet stopping it.
     /// - Every jump, the air jump too, leaves upward at `jump_velocity` (subunits per tick:
     ///   [`JUMP_VELOCITY_SUBUNITS_PER_TICK`], or more with thrusters, [`crate::pickups`]).
-    pub fn apply(
+    pub fn drive(
         &mut self,
-        world: &mut World,
         arena: &Arena,
         intent: Intent,
+        footing: Footing,
         hooked: bool,
         jump_velocity: i32,
-    ) -> Result<Moves, PhysicsError> {
-        let current = world
-            .body(self.body)
-            .map(RigidBody::velocity)
-            .unwrap_or_default();
-        let grounded = world.grounded(self.body) && !hooked;
-        let feet = self.feet_units(world);
-        let motion = &mut self.motion;
-        let jump_pressed = intent.jump && !motion.jump_held;
-        motion.jump_held = intent.jump;
+        traction: Traction,
+    ) -> (Vec3i, Moves) {
+        let current = footing.velocity;
+        let grounded = footing.grounded && !hooked;
+        let landed = grounded && self.airborne;
+        self.airborne = !grounded;
+        let jump_pressed = intent.jump && !self.jump_held;
+        self.jump_held = intent.jump;
         if !intent.crouch {
-            motion.slide_ready = true;
+            self.slide_ready = true;
         }
 
         let mut moves = Moves::default();
         let mut horizontal = [current.x, current.z];
         let mut vertical = current.y;
-        let pad = arena.pad_under(feet).filter(|_| grounded && current.y <= 0);
+        let pad = arena
+            .pad_under(footing.feet)
+            .filter(|_| grounded && current.y <= 0);
         if let Some(pad) = pad {
             let launch = pad.launch_velocity();
             horizontal = [launch.x, launch.z];
             vertical = launch.y;
-            motion.sliding = false;
+            self.sliding = false;
             moves.launched = true;
         } else if grounded {
-            motion.air_jumps = AIR_JUMPS;
+            self.air_jumps = AIR_JUMPS;
             let speed = length(horizontal);
-            if motion.sliding && (!intent.crouch || speed <= WALK_SPEED_SUBUNITS_PER_TICK) {
-                motion.sliding = false;
-            } else if !motion.sliding
+            if self.sliding && (!intent.crouch || speed <= WALK_SPEED_SUBUNITS_PER_TICK) {
+                self.sliding = false;
+            } else if !self.sliding
                 && intent.crouch
-                && motion.slide_ready
+                && self.slide_ready
                 && speed >= SLIDE_ENTRY_SUBUNITS_PER_TICK
             {
-                motion.sliding = true;
-                motion.slide_ready = false;
+                self.sliding = true;
+                self.slide_ready = false;
                 horizontal = with_speed(horizontal, speed.max(SLIDE_SPEED_SUBUNITS_PER_TICK));
-            } else if motion.sliding {
+            } else if self.sliding {
                 horizontal = with_speed(horizontal, speed - SLIDE_FRICTION_SUBUNITS_PER_TICK);
             }
-            if !motion.sliding {
-                horizontal = walk_velocity(intent);
+            if !self.sliding {
+                horizontal = wish_direction(intent).map_or([0, 0], |direction| {
+                    scale(direction, traction.scale(wish_speed(intent)))
+                });
+            }
+            if landed {
+                // Touching down: the legs' give does not bounce it back up.
+                vertical = vertical.min(0);
             }
             if intent.jump {
                 vertical = jump_velocity;
-                motion.sliding = false;
+                self.sliding = false;
                 moves.jumped = true;
             }
         } else {
             // A slide survives leaving the ground (down a ramp, off a ledge) and goes on when
             // it lands; only a jump ends it.
             horizontal = air_control(horizontal, intent);
-            if jump_pressed && motion.air_jumps > 0 {
-                motion.air_jumps -= 1;
-                motion.sliding = false;
+            if jump_pressed && self.air_jumps > 0 {
+                self.air_jumps -= 1;
+                self.sliding = false;
                 if let Some(direction) = wish_direction(intent) {
                     let speed = length(horizontal).max(wish_speed(intent));
                     horizontal = scale(direction, speed);
@@ -335,66 +376,16 @@ impl Player {
                 moves.air_jumped = true;
             }
         }
-        world.set_velocity(
-            self.body,
-            Vec3i::new(horizontal[0], vertical, horizontal[1]),
-        )?;
-        Ok(moves)
+        (Vec3i::new(horizontal[0], vertical, horizontal[1]), moves)
     }
+}
 
-    /// The body's exact centre, in units.
-    #[must_use]
-    pub fn center(&self, world: &World) -> [f32; 3] {
-        world
-            .body(self.body)
-            .map(RigidBody::exact_position)
-            .unwrap_or_default()
-    }
-
-    /// The feet, in units.
-    #[must_use]
-    pub fn feet(&self, world: &World) -> [f32; 3] {
-        let [x, y, z] = self.center(world);
-        #[allow(clippy::cast_precision_loss)]
-        [x, y - PLAYER_HALF_EXTENTS.y as f32, z]
-    }
-
-    /// Where shots leave from: the eye, lower while sliding.
-    #[must_use]
-    pub fn eye(&self, world: &World) -> [f32; 3] {
-        let [x, y, z] = self.feet(world);
-        let height = if self.motion.sliding {
-            SLIDE_EYE_HEIGHT_UNITS
-        } else {
-            EYE_HEIGHT_UNITS
-        };
-        #[allow(clippy::cast_precision_loss)]
-        [x, y + height as f32, z]
-    }
-
-    /// Adds `push` (subunits per tick) to the body's velocity: a blast's knockback.
-    pub fn push(&self, world: &mut World, push: [i32; 3]) -> Result<(), PhysicsError> {
-        let velocity = world
-            .body(self.body)
-            .map(RigidBody::velocity)
-            .unwrap_or_default();
-        world.set_velocity(
-            self.body,
-            Vec3i::new(
-                velocity.x + push[0],
-                velocity.y + push[1],
-                velocity.z + push[2],
-            ),
-        )
-    }
-
-    /// The horizontal speed the last step realized, subunits per tick.
-    #[must_use]
-    pub fn horizontal_speed(&self, world: &World) -> i32 {
-        let velocity = world
-            .body(self.body)
-            .map(RigidBody::velocity)
-            .unwrap_or_default();
-        length([velocity.x, velocity.z])
+/// Eye height above the feet: lower while sliding.
+#[must_use]
+pub const fn eye_height(motion: Motion) -> i32 {
+    if motion.sliding {
+        SLIDE_EYE_HEIGHT_UNITS
+    } else {
+        EYE_HEIGHT_UNITS
     }
 }

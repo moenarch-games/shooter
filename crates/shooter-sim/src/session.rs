@@ -14,36 +14,86 @@
 //! start, until the person releases it (Ready, Atlas D2.i70.11). A person who stops sending
 //! inputs (a lost connection) lets go of it after [`HOLD_INPUT_TICKS`].
 //!
+//! **Mechanical robots** (shooter#73, Atlas D2.i70.5). Every living fighter is its robot in the
+//! articulated world ([`crate::mechanics`], [`Session::mechanics`]), keyed by its slot: the
+//! robot's compound bodies are its only body (no capsule), and every part's box is where its
+//! body carries it ([`Fighter::hitboxes`]). A spawn adds the robot, a death or a slot changing
+//! hands removes it, and a part that comes off ([`crate::damage`]) leaves the bodies, so it no
+//! longer weighs, touches or drives anything ([`Mechanics::sever`]); each of those rebuilds the
+//! world from its exact state, so the host, a predicting client and a replay continue alike.
+//! Each tick the movement rules ([`crate::player::Motion::drive`]: walk, sprint, slide, jumps,
+//! pads, air control, the rope) give the velocity the movement drive sets on the whole robot
+//! ([`Mechanics::drive`]); for robots with connected legs it also balances and faces the aim.
+//! Wheels and tracks alone neither jump nor turn their chassis toward the camera. This is an
+//! interim chassis drive (Atlas D2.i70.5) until robots walk and roll on their actuators alone. Its
+//! actuators take what its person's control layout resolved ([`crate::bindings`]; a bot's, its
+//! build's preset from its movement keys), drawing their motors' energy from its pool after its
+//! jumps, swings and shots, and its legs, wheels and tracks slide where the drive takes them. It walks on its feet: only a connected leg,
+//! wheel or track on the ground is footing, and the wished speeds scale by the share of its
+//! locomotion it still has ([`crate::player::Traction`]).
+//!
+//! **Collisions and debris** (shooter#75, Atlas D2.i70.10). After the step, a robot that a hard
+//! impact (another robot, debris, the arena, a high fall) changed fast enough takes a blow on the
+//! part reaching furthest toward what it hit ([`crate::impact`]), nobody's (a collision kill
+//! costs a frag, as a fall does). A large part carried away whole stays a physical body for a
+//! while ([`Mechanics::break_off`], [`crate::mechanics::DebrisState`]); destroyed and small ones
+//! do not. Debris retires deterministically (lifetime, rest, budget, its robot's respawn) at the
+//! start of a tick and travels in snapshots, so a predicting client holds it exactly.
+//!
 //! Hitscan shots and blade swings are lag-compensated: a person's shot is checked against the
-//! fighters' parts where that person saw them (their centre and yaw at the snapshot tick its
-//! command names, at most [`MAX_REWIND_TICKS`] back; the parts they have now), while the
-//! arena's geometry blocks the ray as it is now. Rockets and shotgun pellets are projectiles:
+//! fighters' parts where that person saw them (where their bodies carried them at the snapshot
+//! tick its command names, at most [`MAX_REWIND_TICKS`] back; the parts they have now), while
+//! the arena's geometry blocks the ray as it is now. Rockets and shotgun pellets are projectiles:
 //! they fly through the world as it is each tick and meet fighters' parts where they are then,
 //! like the flame.
 //!
-//! Module pickups lie on the map's pads; the host resolves who takes them, applies, expires and
-//! clears their effects and brings the pads back ([`crate::pickups`] has the rules).
+//! Module pickups lie on the map's pads and where their carriers died; the host resolves who takes
+//! them, applies, expires and clears their effects, drops a dead carrier's module, removes the
+//! drops and brings the pads back ([`crate::pickups`] has the rules).
+//!
+//! **Arena destruction** (shooter#60). A kit-built map's marked cover, barriers and crates are
+//! damageable placeables ([`Session::scenery`]): a ray, a pellet or the flame that stops on one,
+//! a blade swing that strikes no robot but meets one, and a rocket's blast hurt it as they hurt
+//! robot parts, and at zero health it breaks. The break lands last in the tick (after the robots'
+//! changes), in the arena, the physics world and the robots' world at once, so every query of
+//! the next tick meets the broken pieces; a new round restores every placeable
+//! ([`crate::scenery`] has the rules).
 //!
 //! Every fighter has a shared energy pool from its build; its jumps, swings and shots ask it for
 //! energy first come, first served and it regenerates after them each tick ([`crate::energy`]).
 //! A lost battery takes its capacity and its share of the charge with it.
+//!
+//! A person whose build mounts a repair module may repair a damaged part in its reach while the
+//! match goes on ([`crate::repair`]): the host checks the order, the repair draws from the pool
+//! after the tick's shots and hits and before the motors, a blow on the part or the module
+//! pauses it, and death and respawn end it.
 
 use crate::aim;
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
+use crate::bindings::{BindingState, Bindings, Pressed};
 use crate::bots::{Bot, Sight};
 use crate::damage::{BATTERY_BLAST_DAMAGE, BATTERY_BLAST_RADIUS_UNITS, Blow, Hitboxes, PartDamage};
 use crate::dummies::Dummy;
 use crate::energy::{self, Pool};
 use crate::grapple::Hook;
 use crate::maps::MapId;
+use crate::mechanics::{self, Controls, Footing as RobotFooting, Mechanics, RobotState};
 use crate::melee;
-use crate::physics::{BodyId, PhysicsError, RayHit, Vec3i, World};
-use crate::pickups::{self, ArenaModule, Carried, PAD_RESPAWN_TICKS, Pickup};
-use crate::player::{
-    EYE_HEIGHT_UNITS, GRAVITY, Intent, KILL_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, Player, STEP_UP,
+use crate::physics::articulated::Pose;
+use crate::physics::{BodyId, PhysicsError, RayHit, SUBUNITS_PER_UNIT, Vec3i, World};
+use crate::pickups::{
+    self, ArenaModule, Carried, DROP_LIFETIME_TICKS, Drop, PAD_RESPAWN_TICKS, Pickup,
 };
-use crate::robot::{Assembly, BETA, Kind, PartId, Tuning};
-use crate::weapons::{self, Arsenal, Delivery, Flight, Pellet, Rocket, Travel, Weapon};
+use crate::player::{
+    Footing, GRAVITY, Intent, KILL_HEIGHT_UNITS, Motion, PLAYER_HALF_EXTENTS, STEP_UP, Traction,
+    eye_height,
+};
+use crate::repair::{self, Order, Outcome, Repair};
+use crate::robot::{Assembly, BETA, Kind, Locomotion, PartId, Tuning};
+use crate::scenery::{PlaceableState, Scenery};
+use crate::weapons::{
+    self, Arsenal, Delivery, Flight, Instance, Pellet, Rocket, Select, Travel, Weapon,
+};
 use std::collections::VecDeque;
 
 /// Ticks a fighter stays dead: 2 s.
@@ -175,7 +225,10 @@ pub struct Fighter {
     pub pilot: Pilot,
     /// The name its person picked ([`crate::names`]); cleared when the slot changes hands.
     pub name: Option<String>,
-    pub player: Player,
+    /// Its movement state (slides, jumps) between ticks.
+    pub motion: Motion,
+    /// Where its mechanical robot is after the last tick, while it is alive.
+    pub stance: Option<Stance>,
     pub arsenal: Arsenal,
     /// The robot it is built as this life ([`crate::robot`]).
     pub build: Assembly,
@@ -191,6 +244,8 @@ pub struct Fighter {
     /// Its build's part healths and lost parts this life ([`crate::damage`]); the root
     /// chassis' health is its life.
     pub parts: PartDamage,
+    /// The field repair under way this life, if any ([`crate::repair`]).
+    pub repair: Option<Repair>,
     /// While dead: the tick it comes back.
     pub respawn_at: Option<u32>,
     pub frags: i32,
@@ -215,10 +270,8 @@ impl Fighter {
             slot,
             pilot,
             name: None,
-            player: Player {
-                body: body_of(slot),
-                motion: crate::player::Motion::default(),
-            },
+            motion: Motion::default(),
+            stance: None,
             arsenal: Arsenal::default(),
             build: Assembly::default(),
             configured: Assembly::default(),
@@ -226,6 +279,7 @@ impl Fighter {
             carried: None,
             energy: 0,
             parts: PartDamage::default(),
+            repair: None,
             respawn_at: None,
             frags: 0,
             deaths: 0,
@@ -248,7 +302,7 @@ impl Fighter {
 
     /// Tracks the input backlog over [`BACKLOG_WINDOW_TICKS`] and, at the end of a window in
     /// which more than [`BACKLOG_KEEP`] inputs always waited, drops the oldest down to it (a
-    /// dropped weapon switch carries over to the next input).
+    /// dropped weapon switch or repair order carries over to the next input).
     fn trim_backlog(&mut self) {
         self.backlog = self.backlog.min(self.inputs.len());
         self.backlog_ticks += 1;
@@ -261,6 +315,7 @@ impl Fighter {
             };
             if let Some(next) = self.inputs.front_mut() {
                 next.intent.select = next.intent.select.or(dropped.intent.select);
+                next.intent.repair = next.intent.repair.or(dropped.intent.repair);
             }
         }
         self.backlog = usize::MAX;
@@ -287,10 +342,17 @@ impl Fighter {
         self.grounded
     }
 
-    /// How `weapon` fires for it: its build's mod on the weapon, then the module it carries.
+    /// How the weapon copy `instance` fires for it: its build's mod on that copy, then the
+    /// module it carries.
     #[must_use]
-    pub fn tuning(&self, weapon: Weapon) -> Tuning {
-        tuning_of(&self.build, self.carried, weapon)
+    pub fn tuning(&self, instance: Instance) -> Tuning {
+        tuning_of(&self.build, self.carried, instance)
+    }
+
+    /// The weapon copies it still has, in part ID order ([`PartDamage::instances`]).
+    #[must_use]
+    pub fn instances(&self) -> Vec<Instance> {
+        self.parts.instances(&self.build).collect()
     }
 
     /// Its shared energy pool: its build's capacity and regeneration ([`crate::energy`]).
@@ -299,21 +361,32 @@ impl Fighter {
         Pool::attached(&self.build, &self.parts)
     }
 
-    /// It is `build` this life, whole (practice and scripts; a hosted fighter changes build only
-    /// at a spawn, [`Session::configure`]).
-    pub fn rebuild(&mut self, build: Assembly) {
+    /// It is `build` this life, whole: its parts and arsenal ([`Session::rebuild`] puts its
+    /// robot in the world as that build).
+    fn rebuild(&mut self, build: Assembly) {
         self.build = build;
         self.parts = PartDamage::fresh(&build);
+        self.repair = None;
         if !self.parts.holdable(&build, self.arsenal.held) {
             self.arsenal = Arsenal::holding(self.first_weapon());
         }
     }
 
-    /// The weapon it takes up at spawn: the first its build lets it hold that is not the grapple,
-    /// else the grapple, else the blade ([`weapons::spawn_weapon`]), the energy rifle when it has
-    /// none.
-    fn first_weapon(&self) -> Weapon {
-        weapons::spawn_weapon(|weapon| self.parts.armed(&self.build, weapon)).unwrap_or_default()
+    /// The parts a field repair may start on now (bits by index, [`repair::eligible`]): damaged,
+    /// still connected and in reach of a working repair module where its robot carries them.
+    /// None while dead.
+    #[must_use]
+    pub fn repairable(&self) -> u32 {
+        if !self.alive() {
+            return 0;
+        }
+        repair::eligible(&self.build, &self.parts, &self.hitboxes())
+    }
+
+    /// The weapon it takes up at spawn: the first gun its build lets it hold, else the blade
+    /// ([`weapons::spawn_weapon`]; never the grapple module), the energy rifle when it has none.
+    fn first_weapon(&self) -> Instance {
+        weapons::spawn_weapon(&self.instances()).unwrap_or_default()
     }
 
     /// Its root chassis' health: its life ([`crate::damage`]).
@@ -322,16 +395,286 @@ impl Fighter {
         self.parts.chassis_health(&self.build)
     }
 
-    /// Its connected parts as hitboxes on a capsule centred at `center` facing `yaw`.
+    /// Its connected parts where its robot's bodies carry them now (none while dead).
     #[must_use]
-    pub fn hitboxes(&self, center: [f32; 3], yaw: u16) -> Hitboxes {
-        Hitboxes::place(&self.build, &self.parts, center, yaw)
+    pub fn hitboxes(&self) -> Hitboxes {
+        self.stance
+            .as_ref()
+            .map(|stance| stance.hitboxes.attached(&self.parts))
+            .unwrap_or_default()
+    }
+
+    /// The weapon copy `which` names on its robot: that exact part if it is a weapon of its
+    /// build, or the first copy of that weapon it still has.
+    #[must_use]
+    pub fn copy(&self, which: impl Into<Select>) -> Option<Instance> {
+        match which.into() {
+            Select::Part(part) => BETA.instance(&self.build, part),
+            Select::Weapon(weapon) => self.parts.first(&self.build, weapon),
+        }
+    }
+
+    /// Where the weapon copy `which` names ([`Fighter::copy`]) shoots from now
+    /// ([`aim::muzzle`]): `None` while dead, or when that copy is no longer connected or the
+    /// weapon has no muzzle (the blade).
+    #[must_use]
+    pub fn muzzle(&self, which: impl Into<Select>) -> Option<aim::Muzzle> {
+        aim::muzzle(&self.build, &self.hitboxes(), self.copy(which)?)
+    }
+
+    /// Its feet (units): its robot's frame origin less the reach of its build standing whole
+    /// ([`mechanics::stance`]); the origin while dead.
+    #[must_use]
+    pub fn feet(&self) -> [f32; 3] {
+        self.stance.as_ref().map_or([0.0; 3], Stance::feet)
+    }
+
+    /// Its centre (units): as high above its feet as a fighter's reference box's centre
+    /// ([`PLAYER_HALF_EXTENTS`]), what bots, pads and blasts measure from.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn center(&self) -> [f32; 3] {
+        let [x, y, z] = self.feet();
+        [x, y + PLAYER_HALF_EXTENTS.y as f32, z]
+    }
+
+    /// Where its shots leave from: the eye above its feet, lower while sliding.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn eye(&self) -> [f32; 3] {
+        let [x, y, z] = self.feet();
+        [x, y + eye_height(self.motion) as f32, z]
+    }
+
+    /// Its root body's velocity (units a second), zero while dead.
+    #[must_use]
+    pub fn velocity(&self) -> [f32; 3] {
+        self.stance
+            .as_ref()
+            .map_or([0.0; 3], |stance| stance.velocity)
+    }
+
+    /// The share of its locomotion it still has.
+    #[must_use]
+    pub fn traction(&self) -> Traction {
+        let mut traction = Traction {
+            connected: 0,
+            mounted: 0,
+        };
+        for (index, part) in self.build.parts().iter().enumerate() {
+            if BETA
+                .part_type(part.kind)
+                .is_some_and(|kind| matches!(kind.kind, Kind::Locomotion(_)))
+            {
+                traction.mounted = traction.mounted.saturating_add(1);
+                if self.parts.attached(index) {
+                    traction.connected = traction.connected.saturating_add(1);
+                }
+            }
+        }
+        traction
+    }
+
+    /// An operational leg is the interim movement drive's only source of natural jump and
+    /// chassis turning. Wheels, tracks and detached legs do not grant either capability.
+    #[must_use]
+    fn connected_leg(&self) -> bool {
+        self.build.parts().iter().enumerate().any(|(index, part)| {
+            self.parts.attached(index)
+                && BETA
+                    .part_type(part.kind)
+                    .is_some_and(|part_type| part_type.kind == Kind::Locomotion(Locomotion::Leg))
+        })
     }
 }
 
-fn tuning_of(build: &Assembly, carried: Option<Carried>, weapon: Weapon) -> Tuning {
-    let tuning = BETA.tuning(build, weapon);
-    carried.map_or(tuning, |carried| carried.module.tune(weapon, tuning))
+/// Where a fighter's mechanical robot is after a tick.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stance {
+    /// Its root body's authored frame.
+    pub origin: Pose,
+    /// Its root body's velocity (of its centre of mass), units a second.
+    pub velocity: [f32; 3],
+    /// How far its feet reach below the origin ([`mechanics::stance`] of its whole build).
+    pub reach: f32,
+    pub footing: RobotFooting,
+    /// Its connected parts where its bodies carry them.
+    pub hitboxes: Hitboxes,
+}
+
+impl Stance {
+    #[must_use]
+    pub fn feet(&self) -> [f32; 3] {
+        let [x, y, z] = self.origin.position;
+        [x, y - self.reach, z]
+    }
+}
+
+/// Units a second of a velocity in subunits a tick.
+#[allow(clippy::cast_precision_loss)]
+fn per_second(velocity: Vec3i) -> [f32; 3] {
+    [velocity.x, velocity.y, velocity.z]
+        .map(|axis| (axis * i32::from(crate::TICK_HZ)) as f32 / SUBUNITS_PER_UNIT as f32)
+}
+
+/// Subunits a tick of a velocity in units a second, rounded.
+#[allow(clippy::cast_possible_truncation)]
+fn per_tick(velocity: [f32; 3]) -> Vec3i {
+    let [x, y, z] = velocity
+        .map(|axis| (axis * SUBUNITS_PER_UNIT as f32 / f32::from(crate::TICK_HZ)).round() as i32);
+    Vec3i::new(x, y, z)
+}
+
+/// Whole units of a position.
+#[allow(clippy::cast_possible_truncation)]
+fn whole(position: [f32; 3]) -> Vec3i {
+    let [x, y, z] = position.map(|axis| axis.round() as i32);
+    Vec3i::new(x, y, z)
+}
+
+/// Below this speed up or down (units a second) a robot held up by its chassis has come to rest
+/// there rather than glancing off on its way down...
+const PERCHED_REST: f32 = 2.0;
+/// ...and with no scenery this far (units) under its feet it is hung up on it, not leaning on
+/// a wall a step above the ground.
+const PERCHED_HEIGHT: f32 = 20.0;
+
+/// A robot held up by its chassis, upright, at rest and high off the ground: perched on a
+/// ledge's lip rather than tipped over.
+fn perched(world: &World, stance: &Stance) -> bool {
+    let feet = stance.feet();
+    upright(stance.origin.orientation)
+        && stance.velocity[1].abs() < PERCHED_REST
+        && world
+            .cast_ray(feet, [0.0, -PERCHED_HEIGHT, 0.0], |body| {
+                body.0 < FIRST_PLAYER_BODY
+            })
+            .is_none()
+}
+
+/// A robot's frame at `orientation` leans less than 45° from upright: its up axis's height,
+/// `1 - 2 (x² + z²)`, is above `cos 45°` (arithmetic only, so every platform agrees).
+fn upright(orientation: [f32; 4]) -> bool {
+    let [x, _, z, _] = orientation;
+    1.0 - 2.0 * (x * x + z * z) > std::f32::consts::FRAC_1_SQRT_2
+}
+
+/// The angular velocity (radians a second) that turns a robot's frame from `orientation`
+/// halfway to upright and facing `yaw` in a tick: the movement drive's balance and aim.
+/// Arithmetic only (no transcendental functions), so every platform agrees.
+fn steer(orientation: [f32; 4], yaw: u16) -> [f32; 3] {
+    let target = mechanics::facing(yaw);
+    let [qx, qy, qz, qw] = orientation;
+    let (cx, cy, cz, cw) = (-qx, -qy, -qz, qw);
+    let [tx, ty, tz, tw] = target;
+    // The rotation from here to there: target × conjugate(orientation).
+    let error = [
+        tw * cx + tx * cw + ty * cz - tz * cy,
+        tw * cy - tx * cz + ty * cw + tz * cx,
+        tw * cz + tx * cy - ty * cx + tz * cw,
+        tw * cw - tx * cx - ty * cy - tz * cz,
+    ];
+    let sign = if error[3] < 0.0 { -1.0 } else { 1.0 };
+    let rate = sign * f32::from(crate::TICK_HZ);
+    let spin = [error[0] * rate, error[1] * rate, error[2] * rate];
+    let speed = (spin[0] * spin[0] + spin[1] * spin[1] + spin[2] * spin[2]).sqrt();
+    if speed > MAX_TURN_RATE {
+        spin.map(|axis| axis * (MAX_TURN_RATE / speed))
+    } else {
+        spin
+    }
+}
+
+/// The fastest the movement drive turns a robot (radians a second): a half turn in a fifth of
+/// a second.
+const MAX_TURN_RATE: f32 = 16.0;
+
+/// How far (units) below its feet a robot still counts as standing, and the fastest it may be
+/// rising then (units a second): its legs' give lifts it off the ground for a tick now and
+/// then, and it does not lose its footing for that.
+const GROUND_PROBE_UNITS: f32 = 4.0;
+const GROUND_RISE: f32 = 60.0;
+
+/// The scenery is right under a robot's feet and it is not rising off it.
+fn on_ground(world: &World, stance: &Stance) -> bool {
+    let feet = stance.feet();
+    stance.velocity[1] <= GROUND_RISE
+        && world
+            .cast_ray(
+                [feet[0], feet[1] + GROUND_PROBE_UNITS, feet[2]],
+                [0.0, -2.0 * GROUND_PROBE_UNITS, 0.0],
+                |body| body.0 < FIRST_PLAYER_BODY,
+            )
+            .is_some()
+}
+
+/// How far ahead of its feet (units) a robot feels for a ledge to step onto...
+const STEP_PROBE_UNITS: f32 = 35.0;
+/// ...at these heights above its feet (units): the lowest blocked, the first clear one above it
+/// the ledge's top, at most [`STEP_UP`]'s height.
+const STEP_PROBES: [i32; 6] = [3, 10, 17, 24, 31, STEP_UP.max_height + 3];
+
+/// Step-up for robots (what the capsule's step-up was, [`STEP_UP`]): a robot moving toward
+/// scenery that blocks its feet but not [`STEP_UP`]'s height above them hops just high enough
+/// to land on it, on the ground or in the air (a ledge caught at a jump's top). Its feet's
+/// boxes would otherwise catch on every kerb, stair and ledge lip. Integer square root, so
+/// every platform agrees.
+#[allow(clippy::cast_precision_loss)]
+fn step_up(world: &World, intent: Intent, feet: [f32; 3], velocity: Vec3i) -> Vec3i {
+    let Some((x, z)) = crate::player::wish_direction(intent) else {
+        return velocity;
+    };
+    let one = crate::trig::TRIG_ONE as f32;
+    let ahead = [
+        x as f32 / one * STEP_PROBE_UNITS,
+        0.0,
+        z as f32 / one * STEP_PROBE_UNITS,
+    ];
+    let scenery = |body: BodyId| body.0 < FIRST_PLAYER_BODY;
+    let blocked = |height: i32| {
+        world
+            .cast_ray([feet[0], feet[1] + height as f32, feet[2]], ahead, scenery)
+            .is_some()
+    };
+    if !blocked(STEP_PROBES[0]) {
+        return velocity;
+    }
+    let Some(top) = STEP_PROBES[1..]
+        .iter()
+        .copied()
+        .find(|height| !blocked(*height))
+    else {
+        return velocity;
+    };
+    // Rising `top` units under gravity: v² = 2 g h, in subunits.
+    let lift = u64::from(top.unsigned_abs())
+        * 2
+        * u64::from(GRAVITY.y.unsigned_abs())
+        * u64::from(SUBUNITS_PER_UNIT.unsigned_abs());
+    let hop = i32::try_from(crate::trig::isqrt(lift)).unwrap_or(i32::MAX);
+    Vec3i::new(velocity.x, velocity.y.max(hop), velocity.z)
+}
+
+/// The commands the preset layout of the robot in `slot` ([`Bindings::preset`], from its
+/// connected actuators) gives for the keys `intent`'s movement presses ([`Pressed::wasd`]): what
+/// a bot sends, and a script or test that plays the default layout. Rest without a robot.
+fn preset_motors(mechanics: &Mechanics, slot: u8, intent: Intent) -> crate::bindings::Motors {
+    mechanics
+        .robot(slot)
+        .map_or(crate::bindings::Motors::REST, |robot| {
+            Bindings::preset(&robot.layout).resolve(
+                &robot.layout,
+                &mut BindingState::default(),
+                Pressed::wasd(intent.forward, intent.strafe),
+            )
+        })
+}
+
+fn tuning_of(build: &Assembly, carried: Option<Carried>, instance: Instance) -> Tuning {
+    let tuning = BETA.tuning(build, instance);
+    carried.map_or(tuning, |carried| {
+        carried.module.tune(instance.weapon, tuning)
+    })
 }
 
 /// One use of `fighter`'s module spent; the last one spends the module.
@@ -416,8 +759,11 @@ pub struct StepReport {
     pub sliding: bool,
     /// It touched down this tick after being airborne.
     pub landed: bool,
-    /// The weapon that fired this tick.
-    pub fired: Option<Weapon>,
+    /// The last weapon copy that fired this tick (the last of [`StepReport::volley`]).
+    pub fired: Option<Instance>,
+    /// Every copy that fired this tick, in the order granted: the grapple's hook, the swing,
+    /// then the guns by part (shooter#127).
+    pub volley: weapons::Volley,
     /// Damage dealt to others (fighters and dummies) this tick.
     pub damage: i32,
     /// A rocket exploded this tick.
@@ -427,14 +773,17 @@ pub struct StepReport {
 /// Something a tick did that the clients show or sound.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
-    /// A shot left `slot`'s eye (units) along `direction` (unit vector).
+    /// A shot (or the grapple module's hook) left `from` (units: its muzzle, the eye for the blade,
+    /// [`aim`]) along `direction` (unit vector). `part` is the weapon copy that fired
+    /// (shooter#125).
     Fired {
         slot: u8,
         weapon: Weapon,
-        eye: [f32; 3],
+        part: PartId,
+        from: [f32; 3],
         direction: [f32; 3],
     },
-    /// A hitscan beam from the eye to `end`; `struck` when it met a body there.
+    /// A hitscan beam (or the grapple's line) from `from` to `end`; `struck` when it met a body there.
     Beam {
         weapon: Weapon,
         from: [f32; 3],
@@ -445,7 +794,7 @@ pub enum Event {
     /// A rocket blew up at `at`.
     Exploded { at: [f32; 3] },
     /// A shotgun pellet's last stretch, from `from` to where it struck a body at `at`;
-    /// `launched` when it was fired this tick (`from` is the shooter's eye).
+    /// `launched` when it was fired this tick (`from` is the shooter's muzzle).
     Pellet {
         from: [f32; 3],
         at: [f32; 3],
@@ -493,6 +842,14 @@ pub enum Event {
     },
     /// `slot` spent its module's last use.
     ModuleSpent { slot: u8, module: ArenaModule },
+    /// `slot` died carrying `carried`, and left it where its feet were.
+    ModuleDropped { slot: u8, carried: Carried },
+    /// `slot` took `carried` (the uses it had left) from where `from` dropped it.
+    DropTaken {
+        slot: u8,
+        from: u8,
+        carried: Carried,
+    },
 }
 
 /// What a hitscan ray struck.
@@ -501,6 +858,8 @@ enum Target {
     /// A fighter's parts, each with its share of the damage.
     Fighter(usize, Vec<Blow>),
     Dummy(usize),
+    /// A damageable placeable of the arena ([`Scenery::of_body`]).
+    Placeable(usize),
     Nothing,
 }
 
@@ -512,28 +871,37 @@ struct Shot {
     at: [f32; 3],
 }
 
-/// The fighters' centres and yaws after a tick (`None` while dead), for lag-compensated shots.
+/// The fighters' centres and part boxes after a tick (`None` while dead), for lag-compensated
+/// shots.
 #[derive(Clone, Debug)]
 struct Frame {
     tick: u32,
-    poses: Vec<Option<([f32; 3], u16)>>,
+    poses: Vec<Option<([f32; 3], Hitboxes)>>,
 }
 
 /// A destroyed battery's blast waiting to go off this tick: where, and who and what destroyed
-/// the battery.
+/// the battery (nobody and nothing: a collision, [`crate::impact`]).
 #[derive(Clone, Copy, Debug)]
 struct Blast {
     at: [f32; 3],
-    attacker: usize,
-    weapon: Weapon,
+    attacker: Option<usize>,
+    weapon: Option<Weapon>,
 }
 
 #[derive(Debug)]
 pub struct Session {
     /// The catalogued map `arena` is ([`Session::on_map`]); `None` for a scripted arena.
     pub map: Option<MapId>,
+    /// The arena as it stands: a broken placeable's placement in its broken variant, and its
+    /// broken pieces among [`Arena::pieces`] ([`crate::scenery`]).
     pub arena: Arena,
+    /// The arena's damageable placeables and their health.
+    pub scenery: Scenery,
+    /// The arena's scenery and the target dummies: what rays, hooks and flames meet besides
+    /// the robots.
     pub world: World,
+    /// The fighters' robots, by slot, on the arena's statics.
+    pub mechanics: Mechanics,
     pub rules: Rules,
     pub phase: Phase,
     /// One per slot, in slot order.
@@ -544,6 +912,8 @@ pub struct Session {
     pub pellets: Vec<Pellet>,
     /// The module pads, in the map's order ([`Arena::module_pads`]).
     pub pickups: Vec<Pickup>,
+    /// The modules dead carriers dropped, oldest first.
+    pub drops: Vec<Drop>,
     /// What the last tick did, in order.
     pub events: Vec<Event>,
     tick: u32,
@@ -554,7 +924,7 @@ pub struct Session {
     blasts: VecDeque<Blast>,
 }
 
-/// A fighter's capsule half extents (units): its collision box in the arena.
+/// The reference fighter box's half extents (units): a robot's centre is its feet plus its height.
 #[allow(clippy::cast_precision_loss)]
 pub const HALF: [f32; 3] = [
     PLAYER_HALF_EXTENTS.x as f32,
@@ -577,8 +947,16 @@ impl Session {
 
     /// A match in `arena`, outside the catalog (the scripted moves and test arenas).
     pub fn with_rules(arena: Arena, rules: Rules) -> Result<Self, PhysicsError> {
-        let mut world = arena.build_world(GRAVITY)?;
+        let scenery = Scenery::of(&arena);
+        let statics = scenery.statics(&arena);
+        let mut world = World::new(GRAVITY);
+        for body in &statics {
+            world.add_body(body.clone())?;
+        }
         world.set_step_up(Some(STEP_UP));
+        #[allow(clippy::cast_precision_loss)]
+        let gravity = per_second(GRAVITY).map(|axis| axis * f32::from(crate::TICK_HZ) / 100.0);
+        let mechanics = Mechanics::for_match(&statics, gravity)?;
         let fighters = (0..rules.slots)
             .map(|slot| {
                 let pilot = if rules.local && slot == 0 {
@@ -594,7 +972,9 @@ impl Session {
         let mut session = Self {
             map: None,
             arena,
+            scenery,
             world,
+            mechanics,
             rules,
             phase: Phase::Playing {
                 ends_at: (rules.time_limit_ticks > 0).then_some(rules.time_limit_ticks),
@@ -604,6 +984,7 @@ impl Session {
             rockets: Vec::new(),
             pellets: Vec::new(),
             pickups: Vec::new(),
+            drops: Vec::new(),
             events: Vec::new(),
             tick: 0,
             history: VecDeque::new(),
@@ -656,14 +1037,137 @@ impl Session {
         Ok(())
     }
 
+    /// Puts `slot`'s fighter's robot in the world as its build, whole, standing at `feet`
+    /// (units) facing `yaw`, in place of any robot it had.
+    fn spawn_robot(&mut self, slot: usize, feet: [f32; 3], yaw: u16) -> Result<(), PhysicsError> {
+        let id = u8::try_from(slot).unwrap_or(u8::MAX);
+        self.mechanics.despawn(id)?;
+        let build = self.fighters[slot].build;
+        self.mechanics
+            .spawn_at(id, build, feet, mechanics::facing(yaw))?;
+        self.refresh(slot)
+    }
+
+    /// Reads `slot`'s fighter's stance back from its robot (none without one).
+    fn refresh(&mut self, slot: usize) -> Result<(), PhysicsError> {
+        let id = u8::try_from(slot).unwrap_or(u8::MAX);
+        let fighter = &mut self.fighters[slot];
+        let (Some(origin), Some(velocity)) =
+            (self.mechanics.root(slot), self.mechanics.velocity(id))
+        else {
+            fighter.stance = None;
+            return Ok(());
+        };
+        let frames = self.mechanics.part_frames(id)?;
+        fighter.stance = Some(Stance {
+            origin,
+            velocity,
+            reach: mechanics::stance(&fighter.build),
+            footing: self.mechanics.footing(id),
+            hitboxes: Hitboxes::posed(&fighter.build, &fighter.parts, &frames),
+        });
+        Ok(())
+    }
+
+    /// Adds `push` (subunits per tick) to `slot`'s robot's velocity: a blast's or a blade's
+    /// knockback, on the whole robot.
+    fn push(&mut self, slot: usize, push: [i32; 3]) -> Result<(), PhysicsError> {
+        let id = u8::try_from(slot).unwrap_or(u8::MAX);
+        let (Some(root), Some(moving)) = (
+            self.mechanics.root_motion(slot),
+            self.mechanics.velocity(id),
+        ) else {
+            return Ok(());
+        };
+        let added = per_second(Vec3i::new(push[0], push[1], push[2]));
+        let velocity = std::array::from_fn(|axis| moving[axis] + added[axis]);
+        self.mechanics.drive(id, velocity, root.angular_velocity)
+    }
+
+    /// The robots catch up with the fighters: the dead leave the world and the parts each has
+    /// lost come off its bodies; the large ones carried away whole stay physical debris for a
+    /// while, destroyed ones shatter ([`Mechanics::break_off`], shooter#75).
+    fn settle_robots(&mut self) -> Result<(), PhysicsError> {
+        for slot in 0..self.fighters.len() {
+            let id = u8::try_from(slot).unwrap_or(u8::MAX);
+            let fighter = &self.fighters[slot];
+            if !fighter.alive() {
+                if self.mechanics.despawn(id)? {
+                    self.fighters[slot].stance = None;
+                }
+                continue;
+            }
+            let lost = fighter.parts.lost();
+            let intact = fighter
+                .parts
+                .health()
+                .iter()
+                .enumerate()
+                .filter(|(_, health)| **health > 0)
+                .fold(0u32, |mask, (index, _)| mask | (1 << index));
+            if self
+                .mechanics
+                .robot(id)
+                .is_some_and(|robot| robot.lost != lost)
+                && self.mechanics.break_off(id, lost, intact)?
+            {
+                self.refresh(slot)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The arena catches up with its placeables ([`crate::scenery`]): each one that broke (or
+    /// came back whole) this tick takes its new pieces in the arena, the physics world and the
+    /// robots' world, and a hook set on one that broke lets go. Last in the tick, like the
+    /// robots' changes: from the next tick on every query meets the new pieces.
+    fn settle_scenery(&mut self) -> Result<(), PhysicsError> {
+        let changed = self.scenery.settle(&mut self.arena);
+        if changed.is_empty() {
+            return Ok(());
+        }
+        for &index in &changed {
+            for id in self.scenery.body_ids(index) {
+                self.world.remove_body(id);
+            }
+            for body in self.scenery.bodies(&self.arena, index) {
+                self.world.add_body(body)?;
+            }
+            if self.scenery.placeables()[index].broken() {
+                for fighter in &mut self.fighters {
+                    if fighter.hook.is_some_and(|hook| {
+                        self.scenery.holds(&self.arena, index, hook.anchor_units())
+                    }) {
+                        fighter.hook = None;
+                    }
+                }
+            }
+        }
+        // The robots stand as they stood: only the scenery under them changes.
+        self.mechanics.reshape(&self.scenery.statics(&self.arena))
+    }
+
+    /// The host's word on the arena's placeables (a snapshot's [`crate::Snapshot::scenery`]),
+    /// for a predicting client: they stand as the host has them from here on.
+    ///
+    /// # Errors
+    ///
+    /// If the state names placeables this map does not break, or the physics world refuses the
+    /// new pieces.
+    pub fn adopt_scenery(&mut self, state: &[PlaceableState]) -> Result<(), PhysicsError> {
+        self.scenery.adopt(state).map_err(crate::physics::error)?;
+        self.settle_scenery()
+    }
+
     fn spawn(&mut self, slot: usize, at: Spawn) -> Result<(), PhysicsError> {
         let fighter = &mut self.fighters[slot];
-        fighter.player = Player::spawn(&mut self.world, fighter.player.body, at.feet)?;
+        fighter.motion = Motion::default();
         fighter.build = fighter.configured;
         fighter.hook = None;
         fighter.carried = None;
-        // Respawn restores the configured build whole (D2.i70.8).
+        // Respawn restores the configured build whole (D2.i70.8), with no repair under way.
         fighter.parts = PartDamage::fresh(&fighter.build);
+        fighter.repair = None;
         fighter.arsenal = Arsenal::holding(fighter.first_weapon());
         fighter.energy = fighter.pool().capacity;
         fighter.respawn_at = None;
@@ -678,7 +1182,42 @@ impl Session {
             slot: fighter.slot,
             yaw: at.yaw,
         });
-        Ok(())
+        // What its last life left lying about retires with it (shooter#75).
+        self.mechanics
+            .clear_debris(u8::try_from(slot).unwrap_or(u8::MAX))?;
+        #[allow(clippy::cast_precision_loss)]
+        let feet = [at.feet.x, at.feet.y, at.feet.z].map(|axis| axis as f32);
+        self.spawn_robot(slot, feet, at.yaw)
+    }
+
+    /// Puts `slot`'s living fighter's robot standing at rest at `feet` (units), facing its yaw:
+    /// scripts and tests placing a fighter.
+    ///
+    /// # Errors
+    ///
+    /// If the physics world refuses the robot.
+    pub fn stand(&mut self, slot: u8, feet: [f32; 3]) -> Result<(), PhysicsError> {
+        let slot = usize::from(slot);
+        self.fighters[slot].respawn_at = None;
+        let yaw = self.fighters[slot].intent.yaw;
+        self.spawn_robot(slot, feet, yaw)
+    }
+
+    /// `slot`'s fighter is `build` this life, whole, its robot rebuilt where it stands (practice
+    /// and scripts; a hosted fighter changes build only at a spawn, [`Session::configure`]).
+    ///
+    /// # Errors
+    ///
+    /// If the physics world refuses the robot.
+    pub fn rebuild(&mut self, slot: u8, build: Assembly) -> Result<(), PhysicsError> {
+        let slot = usize::from(slot);
+        let fighter = &mut self.fighters[slot];
+        fighter.rebuild(build);
+        if !fighter.alive() {
+            return Ok(());
+        }
+        let (feet, yaw) = (fighter.feet(), fighter.intent.yaw);
+        self.spawn_robot(slot, feet, yaw)
     }
 
     /// The spawn point farthest from every other living fighter (the first one when alone).
@@ -688,8 +1227,7 @@ impl Session {
             .fighters
             .iter()
             .filter(|fighter| usize::from(fighter.slot) != slot && fighter.alive())
-            .filter_map(|fighter| self.world.body(fighter.player.body))
-            .map(crate::physics::RigidBody::position)
+            .map(|fighter| whole(fighter.center()))
             .collect();
         let room = |point: &Spawn| {
             others
@@ -759,10 +1297,9 @@ impl Session {
     }
 
     fn replace_pilot(&mut self, slot: usize, pilot: Pilot) -> Result<(), PhysicsError> {
+        self.mechanics
+            .despawn(u8::try_from(slot).unwrap_or(u8::MAX))?;
         let fighter = &mut self.fighters[slot];
-        if fighter.alive() {
-            self.world.remove_body(fighter.player.body);
-        }
         let open = pilot == Pilot::Open;
         *fighter = Fighter::new(fighter.slot, pilot);
         if !open {
@@ -772,30 +1309,62 @@ impl Session {
         Ok(())
     }
 
-    /// Puts `slot`'s fighter alive at an exact physics state: a client resuming its prediction
-    /// from a snapshot (its build and part damage are the caller's to set).
+    /// Puts `slot`'s fighter alive with its robot in the exact state `robot` (its build and
+    /// lost parts included, whatever slot it was in): a client resuming its prediction from a
+    /// snapshot (its part damage is the caller's to set first, matching the robot's lost
+    /// parts).
+    ///
+    /// # Errors
+    ///
+    /// If the robot's bodies do not match its build or the world refuses one.
     pub fn place(
         &mut self,
         slot: u8,
-        position: [f32; 3],
-        velocity: [f32; 3],
-        motion: crate::player::Motion,
-        held: Weapon,
+        robot: &RobotState,
+        motion: Motion,
+        held: Instance,
         hook: Option<Hook>,
     ) -> Result<(), PhysicsError> {
+        self.mechanics.place(RobotState {
+            slot,
+            ..robot.clone()
+        })?;
         let fighter = &mut self.fighters[usize::from(slot)];
-        self.world.remove_body(fighter.player.body);
-        self.world.add_body(crate::physics::RigidBody::moving(
-            fighter.player.body,
-            position,
-            velocity,
-            PLAYER_HALF_EXTENTS,
-        ))?;
-        fighter.player.motion = motion;
+        fighter.build = robot.build;
+        fighter.motion = motion;
         fighter.arsenal.held = held;
         fighter.hook = hook;
         fighter.respawn_at = None;
+        self.refresh(usize::from(slot))
+    }
+
+    /// Puts the match's physical debris in the exact state `debris` (a snapshot's): a client
+    /// resuming its prediction among the pieces the host has.
+    ///
+    /// # Errors
+    ///
+    /// If there are more pieces than [`mechanics::MAX_DEBRIS`] or the world refuses one.
+    pub fn place_debris(&mut self, debris: &[mechanics::DebrisState]) -> Result<(), PhysicsError> {
+        self.mechanics.place_debris(debris)?;
+        for slot in 0..self.fighters.len() {
+            self.refresh(slot)?;
+        }
         Ok(())
+    }
+
+    /// Sets `slot`'s living robot moving at `velocity` (units a second) as one whole, as a
+    /// launch would: scripts and tests staging a collision.
+    ///
+    /// # Errors
+    ///
+    /// If the physics world refuses the velocity.
+    pub fn launch(&mut self, slot: u8, velocity: [f32; 3]) -> Result<(), PhysicsError> {
+        let Some(root) = self.mechanics.root_motion(usize::from(slot)) else {
+            return Ok(());
+        };
+        self.mechanics
+            .drive(slot, velocity, root.angular_velocity)?;
+        self.refresh(usize::from(slot))
     }
 
     /// Queues one tick of person `id`'s controls; the fighter applies one queued input per tick.
@@ -836,7 +1405,11 @@ impl Session {
         let fighter = &mut self.fighters[usize::from(slot)];
         fighter.configured = build;
         if fighter.alive() && fighter.ack == 0 && fighter.build != build {
-            fighter.rebuild(build);
+            // A robot the world refuses (never, for a validated build) stays as it was.
+            if self.rebuild(slot, build).is_err() {
+                return true;
+            }
+            let fighter = &mut self.fighters[usize::from(slot)];
             fighter.arsenal = Arsenal::holding(fighter.first_weapon());
             fighter.energy = fighter.pool().capacity;
         }
@@ -844,6 +1417,21 @@ impl Session {
     }
 
     /// One tick for the local person (slot 0) holding `intent`, seeing the others as they are now.
+    /// `intent` as the default layout would send it for the robot in `slot`: unless it already
+    /// commands motors, its movement keys through the robot's preset layout
+    /// ([`crate::bindings::Bindings::preset`]), as bots do. For scripts and tests that play
+    /// the default layout.
+    #[must_use]
+    pub fn with_preset(&self, slot: u8, intent: Intent) -> Intent {
+        if intent.motors != crate::bindings::Motors::REST {
+            return intent;
+        }
+        Intent {
+            motors: preset_motors(&self.mechanics, slot, intent),
+            ..intent
+        }
+    }
+
     pub fn tick(&mut self, intent: Intent) -> Result<StepReport, PhysicsError> {
         let input = Input {
             sequence: self.fighters[0].ack.wrapping_add(1),
@@ -860,6 +1448,8 @@ impl Session {
     pub fn step(&mut self) -> Result<StepReport, PhysicsError> {
         self.events.clear();
         self.dealt.iter_mut().for_each(|dealt| *dealt = 0);
+        // Debris that retired last tick leaves before anything moves a body.
+        self.mechanics.retire_debris()?;
         if let Phase::Intermission { restarts_at, .. } = self.phase
             && self.tick >= restarts_at
         {
@@ -881,13 +1471,27 @@ impl Session {
             }
         }
 
+        // How each robot moved after the last step, before this tick's drives: what collision
+        // damage measures against ([`crate::impact`]).
+        let before: Vec<Option<[f32; 3]>> = self
+            .fighters
+            .iter()
+            .map(|fighter| fighter.stance.as_ref().map(|stance| stance.velocity))
+            .collect();
         let mut moves = crate::player::Moves::default();
-        for fighter in &mut self.fighters {
+        // What each robot's motors are told this tick, by slot.
+        let mut motors: Vec<Option<Controls>> = vec![None; self.fighters.len()];
+        for (slot, fighter) in self.fighters.iter_mut().enumerate() {
             if !fighter.alive() {
                 continue;
             }
-            // Without a connected leg, wheel or track nothing walks, jumps or slides it
-            // ([`crate::damage`]); it still turns, falls, is pushed and reels in on its hook.
+            let Some(stance) = fighter.stance.as_ref() else {
+                continue;
+            };
+            // Without connected locomotion nothing walks or slides it ([`crate::damage`]).
+            // Natural jumping and the interim camera-facing chassis drive need a connected leg;
+            // a wheel/track-only robot still falls, is pushed and reels in on its hook.
+            let legged = fighter.connected_leg();
             let intent = if playing && fighter.parts.mobile(&fighter.build) {
                 fighter.intent
             } else {
@@ -897,16 +1501,73 @@ impl Session {
                     ..Intent::IDLE
                 }
             };
+            let intent = Intent {
+                jump: intent.jump && legged,
+                ..intent
+            };
             let hooked = fighter.hook.is_some();
             // A thruster jump is the tick's first energy request ([`crate::energy`]).
             let (jump_velocity, boosted) = pickups::jump(fighter.carried, fighter.energy);
-            let moved = fighter.player.apply(
-                &mut self.world,
+            let footing = Footing {
+                velocity: per_tick(stance.velocity),
+                grounded: stance.footing.feet
+                    || (fighter.traction().connected > 0 && on_ground(&self.world, stance)),
+                feet: whole(stance.feet()),
+            };
+            let origin = stance.origin;
+            let traction = fighter.traction();
+            let (velocity, moved) = fighter.motion.drive(
                 &self.arena,
                 intent,
+                footing,
                 hooked,
                 jump_velocity,
-            )?;
+                traction,
+            );
+            // Resting on its body rather than its feet (its legs shot off, tipped over), it lies
+            // where it is: the movement drive is all that slides a robot over the ground. One
+            // still upright and hung up on a ledge by its chassis, its feet in the air
+            // ([`perched`]), steps off it under the drive's air control while it means to move
+            // (else it hangs there for good).
+            let perched = fighter.parts.mobile(&fighter.build)
+                && crate::player::wish_direction(intent).is_some()
+                && perched(&self.world, stance);
+            let velocity = if stance.footing.any && !stance.footing.feet && !hooked && !perched {
+                Vec3i::new(0, velocity.y, 0)
+            } else {
+                velocity
+            };
+            // A rigid wheel/track cannot lift itself over a curb by invoking the leg step-up.
+            let velocity = if legged {
+                step_up(&self.world, intent, stance.feet(), velocity)
+            } else {
+                velocity
+            };
+            let id = u8::try_from(slot).unwrap_or(u8::MAX);
+            let velocity = per_second(velocity);
+            // Aim never acts as a steering motor for wheels, tracks or a stationary chassis.
+            // Until their motor/contact locomotion replaces the interim drive (Q2.i74.1),
+            // retain their real angular momentum instead of injecting camera-driven spin.
+            let angular_velocity = if legged {
+                steer(origin.orientation, intent.yaw)
+            } else {
+                self.mechanics
+                    .root_motion(slot)
+                    .map_or([0.0; 3], |root| root.angular_velocity)
+            };
+            self.mechanics.drive(id, velocity, angular_velocity)?;
+            if let Some(robot) = self.mechanics.robot(id) {
+                // Its actuators take what its control layout resolved (shooter#74), as far as
+                // they can: the host's word on the input ([`crate::bindings::Motors::controls`]).
+                // A robot whose locomotion is gone still turns its joints; between rounds
+                // everything rests.
+                let commanded = if playing {
+                    fighter.intent.motors
+                } else {
+                    crate::bindings::Motors::REST
+                };
+                motors[slot] = Some(commanded.controls(&robot.layout));
+            }
             if moved.jumped
                 && boosted
                 && energy::spend(&mut fighter.energy, pickups::THRUSTER_JUMP_ENERGY)
@@ -921,69 +1582,124 @@ impl Session {
             dummy.drive(&mut self.world, self.tick)?;
         }
 
-        let mut local_fired = None;
+        let mut local_volley = weapons::Volley::default();
         for slot in 0..self.fighters.len() {
             let fighter = &mut self.fighters[slot];
             if !fighter.alive() {
                 continue;
             }
             let intent = fighter.intent;
-            // A set hook holds while the trigger stays down: no second hook until it is let go.
-            let hooked = fighter.hook.is_some();
             let (build, carried, parts) = (fighter.build, fighter.carried, fighter.parts);
-            // The swing, then the gun, ask the shared pool for their energy, first come, first
-            // served ([`crate::energy`]); a weapon part the robot has lost cannot ask
-            // ([`crate::damage`]), so it neither fires nor spends a cooldown; nor can a weapon
-            // the build does not carry. A switch to a weapon it may not hold is refused
-            // ([`weapons::holdable`]): the host decides, the prediction and replays alike.
-            let charge = &mut fighter.energy;
-            let fired = fighter.arsenal.trigger_tuned(
-                intent
-                    .select
-                    .filter(|weapon| parts.holdable(&build, *weapon)),
-                intent.melee && playing,
-                intent.fire && playing && !hooked,
-                self.tick,
-                |weapon| tuning_of(&build, carried, weapon).refire_ticks(weapon),
-                |weapon| {
-                    parts.armed(&build, weapon)
-                        && energy::spend(charge, tuning_of(&build, carried, weapon).energy(weapon))
-                },
-            );
-            if hooked
-                && !(intent.fire
-                    && playing
-                    && fighter.arsenal.held == Weapon::Grapple
-                    && parts.armed(&build, Weapon::Grapple))
-            {
+            // The grapple module (Atlas D2.i104.2) on its own key, whatever gun is held: a set
+            // hook holds while the key stays down and the module is still connected
+            // ([`crate::damage`]); let go, or with the module lost or cut off, the rope goes. A
+            // robot without a working module has no grapple: the host refuses the key. No
+            // second hook until the first is let go. With several grapple modules, the first
+            // still connected hooks, and a set hook holds while any is.
+            let armed: Vec<Instance> = parts.instances(&build).collect();
+            let grapple = parts.first(&build, Weapon::Grapple);
+            let grappling = intent.grapple && playing && grapple.is_some();
+            if !grappling {
                 fighter.hook = None;
             }
-            if let Some(weapon) = fired {
-                if slot == 0 {
-                    local_fired = Some(weapon);
+            let hook = match grapple.filter(|_| grappling && fighter.hook.is_none()) {
+                Some(grapple) => fighter
+                    .arsenal
+                    .hook(
+                        self.tick,
+                        tuning_of(&build, carried, grapple).refire_ticks(Weapon::Grapple),
+                        || {
+                            energy::spend(
+                                &mut fighter.energy,
+                                tuning_of(&build, carried, grapple).energy(Weapon::Grapple),
+                            )
+                        },
+                    )
+                    .then_some(grapple),
+                None => None,
+            };
+            // The grapple's hook, the swing, then the guns ask the shared pool for their energy,
+            // first come, first served in that order and the guns by part ID ([`crate::energy`],
+            // shooter#127). The guns asked are the held copy while the primary trigger is down
+            // and every copy the direct weapon bindings and groups name; each fires if it is
+            // ready, its family's salvo limit allows ([`Weapon::salvo`]) and the pool grants it,
+            // and a refusal refuses only that copy. A weapon part the robot has lost cannot ask
+            // ([`crate::damage`]), so it neither fires nor spends a cooldown; nor can a weapon
+            // the build does not carry, nor a part that is no gun. A switch to a weapon copy it
+            // may not hold is refused ([`weapons::resolve`]): the host decides, the prediction
+            // and replays alike. Every copy of a weapon is its own instance (shooter#125): its
+            // own mod, refire and muzzle; the melee key swings the first blade still connected.
+            let charge = &mut fighter.energy;
+            let held = fighter.arsenal.held;
+            let select = intent
+                .select
+                .and_then(|select| weapons::resolve(select, held, &armed));
+            let mut requests: Vec<Instance> = Vec::new();
+            if playing {
+                if intent.fire {
+                    requests.push(select.unwrap_or(held));
                 }
-                self.fire(slot, weapon, intent)?;
+                requests.extend(
+                    intent
+                        .triggers
+                        .parts()
+                        .iter()
+                        .filter_map(|part| armed.iter().find(|armed| armed.part == *part))
+                        .filter(|instance| instance.weapon.gun()),
+                );
+            }
+            let volley = fighter.arsenal.trigger_tuned(
+                select,
+                parts
+                    .first(&build, Weapon::EnergyBlade)
+                    .filter(|_| intent.melee && playing),
+                &requests,
+                self.tick,
+                |instance| tuning_of(&build, carried, instance).refire_ticks(instance.weapon),
+                |instance| {
+                    armed.contains(&instance)
+                        && energy::spend(
+                            charge,
+                            tuning_of(&build, carried, instance).energy(instance.weapon),
+                        )
+                },
+            );
+            if let Some(grapple) = hook {
+                if slot == 0 {
+                    local_volley.push(grapple);
+                }
+                self.fire(slot, grapple, intent)?;
+            }
+            for &instance in volley.shots() {
+                if slot == 0 {
+                    local_volley.push(instance);
+                }
+                self.fire(slot, instance, intent)?;
                 // The shot went out boosted; it spends a use of the module that boosted it.
                 let fighter = &mut self.fighters[slot];
                 if fighter
                     .carried
-                    .is_some_and(|carried| carried.module.spent_by_shot(weapon))
+                    .is_some_and(|carried| carried.module.spent_by_shot(instance.weapon))
                 {
                     spend_module(fighter, &mut self.events);
                 }
             }
         }
-        // Every request of the tick is in: the pools regenerate.
-        for fighter in &mut self.fighters {
-            if fighter.alive() {
-                fighter.pool().regenerate(&mut fighter.energy);
-            }
-        }
-        for fighter in &mut self.fighters {
-            if let Some(hook) = &mut fighter.hook {
-                let eye = fighter.player.eye(&self.world);
-                hook.pull(&mut self.world, fighter.player.body, eye)?;
-            }
+        for slot in 0..self.fighters.len() {
+            let eye = self.fighters[slot].eye();
+            let Some(hook) = &mut self.fighters[slot].hook else {
+                continue;
+            };
+            let id = u8::try_from(slot).unwrap_or(u8::MAX);
+            let (Some(root), Some(moving)) = (
+                self.mechanics.root_motion(slot),
+                self.mechanics.velocity(id),
+            ) else {
+                continue;
+            };
+            let pulled = hook.pull(per_tick(moving), eye);
+            self.mechanics
+                .drive(id, per_second(pulled), root.angular_velocity)?;
         }
 
         let mut exploded = false;
@@ -1009,20 +1725,73 @@ impl Session {
             }
         }
         self.fly_pellets();
+        // Every hit of the tick is in: the repairs take their orders and work.
+        self.run_repairs(playing);
 
+        // The robots step: each robot's motors ask its pool for their energy, the last requests
+        // of the tick. A robot that died this tick, or lost parts, still steps as it was; it
+        // leaves, or they come off, right after ([`Session::settle_robots`]), so no change to the
+        // world lands between the drive and the step.
+        let mut controls = Vec::with_capacity(self.mechanics.robots().len());
+        for robot in self.mechanics.robots() {
+            let slot = usize::from(robot.slot);
+            controls.push(
+                motors
+                    .get(slot)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(Controls::IDLE),
+            );
+        }
+        for slot in 0..self.fighters.len() {
+            let energy = self.fighters[slot].energy;
+            if let Some(robot) = self
+                .mechanics
+                .robot_mut(u8::try_from(slot).unwrap_or(u8::MAX))
+            {
+                robot.charge = energy;
+            }
+        }
+        // How the tick's drives, pulls and pushes set each robot moving.
+        let set: Vec<Option<[f32; 3]>> = (0..self.fighters.len())
+            .map(|slot| {
+                self.mechanics
+                    .velocity(u8::try_from(slot).unwrap_or(u8::MAX))
+            })
+            .collect();
+        self.mechanics.step(&controls)?;
+        for robot in self.mechanics.robots() {
+            if let Some(fighter) = self.fighters.get_mut(usize::from(robot.slot)) {
+                fighter.energy = robot.charge;
+            }
+        }
+        // Every request of the tick is in: the pools regenerate.
+        for fighter in &mut self.fighters {
+            if fighter.alive() {
+                fighter.pool().regenerate(&mut fighter.energy);
+            }
+        }
         self.world.step()?;
         self.tick += 1;
         for slot in 0..self.fighters.len() {
+            self.refresh(slot)?;
+        }
+        self.collide(&before, &set);
+        #[allow(clippy::cast_precision_loss)]
+        for slot in 0..self.fighters.len() {
             let fighter = &self.fighters[slot];
-            if fighter.alive() && fighter.player.feet(&self.world)[1] < KILL_HEIGHT_UNITS as f32 {
+            if fighter.alive() && fighter.feet()[1] < KILL_HEIGHT_UNITS as f32 {
                 self.kill(slot, None, None);
             }
         }
+        self.settle_robots()?;
+        self.settle_scenery()?;
         if playing {
             self.run_pickups();
         }
         let mut report = StepReport {
-            fired: local_fired,
+            fired: local_volley.shots().last().copied(),
+            volley: local_volley,
             damage: self.dealt.first().copied().unwrap_or(0),
             exploded,
             jumped: moves.jumped,
@@ -1031,12 +1800,16 @@ impl Session {
             ..StepReport::default()
         };
         for fighter in &mut self.fighters {
-            let grounded = fighter.alive() && self.world.grounded(fighter.player.body);
+            let grounded = fighter.alive()
+                && fighter
+                    .stance
+                    .as_ref()
+                    .is_some_and(|stance| stance.footing.any);
             if fighter.slot == 0 {
                 let left_ground = moves.jumped || moves.launched;
                 report.grounded = grounded;
                 report.landed = grounded && !fighter.grounded && !left_ground;
-                report.sliding = fighter.alive() && fighter.player.motion.sliding;
+                report.sliding = fighter.alive() && fighter.motion.sliding;
             }
             fighter.grounded = grounded;
         }
@@ -1052,33 +1825,17 @@ impl Session {
             .fighters
             .iter()
             .map(|fighter| {
-                let center = fighter
-                    .alive()
-                    .then(|| self.world.body(fighter.player.body))
-                    .flatten()
-                    .map(crate::physics::RigidBody::position);
+                let alive = fighter.alive() && fighter.stance.is_some();
+                let center = alive.then(|| whole(fighter.center()));
                 // Where its root chassis is now: what a bot aims at, the one part whose loss
                 // kills.
-                #[allow(clippy::cast_possible_truncation)]
                 let chassis = center.and_then(|_| {
-                    let boxes =
-                        fighter.hitboxes(fighter.player.center(&self.world), fighter.intent.yaw);
-                    let chassis = boxes.get(PartDamage::root(&fighter.build)?)?.center;
-                    Some(Vec3i::new(
-                        chassis[0].round() as i32,
-                        chassis[1].round() as i32,
-                        chassis[2].round() as i32,
-                    ))
+                    let boxes = fighter.hitboxes();
+                    Some(whole(boxes.get(PartDamage::root(&fighter.build)?)?.center))
                 });
                 Sight {
                     center,
-                    eye: center.map(|center| {
-                        Vec3i::new(
-                            center.x,
-                            center.y - PLAYER_HALF_EXTENTS.y + EYE_HEIGHT_UNITS,
-                            center.z,
-                        )
-                    }),
+                    eye: alive.then(|| whole(fighter.eye())),
                     chassis,
                     armed: Weapon::ALL.map(|weapon| fighter.parts.armed(&fighter.build, weapon)),
                 }
@@ -1097,9 +1854,10 @@ impl Session {
                         fighter.starved = 0;
                     } else {
                         // No input this tick (a late packet): hold the last one, but
-                        // never repeat a weapon switch; after a while (a lost
-                        // connection), stand still looking the same way.
+                        // never repeat a weapon switch or repair order; after a while (a
+                        // lost connection), stand still looking the same way.
                         fighter.intent.select = None;
+                        fighter.intent.repair = None;
                         fighter.starved = fighter.starved.saturating_add(1);
                         if fighter.starved >= HOLD_INPUT_TICKS {
                             fighter.intent = Intent {
@@ -1112,17 +1870,55 @@ impl Session {
                 }
                 Pilot::Bot(bot) => {
                     if fighter.respawn_at.is_none() {
-                        fighter.intent = bot.think(
-                            slot,
-                            &sights,
-                            &self.world,
-                            &self.arena,
-                            fighter.arsenal.held,
-                            tick,
-                        );
+                        // The copies it still has: what its weapon request may name.
+                        let copies: Vec<Instance> =
+                            fighter.parts.instances(&fighter.build).collect();
+                        fighter.intent =
+                            bot.think(slot, &sights, &self.world, &self.arena, &copies, tick);
+                        // Its robot's actuators through its build's preset layout, from the
+                        // keys its movement would press: the same commands a person's layout
+                        // sends ([`crate::bindings`]).
+                        fighter.intent.motors =
+                            preset_motors(&self.mechanics, fighter.slot, fighter.intent);
                         fighter.view_tick = tick;
                     }
                 }
+            }
+        }
+    }
+
+    /// Each living fighter's repair order, then a tick of its repair ([`crate::repair`]), in slot
+    /// order: after its jump, swing and shot have asked its pool and every hit of the tick has
+    /// landed (a blow on the part or the module has paused it), before its motors ask. An order
+    /// the host refuses (the part not eligible now) changes nothing; asking again for the part
+    /// under repair keeps the work done. Repairs work only while the round is played.
+    fn run_repairs(&mut self, playing: bool) {
+        for fighter in &mut self.fighters {
+            if !fighter.alive() {
+                continue;
+            }
+            let build = fighter.build;
+            let boxes = fighter.hitboxes();
+            match fighter.intent.repair.filter(|_| playing) {
+                Some(Order::Stop) => fighter.repair = None,
+                Some(Order::Start(part))
+                    if fighter.repair.is_none_or(|repair| repair.target != part) =>
+                {
+                    if let Some(started) = repair::start(&build, &fighter.parts, &boxes, part) {
+                        fighter.repair = Some(started);
+                    }
+                }
+                _ => {}
+            }
+            if !playing {
+                continue;
+            }
+            let Some(work) = fighter.repair.as_mut() else {
+                continue;
+            };
+            match work.tick(&build, &mut fighter.parts, &boxes, &mut fighter.energy) {
+                Outcome::Done | Outcome::Stopped => fighter.repair = None,
+                Outcome::Worked | Outcome::Paused | Outcome::Starved => {}
             }
         }
     }
@@ -1150,15 +1946,16 @@ impl Session {
             winner,
             restarts_at: self.tick + self.rules.intermission_ticks,
         };
+        // The round's drops end with it.
+        self.drops.clear();
         self.events.push(Event::RoundOver { winner });
     }
 
     /// A fresh round: scores cleared, everyone back at their spawn point, no rockets.
     fn restart(&mut self) -> Result<(), PhysicsError> {
         for fighter in &mut self.fighters {
-            if fighter.alive() {
-                self.world.remove_body(fighter.player.body);
-            }
+            self.mechanics.despawn(fighter.slot)?;
+            fighter.stance = None;
             fighter.respawn_at = None;
             fighter.frags = 0;
             fighter.deaths = 0;
@@ -1166,6 +1963,9 @@ impl Session {
         self.rockets.clear();
         self.pellets.clear();
         self.reset_pickups();
+        // Every placeable comes back whole for the new round.
+        self.scenery.restore();
+        self.settle_scenery()?;
         self.phase = Phase::Playing {
             ends_at: (self.rules.time_limit_ticks > 0)
                 .then_some(self.tick + self.rules.time_limit_ticks),
@@ -1173,8 +1973,9 @@ impl Session {
         self.spawn_everyone()
     }
 
-    /// Every pad of the map ready again, as at the start of a round.
+    /// Every pad of the map ready again and nothing dropped, as at the start of a round.
     fn reset_pickups(&mut self) {
+        self.drops.clear();
         self.pickups = self
             .arena
             .module_pads
@@ -1199,11 +2000,7 @@ impl Session {
                 .fighters
                 .iter()
                 .filter(|fighter| fighter.alive())
-                .filter_map(|fighter| {
-                    let center = self.world.body(fighter.player.body)?.position();
-                    let feet = Vec3i::new(center.x, center.y - PLAYER_HALF_EXTENTS.y, center.z);
-                    Some((pad.reach(feet)?, fighter.slot))
-                })
+                .filter_map(|fighter| Some((pad.reach(whole(fighter.feet()))?, fighter.slot)))
                 .min();
             let Some((_, slot)) = taker else {
                 continue;
@@ -1216,6 +2013,33 @@ impl Session {
                 module: pad.module,
             });
         }
+        // Then the drops, oldest first, by the same rule; one not taken lies a tick less.
+        let mut index = 0;
+        while index < self.drops.len() {
+            let drop = self.drops[index];
+            let taker = self
+                .fighters
+                .iter()
+                .filter(|fighter| fighter.alive())
+                .filter_map(|fighter| Some((drop.reach(whole(fighter.feet()))?, fighter.slot)))
+                .min();
+            if let Some((_, slot)) = taker {
+                self.drops.remove(index);
+                self.fighters[usize::from(slot)].carried = Some(drop.carried);
+                self.events.push(Event::DropTaken {
+                    slot,
+                    from: drop.from,
+                    carried: drop.carried,
+                });
+                continue;
+            }
+            self.drops[index].expires_in -= 1;
+            if self.drops[index].expires_in == 0 {
+                self.drops.remove(index);
+            } else {
+                index += 1;
+            }
+        }
     }
 
     fn record(&mut self) {
@@ -1224,8 +2048,10 @@ impl Session {
             .iter()
             .map(|fighter| {
                 fighter
-                    .alive()
-                    .then(|| (fighter.player.center(&self.world), fighter.intent.yaw))
+                    .stance
+                    .as_ref()
+                    .filter(|_| fighter.alive())
+                    .map(|stance| (fighter.center(), stance.hitboxes.clone()))
             })
             .collect();
         if self.history.len() > MAX_REWIND_TICKS as usize {
@@ -1237,9 +2063,9 @@ impl Session {
         });
     }
 
-    /// The fighters' centres and yaws at `tick`, or at the oldest (newest) kept tick before
-    /// (after) it.
-    fn poses_at(&self, tick: u32) -> &[Option<([f32; 3], u16)>] {
+    /// The fighters' centres and part boxes at `tick`, or at the oldest (newest) kept tick
+    /// before (after) it.
+    fn poses_at(&self, tick: u32) -> &[Option<([f32; 3], Hitboxes)>] {
         let frame = self
             .history
             .iter()
@@ -1252,17 +2078,13 @@ impl Session {
     fn hitboxes_now(&self) -> Vec<Option<Hitboxes>> {
         self.fighters
             .iter()
-            .map(|fighter| {
-                fighter.alive().then(|| {
-                    fighter.hitboxes(fighter.player.center(&self.world), fighter.intent.yaw)
-                })
-            })
+            .map(|fighter| fighter.alive().then(|| fighter.hitboxes()))
             .collect()
     }
 
-    /// The other living fighters as `slot`'s person saw them (lag compensation: their centres
-    /// and yaws at the snapshot tick of its input, at most [`MAX_REWIND_TICKS`] back), each
-    /// with its centre and its connected parts placed there.
+    /// The other living fighters as `slot`'s person saw them (lag compensation: where their
+    /// bodies carried their parts at the snapshot tick of its input, at most
+    /// [`MAX_REWIND_TICKS`] back), each with its centre then and the parts it has now.
     fn seen_by(&self, slot: usize) -> Vec<(usize, [f32; 3], Hitboxes)> {
         let rewind = self
             .tick
@@ -1275,14 +2097,26 @@ impl Session {
                 *other != slot && self.fighters.get(*other).is_some_and(Fighter::alive)
             })
             .filter_map(|(other, pose)| {
-                let (center, yaw) = (*pose)?;
-                Some((other, center, self.fighters[other].hitboxes(center, yaw)))
+                let (center, boxes) = pose.as_ref()?;
+                Some((other, *center, boxes.attached(&self.fighters[other].parts)))
             })
             .collect()
     }
 
     fn dummy_of(&self, body: BodyId) -> Option<usize> {
         self.dummies.iter().position(|dummy| dummy.body == body)
+    }
+
+    /// What a ray that stopped on `body` (not a fighter's) strikes: a dummy, a damageable
+    /// placeable or nothing that takes damage.
+    fn target_of(&self, body: BodyId) -> Target {
+        if let Some(dummy) = self.dummy_of(body) {
+            Target::Dummy(dummy)
+        } else if let Some(placeable) = self.scenery.of_body(body) {
+            Target::Placeable(placeable)
+        } else {
+            Target::Nothing
+        }
     }
 
     fn hurt_dummy(&mut self, index: usize, attacker: usize, damage: i32, at: [f32; 3]) {
@@ -1304,24 +2138,33 @@ impl Session {
     /// every battery blast they set off.
     fn strike(&mut self, victim: usize, attacker: usize, blows: &[Blow], weapon: Weapon) {
         for blow in blows {
-            self.hurt_part(victim, attacker, *blow, weapon);
+            self.hurt_part(victim, Some(attacker), *blow, Some(weapon));
         }
         self.settle_blasts();
     }
 
-    /// One blow on one of `victim`'s parts ([`crate::damage`]): its health goes down; at zero
+    /// One blow on one of `victim`'s parts ([`crate::damage`]) by `attacker`'s `weapon`
+    /// (nobody's and none: a collision, [`crate::impact`]): its health goes down; at zero
     /// it comes off with what hung from it, a lost battery takes its capacity and its share of
     /// the charge, a destroyed one queues its blast, and a destroyed root chassis
     /// kills.
     #[allow(clippy::cast_possible_truncation)]
-    fn hurt_part(&mut self, victim: usize, attacker: usize, blow: Blow, weapon: Weapon) {
-        let center = {
-            let fighter = &self.fighters[victim];
-            if !fighter.alive() {
-                return;
-            }
-            fighter.player.center(&self.world)
-        };
+    fn hurt_part(
+        &mut self,
+        victim: usize,
+        attacker: Option<usize>,
+        blow: Blow,
+        weapon: Option<Weapon>,
+    ) {
+        if !self.fighters[victim].alive() {
+            return;
+        }
+        // Where its parts are before this blow (a destroyed battery blasts where it was).
+        let placed = self.fighters[victim]
+            .stance
+            .as_ref()
+            .map(|stance| stance.hitboxes.clone())
+            .unwrap_or_default();
         let fighter = &mut self.fighters[victim];
         let build = fighter.build;
         let before = fighter.pool();
@@ -1329,19 +2172,23 @@ impl Session {
             return;
         };
         fighter.energy = before.shrink(fighter.pool(), fighter.energy);
+        // A direct hit on the part under repair, or on the module repairing it, pauses it.
+        if let Some(repair) = fighter.repair.as_mut() {
+            repair.struck(build.parts()[blow.index].id);
+        }
         let vital = fighter.chassis_health() == 0;
-        if attacker != victim {
+        if let Some(attacker) = attacker.filter(|attacker| *attacker != victim) {
             self.dealt[attacker] += blow.damage;
         }
         self.events.push(Event::Hit {
             victim: victim as u8,
-            attacker: Some(attacker as u8),
+            attacker: attacker.map(|attacker| attacker as u8),
             part: build.parts()[blow.index].id,
             damage: blow.damage,
             at: blow.at,
         });
         if vital {
-            self.kill(victim, Some(attacker), Some(weapon));
+            self.kill(victim, attacker, weapon);
             return;
         }
         let destroyed = change.destroyed.then_some(blow.index);
@@ -1360,21 +2207,45 @@ impl Session {
                 .is_some_and(|part| part.kind == Kind::Battery)
         });
         if let Some(index) = battery {
-            // Where the battery was: the whole build placed as it stands.
-            let fighter = &self.fighters[victim];
-            let whole = Hitboxes::place(
-                &build,
-                &PartDamage::fresh(&build),
-                center,
-                fighter.intent.yaw,
-            );
-            if let Some(part) = whole.get(index) {
+            // Where the battery was: as its robot carried it before the blow.
+            if let Some(part) = placed.get(index) {
                 self.blasts.push_back(Blast {
                     at: part.center,
                     attacker,
                     weapon,
                 });
             }
+        }
+    }
+
+    /// Collision damage ([`crate::impact`]), in slot order: each living robot's impact this
+    /// step, measured from how it moved `before` the tick's drives, how they `set` it moving and
+    /// how it moves now, strikes its part reaching furthest toward what it hit. Nobody is the
+    /// attacker: a robot that dies of it loses a frag, as for a fall.
+    fn collide(&mut self, before: &[Option<[f32; 3]>], set: &[Option<[f32; 3]>]) {
+        let gravity = self
+            .mechanics
+            .gravity()
+            // m/s² to units (centimetres) a second, one step's worth.
+            .map(|axis| axis * 100.0 / f32::from(crate::TICK_HZ));
+        for slot in 0..self.fighters.len() {
+            let fighter = &self.fighters[slot];
+            let (Some(before), Some(set), Some(stance)) = (
+                before.get(slot).copied().flatten(),
+                set.get(slot).copied().flatten(),
+                fighter.stance.as_ref().filter(|_| fighter.alive()),
+            ) else {
+                continue;
+            };
+            let Some(impact) = crate::impact::measure(before, set, stance.velocity, gravity) else {
+                continue;
+            };
+            let damage = crate::impact::damage(impact.speed);
+            let blows = crate::impact::strike(&stance.hitboxes, impact.direction, damage);
+            for blow in blows {
+                self.hurt_part(slot, None, blow, None);
+            }
+            self.settle_blasts();
         }
     }
 
@@ -1400,11 +2271,29 @@ impl Session {
     /// loses a frag.
     #[allow(clippy::cast_possible_truncation)]
     fn kill(&mut self, victim: usize, killer: Option<usize>, weapon: Option<Weapon>) {
+        // Its robot leaves the world once this tick's step is done ([`Session::settle_robots`]).
         let fighter = &mut self.fighters[victim];
-        self.world.remove_body(fighter.player.body);
         fighter.hook = None;
-        // A carried module ends with its carrier; nothing is dropped.
-        fighter.carried = None;
+        fighter.repair = None;
+        // A carried module's effect ends with its carrier, and the module (its uses left) lies
+        // where its feet were, while a round is played and unless it fell out of the arena.
+        #[allow(clippy::cast_precision_loss)]
+        if let Some(carried) = fighter.carried.take()
+            && matches!(self.phase, Phase::Playing { .. })
+            && fighter.feet()[1] >= KILL_HEIGHT_UNITS as f32
+        {
+            self.drops.push(Drop {
+                center: whole(fighter.feet()),
+                carried,
+                from: fighter.slot,
+                expires_in: DROP_LIFETIME_TICKS,
+            });
+            self.events.push(Event::ModuleDropped {
+                slot: fighter.slot,
+                carried,
+            });
+        }
+        let fighter = &mut self.fighters[victim];
         fighter.respawn_at = Some(self.tick + self.rules.respawn_ticks);
         fighter.deaths += 1;
         match killer.filter(|killer| *killer != victim) {
@@ -1418,35 +2307,62 @@ impl Session {
         });
     }
 
-    /// Fires `weapon` from `slot`'s eye: a hitscan beam resolves now (lag-compensated), a rocket
-    /// or a shotgun blast's pellets start flying, a flame burns what it touches now once it has
-    /// ignited.
-    fn fire(&mut self, slot: usize, weapon: Weapon, intent: Intent) -> Result<(), PhysicsError> {
+    /// Fires `weapon` from `slot` ([`aim`]): the camera picks the intended target among the
+    /// arena and the fighters where the shooter saw them, and a mounted ranged weapon's shot
+    /// leaves its muzzle toward it. A hitscan beam resolves now (lag-compensated), a rocket or a
+    /// shotgun blast's pellets start flying, a flame burns what it touches now once it has
+    /// ignited. The grapple module's hook leaves its mount's muzzle toward the target too and
+    /// sets where its line first meets arena geometry ([`Hook::fire`]). The blade leaves the eye
+    /// along the aim.
+    fn fire(
+        &mut self,
+        slot: usize,
+        instance: Instance,
+        intent: Intent,
+    ) -> Result<(), PhysicsError> {
+        let weapon = instance.weapon;
         let shooter = &self.fighters[slot];
-        let body = shooter.player.body;
-        let eye = shooter.player.eye(&self.world);
-        let direction = weapons::aim(intent.yaw, intent.pitch);
-        #[allow(clippy::cast_precision_loss)]
-        let unit = direction.map(|axis| axis as f32 / crate::trig::TRIG_ONE as f32);
+        // The robot is no body in the scenery's world: rays leave its muzzle and meet the other
+        // robots' part boxes.
+        let body = body_of(shooter.slot);
+        let eye = shooter.eye();
+        let delivery = shooter.tuning(instance).delivery(weapon);
+        let muzzle = match delivery {
+            Delivery::Melee => None,
+            _ => shooter.muzzle(instance),
+        };
+        let seen = self.seen_by(slot);
+        let shot = aim::aimed(
+            &self.world,
+            eye,
+            muzzle,
+            intent.yaw,
+            intent.pitch,
+            body,
+            |hit| slot_of(hit).is_none(),
+            seen.iter().map(|(other, _, parts)| (*other, parts)),
+        );
+        let (from, direction) = (shot.from, shot.direction());
         #[allow(clippy::cast_possible_truncation)]
         self.events.push(Event::Fired {
             slot: slot as u8,
             weapon,
-            eye,
-            direction: unit,
+            part: instance.part,
+            from,
+            direction: aim::unit(direction),
         });
         // The weapon's mod in the shooter's build, if any, and the module it carries decide its
         // damage and range.
-        match shooter.tuning(weapon).delivery(weapon) {
+        match delivery {
             Delivery::Rocket => {
-                self.rockets.push(Rocket::launch(body, eye, direction));
+                self.rockets.push(Rocket::launch(body, from, direction));
             }
             Delivery::Grapple => {
-                let (hook, trace) = Hook::fire(&self.world, eye, direction, body);
+                let (hook, trace) = Hook::fire(&self.world, from, eye, direction, body);
                 self.fighters[slot].hook = hook;
                 self.events.push(Event::Beam {
                     weapon,
-                    from: eye,
+                    from,
                     end: trace.end,
                     normal: trace.hit.map_or([0.0; 3], |hit| hit.normal),
                     struck: hook.is_some(),
@@ -1457,47 +2373,46 @@ impl Session {
                 damage,
                 range_units,
             } => {
-                let shot = self.hitscan(slot, weapon, eye, direction, range_units, damage);
+                let shot =
+                    self.hitscan(slot, &seen, weapon, (from, direction), range_units, damage);
                 self.land(slot, weapon, damage, shot);
             }
             Delivery::Pellets { damage } => {
                 self.pellets.extend(
-                    weapons::pellets(intent.yaw, intent.pitch)
-                        .map(|pellet| Pellet::launch(body, eye, pellet, damage)),
+                    weapons::pellets(shot.yaw, shot.pitch)
+                        .map(|pellet| Pellet::launch(body, from, pellet, damage)),
                 );
             }
             // Still igniting: the muzzle glows, nothing burns yet.
             Delivery::Flame { .. } if !self.fighters[slot].arsenal.ignited() => {}
-            Delivery::Flame { damage } => self.burn(slot, weapon, eye, direction, damage)?,
+            Delivery::Flame { damage } => self.burn(slot, weapon, from, direction, damage)?,
         }
         Ok(())
     }
 
-    /// Where one hitscan ray from `slot`'s `eye` along the Q16 `direction` ends and what it
+    /// Where one hitscan ray from `from` (the muzzle) along the Q16 `direction` ends and what it
     /// strikes: the arena (and the dummies) as they are now, fighters' parts where the shooter
-    /// saw them, `damage` shared among the parts it meets ([`Hitboxes::pierce`]).
+    /// saw them (`seen`, [`Session::seen_by`]), `damage` shared among the parts it meets
+    /// ([`Hitboxes::pierce`]).
     fn hitscan(
         &self,
         slot: usize,
+        seen: &[(usize, [f32; 3], Hitboxes)],
         weapon: Weapon,
-        eye: [f32; 3],
-        direction: [i32; 3],
+        (from, direction): ([f32; 3], [i32; 3]),
         range_units: i32,
         damage: i32,
     ) -> Shot {
-        let shooter = &self.fighters[slot];
-        let seen = self.seen_by(slot);
         let sight = aim::sight(
             &self.world,
-            eye,
+            from,
             direction,
             range_units,
-            shooter.player.body,
+            body_of(self.fighters[slot].slot),
             |hit| slot_of(hit).is_none(),
             seen.iter().map(|(other, _, parts)| (*other, parts)),
         );
-        #[allow(clippy::cast_precision_loss)]
-        let unit = direction.map(|axis| axis as f32 / crate::trig::TRIG_ONE as f32);
+        let unit = aim::unit(direction);
         if let Some((victim, _)) = sight.fighter
             && let Some((_, _, parts)) = seen.iter().find(|(other, _, _)| *other == victim)
         {
@@ -1505,11 +2420,11 @@ impl Session {
             let reach = sight.scenery.hit.map_or(1.0, |hit| hit.fraction);
             #[allow(clippy::cast_precision_loss)]
             let translation = unit.map(|axis| axis * range_units as f32 * reach);
-            let blows = parts.pierce(eye, translation, damage, weapon.penetration());
+            let blows = parts.pierce(from, translation, damage, weapon.penetration());
             return Shot {
                 beam: Event::Beam {
                     weapon,
-                    from: eye,
+                    from,
                     end: sight.end,
                     normal: unit.map(|axis| -axis),
                     struck: true,
@@ -1522,15 +2437,14 @@ impl Session {
         Shot {
             beam: Event::Beam {
                 weapon,
-                from: eye,
+                from,
                 end: scenery.end,
                 normal: scenery.hit.map_or([0.0; 3], |hit| hit.normal),
                 struck: scenery.hit.is_some(),
             },
             target: scenery
                 .hit
-                .and_then(|hit| self.dummy_of(hit.body))
-                .map_or(Target::Nothing, Target::Dummy),
+                .map_or(Target::Nothing, |hit| self.target_of(hit.body)),
             at: scenery.end,
         }
     }
@@ -1580,8 +2494,14 @@ impl Session {
                     if let Some(victim) = victim {
                         self.strike(victim, attacker, &blows, Weapon::Shotgun);
                         boxes = self.hitboxes_now();
-                    } else if let Some(dummy) = self.dummy_of(body) {
-                        self.hurt_dummy(dummy, attacker, damage, at);
+                    } else {
+                        match self.target_of(body) {
+                            Target::Dummy(dummy) => self.hurt_dummy(dummy, attacker, damage, at),
+                            Target::Placeable(index) => {
+                                self.scenery.hurt(index, damage);
+                            }
+                            Target::Fighter(..) | Target::Nothing => {}
+                        }
                     }
                 }
             }
@@ -1594,6 +2514,9 @@ impl Session {
         match shot.target {
             Target::Fighter(victim, blows) => self.strike(victim, slot, &blows, weapon),
             Target::Dummy(index) => self.hurt_dummy(index, slot, damage, shot.at),
+            Target::Placeable(index) => {
+                self.scenery.hurt(index, damage);
+            }
             Target::Nothing => {}
         }
     }
@@ -1609,9 +2532,9 @@ impl Session {
         direction: [i32; 3],
         damage: i32,
     ) -> Result<(), PhysicsError> {
-        let owner = self.fighters[slot].player.body;
+        let owner = body_of(self.fighters[slot].slot);
         let (flame, burning) = weapons::flame(&self.world, eye, direction, owner, |body| {
-            slot_of(body).is_some() || self.dummy_of(body).is_some()
+            self.dummy_of(body).is_some()
         })?;
         self.events.push(Event::Beam {
             weapon,
@@ -1620,29 +2543,44 @@ impl Session {
             normal: flame.hit.map_or([0.0; 3], |hit| hit.normal),
             struck: flame.hit.is_some(),
         });
-        let targets: Vec<(Target, [f32; 3])> = burning
-            .into_iter()
-            .filter_map(|body| {
-                let center = self.world.body(body)?.exact_position();
-                Some(match slot_of(body) {
-                    Some(victim) => {
-                        let fighter = self.fighters.get(usize::from(victim))?;
-                        let (index, at) =
-                            fighter.hitboxes(center, fighter.intent.yaw).nearest(eye)?;
-                        let blow = Blow { index, damage, at };
-                        (Target::Fighter(usize::from(victim), vec![blow]), at)
-                    }
-                    None => (
-                        Target::Dummy(self.dummy_of(body)?),
-                        melee::contact(eye, center),
-                    ),
-                })
+        // The other robots whose parts come within the flame's radius of its path, in slot
+        // order, then the dummies in it.
+        let axis = [0, 1, 2].map(|index| flame.end[index] - eye[index]);
+        #[allow(clippy::cast_precision_loss)]
+        let radius = weapons::FLAME_RADIUS_UNITS as f32;
+        let mut targets: Vec<(Target, [f32; 3])> = self
+            .fighters
+            .iter()
+            .enumerate()
+            .filter(|(victim, fighter)| *victim != slot && fighter.alive())
+            .filter_map(|(victim, fighter)| {
+                let parts = fighter.hitboxes();
+                parts.grown(radius).first(eye, axis)?;
+                let (index, at) = parts.nearest(eye)?;
+                let blow = Blow { index, damage, at };
+                Some((Target::Fighter(victim, vec![blow]), at))
             })
             .collect();
+        targets.extend(burning.into_iter().filter_map(|body| {
+            let center = self.world.body(body)?.exact_position();
+            Some((
+                Target::Dummy(self.dummy_of(body)?),
+                melee::contact(eye, center),
+            ))
+        }));
+        // The placeable the flame stops on burns too.
+        if let Some(hit) = flame.hit
+            && let Some(index) = self.scenery.of_body(hit.body)
+        {
+            targets.push((Target::Placeable(index), flame.end));
+        }
         for (target, at) in targets {
             match target {
                 Target::Fighter(victim, blows) => self.strike(victim, slot, &blows, weapon),
                 Target::Dummy(index) => self.hurt_dummy(index, slot, damage, at),
+                Target::Placeable(index) => {
+                    self.scenery.hurt(index, damage);
+                }
                 Target::Nothing => {}
             }
         }
@@ -1661,8 +2599,8 @@ impl Session {
         direction: [i32; 3],
     ) -> Result<(), PhysicsError> {
         let swinger = &self.fighters[slot];
-        let body = swinger.player.body;
-        let feet = swinger.player.feet(&self.world);
+        let body = body_of(swinger.slot);
+        let feet = swinger.feet();
         let in_sight = |world: &World, center: [f32; 3]| {
             let along = [0, 1, 2].map(|axis| center[axis] - eye[axis]);
             world
@@ -1692,7 +2630,7 @@ impl Session {
             .collect();
         let strike = |at: [f32; 3]| {
             let normal = [eye[0] - at[0], 0.0, eye[2] - at[2]];
-            let length = normal[0].hypot(normal[2]).max(f32::EPSILON);
+            let length = libm::hypotf(normal[0], normal[2]).max(f32::EPSILON);
             Event::Beam {
                 weapon: Weapon::EnergyBlade,
                 from: eye,
@@ -1718,14 +2656,16 @@ impl Session {
                     normal: hit.normal,
                     struck: true,
                 });
+                // A placeable within reach takes the blade.
+                if let Some(index) = self.scenery.of_body(hit.body) {
+                    self.scenery.hurt(index, melee::DAMAGE);
+                }
             }
             return Ok(());
         }
         for (victim, blow) in fighters {
             self.events.push(strike(blow.at));
-            self.fighters[victim]
-                .player
-                .push(&mut self.world, melee::knockback(yaw))?;
+            self.push(victim, melee::knockback(yaw))?;
             self.strike(victim, slot, &[blow], Weapon::EnergyBlade);
         }
         for (index, center) in dummies {
@@ -1751,18 +2691,34 @@ impl Session {
                 self.hurt_dummy(index, attacker, damage, center);
             }
         }
+        // Every damageable placeable in reach, by the point of its pieces nearest the blast.
+        for index in 0..self.scenery.placeables().len() {
+            if !self.scenery.placeables()[index].damageable() {
+                continue;
+            }
+            let Some(point) = self.scenery.nearest(&self.arena, index, at) else {
+                continue;
+            };
+            if let Some(damage) = weapons::falloff(
+                at,
+                point,
+                weapons::SPLASH_RADIUS_UNITS,
+                weapons::SPLASH_DAMAGE,
+            ) {
+                self.scenery.hurt(index, damage);
+            }
+        }
         for slot in 0..self.fighters.len() {
             if !self.fighters[slot].alive() {
                 continue;
             }
-            let player = self.fighters[slot].player;
-            let center = player.center(&self.world);
+            let center = self.fighters[slot].center();
             if let Some((_, push)) = weapons::splash(at, center) {
-                player.push(&mut self.world, push)?;
+                self.push(slot, push)?;
             }
             let fighter = &self.fighters[slot];
             let blows: Vec<Blow> = fighter
-                .hitboxes(center, fighter.intent.yaw)
+                .hitboxes()
                 .blast(at, weapons::SPLASH_RADIUS_UNITS, weapons::SPLASH_DAMAGE)
                 .into_iter()
                 .map(|blow| Blow {
@@ -1777,5 +2733,27 @@ impl Session {
             self.strike(slot, attacker, &blows, Weapon::RocketLauncher);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upright;
+
+    /// Only a robot leaning less than 45° may step off a ledge it is hung on: one tipped over
+    /// lies where it is (`tests/collisions.rs` steps an upright one off a block's lip).
+    #[test]
+    fn only_a_robot_leaning_less_than_45_degrees_is_upright() {
+        // Upright, then turned half round about the vertical: upright either way.
+        assert!(upright([0.0, 0.0, 0.0, 1.0]));
+        assert!(upright([0.0, 1.0, 0.0, 0.0]));
+        // Leaning 30° forward (about X) and 40° sideways (about Z): upright.
+        assert!(upright([0.258_819, 0.0, 0.0, 0.965_926]));
+        assert!(upright([0.0, 0.0, 0.342_020, 0.939_693]));
+        // Leaning 50°, on its side and upside down: tipped over.
+        assert!(!upright([0.422_618, 0.0, 0.0, 0.906_308]));
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(!upright([0.0, 0.0, half, half]));
+        assert!(!upright([1.0, 0.0, 0.0, 0.0]));
     }
 }

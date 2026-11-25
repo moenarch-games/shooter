@@ -1,92 +1,64 @@
-//! Posing a drawn robot for one frame from what the match says about its fighter: where it is
-//! and looks, how it moves, and what it does. Presentation only: nothing here decides a rule.
+//! Posing a drawn robot for one frame from what the match says about its fighter: where its
+//! mechanical robot's bodies are and what it does. Presentation only: nothing here decides a rule.
 //!
-//! The match's fighters still move on the capsule controller (the mechanical robots of
-//! shooter#73 do not drive them yet), so the robot stands on the capsule's feet, faces its look
-//! and animates its legs from the fighter's motion:
+//! **The simulation's pose.** A living fighter is its mechanical robot (`shooter_sim::mechanics`,
+//! shooter#73) and every frame comes with where that robot's bodies are ([`PartStates::frames`]:
+//! the predicted local robot, the others between their snapshots). Each part is drawn on the body
+//! that carries it, so the legs, wheels, tracks and joints are where the simulation has them:
 //!
-//! | Activity | Legs | Source |
-//! | --- | --- | --- |
-//! | idle | at rest | the kit's rest pose |
-//! | run (forward or back) | the gait clip at a phase driven by the distance run | kit `walk-biped` / `walk-quadruped` |
-//! | strafe | the same clip | **missing animation**: the kit has no sideways clip |
-//! | jump or fall, grapple | tucked: hip, knee and ankle turned within the kit's ranges | procedural |
-//! | slide | crouched, the body lowered so the feet stay down | procedural |
-//! | death | the robot topples over backwards until it respawns | procedural (lost parts lie where they fell) |
+//! | What | Drawn from |
+//! | --- | --- |
+//! | the robot as a whole (standing, tilting, lying on its chassis without legs) | its root body |
+//! | a leg's stride | the hip (thigh against the body it hangs from) and knee (shin against thigh) angles about the leg's own X, on the kit's hip and knee; the ankle stays at rest (the simulation's foot is fixed to its shin) |
+//! | a wheel's or track's roll | the kit's `roll` clip at the angle its body (a track's first road wheel) has turned about its axle (the descriptor's rule: `(angle mod 2π) / 2π` of its second) |
+//! | a hinge's or rotor's turn | its moving piece (and everything on it, which rides the carried body) turned as the carried body is against the joint's |
+//! | weapons | the weapons kit's states ([`super::weapon`]): no mechanics pose |
+//! | death | the robot topples over backwards until it respawns: procedural (a dead fighter has no mechanical robot) |
+//! | lost parts | where [`PartStates::detached`] puts them ([`super::track`] lets them fall to the floor) |
 //!
-//! The weapons play the weapons kit's states ([`super::weapon`]): a shot's recoil and flash, the
-//! continuous weapons' loops, the rail gun's recharge and the rocket pod's reload, the grapple's
-//! launch and retract (its hook flying to where the host set it), the blade's extend, retract and
-//! quick-melee swing (the kit's `swing` about the blade's wrist; the part it is mounted on stays
-//! rigid), and their glow channels; each mod sits on its weapon's anchor and moves with it. A
-//! missing animation (strafe: the kit has no sideways clip) is reported ([`Animation::missing`])
-//! and marked over the robot, never a silent dummy.
+//! Without frames (the builder's bench, a gallery's still) every part is drawn at rest, the
+//! robot's lowest point on the fighter's feet.
 //!
-//! **Joints.** Hinges and rotors turn at the angles the state gives ([`PartStates::joints`];
-//! nothing in the match sets them yet). The kit turns a joint's moving piece about the cube's
-//! centre, the simulation (`shooter_sim::mechanics`) joins the child at the centre of the top
-//! face; both share the axis. The drawing follows the simulation: the moving piece and every part
-//! on it turn about the simulation's anchor, so the plate stays flush under the child. For a
-//! rotor both pivots lie on its axis, so they agree exactly.
+//! The kit turns a joint's moving piece about the cube's centre, the simulation joins the child at
+//! the centre of the top face; both share the axis, and the drawing follows the simulation, so
+//! the plate stays flush under the child. The kit's leg clips (`walk-biped`, `walk-quadruped`)
+//! are not played: the simulation's gait strides the legs.
 //!
-//! **Wheels and tracks** roll the locomotion kit's `roll` clip at their joint's angle (the
-//! descriptor's rule: the clip's time is `(angle mod 2π) / 2π` of its second; the track's belt
-//! moves with its wheels). The angle is the simulation's where the state gives one
-//! ([`PartStates::joints`]: the mechanics fixtures); in the match, where the fighters move as
-//! capsules, it is the turn the robot's ground motion and turn rate would give each wheel and track
-//! about its axle ([`advance_rolls`]), so wheels on opposite sides turn opposite ways and a robot
-//! turning on the spot counter-rotates its tracks.
-//!
-//! **Lost parts** ([`PartStates::detached`]): every part the authoritative state says the robot
-//! has lost (`shooter_sim::damage`: a destroyed part and what hung from it, its weapons and their
-//! mods too) draws at rest where its entry puts its robot frame ([`super::track`] lets it fall
-//! from where it came off to the floor); the rest of the robot keeps animating without them. The entries name each lost part,
-//! not subtrees: when the root chassis is destroyed the robot is dead, and everything comes off.
+//! The weapons play the weapons kit's states: a shot's recoil and flash, the continuous weapons'
+//! loops, the rail gun's recharge and the rocket pod's reload, the grapple's launch and retract
+//! (its hook flying to where the host set it), the blade's extend, retract and quick-melee swing
+//! (the kit's `swing` about the blade's wrist), and their glow channels; each mod sits on its
+//! weapon's anchor and moves with it. A missing animation (strafe: neither the kit nor the
+//! simulation's gait has a sideways step, the legs stride while the robot moves sideways) is
+//! reported ([`Animation::missing`]) and marked over the robot, never a silent dummy.
 
+use super::frames::Frames;
 use super::kit::{KitData, Rig};
-use super::model::Model;
+use super::model::{Model, ModelPart};
 use super::weapon::{self, Memory};
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3};
 use shooter_sim::robot::{Joint, Kind, Locomotion, PartId};
-use shooter_sim::weapons::Weapon;
+use shooter_sim::weapons::{Instance, Weapon};
 
 /// Horizontal speed (metres a second) above which a robot runs rather than idles.
 pub const RUN_SPEED: f32 = 0.5;
-/// The gait clips' stride: the body's travel in one cycle (metres): `walk-biped` 0.6 m/s over a
-/// 1 s cycle, `walk-quadruped` 0.5 m/s over 0.8 s (asset-tooling `docs/combat-robot-kit.md`).
-fn stride(clip: &str) -> f32 {
-    if clip == "walk-quadruped" { 0.4 } else { 0.6 }
-}
-/// The fastest the legs cycle (cycles a second). The fighters run far faster than the clips'
-/// walking pace, so the legs trot at this rate and slide over the ground until mechanical
-/// locomotion moves the robots (shooter#58).
-pub const MAX_CYCLES_PER_SECOND: f32 = 2.5;
 /// A fall or rise faster than this (metres a second) is airborne.
 pub const AIRBORNE_SPEED: f32 = 1.0;
 /// How long after a shot the robot is labelled firing (seconds).
 pub const RECOIL_SECONDS: f32 = 0.1;
 /// How long a death's topple takes (seconds).
 pub const TOPPLE_SECONDS: f32 = 0.7;
-/// The capsule's half height (metres): the robot's feet stand at its bottom.
+/// The fighter's reference half height (metres): its feet are this far below its centre.
 #[allow(clippy::cast_precision_loss)]
 pub const HALF_HEIGHT: f32 =
     shooter_sim::player::PLAYER_HALF_EXTENTS.y as f32 * crate::scene::METRES_PER_UNIT;
 /// The leg's sole in its glTF frame: the descriptor's `sole` anchor on the `ankle` joint.
 pub const SOLE: Vec3 = Vec3::new(0.0, 0.8, -0.01);
-/// Where the simulation anchors a hinge or rotor's moving side, in the joint part's glTF frame:
-/// the centre of its top face (the kit's pivot is the cube's centre, (0, 0.1, 0)).
-pub const SIM_JOINT_ANCHOR: Vec3 = Vec3::new(0.0, 0.2, 0.0);
-
-/// A leg's hip, knee and ankle (radians about the leg's own X, the kit's signs: a positive hip
-/// swings the leg back, a positive knee folds the shin back) while airborne.
-pub const TUCK: [f32; 3] = [-0.8, 1.4, -0.6];
-/// The same while sliding: crouched, the foot level.
-pub const CROUCH: [f32; 3] = [-1.1, 2.0, -0.9];
 
 /// What the match says about one fighter this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RobotState {
-    /// Its capsule's centre (metres).
+    /// Its centre (metres): its feet are [`HALF_HEIGHT`] below.
     pub center: Vec3,
     /// Where it looks (its horizontal part turns the robot).
     pub forward: Vec3,
@@ -95,18 +67,82 @@ pub struct RobotState {
     pub sliding: bool,
     /// Where its grapple hook holds (metres), while it does.
     pub hook: Option<Vec3>,
-    /// Seconds since its last shot (or swing, or hook), and the weapon that made it.
+    /// Seconds since its last shot (or swing, or hook), and the weapon copy that made it
+    /// (shooter#125: only that copy shows the shot).
     pub since_fired: f32,
-    pub fired: Weapon,
+    pub fired: Instance,
     /// How many shots it has fired this life (the rocket pod's tubes alternate).
     pub shots: u32,
-    pub held: Weapon,
+    /// Seconds since each of its copies that fired lately last did (shooter#127: copies fire
+    /// together, each showing its own shot); a copy not in it shows `fired`'s.
+    pub recent: Recent,
+    /// The weapon copy it holds.
+    pub held: Instance,
     /// Its energy pool's share of its capacity (0..=1): the weapons' charge glow.
     pub energy: f32,
     /// How far through a blade swing it is (0..=1), while swinging.
     pub swing: Option<f32>,
     /// Seconds since it died, while dead.
     pub dead_for: Option<f32>,
+}
+
+/// Seconds since each weapon copy last fired, by part, for the most recent few.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recent {
+    len: u8,
+    entries: [(PartId, f32); RECENT],
+}
+
+/// How many copies [`Recent`] remembers.
+const RECENT: usize = 8;
+
+impl Default for Recent {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl Recent {
+    /// No copy has fired.
+    pub const NONE: Self = Self {
+        len: 0,
+        entries: [(PartId(0), f32::INFINITY); RECENT],
+    };
+
+    /// Seconds since the copy on `part` last fired, if it is remembered.
+    #[must_use]
+    pub fn since(&self, part: PartId) -> Option<f32> {
+        self.entries[..usize::from(self.len)]
+            .iter()
+            .find(|(at, _)| *at == part)
+            .map(|(_, since)| *since)
+    }
+
+    /// The copy on `part` fired now: it replaces its own entry, else the oldest.
+    pub fn fired(&mut self, part: PartId) {
+        let len = usize::from(self.len);
+        let at = self.entries[..len]
+            .iter()
+            .position(|(at, _)| *at == part)
+            .unwrap_or_else(|| {
+                if len < RECENT {
+                    self.len += 1;
+                    len
+                } else {
+                    (0..RECENT)
+                        .max_by(|a, b| self.entries[*a].1.total_cmp(&self.entries[*b].1))
+                        .unwrap_or(0)
+                }
+            });
+        self.entries[at] = (part, 0.0);
+    }
+
+    /// `seconds` later.
+    pub fn advance(&mut self, seconds: f32) {
+        for (_, since) in &mut self.entries[..usize::from(self.len)] {
+            *since += seconds;
+        }
+    }
 }
 
 /// What its legs and body do.
@@ -129,7 +165,8 @@ pub enum Action {
     Blade,
 }
 
-/// A fighter's animation state this frame.
+/// A fighter's animation state this frame: what it does, for the HUD and the weapons (its legs
+/// and body are where the simulation has them).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Animation {
     pub activity: Activity,
@@ -179,25 +216,17 @@ impl Animation {
         }
     }
 
-    /// "run (walk-biped) + fire", "strafe [missing animation: strafe]".
+    /// "run + fire", "strafe [missing animation: strafe]", "death (procedural topple)".
     #[must_use]
-    pub fn label(self, model: &Model) -> String {
+    pub fn label(self) -> String {
         let activity = match self.activity {
-            Activity::Idle => "idle".to_owned(),
-            Activity::Run | Activity::Strafe => {
-                let name = if self.activity == Activity::Run {
-                    "run"
-                } else {
-                    "strafe"
-                };
-                model
-                    .gait
-                    .map_or_else(|| name.to_owned(), |clip| format!("{name} ({clip})"))
-            }
-            Activity::Airborne => "jump/fall (procedural tuck)".to_owned(),
-            Activity::Grapple => "grapple (procedural tuck)".to_owned(),
-            Activity::Slide => "slide (procedural crouch)".to_owned(),
-            Activity::Death => "death (procedural topple)".to_owned(),
+            Activity::Idle => "idle",
+            Activity::Run => "run",
+            Activity::Strafe => "strafe",
+            Activity::Airborne => "jump/fall",
+            Activity::Grapple => "grapple",
+            Activity::Slide => "slide",
+            Activity::Death => "death (procedural topple)",
         };
         let action = match self.action {
             Action::None => "",
@@ -211,35 +240,18 @@ impl Animation {
     }
 }
 
-/// The gait clip's phase after `seconds` more of `state`'s motion (cycles, wrapping at 1).
-#[must_use]
-pub fn advance_phase(phase: f32, model: &Model, state: &RobotState, seconds: f32) -> f32 {
-    let Some(clip) = model.gait else {
-        return phase;
-    };
-    let horizontal = Vec3::new(state.velocity.x, 0.0, state.velocity.z);
-    let look = Vec3::new(state.forward.x, 0.0, state.forward.z).normalize_or(Vec3::Z);
-    let animation = Animation::of(state);
-    let speed = match animation.activity {
-        // Backing up runs the clip backwards; strafing runs it forwards.
-        Activity::Run => horizontal.dot(look),
-        Activity::Strafe => horizontal.length(),
-        _ => return phase,
-    };
-    let rate = (speed / stride(clip)).clamp(-MAX_CYCLES_PER_SECOND, MAX_CYCLES_PER_SECOND);
-    (phase + rate * seconds).rem_euclid(1.0)
-}
-
-/// Per-part state from the authoritative match: lost parts, damaged armor and joint angles.
+/// Per-part state from the authoritative match: where its bodies are, lost parts and damaged
+/// armor.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PartStates<'a> {
+    /// Where the simulation has its mechanical robot's bodies, while it has one: the pose every
+    /// connected part is drawn in.
+    pub frames: Option<&'a Frames>,
     /// Each lost part (every one, not only the root of a lost branch), with where its robot
     /// frame is in the world.
     pub detached: &'a [(PartId, Mat4)],
     /// Parts drawn in their damaged variant, where the kit has one.
     pub damaged: &'a [PartId],
-    /// Hinge, rotor, wheel and track angles (radians; a track's two road wheels share one).
-    pub joints: &'a [(PartId, f32)],
 }
 
 /// One part as drawn this frame.
@@ -259,6 +271,8 @@ pub struct PosedPart {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Muzzle {
     pub weapon: Weapon,
+    /// The weapon part it is the muzzle of: every mounted copy has its own (shooter#125).
+    pub part: PartId,
     pub position: Vec3,
     pub direction: Vec3,
 }
@@ -267,6 +281,7 @@ pub struct Muzzle {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Posed {
     pub animation: Animation,
+    /// Its root body's frame (at rest without the simulation's frames).
     pub world_from_robot: Mat4,
     pub parts: Vec<PosedPart>,
     /// Where a missing-animation marker floats: over its top.
@@ -286,55 +301,54 @@ fn about(pivot: Vec3, axis: Vec3, angle: f32) -> Mat4 {
         * Mat4::from_translation(-pivot)
 }
 
-/// Part `id`'s joint angle in `parts` (radians), zero where none is given.
-fn angle_of(parts: &PartStates, id: PartId) -> f32 {
-    parts
-        .joints
-        .iter()
-        .find(|(part, _)| *part == id)
-        .map_or(0.0, |(_, angle)| *angle)
+/// `motion` (a turn in the robot's frame at rest) in `part`'s glTF frame.
+fn local(part: &ModelPart, motion: Mat4) -> Mat4 {
+    part.robot_from_local.inverse() * motion * part.robot_from_local
 }
 
-/// Each wheel's and track's angle (radians, one a model part; others stay as they are) after
-/// `seconds` more of `state`'s motion, with the robot turning at `yaw_rate` (radians a second
-/// about +Y): rolling on the floor where the robot moves (idle, running, strafing, sliding), not
-/// in the air or dead. The fighters move as capsules, so this is the turn the robot's ground
-/// motion would give its wheels; the simulation's joint angles replace it where a state has them
-/// ([`PartStates::joints`]).
-pub fn advance_rolls(
-    angles: &mut [f32],
-    model: &Model,
-    state: &RobotState,
-    yaw_rate: f32,
-    seconds: f32,
-) {
-    let rolling = matches!(
-        Animation::of(state).activity,
-        Activity::Idle | Activity::Run | Activity::Strafe | Activity::Slide
-    );
-    if !rolling {
-        return;
-    }
-    // The robot's motion in its own frame.
-    let velocity = facing(state.forward).transpose() * state.velocity;
-    for (angle, part) in angles.iter_mut().zip(&model.parts) {
-        if let Some(roll) = &part.roll {
-            *angle = (*angle + roll.rate(velocity, yaw_rate) * seconds)
-                .rem_euclid(std::f32::consts::TAU);
-        }
-    }
+/// The angle (radians, right-handed, within ±π) `motion`'s rotation turns about `axis`.
+fn angle_about(motion: Mat4, axis: Vec3) -> f32 {
+    let (_, rotation, _) = motion.to_scale_rotation_translation();
+    let rotation = if rotation.w < 0.0 {
+        -rotation
+    } else {
+        rotation
+    };
+    2.0 * Vec3::new(rotation.x, rotation.y, rotation.z)
+        .dot(axis)
+        .atan2(rotation.w)
 }
 
-/// The robot's turn rate (radians a second about +Y) from looking along `from` to `to` in
-/// `seconds`.
+/// A leg's hip and knee angles (radians about the leg's own X, in its glTF frame) where
+/// `frames` have its thigh and shin: the thigh against the body it hangs from, the shin against
+/// the thigh.
 #[must_use]
-pub fn yaw_rate(from: Vec3, to: Vec3, seconds: f32) -> f32 {
-    if seconds <= 0.0 {
-        return 0.0;
-    }
-    let from = Vec3::new(from.x, 0.0, from.z).normalize_or(Vec3::Z);
-    let to = Vec3::new(to.x, 0.0, to.z).normalize_or(Vec3::Z);
-    from.cross(to).y.atan2(from.dot(to)) / seconds
+pub fn leg_angles(part: &ModelPart, frames: &Frames) -> Option<[f32; 2]> {
+    let bodies = frames.part(part.id)?;
+    let (thigh, shin) = (*bodies.moving.first()?, *bodies.moving.get(1)?);
+    Some([
+        angle_about(local(part, frames.relative(bodies.base, thigh)), Vec3::X),
+        angle_about(local(part, frames.relative(thigh, shin)), Vec3::X),
+    ])
+}
+
+/// A wheel's or track's angle (radians about its axle, [`super::model::Roll::axis`]) where
+/// `frames` have its rolling body (a track's first road wheel).
+#[must_use]
+pub fn roll_angle(part: &ModelPart, frames: &Frames) -> Option<f32> {
+    let roll = part.roll.as_ref()?;
+    let bodies = frames.part(part.id)?;
+    let wheel = *bodies.moving.first()?;
+    Some(angle_about(frames.relative(bodies.base, wheel), roll.axis))
+}
+
+/// How a joint's moving piece is turned (in its glTF frame) where `frames` have the body its top
+/// face carries.
+#[must_use]
+pub fn joint_turn(part: &ModelPart, frames: &Frames) -> Option<Mat4> {
+    let bodies = frames.part(part.id)?;
+    let carried = *bodies.moving.first()?;
+    Some(local(part, frames.relative(bodies.base, carried)))
 }
 
 /// The leg rig's rotations for hip, knee and ankle angles about its own X.
@@ -354,15 +368,33 @@ fn facing(forward: Vec3) -> Mat3 {
     Mat3::from_cols(forward, Vec3::Y, forward.cross(Vec3::Y))
 }
 
-/// `model` posed for `state`, its legs at gait `phase`, with `parts`' per-part state and its
-/// weapons' `memory`.
+/// Where a robot without the simulation's frames stands: at rest on the fighter's feet, facing
+/// its look; toppling over backwards once dead.
+fn rest_frame(model: &Model, state: &RobotState, animation: Animation) -> Mat4 {
+    let feet = state.center - Vec3::Y * HALF_HEIGHT;
+    let mut world_from_robot =
+        Mat4::from_mat3_translation(facing(state.forward), feet - Vec3::Y * model.floor);
+    if let (Activity::Death, Some(dead_for)) = (animation.activity, state.dead_for) {
+        let t = (dead_for / TOPPLE_SECONDS).clamp(0.0, 1.0);
+        let eased = t * t * (3.0 - 2.0 * t);
+        // Backwards over its heels: +Y turns toward −X about +Z.
+        world_from_robot *= about(
+            Vec3::new(model.back, model.floor, 0.0),
+            Vec3::Z,
+            eased * std::f32::consts::FRAC_PI_2,
+        );
+    }
+    world_from_robot
+}
+
+/// `model` posed for `state`, with `parts`' per-part state (the simulation's frames, lost and
+/// damaged parts) and its weapons' `memory`.
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn pose(
     model: &Model,
     kit: &KitData,
     state: &RobotState,
-    phase: f32,
     parts: &PartStates,
     memory: &Memory,
 ) -> Posed {
@@ -375,8 +407,20 @@ pub fn pose(
             lost[index] = Some(*world_from_robot);
         }
     }
-    // Joint motions (robot frame) and every part's palette.
-    let mut motion = vec![Mat4::IDENTITY; count];
+    // The root body, and each part on the body it hangs from (all at rest without frames).
+    let frames = parts
+        .frames
+        .filter(|_| animation.activity != Activity::Death);
+    let world_from_robot = frames.map_or_else(|| rest_frame(model, state, animation), Frames::root);
+    let bases: Vec<Mat4> = model
+        .parts
+        .iter()
+        .map(|part| {
+            frames
+                .and_then(|frames| Some(frames.body(frames.part(part.id)?.base)))
+                .unwrap_or(world_from_robot)
+        })
+        .collect();
     let mut palettes: Vec<Option<Vec<Mat4>>> = vec![None; count];
     // Attached weapons' joints, posed once their place in the world is known (the hook).
     let mut weapons = vec![None; count];
@@ -388,50 +432,56 @@ pub fn pose(
         let attached = lost[index].is_none();
         palettes[index] = Some(match part.kind {
             Kind::Locomotion(Locomotion::Leg) if attached => {
-                let rotations = match (animation.activity, model.gait.and_then(|c| rig.clip(c))) {
-                    (Activity::Run | Activity::Strafe, Some(clip)) => {
-                        let mut rotations = rig.rest();
-                        clip.sample(phase + part.phase, &mut rotations);
-                        rotations
-                    }
-                    (Activity::Airborne | Activity::Grapple, _) => leg_rotations(rig, TUCK),
-                    (Activity::Slide, _) => leg_rotations(rig, CROUCH),
-                    _ => rig.rest(),
-                };
-                rig.palette(&rotations)
+                let [hip, knee] = frames
+                    .and_then(|frames| leg_angles(part, frames))
+                    .unwrap_or_default();
+                rig.palette(&leg_rotations(rig, [hip, knee, 0.0]))
             }
             Kind::Weapon(held) if attached && kit.entries[entry].gear.is_some() => {
                 let gear = kit.entries[entry]
                     .gear
                     .as_ref()
                     .unwrap_or_else(|| unreachable!());
-                weapons[index] = Some(weapon::locals(rig, gear, held, part.refire, state, memory));
+                let instance = Instance {
+                    part: part.id,
+                    weapon: held,
+                };
+                weapons[index] = Some(weapon::locals(
+                    rig,
+                    gear,
+                    instance,
+                    part.refire,
+                    state,
+                    memory,
+                ));
                 continue;
             }
             Kind::Locomotion(Locomotion::Wheel | Locomotion::Track) if attached => {
-                // The kit's roll clip at the joint's angle: (angle mod 2π) / 2π through it.
+                // The kit's roll clip at the axle's angle: (angle mod 2π) / 2π through it.
+                let angle = frames
+                    .and_then(|frames| roll_angle(part, frames))
+                    .unwrap_or_default();
                 let rolling = kit.entries[entry].rolling.as_ref();
                 match rolling.and_then(|rolling| Some((rolling, rig.clip(&rolling.clip)?))) {
                     Some((rolling, clip)) => {
                         let mut locals = rig.rest_locals();
-                        clip.pose(rolling.time(angle_of(parts, part.id)), &mut locals);
+                        clip.pose(
+                            rolling.time(angle.rem_euclid(std::f32::consts::TAU)),
+                            &mut locals,
+                        );
                         rig.palette_of(&locals)
                     }
                     None => rig.palette(&rig.rest()),
                 }
             }
             Kind::Joint(joint) if attached => {
-                let angle = angle_of(parts, part.id);
-                let axis = match joint {
-                    Joint::Hinge => Vec3::X,
-                    Joint::Rotor => Vec3::Y,
-                };
-                let turn = about(SIM_JOINT_ANCHOR, axis, angle);
+                let turn = frames
+                    .and_then(|frames| joint_turn(part, frames))
+                    .unwrap_or(Mat4::IDENTITY);
                 let moving = rig.joint(match joint {
                     Joint::Hinge => "hinge",
                     Joint::Rotor => "rotor",
                 });
-                motion[index] = part.robot_from_local * turn * part.robot_from_local.inverse();
                 rig.palette(&rig.rest())
                     .into_iter()
                     .enumerate()
@@ -441,60 +491,14 @@ pub fn pose(
             _ => rig.palette(&rig.rest()),
         });
     }
-    // What is mounted on a turned joint turns with it (parents come before children).
-    let mut carried = vec![Mat4::IDENTITY; count];
-    for index in 0..count {
-        if let Some(parent) = model.parts[index].parent {
-            carried[index] = carried[parent] * motion[parent];
-        }
-    }
-    let robot_from_local: Vec<Mat4> = (0..count)
-        .map(|index| carried[index] * model.parts[index].robot_from_local)
-        .collect();
-
-    // Stand on the capsule's feet; grounded, the lowest sole stays on the floor.
-    let grounded = matches!(
-        animation.activity,
-        Activity::Idle | Activity::Run | Activity::Strafe | Activity::Slide
-    );
-    let mut lift = 0.0;
-    if grounded {
-        let soles = model.parts.iter().enumerate().filter_map(|(index, part)| {
-            let entry = part.entry;
-            let rig = kit.entries[entry].rig.as_ref()?;
-            let ankle = rig.joint("ankle")?;
-            let palette = palettes[index].as_ref()?;
-            (part.kind == Kind::Locomotion(Locomotion::Leg) && lost[index].is_none()).then(|| {
-                (robot_from_local[index] * palette[ankle])
-                    .transform_point3(SOLE)
-                    .y
-            })
-        });
-        if let Some(lowest) = soles.reduce(f32::min) {
-            lift = model.floor - lowest;
-        }
-    }
-    let feet = state.center - Vec3::Y * HALF_HEIGHT;
-    let mut world_from_robot =
-        Mat4::from_mat3_translation(facing(state.forward), feet + Vec3::Y * (lift - model.floor));
-    if let (Activity::Death, Some(dead_for)) = (animation.activity, state.dead_for) {
-        let t = (dead_for / TOPPLE_SECONDS).clamp(0.0, 1.0);
-        let eased = t * t * (3.0 - 2.0 * t);
-        // Backwards over its heels: +Y turns toward −X about +Z.
-        world_from_robot *= about(
-            Vec3::new(model.back, model.floor, 0.0),
-            Vec3::Z,
-            eased * std::f32::consts::FRAC_PI_2,
-        );
-    }
 
     let mut grapple = None;
     let mut muzzles = Vec::new();
     let mut posed = Vec::with_capacity(count);
     for (index, part) in model.parts.iter().enumerate() {
         let world_from_local = match lost[index] {
-            Some(world) => world * model.parts[index].robot_from_local,
-            None => world_from_robot * robot_from_local[index],
+            Some(world) => world * part.robot_from_local,
+            None => bases[index] * part.robot_from_local,
         };
         if let Some((mut locals, reach)) = weapons[index].take() {
             let entry = part.entry;
@@ -529,6 +533,7 @@ pub fn pose(
                 if let Some((frame, anchor)) = found {
                     let muzzle = Muzzle {
                         weapon: held,
+                        part: part.id,
                         position: frame.transform_point3(anchor.position),
                         direction: frame.transform_vector3(anchor.normal).normalize_or(Vec3::X),
                     };

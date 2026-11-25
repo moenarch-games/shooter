@@ -12,7 +12,7 @@ use input_bindings_core::{
     RepeatPolicy, RuntimeActionPhase, RuntimeDecision, SemanticControlState, WheelDirection,
     WhenExpr,
 };
-use shooter_sim::Weapon;
+use shooter_sim::{Instance, Select, Weapon};
 use std::collections::BTreeMap;
 use winit::keyboard::KeyCode;
 
@@ -29,12 +29,17 @@ pub const MELEE: &str = "weapon.melee";
 pub const NEXT: &str = "weapon.next";
 /// ...and back: wheel up or Q.
 pub const PREVIOUS: &str = "weapon.previous";
+/// Field repair (shooter#61): R opens the quick repair menu and, pressed again, repairs the
+/// part chosen there (the wheel and Q/E move through it while it is open).
+pub const REPAIR: &str = "robot.repair";
+/// The grapple module (shooter#104, Atlas D2.i104.2): its own key, not a weapon in the cycle.
+/// Held, the robot's mounted grapple hooks and reels; let go, the rope goes.
+pub const GRAPPLE: &str = "robot.grapple";
 /// Select actions, in [`Weapon::ROTATION`] order.
 pub const SELECT: [&str; Weapon::ROTATION.len()] = [
     "weapon.energyRifle",
     "weapon.railGun",
     "weapon.rocketLauncher",
-    "weapon.grapple",
     "weapon.shotgun",
     "weapon.laser",
     "weapon.flamethrower",
@@ -42,6 +47,8 @@ pub const SELECT: [&str; Weapon::ROTATION.len()] = [
 
 /// W3C mouse button index of the primary (left) button...
 pub const PRIMARY_BUTTON: u16 = 0;
+/// ...of the secondary (right) button...
+pub const SECONDARY_BUTTON: u16 = 2;
 /// ...and of the thumb's back button.
 pub const BACK_BUTTON: u16 = 3;
 
@@ -105,7 +112,7 @@ fn mouse_button(button: u16) -> InputStroke {
 pub fn action_registry() -> ActionRegistry {
     use AxisDirection::{Negative, Positive};
     use standard::{LEFT_X, LEFT_Y, SOUTH};
-    let actions: [(&str, &str, Vec<InputStroke>); 18] = [
+    let actions: [(&str, &str, Vec<InputStroke>); 19] = [
         (
             MOVE_FORWARD,
             "Move forward",
@@ -150,10 +157,19 @@ pub fn action_registry() -> ActionRegistry {
         (SELECT[0], "Energy rifle", vec![key("Digit1")]),
         (SELECT[1], "Rail gun", vec![key("Digit2")]),
         (SELECT[2], "Rocket launcher", vec![key("Digit3")]),
-        (SELECT[3], "Grapple hook", vec![key("Digit4")]),
-        (SELECT[4], "Shotgun", vec![key("Digit5")]),
-        (SELECT[5], "Laser", vec![key("Digit6")]),
-        (SELECT[6], "Flamethrower", vec![key("Digit7")]),
+        (SELECT[3], "Shotgun", vec![key("Digit4")]),
+        (SELECT[4], "Laser", vec![key("Digit5")]),
+        (SELECT[5], "Flamethrower", vec![key("Digit6")]),
+        (
+            GRAPPLE,
+            "Grapple hook (mounted module)",
+            vec![mouse_button(SECONDARY_BUTTON), key("KeyF")],
+        ),
+        (
+            REPAIR,
+            "Repair menu / repair the chosen part",
+            vec![key("KeyR")],
+        ),
     ];
     ActionRegistry {
         actions: actions
@@ -165,6 +181,8 @@ pub fn action_registry() -> ActionRegistry {
                 category_path: vec![
                     if id.starts_with("weapon.") {
                         "Weapons"
+                    } else if id.starts_with("robot.") {
+                        "Robot"
                     } else {
                         "Movement"
                     }
@@ -240,7 +258,11 @@ pub struct Controls {
     keys: BTreeMap<KeyCode, InputStroke>,
     /// Weapon steps pressed since the last tick took them: + next, - previous.
     steps: i32,
+    /// Repair presses since the last tick took them.
+    repairs: u32,
     wheel: Notches,
+    /// The mouse buttons held (bit per W3C index), for the control layout.
+    buttons: u8,
 }
 
 impl Default for Controls {
@@ -283,7 +305,9 @@ impl Controls {
             pad_strokes,
             keys: BTreeMap::new(),
             steps: 0,
+            repairs: 0,
             wheel: Notches::default(),
+            buttons: 0,
         }
     }
 
@@ -295,6 +319,7 @@ impl Controls {
                 match dispatch.action.as_str() {
                     NEXT => self.steps += 1,
                     PREVIOUS => self.steps -= 1,
+                    REPAIR => self.repairs += 1,
                     _ => {}
                 }
             }
@@ -317,6 +342,11 @@ impl Controls {
     /// The weapon steps pressed since the last call: + next, - previous.
     pub fn take_steps(&mut self) -> i32 {
         std::mem::take(&mut self.steps)
+    }
+
+    /// The repair presses since the last call.
+    pub fn take_repairs(&mut self) -> u32 {
+        std::mem::take(&mut self.repairs)
     }
 
     /// winit's `KeyCode` names are the W3C physical key codes.
@@ -361,7 +391,9 @@ impl Controls {
     pub fn release_all(&mut self) {
         self.keys.clear();
         self.steps = 0;
+        self.repairs = 0;
         self.wheel = Notches::default();
+        self.buttons = 0;
         for (_, down) in &mut self.pad_strokes {
             *down = false;
         }
@@ -395,6 +427,9 @@ impl Controls {
 
     /// A W3C mouse button went down (0 primary).
     pub fn mouse_down(&mut self, button: u16) {
+        if button < 8 {
+            self.buttons |= 1 << button;
+        }
         let decisions = self
             .runtime
             .input_down(mouse_button(button), false, NO_CLOCK_MS);
@@ -402,8 +437,28 @@ impl Controls {
     }
 
     pub fn mouse_up(&mut self, button: u16) {
+        if button < 8 {
+            self.buttons &= !(1 << button);
+        }
         let decisions = self.runtime.input_up(&mouse_button(button), NO_CLOCK_MS);
         self.apply(&decisions);
+    }
+
+    /// What the control layout reads this tick (shooter#74, [`shooter_sim::bindings`]): every
+    /// held key by its W3C code, the held mouse buttons and the mouse's movement `mouse`
+    /// (counts since the last tick). The same keys still drive the movement actions above; a
+    /// layout reads them for the robot's actuators.
+    #[must_use]
+    pub fn pressed(&self, mouse: [i32; 2]) -> shooter_sim::bindings::Pressed {
+        let held = self.keys.keys().fold(
+            shooter_sim::bindings::Pressed::default(),
+            |pressed, code| pressed.with_key(&format!("{code:?}")),
+        );
+        shooter_sim::bindings::Pressed {
+            buttons: self.buttons,
+            mouse,
+            ..held
+        }
     }
 
     #[must_use]
@@ -414,6 +469,11 @@ impl Controls {
     #[must_use]
     pub fn melee_held(&self) -> bool {
         self.state.is_held(MELEE)
+    }
+
+    #[must_use]
+    pub fn grapple_held(&self) -> bool {
+        self.state.is_held(GRAPPLE)
     }
 
     /// The weapon whose select key is held, if any.
@@ -495,16 +555,17 @@ impl Notches {
     }
 }
 
-/// The weapon the local fighter asks to hold: a select key held, or where the next and previous
-/// steps lead through the weapons it carries and still has ([`shooter_sim::weapons::cycled`]).
-/// A step's target is asked for every tick for [`Selection::ASK_TICKS`] (inputs are unreliable
-/// datagrams; asking for the weapon already held changes nothing), and steps taken meanwhile
-/// count on from it, so quick notches add up however late the host's word comes. The host
-/// decides: it refuses a weapon the robot does not have.
+/// The weapon the local fighter asks to hold: a select key held (the copy of that weapon held,
+/// else its first copy, [`shooter_sim::weapons::resolve`]), or where the next and previous steps
+/// lead through the weapon copies it carries and still has, every copy its own step
+/// ([`shooter_sim::weapons::cycled`], shooter#125). A step's target is asked for every tick for
+/// [`Selection::ASK_TICKS`] (inputs are unreliable datagrams; asking for the copy already held
+/// changes nothing), and steps taken meanwhile count on from it, so quick notches add up however
+/// late the host's word comes. The host decides: it refuses a copy the robot does not have.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Selection {
     /// The step's target and the ticks it has been asked for.
-    wanted: Option<(Weapon, u32)>,
+    wanted: Option<(Instance, u32)>,
 }
 
 impl Selection {
@@ -512,32 +573,32 @@ impl Selection {
     pub const ASK_TICKS: u32 = 30;
 
     /// This tick's `select`: `direct` (a select key) if held, else the cycle's target `steps`
-    /// on from the last target (or from `held`, the weapon held as predicted), with `armed`
-    /// saying which weapons the build still has.
+    /// on from the last target (or from `held`, the copy held as predicted), among `armed`, the
+    /// copies the build still has.
     pub fn intent(
         &mut self,
         direct: Option<Weapon>,
         steps: i32,
-        held: Weapon,
-        armed: impl Fn(Weapon) -> bool,
-    ) -> Option<Weapon> {
-        if direct.is_some() {
+        held: Instance,
+        armed: &[Instance],
+    ) -> Option<Select> {
+        if let Some(weapon) = direct {
             self.wanted = None;
-            return direct;
+            return Some(Select::Weapon(weapon));
         }
         if steps != 0 {
-            let from = self.wanted.map_or(held, |(weapon, _)| weapon);
+            let from = self.wanted.map_or(held, |(instance, _)| instance);
             if let Some(target) = shooter_sim::weapons::cycled(from, steps, armed) {
                 self.wanted = Some((target, 0));
             }
         }
-        let (weapon, asked) = self.wanted.as_mut()?;
+        let (instance, asked) = self.wanted.as_mut()?;
         *asked += 1;
-        let weapon = *weapon;
+        let instance = *instance;
         if *asked >= Self::ASK_TICKS {
             self.wanted = None;
         }
-        Some(weapon)
+        Some(instance.into())
     }
 }
 
@@ -660,6 +721,31 @@ mod tests {
         assert_eq!(controls.selected(), Some(Weapon::RailGun));
     }
 
+    /// The control layout (shooter#74) reads the held keys by their W3C codes, the held mouse
+    /// buttons and the mouse's movement; focus lost lets go of all of them.
+    #[test]
+    fn the_control_layout_reads_held_keys_buttons_and_the_mouse() {
+        use shooter_sim::bindings::Pressed;
+        let mut controls = Controls::new();
+        controls.key_down(KeyCode::KeyW, false);
+        controls.key_down(KeyCode::KeyJ, false);
+        controls.mouse_down(SECONDARY_BUTTON);
+        let pressed = controls.pressed([4, -2]);
+        assert_eq!(
+            pressed.keys,
+            Pressed::default().with_key("KeyW").with_key("KeyJ").keys
+        );
+        assert_eq!(pressed.buttons, 1 << SECONDARY_BUTTON);
+        assert_eq!(pressed.mouse, [4, -2]);
+        controls.key_up(KeyCode::KeyW);
+        controls.mouse_up(SECONDARY_BUTTON);
+        let pressed = controls.pressed([0, 0]);
+        assert_eq!(pressed.keys, Pressed::default().with_key("KeyJ").keys);
+        assert_eq!(pressed.buttons, 0);
+        controls.release_all();
+        assert_eq!(controls.pressed([0, 0]), Pressed::default());
+    }
+
     #[test]
     fn v_and_the_thumb_button_swing_the_blade() {
         let mut controls = Controls::new();
@@ -670,6 +756,21 @@ mod tests {
         controls.mouse_down(BACK_BUTTON);
         assert!(controls.melee_held());
         assert_eq!(controls.selected(), None);
+    }
+
+    #[test]
+    fn the_right_button_and_f_hold_the_grapple_module() {
+        let mut controls = Controls::new();
+        controls.mouse_down(SECONDARY_BUTTON);
+        assert!(controls.grapple_held() && !controls.fire_held());
+        controls.mouse_up(SECONDARY_BUTTON);
+        assert!(!controls.grapple_held());
+        controls.key_down(KeyCode::KeyF, false);
+        assert!(controls.grapple_held());
+        // No select key makes it a held weapon.
+        assert_eq!(controls.selected(), None);
+        controls.key_up(KeyCode::KeyF);
+        assert!(!controls.grapple_held());
     }
 
     #[test]
@@ -739,37 +840,58 @@ mod tests {
 
     #[test]
     fn the_selection_cycles_the_carried_weapons_and_keeps_asking_for_a_while() {
-        use Weapon::{EnergyBlade, EnergyRifle, Grapple, RailGun, Shotgun};
-        let standard = |weapon| matches!(weapon, EnergyRifle | Grapple | Shotgun | EnergyBlade);
+        use Weapon::{EnergyBlade, EnergyRifle, Grapple, Laser, RailGun, Shotgun};
+        let at = Instance::new;
+        let (rifle, shotgun, laser) = (at(7, EnergyRifle), at(10, Shotgun), at(11, Laser));
+        // The grapple module is carried but never in the cycle.
+        let standard = [rifle, at(8, EnergyBlade), at(9, Grapple), shotgun, laser];
         let mut selection = Selection::default();
-        assert_eq!(selection.intent(None, 0, EnergyRifle, standard), None);
+        assert_eq!(selection.intent(None, 0, rifle, &standard), None);
         assert_eq!(
-            selection.intent(None, 1, EnergyRifle, standard),
-            Some(Grapple)
+            selection.intent(None, 1, rifle, &standard),
+            Some(shotgun.into())
         );
         // A second notch before the switch shows counts on from the first one's target.
         assert_eq!(
-            selection.intent(None, 1, EnergyRifle, standard),
-            Some(Shotgun)
+            selection.intent(None, 1, rifle, &standard),
+            Some(laser.into())
         );
         // Asked for until the host surely has it, then nothing.
         let mut asked = 1;
-        while selection.intent(None, 0, Shotgun, standard).is_some() {
+        while selection.intent(None, 0, laser, &standard).is_some() {
             asked += 1;
         }
         assert_eq!(asked, Selection::ASK_TICKS);
         // Wraps round; a select key wins over the cycle and ends it.
         assert_eq!(
-            selection.intent(None, 1, Shotgun, standard),
-            Some(EnergyRifle)
+            selection.intent(None, 1, laser, &standard),
+            Some(rifle.into())
         );
         assert_eq!(
-            selection.intent(Some(RailGun), 0, Shotgun, standard),
-            Some(RailGun)
+            selection.intent(Some(RailGun), 0, shotgun, &standard),
+            Some(Select::Weapon(RailGun))
         );
-        assert_eq!(selection.intent(None, 0, Shotgun, standard), None);
+        assert_eq!(selection.intent(None, 0, shotgun, &standard), None);
         // Nothing to cycle through: nothing asked.
-        assert_eq!(selection.intent(None, 1, EnergyRifle, |_| false), None);
+        assert_eq!(selection.intent(None, 1, rifle, &[]), None);
+    }
+
+    #[test]
+    fn the_selection_steps_through_every_copy_of_a_weapon() {
+        // The twin rail (shooter#125): each rail gun is its own step.
+        let at = Instance::new;
+        let (left, right) = (at(7, Weapon::RailGun), at(9, Weapon::RailGun));
+        let twin = [
+            left,
+            at(8, Weapon::EnergyBlade),
+            right,
+            at(10, Weapon::Grapple),
+        ];
+        let mut selection = Selection::default();
+        assert_eq!(selection.intent(None, 1, left, &twin), Some(right.into()));
+        let mut selection = Selection::default();
+        assert_eq!(selection.intent(None, 1, right, &twin), Some(left.into()));
+        assert_eq!(selection.intent(None, -1, right, &twin), Some(right.into()));
     }
 
     #[test]

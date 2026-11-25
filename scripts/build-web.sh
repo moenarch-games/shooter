@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the browser client into web/dist: the client crate for wasm32 (WebGPU), bound with the
+# Builds the browser client into web/dist: the client crate for wasm32 (WebGPU, else WebGL 2), bound with the
 # wasm-bindgen CLI, and the pinned kits' release tars beside it in web/dist/robot-kit/kit.tar,
 # web/dist/weapon-kit/kit.tar, web/dist/locomotion-kit/kit.tar and web/dist/arena-kit/kit.tar
 # (scripts/fetch-robot-kit.sh).

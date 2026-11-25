@@ -6,17 +6,19 @@
 //! shotgun (odd slots) up close, rockets (even) or the laser (odd) at mid range and the rail gun
 //! far off, and rushes in to swing the energy blade when someone comes within a few metres. It
 //! aims at its target's root chassis (the one part whose loss kills, [`crate::damage`]), and once a
-//! weapon part of its own is lost it fires the first gun it still has instead. Every random
-//! choice comes from its own seeded stream (SplitMix64, `crate::rng`), so a match replays
-//! exactly.
+//! weapon part of its own is lost it fires the first gun it still has instead. It fires every copy
+//! of the gun it picks together, through the per-copy triggers a person's weapon group sends
+//! (shooter#127). Every random choice comes from its own seeded stream (SplitMix64,
+//! `crate::rng`), so a match replays exactly.
 
+use crate::aim;
 use crate::arena::Arena;
 use crate::physics::{Vec3i, World};
 use crate::player::Intent;
 use crate::rng::Rng;
 use crate::session::slot_of;
 use crate::trig;
-use crate::weapons::{MAX_PITCH, Weapon};
+use crate::weapons::{Instance, MAX_PITCH, Select, Triggers, Weapon};
 
 /// A bot looks for targets every 6 ticks (0.1 s).
 pub const SCAN_TICKS: u32 = 6;
@@ -49,6 +51,8 @@ pub const MELEE_UNITS: i32 = crate::melee::REACH_UNITS - 30;
 pub const WAYPOINT_REACH_UNITS: i64 = 150;
 /// After 0.5 s barely moving while it wants to walk, it jumps and picks another waypoint.
 pub const STUCK_TICKS: u32 = 30;
+/// Barely moving: within 20 cm (on both axes together) of where it was when it last moved on.
+pub const STUCK_UNITS: i32 = 20;
 
 /// What a bot knows of one slot: where its fighter stands (units), if it is alive, where its
 /// root chassis is (what a bot aims at: destroying it is the kill, [`crate::damage`]) and which
@@ -91,12 +95,6 @@ const fn turn(from: u16, to: u16) -> i32 {
 
 const fn turned(from: u16, by: i32) -> u16 {
     from.wrapping_add(by as i16 as u16)
-}
-
-/// The pitch steps (`trig` angle, up positive) looking `rise` up over `run` across.
-fn pitch_of(rise: i32, run: i32) -> i16 {
-    let angle = trig::yaw_from_vector(rise, run.max(1)).unwrap_or(0);
-    (angle as i16).clamp(-MAX_PITCH, MAX_PITCH)
 }
 
 impl Bot {
@@ -169,7 +167,7 @@ impl Bot {
         sights: &[Sight],
         world: &World,
         arena: &Arena,
-        held: Weapon,
+        copies: &[Instance],
         tick: u32,
     ) -> Intent {
         let (Some(center), Some(eye)) = (sights[me].center, sights[me].eye) else {
@@ -192,14 +190,17 @@ impl Bot {
             .target
             .and_then(|target| sights[target].chassis.or(sights[target].center))
         {
-            Some(target) => self.fight(me, eye, target, held, sights[me].armed, tick),
+            Some(target) => self.fight(me, (eye, target), world, copies, sights[me].armed, tick),
             None => self.wander(center, arena),
         };
-        // Stuck against something while walking: hop and head elsewhere.
+        // Stuck against something while walking (within a few centimetres of where it last got
+        // stuck: a robot jostles against a wall): hop and head elsewhere.
         let moved = self
             .last
-            .is_some_and(|last| (last.x - center.x).abs() + (last.z - center.z).abs() > 1);
-        self.last = Some(center);
+            .is_none_or(|last| (last.x - center.x).abs() + (last.z - center.z).abs() > STUCK_UNITS);
+        if moved || intent.forward == 0 {
+            self.last = Some(center);
+        }
         if intent.forward != 0 && !moved {
             self.stuck += 1;
             if self.stuck >= STUCK_TICKS {
@@ -225,9 +226,9 @@ impl Bot {
     fn fight(
         &mut self,
         me: usize,
-        eye: Vec3i,
-        target: Vec3i,
-        held: Weapon,
+        (eye, target): (Vec3i, Vec3i),
+        world: &World,
+        copies: &[Instance],
         armed: [bool; 8],
         tick: u32,
     ) -> Intent {
@@ -239,11 +240,12 @@ impl Bot {
             self.error = (self.signed(AIM_ERROR_YAW), self.signed(AIM_ERROR_PITCH));
             self.error_until = tick + AIM_ERROR_TICKS;
         }
-        let yaw = turned(
-            trig::yaw_from_vector(dx, dz).unwrap_or(self.yaw),
-            self.error.0,
-        );
-        let pitch = i16::try_from(i32::from(pitch_of(dy, run)) + self.error.1)
+        // It puts its reticle (the camera's centre ray, [`aim::at`]) on the target.
+        #[allow(clippy::cast_precision_loss)]
+        let units = |at: Vec3i| [at.x as f32, at.y as f32, at.z as f32];
+        let (aim_yaw, aim_pitch) = aim::at(Some(world), units(eye), units(target));
+        let yaw = turned(aim_yaw, self.error.0);
+        let pitch = i16::try_from(i32::from(aim_pitch) + self.error.1)
             .unwrap_or(0)
             .clamp(-MAX_PITCH, MAX_PITCH);
         self.face(yaw, pitch);
@@ -265,13 +267,15 @@ impl Bot {
         } else {
             Weapon::RailGun
         };
-        // A weapon part it has lost: the first gun it can still fire instead.
+        // A weapon part it has lost: the first gun it can still fire instead. It asks for the
+        // weapon, and the host picks the copy (shooter#125, [`crate::weapons::resolve`]): the
+        // one it holds while that one is still on, else the first copy it still has.
         let weapon = if armed(weapon) {
             weapon
         } else {
             Weapon::ROTATION
                 .into_iter()
-                .find(|gun| *gun != Weapon::Grapple && armed(*gun))
+                .find(|gun| armed(*gun))
                 .unwrap_or(weapon)
         };
         if tick >= self.strafe_until {
@@ -294,13 +298,30 @@ impl Bot {
             jump: self.rng.below(90) == 0,
             sprint: false,
             crouch: false,
-            fire: weapon == held && ready,
+            // Every copy of the gun it picks, as one request through the same per-copy triggers a
+            // person's weapon group sends (shooter#127): the host grants each copy its own refire
+            // and energy and staggers the rocket launchers ([`Weapon::salvo`]).
+            fire: false,
+            triggers: if ready {
+                copies
+                    .iter()
+                    .filter(|copy| copy.weapon == weapon)
+                    .map(|copy| copy.part)
+                    .collect()
+            } else {
+                Triggers::NONE
+            },
             melee: ready
                 && armed(Weapon::EnergyBlade)
                 && run < MELEE_UNITS
                 && dy.abs() < crate::player::EYE_HEIGHT_UNITS,
-            select: Some(weapon),
+            // Bots never grapple (Atlas D2.8), module or not.
+            grapple: false,
+            select: Some(Select::Weapon(weapon)),
             edit: false,
+            repair: None,
+            // The session resolves its build's preset from its movement ([`crate::bindings`]).
+            motors: crate::bindings::Motors::REST,
         }
     }
 
@@ -321,8 +342,16 @@ impl Bot {
                 .filter(|index| Some(*index) != self.waypoint)
                 .filter(|index| arena.clear_walk(feet, points[*index]))
                 .collect();
+            // Pressed against a wall, no walk is clear: it heads for the nearest point.
             let choices = if open.is_empty() {
-                (0..points.len()).collect()
+                (0..points.len())
+                    .filter(|index| Some(*index) != self.waypoint)
+                    .min_by_key(|index| {
+                        let point = points[*index];
+                        trig::xz_length(point.x - feet.x, point.z - feet.z)
+                    })
+                    .into_iter()
+                    .collect()
             } else {
                 open
             };

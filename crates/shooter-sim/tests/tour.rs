@@ -1,5 +1,7 @@
 //! The scripted tour on physics-engine: the player climbs the ramp, jumps, descends and stops at
 //! the wall.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::player::{PLAYER_HALF_EXTENTS, WALK_SPEED_SUBUNITS_PER_TICK, walk_velocity};
 use shooter_sim::tour::{self, end_of};
@@ -18,7 +20,7 @@ fn walking_reaches_the_platform_and_the_wall() {
     let on_platform = end_of(&samples, "on the platform").unwrap();
     assert!(on_platform.grounded, "{on_platform:?}");
     assert!(
-        (on_platform.center[1] - (200.0 + half)).abs() < 2.0,
+        (on_platform.center[1] - (200.0 + half)).abs() < 3.0,
         "{on_platform:?}"
     );
 
@@ -33,21 +35,31 @@ fn walking_reaches_the_platform_and_the_wall() {
 
     let wall = end_of(&samples, "into the west wall").unwrap();
     assert!(
-        wall.grounded && (wall.center[1] - half).abs() < 2.0,
+        wall.grounded && (wall.center[1] - half).abs() < 3.0,
         "{wall:?}"
     );
-    // The wall's face is at x = -2000; the capsule's radius is 30.
-    assert!((wall.center[0] + 1970.0).abs() < 3.0, "{wall:?}");
+    // The wall's face is at x = -2000; the standard robot's guns reach about 45 units ahead
+    // of its centre, turned to the wall.
+    assert!((-1_965.0..-1_940.0).contains(&wall.center[0]), "{wall:?}");
 
     // The 80 cm crate at (-12 m, 12 m) blocks walking and a running jump clears it.
     let blocked = end_of(&samples, "against the crate").unwrap();
-    assert!((blocked.center[2] - 1130.0).abs() < 3.0, "{blocked:?}");
-    let crate_top = end_of(&samples, "on the crate").unwrap();
-    assert!(crate_top.grounded, "{crate_top:?}");
+    // Its north face is at z 11.6 m: the robot's legs stop against it (swinging back as far as
+    // their hips let them) while its body, above the crate's top, leans over it.
     assert!(
-        (crate_top.center[1] - (80.0 + half)).abs() < 2.0,
-        "{crate_top:?}"
+        (1_130.0..1_180.0).contains(&blocked.center[2]) && blocked.center[1] < half + 20.0,
+        "{blocked:?}"
     );
+    // After a step back, a running jump carries its feet over the top.
+    let over = samples.iter().any(|sample| {
+        ["over the edge", "on the crate"].contains(&sample.leg)
+            && (-1_240.0..-1_160.0).contains(&sample.center[0])
+            && (1_160.0..1_240.0).contains(&sample.center[2])
+            && sample.center[1] - half > 80.0 - 3.0
+    });
+    assert!(over, "never over the crate");
+    let after = end_of(&samples, "on the crate").unwrap();
+    assert!(after.grounded, "{after:?}");
 }
 
 #[test]

@@ -25,12 +25,29 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
-/// 9: the logged commands are wire-14 inputs and the digests cover wire-14 snapshots (builds
-/// without the retired control core, the root chassis the vital part); 8 carried wire 13 (each
+/// 17: the logged commands are wire-24 inputs (per-copy fire requests, shooter#127: every
+/// scripted person asks the parts 7 to 12 to fire as a weapon group now and then) and the
+/// digests cover wire-24 snapshots.
+/// 16: the logged commands are wire-23 inputs (a weapon switch names a weapon or an exact
+/// mounted copy, shooter#125; the third and fourth scripted people play the twin rail and the
+/// rocket pod) and the digests cover wire-23 snapshots (the copy held, the copy that fired).
+/// 15: the logged commands are wire-22 inputs (each carries the actuator commands its
+/// person's control layout resolved, shooter#74; the scripted people play the named loadouts'
+/// preset) and the digests cover wire-22 snapshots.
+/// 14: the logged commands are wire-21 inputs (the grapple module's own key, shooter#104) and
+/// the digests cover wire-21 snapshots.
+/// 13: the logged commands are wire-20 inputs and the digests cover wire-20 snapshots
+/// (collision damage and the physical debris, shooter#75).
+/// 12: the logged commands are wire-19 inputs (a repair order) and the digests cover wire-19
+/// snapshots (each fighter's repair and repairable parts, shooter#61); 11 carried wire 18 (the
+/// modules dead carriers dropped, shooter#62); 10
+/// carried wire 17 (the arena placeables' health, shooter#60); 9: the logged commands are wire-14
+/// inputs and the digests cover wire-14 snapshots (builds without the retired control core, the
+/// root chassis the vital part); 8 carried wire 13 (each
 /// robot's part healths, part hits and detachments); 7 carried wire 12 (shared energy charge,
 /// batteries, no heat), 6 wire 11 (robot builds as socket-grid component trees), 5 wire 10
 /// (module pickups), 4 wire 9 (robot builds with weapon mods).
-const FORMAT: u8 = 9;
+const FORMAT: u8 = 17;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 
@@ -320,27 +337,27 @@ mod tests {
         assert_eq!(verified.final_snapshot.tick, 600);
     }
 
-    /// A scripted match on the kit-built assembly works (shooter#52) records, round-trips,
-    /// replays tick for tick and restores its map.
+    /// A scripted match on each kit-built map (the assembly works, shooter#52; the proving cell,
+    /// shooter#53; the drydock, shooter#55) records, round-trips, replays tick for tick and
+    /// restores its map.
     #[test]
-    fn a_replay_on_the_assembly_works_reproduces_every_tick() {
-        let script = Script {
-            map: MapId::AssemblyWorks,
-            ..short()
-        };
-        let replay = record(script).unwrap();
-        let bytes = replay.encode().unwrap();
-        assert_eq!(Replay::decode(&bytes).unwrap().map, MapId::AssemblyWorks);
-        assert_eq!(record(script).unwrap().encode().unwrap(), bytes);
-        let verified = verify(&replay).unwrap();
-        assert_eq!(verified.checkpoints_verified, 600);
-        assert_eq!(verified.final_snapshot.tick, 600);
-        replay
-            .play(600, |session| {
-                assert_eq!(session.map, Some(MapId::AssemblyWorks));
-                Ok(())
-            })
-            .unwrap();
+    fn a_replay_on_a_kit_built_map_reproduces_every_tick() {
+        for map in [MapId::AssemblyWorks, MapId::ProvingCell, MapId::Drydock] {
+            let script = Script { map, ..short() };
+            let replay = record(script).unwrap();
+            let bytes = replay.encode().unwrap();
+            assert_eq!(Replay::decode(&bytes).unwrap().map, map);
+            assert_eq!(record(script).unwrap().encode().unwrap(), bytes);
+            let verified = verify(&replay).unwrap();
+            assert_eq!(verified.checkpoints_verified, 600);
+            assert_eq!(verified.final_snapshot.tick, 600);
+            replay
+                .play(600, |session| {
+                    assert_eq!(session.map, Some(map));
+                    Ok(())
+                })
+                .unwrap();
+        }
     }
 
     #[test]
@@ -401,6 +418,40 @@ mod tests {
         assert_eq!(pools(), pools());
     }
 
+    /// Arena destruction replays (shooter#60): a minute on the proving cell breaks some of its
+    /// cover, every tick (the placeables' health in each snapshot digest) verifies, and a replay
+    /// breaks the same placeables on the same ticks.
+    #[test]
+    fn a_replay_reproduces_every_broken_placeable() {
+        let script = Script {
+            map: MapId::ProvingCell,
+            ticks: 3_600,
+            ..Script::DEFAULT
+        };
+        let replay = record(script).unwrap();
+        assert_eq!(verify(&replay).unwrap().checkpoints_verified, 3_600);
+        let breaks = || {
+            let mut states = Vec::new();
+            replay
+                .play(u64::MAX, |session| {
+                    let state = session.scenery.state();
+                    if states.last().is_none_or(|(_, last)| *last != state) {
+                        states.push((session.ticks(), state));
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            states
+        };
+        let states = breaks();
+        let (_, last) = states.last().unwrap();
+        assert!(
+            last.iter().any(|placeable| placeable.health == 0),
+            "nothing broke: {last:?}"
+        );
+        assert_eq!(states, breaks());
+    }
+
     #[test]
     fn a_diverging_match_fails_verification() {
         let mut replay = record(short()).unwrap();
@@ -431,6 +482,126 @@ mod tests {
                 .unwrap();
             assert_eq!(fighters, usize::from(slots));
         }
+    }
+
+    /// Four scripted people, the third on the twin rail and the fourth on the rocket pod
+    /// (shooter#125): the match replays tick for tick, and both fire more than one copy of their
+    /// weapon: the twin rail both at once, the pod never two rockets in one tick (shooter#127).
+    #[test]
+    fn a_replay_with_weapon_copies_reproduces_every_tick() {
+        use shooter_sim::Assembly;
+        use shooter_sim::robot::{BETA, PartId, ROCKET_POD, TWIN_RAIL};
+        use shooter_sim::weapons::Weapon;
+        let script = Script {
+            ticks: 900,
+            people: 4,
+            ..Script::DEFAULT
+        };
+        let replay = record(script).unwrap();
+        let bytes = replay.encode().unwrap();
+        assert_eq!(Replay::decode(&bytes).unwrap(), replay);
+        assert_eq!(verify(&replay).unwrap().checkpoints_verified, 900);
+        let mut copies: Vec<(Assembly, PartId)> = Vec::new();
+        // Both rail guns in one tick (shooter#127, the scripted weapon group).
+        let mut together = false;
+        replay
+            .play(u64::MAX, |session| {
+                let mut this_tick: Vec<(u8, Weapon)> = Vec::new();
+                for event in &session.events {
+                    if let Event::Fired {
+                        slot, weapon, part, ..
+                    } = *event
+                    {
+                        this_tick.push((slot, weapon));
+                        let fighter = &session.fighters[usize::from(slot)];
+                        let build = fighter.build;
+                        if fighter.human().is_some()
+                            && [TWIN_RAIL, ROCKET_POD].contains(&build)
+                            && BETA.instance(&build, part).map(|copy| copy.weapon) == Some(weapon)
+                            && !copies.contains(&(build, part))
+                        {
+                            copies.push((build, part));
+                        }
+                    }
+                }
+                for (slot, fighter) in session.fighters.iter().enumerate() {
+                    let fired = |of: Weapon| {
+                        this_tick
+                            .iter()
+                            .filter(|(shooter, weapon)| {
+                                usize::from(*shooter) == slot && *weapon == of
+                            })
+                            .count()
+                    };
+                    // Never two rockets from one robot in one tick: the salvo limit.
+                    assert!(fired(Weapon::RocketLauncher) <= 1);
+                    together |= fighter.build == TWIN_RAIL && fired(Weapon::RailGun) == 2;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(together, "the twin rail fires both rail guns in one tick");
+        for build in [TWIN_RAIL, ROCKET_POD] {
+            let fired: Vec<PartId> = copies
+                .iter()
+                .filter(|(of, _)| *of == build)
+                .map(|(_, part)| *part)
+                .collect();
+            assert!(
+                fired.contains(&PartId(7)) && fired.contains(&PartId(9)),
+                "{fired:?}"
+            );
+        }
+    }
+
+    /// Five scripted people, the fifth asking for the rail rack (shooter#126): the replay
+    /// decodes and verifies tick for tick, and the rack it carries and plays has the authored
+    /// socket structure, part for part and socket for socket, and fires from its rails.
+    #[test]
+    fn a_replay_with_mount_rails_reproduces_their_socket_structure() {
+        use shooter_sim::mechanics::sockets;
+        use shooter_sim::robot::{BETA, Kind, RAIL_RACK};
+        let script = Script {
+            ticks: 900,
+            people: 5,
+            ..Script::DEFAULT
+        };
+        let replay = record(script).unwrap();
+        let bytes = replay.encode().unwrap();
+        let decoded = Replay::decode(&bytes).unwrap();
+        assert_eq!(decoded, replay);
+        assert_eq!(verify(&decoded).unwrap().checkpoints_verified, 900);
+        let (mut configured, mut played, mut from_a_rail) = (false, false, false);
+        decoded
+            .play(u64::MAX, |session| {
+                for fighter in session.fighters.iter().filter(|f| f.human().is_some()) {
+                    if fighter.configured == RAIL_RACK {
+                        configured = true;
+                        assert_eq!(fighter.configured.candidate(), RAIL_RACK.candidate());
+                    }
+                    if fighter.build == RAIL_RACK {
+                        played = true;
+                        assert_eq!(sockets(&fighter.build), sockets(&RAIL_RACK));
+                    }
+                }
+                for event in &session.events {
+                    if let Event::Fired { slot, part, .. } = *event {
+                        let build = session.fighters[usize::from(slot)].build;
+                        let support = build
+                            .part(part)
+                            .and_then(|part| part.mount)
+                            .and_then(|mount| build.part(mount.parent))
+                            .and_then(|parent| BETA.part_type(parent.kind));
+                        from_a_rail |= build == RAIL_RACK
+                            && support.is_some_and(|support| support.kind == Kind::Rail);
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(configured, "the fifth person's rail rack is in the replay");
+        assert!(played, "the rail rack plays after a respawn");
+        assert!(from_a_rail, "a weapon on a rail fires");
     }
 
     #[test]

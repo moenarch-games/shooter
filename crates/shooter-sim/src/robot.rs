@@ -26,6 +26,16 @@
 //! socket only. Footprints are checked per face; whether parts on different faces or parents
 //! intersect in space is not (that needs the parts' real geometry, shooter#73).
 //!
+//! **Extensions** (D2.i123.11, shooter#126). Beams ([`Kind::Beam`]), mount rails ([`Kind::Rail`])
+//! and adapters ([`Kind::Adapter`]) are ordinary parts that add sockets: a rail lies flat on its
+//! parent's face (its footprint is its whole length) and offers a row of hardpoints on its top,
+//! one a cell, so one support carries several weapons; an adapter is one cell with a socket on
+//! each free face; a beam has sockets on every face. They have mass, health and build points,
+//! are mounted, turned, footprinted, hit and lost like any part, and their children are placed,
+//! weighed and struck where the extension carries them: losing the support loses everything on
+//! it ([`crate::damage`]). There is no second placement authority: a part on a rail is a child of
+//! the rail in the same single-parent tree, through the same validation.
+//!
 //! **Orientation** is exact and canonical: three binary angles (65 536 a turn, like the
 //! fighters' yaw), applied in the socket's frame as yaw about the face's outward normal, then
 //! pitch, then roll (intrinsic Z-Y-X). [`Orientation::canonical`] folds any triple into the one
@@ -38,8 +48,10 @@
 //!
 //! **Rules.** Only objective rules reject a build: known codes, one root chassis, existing parents
 //! and sockets, no cycles, footprints on their faces without overlaps, mods on the weapons they
-//! fit, each weapon at most once (the arsenal looks a weapon's mod up by weapon), the
-//! technical part-count ceiling [`MAX_PARTS`], and the build points. Nothing requires
+//! fit, the technical part-count ceiling [`MAX_PARTS`], and the build points. A weapon may be
+//! mounted any number of times (shooter#125): two rail guns or four rocket launchers are valid
+//! when the sockets and the build points allow them, and each copy is its own
+//! [`crate::weapons::Instance`], addressed by its part. Nothing requires
 //! locomotion: stationary, asymmetrical or grappling-only robots are valid. Every attachment is
 //! rigid; only joint and locomotion parts move ([`crate::mechanics`] places every part in space
 //! and builds the robot's bodies, joints and motors from the tree).
@@ -69,18 +81,19 @@
 //!
 //! A build does not yet change how a fighter moves, but it is its arsenal (shooter#92): a fighter
 //! holds, fires and swings only the weapons its build mounts and still has, a weapon without a
-//! mod fires as shipped, and a mounted weapon's mod applies whenever it fires, on the host and in
-//! a client's prediction alike. Every part has component health; [`crate::damage`] places the
+//! mod fires as shipped, and a mounted weapon's mod applies whenever that copy fires, on the host
+//! and in a client's prediction alike. Every part has component health; [`crate::damage`] places the
 //! parts on the fighter as hitboxes, resolves strikes onto them and detaches what is destroyed:
 //! a lost weapon part no longer fires, a lost battery takes its energy with it, a robot without a connected
 //! locomotion part cannot walk, and the root chassis is the only kill. [`crate::mechanics`]
 //! builds any valid build as a mechanical robot, but the match's fighters do not use it yet (shooter#73's
 //! second half); locomotion (shooter#58) and the builder (shooter#57) apply the rest.
 
-use crate::weapons::{Delivery, Weapon};
+use crate::weapons::{Delivery, Instance, Weapon};
 use parts::{
-    BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, FLAMETHROWER, GRAPPLE,
-    LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    ADAPTER, BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, FLAMETHROWER,
+    GRAPPLE, LASER, LEG, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, RAIL_GUN, REPAIR_MODULE,
+    ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
 
@@ -145,8 +158,10 @@ pub struct Faces(u8);
 impl Faces {
     pub const NONE: Self = Self(0);
     pub const ALL: Self = Self(0b11_1111);
-    /// Only the face opposite the mount (a joint's moving side).
+    /// Only the face opposite the mount (a joint's moving side, a mount rail's hardpoints).
     pub const TOP: Self = Self(Face::PosZ.bit());
+    /// Every face but the mount face, which rests on the parent (an adapter's five).
+    pub const EXPOSED: Self = Self(Self::ALL.0 & !Face::NegZ.bit());
 
     #[must_use]
     pub const fn contains(self, face: Face) -> bool {
@@ -160,14 +175,25 @@ pub enum Kind {
     /// A cuboid chassis section; a build's root is one, and the root is the robot's vital part
     /// and its baseline energy (D2.i89.1).
     Chassis,
-    /// A structural beam extending the tree.
+    /// A structural beam extending the tree: sockets on every face.
     Beam,
+    /// A mounting rail (shooter#126, D2.i123.11): a flat strip lying on its parent's face whose
+    /// top carries a row of hardpoints, one a cell, so several weapons or modules ride on one
+    /// support. Not the rail gun ([`Weapon::RailGun`]).
+    Rail,
+    /// An adapter (shooter#126, D2.i123.11): one cell exposing a socket on each of its five free
+    /// faces, so what is mounted on it faces up, forward, back or to either side of the face it
+    /// sits on.
+    Adapter,
     /// A movable joint: its base is rigid with its parent, its top face and what is mounted
     /// there turn about one axis ([`crate::mechanics`]).
     Joint(Joint),
     /// A battery: stored energy capacity only (D2.i70.3).
     Battery,
     Sensor,
+    /// A repair module (D2.i70.9): when the player activates it, it restores a damaged part
+    /// still connected within its radius of where it is mounted ([`crate::repair`]).
+    Repair,
     /// Legs, wheels or tracks: optional (D2.i70.1), driven as they are mounted
     /// ([`crate::mechanics`]).
     Locomotion(Locomotion),
@@ -511,6 +537,19 @@ pub mod parts {
     /// 20 × 20 × 80 cm.
     #[rustfmt::skip]
     pub const BEAM_LONG: PartType = tough(part(11, "robot.beam.20x20x80", Kind::Beam, [1, 1, 4], Faces::ALL, [10, 0, 0, 3]), 60);
+    // Mount rails and the adapter (shooter#126): ordinary parts on the socket tree whose sockets
+    // are further hardpoints. A rail lies flat (its footprint is its length) with sockets on its
+    // top only; the adapter is one cell with sockets on its five free faces.
+    /// A 20 × 40 cm mount rail, 20 cm high: two hardpoints in a row.
+    #[rustfmt::skip]
+    pub const MOUNT_RAIL_SHORT: PartType = tough(part(12, "robot.mount-rail.20x40", Kind::Rail, [1, 2, 1], Faces::TOP, [3, 0, 0, 1]), 45);
+    /// A 20 × 80 cm mount rail, 20 cm high: four hardpoints in a row (two heavy weapons, or four
+    /// light ones).
+    #[rustfmt::skip]
+    pub const MOUNT_RAIL_LONG: PartType = tough(part(13, "robot.mount-rail.20x80", Kind::Rail, [1, 4, 1], Faces::TOP, [6, 0, 0, 2]), 55);
+    /// A 20 cm adapter cube: five sockets, one on each face but its mount face.
+    #[rustfmt::skip]
+    pub const ADAPTER: PartType = tough(part(14, "robot.adapter", Kind::Adapter, [1, 1, 1], Faces::EXPOSED, [2, 0, 0, 1]), 40);
     // Motorised parts end with their drive: torque (N·m), top rate (tenths of a radian a
     // second) and the energy drawn a second while commanded.
     /// A hinge servo: one socket, on its moving side.
@@ -525,6 +564,11 @@ pub mod parts {
     /// component health for per-part damage (shooter#56).
     #[rustfmt::skip]
     pub const BATTERY: PartType = tough(part(32, "robot.battery", Kind::Battery, [1, 2, 1], Faces::NONE, [20, 60, 0, 5]), 60);
+    /// A 20 × 20 × 20 cm field repair module (D2.i70.9, shooter#61): it restores a chosen
+    /// damaged part within its radius ([`crate::repair`]), with 40 component health like a
+    /// light weapon.
+    #[rustfmt::skip]
+    pub const REPAIR_MODULE: PartType = tough(part(33, "robot.repair-module", Kind::Repair, [1, 1, 1], Faces::NONE, [12, 0, 0, 8]), 40);
     #[rustfmt::skip]
     pub const SENSOR: PartType = tough(part(31, "robot.sensor", Kind::Sensor, [1, 1, 1], Faces::NONE, [10, 0, 0, 5]), 30);
     /// One self-contained leg, 80 cm long: a hip and a knee servo, each with this drive.
@@ -546,6 +590,12 @@ pub mod parts {
     pub const RAIL_GUN: PartType = weapon(Weapon::RailGun, "weapon.rail-gun", true, [25, 20]);
     #[rustfmt::skip]
     pub const ROCKET_LAUNCHER: PartType = weapon(Weapon::RocketLauncher, "weapon.rocket-launcher", true, [30, 20]);
+    /// The grapple module (Atlas D2.i104.2, shooter#104): an optional component on any free
+    /// socket, mounted and lost like a weapon part (10 kg, 10 build points, 40 health), but
+    /// never a gun in the rotation: it hooks on its own key ([`crate::grapple`]). Its hook's
+    /// energy and interval are [`Weapon::energy`] and [`Weapon::refire_ticks`] of
+    /// [`Weapon::Grapple`], its reach [`crate::grapple::RANGE_UNITS`]: provisional tuning. The
+    /// weapons kit's `weapon.grapple-hook` model draws it.
     #[rustfmt::skip]
     pub const GRAPPLE: PartType = weapon(Weapon::Grapple, "weapon.grapple-hook", false, [10, 10]);
     #[rustfmt::skip]
@@ -606,16 +656,17 @@ pub const LONG_BARREL: ModId = ModId(3);
 // old build naming it is an unknown mod.
 pub const EFFICIENCY_COIL: ModId = ModId(5);
 
-/// The beta's catalog: three chassis sizes, two beams, two joints, a battery, a sensor,
-/// legs, wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
+/// The beta's catalog: three chassis sizes, two beams, two mount rails and an adapter, two joints, a battery, a sensor, a
+/// repair module, legs, wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
 /// Provisional values (Q2.i70.1, Q2.i70.2).
 #[rustfmt::skip]
 pub const BETA: Catalog = Catalog {
     parts: &[
         parts::CHASSIS_S, parts::CHASSIS_M, parts::CHASSIS_L,
         parts::BEAM_SHORT, parts::BEAM_LONG,
+        parts::MOUNT_RAIL_SHORT, parts::MOUNT_RAIL_LONG, parts::ADAPTER,
         parts::HINGE, parts::ROTOR,
-        parts::BATTERY, parts::SENSOR,
+        parts::BATTERY, parts::SENSOR, parts::REPAIR_MODULE,
         parts::LEG, parts::WHEEL, parts::TRACK,
         parts::ARMOR_PLATE,
         parts::ENERGY_RIFLE, parts::RAIL_GUN, parts::ROCKET_LAUNCHER, parts::GRAPPLE,
@@ -758,6 +809,20 @@ impl Part {
                 orientation: Orientation::IDENTITY,
             }),
             modification: None,
+        }
+    }
+
+    /// Turned `yaw` binary angles about its socket's normal.
+    const fn yawed(self, yaw: u16) -> Self {
+        let Some(mount) = self.mount else {
+            panic!("the root is not turned");
+        };
+        Self {
+            mount: Some(Mount {
+                orientation: Orientation::canonical(yaw, 0, 0),
+                ..mount
+            }),
+            ..self
         }
     }
 
@@ -932,6 +997,57 @@ pub const PYRO: Assembly = with_weapons(
     None,
 );
 
+/// A field-repair loadout (shooter#61): the standard build with a repair module (ID 11) on the
+/// small chassis' back, its second cell up, whose radius reaches every other part
+/// ([`crate::repair::RADIUS_UNITS`]). Valid in [`BETA`].
+pub const MECHANIC: Assembly = with_weapons(
+    frame(&CHASSIS_S),
+    [
+        forward(7, &ENERGY_RIFLE, &CHASSIS_S, 1, 2),
+        forward(8, &ENERGY_BLADE, &CHASSIS_S, 0, 2),
+        forward(9, &GRAPPLE, &CHASSIS_S, 0, 3),
+        forward(10, &SHOTGUN, &CHASSIS_S, 1, 3),
+    ],
+    Some(Part::on(
+        11,
+        &REPAIR_MODULE,
+        0,
+        &CHASSIS_S,
+        Face::NegX,
+        1,
+        0,
+    )),
+);
+
+/// A fixture with two rail guns (shooter#125): the heavy frame with a rail gun high on either
+/// side of the medium chassis' front (IDs 7 and 9), the blade below the left one, the grapple
+/// below the right one and a battery on its back for the shots. Each copy is its own weapon: its
+/// own mount, mod, health and refire. Valid in [`BETA`].
+pub const TWIN_RAIL: Assembly = with_weapons(
+    frame(&CHASSIS_M),
+    [
+        forward(7, &RAIL_GUN, &CHASSIS_M, 1, 2),
+        forward(8, &ENERGY_BLADE, &CHASSIS_M, 1, 1),
+        forward(9, &RAIL_GUN, &CHASSIS_M, 0, 2),
+        forward(10, &GRAPPLE, &CHASSIS_M, 0, 1),
+    ],
+    Some(Part::on(11, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0)),
+);
+
+/// A fixture with four rocket launchers (shooter#125) filling the small chassis' front, two low
+/// and two high (IDs 7 to 10), and nothing else: 109 of the 110 build points. Its launchers
+/// share the rockets' salvo limit: never two rockets in one tick (shooter#127). Valid in [`BETA`].
+pub const ROCKET_POD: Assembly = with_weapons(
+    frame(&CHASSIS_S),
+    [
+        forward(7, &ROCKET_LAUNCHER, &CHASSIS_S, 1, 0),
+        forward(8, &ROCKET_LAUNCHER, &CHASSIS_S, 0, 0),
+        forward(9, &ROCKET_LAUNCHER, &CHASSIS_S, 1, 2),
+        forward(10, &ROCKET_LAUNCHER, &CHASSIS_S, 0, 2),
+    ],
+    None,
+);
+
 /// The test ranges' build: every weapon, unmodded, on the front of the large chassis (the
 /// light ones in the bottom two rows, the rail gun and the rocket launcher above), on the shared
 /// frame. A fighter fires only what its build carries (shooter#92), so the scripted weapon
@@ -952,15 +1068,70 @@ pub const ARMORY: Assembly = authored(&[
     forward(14, &ROCKET_LAUNCHER, &CHASSIS_L, 1, 2),
 ]);
 
+/// A fixture on mount rails (shooter#126): the medium chassis on two legs (IDs 1, 2) with a long
+/// rail (ID 3) standing up the right column of its front and a short one (ID 8) at the foot of
+/// its left column. The long rail's four hardpoints carry, bottom to top and facing the aim, the
+/// energy rifle, the shotgun, the blade and the grapple (IDs 4 to 7); the short rail's two the
+/// laser and the flamethrower (IDs 9, 10): six weapons on two supports, 107 of the 110 build
+/// points. Its IDs are in the order a bench places its parts. Valid in [`BETA`].
+pub const RAIL_RACK: Assembly = authored(&[
+    Part::root(0, &CHASSIS_M),
+    Part::on(1, &LEG, 0, &CHASSIS_M, Face::NegZ, 0, 0),
+    Part::on(2, &LEG, 0, &CHASSIS_M, Face::NegZ, 1, 0),
+    forward(3, &MOUNT_RAIL_LONG, &CHASSIS_M, 0, 0),
+    Part::on(4, &ENERGY_RIFLE, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 0),
+    Part::on(5, &SHOTGUN, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 1),
+    Part::on(6, &ENERGY_BLADE, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 2),
+    Part::on(7, &GRAPPLE, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 3),
+    forward(8, &MOUNT_RAIL_SHORT, &CHASSIS_M, 1, 0),
+    Part::on(9, &LASER, 8, &MOUNT_RAIL_SHORT, Face::PosZ, 0, 0),
+    Part::on(10, &FLAMETHROWER, 8, &MOUNT_RAIL_SHORT, Face::PosZ, 0, 1),
+]);
+
+/// A fixture with a turned rail (shooter#126): the medium chassis on two legs with a long rail
+/// (ID 3) turned a quarter on the top left cell of its front, so it lies across the front's top
+/// row and overhangs the right side by two cells, carrying two rail guns side by side (IDs 4, 5)
+/// facing the aim; the grapple and the blade (IDs 6, 7) sit on the chassis' front at its foot
+/// and a battery (ID 8) on its back. Four weapons, two of them on the rail. Valid in [`BETA`].
+pub const CROSS_RAIL: Assembly = authored(&[
+    Part::root(0, &CHASSIS_M),
+    Part::on(1, &LEG, 0, &CHASSIS_M, Face::NegZ, 0, 0),
+    Part::on(2, &LEG, 0, &CHASSIS_M, Face::NegZ, 1, 0),
+    forward(3, &MOUNT_RAIL_LONG, &CHASSIS_M, 1, 3).yawed(Orientation::QUARTER),
+    Part::on(4, &RAIL_GUN, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 0),
+    Part::on(5, &RAIL_GUN, 3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 2),
+    forward(6, &GRAPPLE, &CHASSIS_M, 0, 0),
+    forward(7, &ENERGY_BLADE, &CHASSIS_M, 1, 0),
+    Part::on(8, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0),
+]);
+
+/// A fixture on an adapter (shooter#126): the small chassis on two legs with an adapter (ID 3)
+/// on its roof; on the adapter's front a short rail (ID 4) turned a quarter, lying across, with
+/// the energy rifle and the shotgun (IDs 5, 6) side by side facing the aim, and on the adapter's
+/// top the grapple (ID 7), pointing up. Three weapons. Valid in [`BETA`].
+pub const ADAPTER_MAST: Assembly = authored(&[
+    Part::root(0, &CHASSIS_S),
+    Part::on(1, &LEG, 0, &CHASSIS_S, Face::NegZ, 0, 0),
+    Part::on(2, &LEG, 0, &CHASSIS_S, Face::NegZ, 1, 0),
+    Part::on(3, &ADAPTER, 0, &CHASSIS_S, Face::PosZ, 0, 0),
+    Part::on(4, &MOUNT_RAIL_SHORT, 3, &ADAPTER, Face::PosX, 0, 0).yawed(Orientation::QUARTER),
+    Part::on(5, &ENERGY_RIFLE, 4, &MOUNT_RAIL_SHORT, Face::PosZ, 0, 0),
+    Part::on(6, &SHOTGUN, 4, &MOUNT_RAIL_SHORT, Face::PosZ, 0, 1),
+    Part::on(7, &GRAPPLE, 3, &ADAPTER, Face::PosZ, 0, 0),
+]);
+
 /// The named loadouts a person picks from until the builder (shooter#57): the unmodified
 /// standard and heavy builds, the two contrasting modded ones and the pyro (the laser and the
-/// flamethrower, shooter#96), all component trees.
-pub const LOADOUTS: [(&str, Assembly); 5] = [
+/// flamethrower, shooter#96) and the mechanic (a field repair module, shooter#61), all
+/// component trees. The builds with several copies of one weapon ([`TWIN_RAIL`], [`ROCKET_POD`])
+/// are fixtures, not among them; the builder makes any such build.
+pub const LOADOUTS: [(&str, Assembly); 6] = [
     ("standard", STANDARD),
     ("heavy", HEAVY),
     ("skirmisher", SKIRMISHER),
     ("marksman", MARKSMAN),
     ("pyro", PYRO),
+    ("mechanic", MECHANIC),
 ];
 
 /// The loadout called `name` in [`LOADOUTS`] (any case).
@@ -1067,7 +1238,6 @@ pub enum AssemblyError {
     NotAWeapon(PartId),
     /// The mod does not fit the weapon.
     DoesNotFit(ModId, Weapon),
-    DuplicateWeapon(Weapon),
     OverBudget {
         points: u32,
         build_points: u32,
@@ -1107,7 +1277,6 @@ impl fmt::Display for AssemblyError {
             Self::DoesNotFit(id, weapon) => {
                 write!(formatter, "mod {} does not fit {weapon:?}", id.0)
             }
-            Self::DuplicateWeapon(weapon) => write!(formatter, "{weapon:?} is mounted twice"),
             Self::OverBudget {
                 points,
                 build_points,
@@ -1176,25 +1345,52 @@ impl Catalog {
         }
     }
 
-    /// The weapons mounted in `build`, in part ID order.
-    pub fn weapons<'a>(
-        &'a self,
-        build: &'a Assembly,
-    ) -> impl Iterator<Item = (PartId, Weapon)> + 'a {
-        build
-            .parts()
-            .iter()
-            .filter_map(|part| Some((part.id, self.weapon(part)?)))
+    /// The weapons mounted in `build`, every copy its own instance, in part ID order.
+    pub fn weapons<'a>(&'a self, build: &'a Assembly) -> impl Iterator<Item = Instance> + 'a {
+        build.parts().iter().filter_map(|part| {
+            Some(Instance {
+                part: part.id,
+                weapon: self.weapon(part)?,
+            })
+        })
     }
 
-    /// The mod on `weapon` in `build`, wherever it is mounted.
+    /// The first copy of `weapon` mounted in `build` (the lowest part ID), if any.
     #[must_use]
-    pub fn mod_on(&self, build: &Assembly, weapon: Weapon) -> Option<ModId> {
-        build
-            .parts()
-            .iter()
-            .find(|part| self.weapon(part) == Some(weapon))
-            .and_then(|part| part.modification)
+    pub fn first(&self, build: &Assembly, weapon: Weapon) -> Option<Instance> {
+        self.weapons(build)
+            .find(|instance| instance.weapon == weapon)
+    }
+
+    /// The weapon mounted as part `part` of `build`, if it is one.
+    #[must_use]
+    pub fn instance(&self, build: &Assembly, part: PartId) -> Option<Instance> {
+        let weapon = self.weapon(build.part(part)?)?;
+        Some(Instance { part, weapon })
+    }
+
+    /// Which copy `instance` is of its weapon in `build`, and how many copies `build` mounts
+    /// (lost ones too, so the numbers stay put): `(1, 1)` for a weapon mounted once, `(2, 4)`
+    /// for the second of four rocket launchers by part ID. `None` if it is no weapon of the
+    /// build.
+    #[must_use]
+    pub fn copy(&self, build: &Assembly, instance: Instance) -> Option<(u8, u8)> {
+        let copies = || {
+            self.weapons(build)
+                .filter(move |other| other.weapon == instance.weapon)
+        };
+        let index = copies().position(|other| other == instance)?;
+        let count = copies().count();
+        Some((
+            u8::try_from(index + 1).unwrap_or(u8::MAX),
+            u8::try_from(count).unwrap_or(u8::MAX),
+        ))
+    }
+
+    /// The mod on part `part` of `build`, if any.
+    #[must_use]
+    pub fn mod_at(&self, build: &Assembly, part: PartId) -> Option<ModId> {
+        build.part(part).and_then(|part| part.modification)
     }
 
     /// The mods in `build` with the weapon each is on, in part ID order.
@@ -1208,18 +1404,109 @@ impl Catalog {
             .filter_map(|part| Some((part.id, self.weapon(part)?, part.modification?)))
     }
 
-    /// How `weapon` fires in `build`: its mod's tuning, else the shipped weapon's.
+    /// How the copy `instance` fires in `build`: its mod's tuning, else the shipped weapon's.
     #[must_use]
-    pub fn tuning(&self, build: &Assembly, weapon: Weapon) -> Tuning {
-        self.mod_on(build, weapon)
+    pub fn tuning(&self, build: &Assembly, instance: Instance) -> Tuning {
+        build
+            .part(instance.part)
+            .filter(|part| self.weapon(part) == Some(instance.weapon))
+            .and_then(|part| part.modification)
             .and_then(|id| self.modification(id))
             .map_or(Tuning::BASE, |modification| modification.tuning)
     }
 
+    /// The cells of `site`'s face on a parent of type `parent` that a part of type `kind` with
+    /// `modification`, turned `orientation` there, reserves: its base (a heavy mod makes it at
+    /// least two cells long) turned with the yaw's nearest quarter turn, cells past the face's
+    /// edge left out. The footprint rule of [`Catalog::validate`].
+    fn reserved(
+        &self,
+        kind: &PartType,
+        modification: Option<ModId>,
+        orientation: Orientation,
+        site: Site,
+        parent: &PartType,
+    ) -> impl Iterator<Item = (u8, u8)> + use<> {
+        let heavy = modification
+            .and_then(|id| self.modification(id))
+            .is_some_and(|modification| modification.heavy);
+        let length = if heavy {
+            kind.cells[1].max(2)
+        } else {
+            kind.cells[1]
+        };
+        footprint(
+            (kind.cells[0], length),
+            orientation.quarter_turns(),
+            (site.u, site.v),
+            site.face.grid(parent.cells),
+        )
+    }
+
+    /// The sockets of `parent` in `build` that a part of type `kind` with `modification`,
+    /// mounted on `socket` turned `orientation`, would reserve: its footprint exactly as
+    /// [`Catalog::validate`] checks it, whether or not the placement is valid (the builder's
+    /// preview, shooter#124). Empty if `build` has no such parent or socket, or the part type is
+    /// unknown.
+    #[must_use]
+    pub fn footprint(
+        &self,
+        build: &Assembly,
+        parent: PartId,
+        socket: SocketId,
+        kind: PartTypeId,
+        modification: Option<ModId>,
+        orientation: Orientation,
+    ) -> Vec<SocketId> {
+        let (Some(parent), Some(kind)) = (
+            build
+                .part(parent)
+                .and_then(|part| self.part_type(part.kind)),
+            self.part_type(kind),
+        ) else {
+            return Vec::new();
+        };
+        let Some(site) = parent.site(socket) else {
+            return Vec::new();
+        };
+        let (yaw, pitch, roll) = orientation.raw();
+        self.reserved(
+            kind,
+            modification,
+            Orientation::canonical(yaw, pitch, roll),
+            site,
+            parent,
+        )
+        .filter_map(|(u, v)| parent.socket(site.face, u, v))
+        .collect()
+    }
+
+    /// The sockets of `parent` in `build` that its children's footprints reserve, each with the
+    /// child holding it (children in ID order).
+    #[must_use]
+    pub fn claims(&self, build: &Assembly, parent: PartId) -> Vec<(SocketId, PartId)> {
+        build
+            .children(parent)
+            .filter_map(|child| Some((child, child.mount?)))
+            .flat_map(|(child, mount)| {
+                self.footprint(
+                    build,
+                    parent,
+                    mount.socket,
+                    child.kind,
+                    child.modification,
+                    mount.orientation,
+                )
+                .into_iter()
+                .map(move |socket| (socket, child.id))
+            })
+            .collect()
+    }
+
     /// The one validation path for a build, in a fixed order so the same candidate always fails
     /// the same way: the part ceiling and known codes; unique IDs (canonical ID order); one root
-    /// chassis; parents and their sockets; connection to the root; footprints; mods and weapons;
-    /// then the build points.
+    /// chassis; parents and their sockets; connection to the root; footprints; mods; then the
+    /// build points.
     ///
     /// # Errors
     ///
@@ -1305,22 +1592,13 @@ impl Catalog {
         // Footprints: no cell of a face claimed twice.
         let mut claimed: Vec<(PartId, Face, (u8, u8), PartId)> = Vec::new();
         for &(part, parent, site) in &sites {
-            let kind = type_of(part);
             let mount = part.mount.expect("children have mounts");
-            let heavy = part
-                .modification
-                .and_then(|id| self.modification(id))
-                .is_some_and(|modification| modification.heavy);
-            let length = if heavy {
-                kind.cells[1].max(2)
-            } else {
-                kind.cells[1]
-            };
-            for cell in footprint(
-                (kind.cells[0], length),
-                mount.orientation.quarter_turns(),
-                (site.u, site.v),
-                site.face.grid(type_of(parent).cells),
+            for cell in self.reserved(
+                type_of(part),
+                part.modification,
+                mount.orientation,
+                site,
+                type_of(parent),
             ) {
                 if let Some(&(.., owner)) = claimed
                     .iter()
@@ -1332,21 +1610,17 @@ impl Catalog {
             }
         }
 
-        let mut seen = Vec::new();
+        // Mods on the weapons they fit. A weapon may be mounted any number of times
+        // (shooter#125): the sockets and the build points bound its copies.
         for part in &parts {
-            let weapon = self.weapon(part);
             if let Some(id) = part.modification {
-                let weapon = weapon.ok_or(AssemblyError::NotAWeapon(part.id))?;
+                let weapon = self
+                    .weapon(part)
+                    .ok_or(AssemblyError::NotAWeapon(part.id))?;
                 let modification = self.modification(id).expect("mods were checked");
                 if !modification.fits.contains(&weapon) {
                     return Err(AssemblyError::DoesNotFit(id, weapon));
                 }
-            }
-            if let Some(weapon) = weapon {
-                if seen.contains(&weapon) {
-                    return Err(AssemblyError::DuplicateWeapon(weapon));
-                }
-                seen.push(weapon);
             }
         }
 

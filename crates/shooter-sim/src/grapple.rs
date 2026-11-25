@@ -1,19 +1,25 @@
-//! The grapple hook (Atlas D2.5): fired at arena geometry, it reels the player toward the hit
-//! point while the rope keeps them within its length, so momentum across the rope swings them
-//! round the anchor.
+//! The grapple hook (Atlas D2.i104.1, D2.i104.2): an optional socket-mounted robot module
+//! (`weapon.grapple-hook` in [`crate::robot::BETA`], build points and mass like any part) on its
+//! own key ([`crate::player::Intent::grapple`]), never a gun in the rotation. Fired from the
+//! module's muzzle toward the camera's target ([`crate::aim`]) at arena geometry, it reels the
+//! robot toward the hit point while the rope keeps it within its length, so momentum across the
+//! rope swings it round the anchor: pull and swing at once. Each hook costs the module's
+//! activation energy from the shared pool ([`crate::energy`]) and waits its refire
+//! ([`crate::weapons::Weapon::refire_ticks`]); a robot whose module is lost or cut off cannot
+//! hook, and a set hook lets go the tick it loses the module, its key is released or it dies.
+//! Fighters are never hooked. Reach and interval are provisional tuning, not approved values.
 //!
-//! physics-engine cannot yet pull or swing a kinematic character on a rope
-//! (moritzbrantner/physics-engine#557), so this is a deterministic stand-in: each tick before the
-//! world steps, [`Hook::pull`] adds the reel's acceleration toward the anchor and removes any
-//! velocity that would stretch the rope. The physics world's character move still resolves every
-//! collision. [`Hook::pull`] is the whole seam: when the engine has rope joints on characters,
-//! its body becomes that joint and nothing else changes.
+//! A deterministic stand-in for a rope joint: each tick before the world steps, [`Hook::pull`]
+//! adds the reel's acceleration toward the anchor to the robot's velocity and removes any that
+//! would stretch the rope; the movement drive sets the result on the mechanical robot
+//! ([`crate::mechanics::Mechanics::drive`]) and the articulated world resolves every collision.
+//! [`Hook::pull`] is the whole seam: a rope joint on the robot's root body could replace it.
 //!
 //! Everything is integer: positions and velocities in subunits, lengths integer square roots.
 
 use crate::arena::FIRST_PLAYER_BODY;
 use crate::fixed::{subunits_per_tick, subunits_per_tick_squared};
-use crate::physics::{BodyId, PhysicsError, RigidBody, SUBUNITS_PER_UNIT, Vec3i, World};
+use crate::physics::{BodyId, SUBUNITS_PER_UNIT, Vec3i, World};
 use crate::trig;
 use crate::weapons::{self, subunits};
 
@@ -54,17 +60,19 @@ fn narrow(value: i64) -> i32 {
 }
 
 impl Hook {
-    /// Fires a hook from `eye` (units) along the Q16 `direction`, ignoring `owner`: set where it
-    /// first meets arena geometry within [`RANGE_UNITS`], or `None` with where the shot ended
-    /// (a miss, or a fighter or dummy in the way).
+    /// Fires a hook from the module's muzzle `from` (units) along the Q16 `direction`, ignoring
+    /// `owner`: set where it first meets arena geometry within [`RANGE_UNITS`], or `None` with
+    /// where the shot ended (a miss, or a fighter or dummy in the way). The rope is tied at the
+    /// robot's `eye` ([`Hook::pull`]): its length is the eye's distance to the anchor.
     #[must_use]
     pub fn fire(
         world: &World,
+        from: [f32; 3],
         eye: [f32; 3],
         direction: [i32; 3],
         owner: BodyId,
     ) -> (Option<Self>, weapons::Trace) {
-        let trace = weapons::trace(world, eye, direction, RANGE_UNITS, owner, |_| true);
+        let trace = weapons::trace(world, from, direction, RANGE_UNITS, owner, |_| true);
         let hook = trace.hit.filter(|hit| holds_on(hit.body)).map(|_| {
             let anchor = subunits(trace.end);
             let from = subunits(eye);
@@ -85,24 +93,17 @@ impl Hook {
             .map(|axis| axis as f32 / SUBUNITS_PER_UNIT as f32)
     }
 
-    /// One tick of rope on `body`, whose eye is `eye` (units): reels the rope in, pulls toward
-    /// the anchor and takes out any velocity that would stretch the rope past its length. Call
-    /// after the body's own movement and before the world steps.
-    pub fn pull(
-        &mut self,
-        world: &mut World,
-        body: BodyId,
-        eye: [f32; 3],
-    ) -> Result<(), PhysicsError> {
-        let velocity = world
-            .body(body)
-            .map(RigidBody::velocity)
-            .unwrap_or_default();
+    /// One tick of rope on a body moving at `velocity` (subunits per tick) whose eye is `eye`
+    /// (units): reels the rope in, and returns the velocity pulled toward the anchor without
+    /// any part that would stretch the rope past its length. Call after the body's own
+    /// movement and before the world steps.
+    #[must_use]
+    pub fn pull(&mut self, velocity: Vec3i, eye: [f32; 3]) -> Vec3i {
         let from = subunits(eye);
         let offset = [0, 1, 2].map(|axis| i64::from(self.anchor[axis] - from[axis]));
         let span = distance(offset);
         if span == 0 {
-            return Ok(());
+            return velocity;
         }
         let min_length = i64::from(MIN_LENGTH_UNITS * SUBUNITS_PER_UNIT);
         let mut v = [velocity.x, velocity.y, velocity.z].map(i64::from);
@@ -127,6 +128,6 @@ impl Hook {
         }
         // Reel in: the rope shortens to the distance reached, down to its minimum.
         self.length = narrow(span.max(min_length).min(length));
-        world.set_velocity(body, Vec3i::new(narrow(v[0]), narrow(v[1]), narrow(v[2])))
+        Vec3i::new(narrow(v[0]), narrow(v[1]), narrow(v[2]))
     }
 }

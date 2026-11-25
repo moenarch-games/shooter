@@ -141,7 +141,12 @@ impl Sounds {
             }
         }
         // The local swing sounds as it is predicted, not when the host confirms it.
-        if report.fired == Some(Weapon::EnergyBlade) {
+        if report
+            .volley
+            .shots()
+            .iter()
+            .any(|fired| fired.weapon == Weapon::EnergyBlade)
+        {
             self.cue(fire_cue(Weapon::EnergyBlade), None, now_ms);
         }
         for (index, event) in events.iter().enumerate() {
@@ -152,11 +157,11 @@ impl Sounds {
                     ..
                 } if Some(slot) == local => {}
                 // The flamethrower's ignition clicks once, then the flame roars.
-                Event::Fired { eye, .. } if crate::effects::igniting(events, index) => {
-                    self.cue("flame.ignite", Some(metres(eye)), now_ms);
+                Event::Fired { from, .. } if crate::effects::igniting(events, index) => {
+                    self.cue("flame.ignite", Some(metres(from)), now_ms);
                 }
-                Event::Fired { weapon, eye, .. } => {
-                    self.cue(fire_cue(weapon), Some(metres(eye)), now_ms);
+                Event::Fired { weapon, from, .. } => {
+                    self.cue(fire_cue(weapon), Some(metres(from)), now_ms);
                 }
                 Event::Exploded { at } => self.cue("rocket.explode", Some(metres(at)), now_ms),
                 Event::Damaged { .. } => self.cue("target.hit", None, now_ms),
@@ -187,6 +192,8 @@ impl Sounds {
                 | Event::RoundOver { .. }
                 | Event::ModuleTaken { .. }
                 | Event::ModuleSpent { .. }
+                | Event::ModuleDropped { .. }
+                | Event::DropTaken { .. }
                 | Event::Detached { .. } => {}
             }
         }

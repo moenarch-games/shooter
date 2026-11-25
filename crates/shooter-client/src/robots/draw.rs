@@ -6,12 +6,12 @@ use super::kit::{KitData, KitMaterial};
 use super::model::Model;
 use super::pose::{self, Muzzle, PartStates, RobotState};
 use super::weapon::Memory;
+use crate::gfx::{AlphaMode, StandardMaterial};
+use crate::gfx::{Instance, InstanceId, MaterialId, MeshId, SkinId, TextureId, World};
 use render_engine::glam::{Mat4, Quat, Vec3, Vec4};
-use render_engine::material::{AlphaMode, StandardMaterial};
 use render_engine::mesh::{MeshData, Shape};
-use render_engine::world::{Instance, InstanceId, MaterialId, MeshId, SkinId, TextureId, World};
 use shooter_sim::Assembly;
-use shooter_sim::robot::LOADOUTS;
+use shooter_sim::robot::{LOADOUTS, PartId};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -22,6 +22,8 @@ const KIT_EMISSIVE_NITS: f32 = 3_000.0;
 const HIDDEN: Mat4 = Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::Z, Vec4::new(0.0, -100.0, 0.0, 1.0));
 /// The missing-animation marker's edge (metres).
 const MARKER_SIZE: f32 = 0.14;
+/// How bright a part lit for field repair glows (nits).
+const HIGHLIGHT_NITS: f32 = 8_000.0;
 
 /// One fighter this frame, as the match says.
 #[derive(Clone, Copy, Debug)]
@@ -32,6 +34,8 @@ pub struct RobotView<'a> {
     /// Hit glow, 1 just hit and fading to 0.
     pub glow: f32,
     pub parts: PartStates<'a>,
+    /// The part lit for field repair (the local robot's, [`crate::repair_menu`]).
+    pub highlight: Option<PartId>,
 }
 
 /// What was drawn for a fighter.
@@ -59,11 +63,6 @@ struct SlotRobot {
     /// each `set_material`, so they change only when this does).
     glow: Option<u8>,
     marker: InstanceId,
-    phase: f32,
-    /// Each part's roll angle (radians; only wheels and tracks turn), from its ground motion.
-    rolls: Vec<f32>,
-    /// Where it looked last frame (its turn rate).
-    forward: Option<Vec3>,
     /// Its weapons' transitions, from its first frame.
     memory: Option<Memory>,
 }
@@ -75,6 +74,8 @@ pub struct Robots {
     materials: Vec<StandardMaterial>,
     marker_mesh: MeshId,
     marker_material: MaterialId,
+    /// The glow a part lit for field repair is drawn in.
+    highlight_material: MaterialId,
     models: HashMap<Assembly, Rc<Model>>,
     slots: Vec<Option<SlotRobot>>,
     clock: f32,
@@ -144,6 +145,9 @@ impl Robots {
             materials,
             marker_mesh: world.add_mesh(&MeshData::shape(Shape::Cuboid(Vec3::splat(MARKER_SIZE)))),
             marker_material: world.add_material(&glowing(Vec4::new(1.0, 0.0, 0.8, 1.0), 20_000.0)),
+            // The HUD's repair teal (0x4FD1A5), lit well above the arena's exposure.
+            highlight_material: world
+                .add_material(&glowing(Vec4::new(0.08, 0.64, 0.38, 1.0), HIGHLIGHT_NITS)),
             kit,
             models,
             slots: Vec::new(),
@@ -219,7 +223,6 @@ impl Robots {
             world_from_local: HIDDEN,
             skin: None,
         });
-        let rolls = vec![0.0; model.parts.len()];
         SlotRobot {
             build,
             model,
@@ -228,9 +231,6 @@ impl Robots {
             materials,
             glow: None,
             marker,
-            phase: 0.0,
-            rolls,
-            forward: None,
             memory: None,
         }
     }
@@ -270,41 +270,11 @@ impl Robots {
             let Some(robot) = &mut self.slots[slot] else {
                 continue;
             };
-            robot.phase = pose::advance_phase(robot.phase, &robot.model, &view.state, seconds);
             let memory = robot
                 .memory
                 .get_or_insert_with(|| Memory::settled(&view.state));
             memory.advance(&view.state, seconds);
-            let yaw_rate = robot.forward.map_or(0.0, |from| {
-                pose::yaw_rate(from, view.state.forward, seconds)
-            });
-            robot.forward = Some(view.state.forward);
-            pose::advance_rolls(
-                &mut robot.rolls,
-                &robot.model,
-                &view.state,
-                yaw_rate,
-                seconds,
-            );
-            // The simulation's wheel and track angles where the view has them, else the rolls.
-            let mut joints = view.parts.joints.to_vec();
-            for (part, angle) in robot.model.parts.iter().zip(&robot.rolls) {
-                if part.roll.is_some() && !joints.iter().any(|(id, _)| *id == part.id) {
-                    joints.push((part.id, *angle));
-                }
-            }
-            let parts = PartStates {
-                joints: &joints,
-                ..view.parts
-            };
-            let posed = pose::pose(
-                &robot.model,
-                &self.kit,
-                &view.state,
-                robot.phase,
-                &parts,
-                memory,
-            );
+            let posed = pose::pose(&robot.model, &self.kit, &view.state, &view.parts, memory);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let glow = (view.glow.clamp(0.0, 1.0) * 8.0).round() as u8;
             if robot.glow != Some(glow) {
@@ -329,10 +299,12 @@ impl Robots {
                     (true, Some(damaged)) => damaged,
                     _ => part.entry,
                 };
-                let (mesh, material) = (
-                    self.meshes[entry],
-                    robot.materials[self.kit.entries[entry].material],
-                );
+                let material = if view.highlight == Some(part.id) {
+                    self.highlight_material
+                } else {
+                    robot.materials[self.kit.entries[entry].material]
+                };
+                let mesh = self.meshes[entry];
                 if let (Some(skin), Some(palette)) = (skin, &posed_part.palette) {
                     world.set_skin(*skin, palette);
                 }
@@ -366,7 +338,7 @@ impl Robots {
             world.set_instance(robot.marker, instance);
             drawn.push(Drawn {
                 slot: view.slot,
-                label: posed.animation.label(&robot.model),
+                label: posed.animation.label(),
                 grapple: posed.grapple,
                 muzzles: posed.muzzles,
             });

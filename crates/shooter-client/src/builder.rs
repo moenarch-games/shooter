@@ -15,16 +15,28 @@
 //! on whatever arrives. Nothing warns about or forbids unconventional builds (no locomotion,
 //! odd balance): only the objective rules reject one.
 //!
-//! A part's rotation is exact: snaps of an eighth of a turn, or fine steps of about a degree,
-//! about each of the socket's axes ([`Axis`]), in the canonical form the wire carries. The bench
-//! never turns a part into a conventional orientation by itself.
+//! A part's rotation is exact: quarter turns, eighths, or fine steps of about a degree
+//! ([`Step`]), about each of the socket's axes ([`Axis`]), in the canonical form the wire
+//! carries. The bench never turns a part into a conventional orientation by itself.
+//!
+//! **Placing** (shooter#124). A placement is first a [`Proposal`]: the part in hand on one
+//! socket, turned as it is, with the footprint it would reserve and the simulation's verdict on
+//! the build it would make. The preview draws the proposal and a placement commits the
+//! proposal's own build, so what is committed is what was previewed and what the rules
+//! accepted. A refused proposal names its reason ([`describe`]).
+//!
+//! **History.** Every edit to the build (placing, turning, a mod, removing, a new frame, a
+//! loadout) can be undone and redone: the bench keeps the builds before and after, so undo and
+//! redo restore the exact build that was there.
 
+pub mod controls;
+pub mod saved;
 pub mod view;
 
 use shooter_sim::Weapon;
 use shooter_sim::robot::{
     Assembly, AssemblyError, BETA, Budget, Candidate, Catalog, Joint, Kind, Locomotion, MAX_PARTS,
-    ModId, Orientation, PartId, PartType, PartTypeId, RawMount, RawPart, SocketId,
+    ModId, Mount, Orientation, Part, PartId, PartType, PartTypeId, RawMount, RawPart, SocketId,
 };
 use std::fmt;
 
@@ -35,10 +47,75 @@ pub const BENCH: Catalog = Catalog {
     ..BETA
 };
 
+/// A coarse step: a quarter turn.
+pub const COARSE: u16 = Orientation::QUARTER;
 /// A snap: an eighth of a turn.
 pub const SNAP: u16 = Orientation::QUARTER / 2;
 /// A fine step: about a degree (182 of the 65 536 binary angles a turn).
 pub const FINE: u16 = 182;
+/// How many edits the bench can undo.
+pub const HISTORY: usize = 64;
+
+/// How far a rotation key turns a part.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Step {
+    /// A quarter turn ([`COARSE`]).
+    #[default]
+    Quarter,
+    /// An eighth of a turn ([`SNAP`]).
+    Eighth,
+    /// About a degree ([`FINE`]).
+    Fine,
+}
+
+impl Step {
+    /// The step's binary angle.
+    #[must_use]
+    pub const fn angle(self) -> u16 {
+        match self {
+            Self::Quarter => COARSE,
+            Self::Eighth => SNAP,
+            Self::Fine => FINE,
+        }
+    }
+
+    /// The next step, coarse to fine and round again.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Quarter => Self::Eighth,
+            Self::Eighth => Self::Fine,
+            Self::Fine => Self::Quarter,
+        }
+    }
+}
+
+/// The part in hand on one socket, turned as it is: what placing it would do.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Proposal {
+    /// The new part: its kind and its mount (the orientation canonical), with the ID it would get.
+    pub part: Part,
+    /// The parent's sockets its footprint would reserve ([`Catalog::footprint`]).
+    pub footprint: Vec<SocketId>,
+    /// Those of them another part already holds, with the part holding each.
+    pub blocked: Vec<(SocketId, PartId)>,
+    /// The build placing it makes, or the rule that refuses it.
+    pub verdict: Result<Assembly, AssemblyError>,
+}
+
+impl Proposal {
+    /// The parent it would go on.
+    #[must_use]
+    pub fn parent(&self) -> PartId {
+        self.part.mount.map_or(PartId(0), |mount| mount.parent)
+    }
+
+    /// The socket it would go on.
+    #[must_use]
+    pub fn socket(&self) -> SocketId {
+        self.part.mount.map_or(SocketId(0), |mount| mount.socket)
+    }
+}
 
 /// An axis a part turns about on its socket, in the order the orientation applies them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +137,14 @@ pub enum Refusal {
     Nothing,
     /// The selected part takes no mods.
     NoMods,
+    /// No edit to undo.
+    NoUndo,
+    /// No undone edit to redo.
+    NoRedo,
+    /// The control layout edit breaks a binding rule ([`controls`]).
+    Binding(shooter_sim::bindings::BindingError),
+    /// A key no binding may name.
+    UnboundKey,
 }
 
 impl fmt::Display for Refusal {
@@ -69,7 +154,65 @@ impl fmt::Display for Refusal {
             Self::Root => formatter.write_str("the root chassis stays: start a new frame"),
             Self::Nothing => formatter.write_str("select a part first"),
             Self::NoMods => formatter.write_str("no mod fits this part"),
+            Self::NoUndo => formatter.write_str("nothing to undo"),
+            Self::NoRedo => formatter.write_str("nothing to redo"),
+            Self::Binding(error) => error.fmt(formatter),
+            Self::UnboundKey => formatter.write_str("that key cannot be bound"),
         }
+    }
+}
+
+impl Refusal {
+    /// What to tell the person, naming the parts `build` (the bench's build) holds; `subject` is
+    /// the part being edited, if it is in `build`.
+    #[must_use]
+    pub fn describe(self, build: &Assembly, subject: Option<PartId>) -> String {
+        match self {
+            Self::Rule(error) => describe(build, error, subject),
+            other => other.to_string(),
+        }
+    }
+}
+
+/// A part of `build` by name (its type's), or by ID if it is not there.
+fn named(build: &Assembly, id: PartId) -> String {
+    if let Some(instance) = BETA.instance(build, id) {
+        // A weapon mounted more than once: which copy (shooter#125).
+        return crate::overlay::copy_name(build, instance);
+    }
+    build
+        .part(id)
+        .and_then(|part| BETA.part_type(part.kind))
+        .map_or_else(|| format!("part {}", id.0), part_name)
+}
+
+/// The simulation's reason for refusing an edit of `build` (the build before it), said so the
+/// person can act on it: the parts it names by their names, and what would help. `subject` is the
+/// part being edited when `build` holds it (a part turned), not when it is new (a placement).
+#[must_use]
+pub fn describe(build: &Assembly, error: AssemblyError, subject: Option<PartId>) -> String {
+    match error {
+        // The rule names the two parts in the order it met them: the other one is in the way.
+        AssemblyError::Overlap(first, second) => {
+            let holder = [first, second]
+                .into_iter()
+                .find(|id| Some(*id) != subject && build.part(*id).is_some())
+                .unwrap_or(first);
+            format!(
+                "the footprint meets the {}'s cells: turn it or pick a free socket",
+                named(build, holder)
+            )
+        }
+        AssemblyError::TooManyParts(_) => {
+            format!("the robot has its {MAX_PARTS} parts: remove one first")
+        }
+        AssemblyError::InteriorSocket(_) => {
+            "that face rests on the part's parent: pick an outer face".to_owned()
+        }
+        AssemblyError::DoesNotFit(..) | AssemblyError::NotAWeapon(_) => {
+            format!("{error}: pick another mod")
+        }
+        other => other.to_string(),
     }
 }
 
@@ -77,6 +220,13 @@ impl From<AssemblyError> for Refusal {
     fn from(error: AssemblyError) -> Self {
         Self::Rule(error)
     }
+}
+
+/// A build on the bench and the part selected in it: what undo and redo restore.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Snapshot {
+    draft: Assembly,
+    selected: Option<PartId>,
 }
 
 /// The bench: the build being worked on, the catalogue part in hand and the selected part.
@@ -88,6 +238,9 @@ pub struct Workbench {
     /// How the part in hand will be turned on its socket.
     pub turn: Orientation,
     pub selected: Option<PartId>,
+    /// The builds before each edit (the latest last), and those undone (the latest undone last).
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
 }
 
 impl Workbench {
@@ -99,7 +252,69 @@ impl Workbench {
             hand: None,
             turn: Orientation::IDENTITY,
             selected: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
         }
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            draft: self.draft,
+            selected: self.selected,
+        }
+    }
+
+    /// Makes `draft` the bench's build, `selected` selected, as one edit that can be undone (no
+    /// edit if nothing changes).
+    fn commit(&mut self, draft: Assembly, selected: Option<PartId>) {
+        if draft == self.draft {
+            self.selected = selected;
+            return;
+        }
+        if self.undo.len() == HISTORY {
+            self.undo.remove(0);
+        }
+        self.undo.push(self.snapshot());
+        self.redo.clear();
+        self.draft = draft;
+        self.selected = selected;
+    }
+
+    /// Whether there is an edit to undo, and an undone edit to redo.
+    #[must_use]
+    pub fn history(&self) -> (bool, bool) {
+        (!self.undo.is_empty(), !self.redo.is_empty())
+    }
+
+    /// Takes the last edit back: the build before it, exactly, with what was selected then.
+    ///
+    /// # Errors
+    ///
+    /// If there is no edit to undo.
+    pub fn undo(&mut self) -> Result<(), Refusal> {
+        let before = self.undo.pop().ok_or(Refusal::NoUndo)?;
+        self.redo.push(self.snapshot());
+        self.restore(before);
+        Ok(())
+    }
+
+    /// Makes the last undone edit again: the build after it, exactly.
+    ///
+    /// # Errors
+    ///
+    /// If there is no undone edit.
+    pub fn redo(&mut self) -> Result<(), Refusal> {
+        let after = self.redo.pop().ok_or(Refusal::NoRedo)?;
+        self.undo.push(self.snapshot());
+        self.restore(after);
+        Ok(())
+    }
+
+    fn restore(&mut self, snapshot: Snapshot) {
+        self.draft = snapshot.draft;
+        self.selected = snapshot
+            .selected
+            .filter(|id| self.draft.part(*id).is_some());
     }
 
     /// The build on the bench (it lays out; it may be over budget).
@@ -124,9 +339,8 @@ impl Workbench {
     }
 
     /// Starts over from `build` (a named loadout), keeping what is in hand.
-    pub const fn load(&mut self, build: Assembly) {
-        self.draft = build;
-        self.selected = None;
+    pub fn load(&mut self, build: Assembly) {
+        self.commit(build, None);
     }
 
     /// Starts a new robot: `chassis` alone, as its root.
@@ -143,13 +357,69 @@ impl Workbench {
                 modification: None,
             }],
         };
-        self.draft = BENCH.validate(&candidate)?;
-        self.selected = Some(PartId(0));
+        let draft = BENCH.validate(&candidate)?;
+        self.commit(draft, Some(PartId(0)));
         Ok(())
     }
 
+    /// `kind` turned `turn` on `socket` of `parent`: the new part (with the lowest free ID), the
+    /// footprint it would reserve and the build the bench would hold, or the rule it breaks (the
+    /// bench's preview, valid or not).
+    #[must_use]
+    pub fn propose(
+        &self,
+        kind: PartTypeId,
+        parent: PartId,
+        socket: SocketId,
+        turn: Orientation,
+    ) -> Proposal {
+        let mut candidate = self.draft.candidate();
+        let free = (0..=u8::MAX).find(|id| candidate.parts.iter().all(|part| part.id != *id));
+        let (yaw, pitch, roll) = turn.raw();
+        let part = Part {
+            id: PartId(free.unwrap_or(u8::MAX)),
+            kind,
+            mount: Some(Mount {
+                parent,
+                socket,
+                orientation: Orientation::canonical(yaw, pitch, roll),
+            }),
+            modification: None,
+        };
+        let footprint = BENCH.footprint(&self.draft, parent, socket, kind, None, turn);
+        let claims = BENCH.claims(&self.draft, parent);
+        let blocked = footprint
+            .iter()
+            .filter_map(|cell| claims.iter().find(|(held, _)| held == cell).copied())
+            .collect();
+        let verdict = match free {
+            Some(id) => {
+                candidate.parts.push(RawPart {
+                    id,
+                    kind: kind.0,
+                    mount: Some(RawMount {
+                        parent: parent.0,
+                        socket: socket.0,
+                        yaw,
+                        pitch,
+                        roll,
+                    }),
+                    modification: None,
+                });
+                BENCH.validate(&candidate)
+            }
+            None => Err(AssemblyError::TooManyParts(candidate.parts.len() + 1)),
+        };
+        Proposal {
+            part,
+            footprint,
+            blocked,
+            verdict,
+        }
+    }
+
     /// The build with `kind` turned `turn` on `socket` of `parent`, as the bench would hold it,
-    /// and the new part's ID: what a placement would make (the bench's preview).
+    /// and the new part's ID: what a placement would make.
     ///
     /// # Errors
     ///
@@ -161,24 +431,8 @@ impl Workbench {
         socket: SocketId,
         turn: Orientation,
     ) -> Result<(Assembly, PartId), AssemblyError> {
-        let mut candidate = self.draft.candidate();
-        let id = (0..=u8::MAX)
-            .find(|id| candidate.parts.iter().all(|part| part.id != *id))
-            .ok_or(AssemblyError::TooManyParts(candidate.parts.len() + 1))?;
-        let (yaw, pitch, roll) = turn.raw();
-        candidate.parts.push(RawPart {
-            id,
-            kind: kind.0,
-            mount: Some(RawMount {
-                parent: parent.0,
-                socket: socket.0,
-                yaw,
-                pitch,
-                roll,
-            }),
-            modification: None,
-        });
-        Ok((BENCH.validate(&candidate)?, PartId(id)))
+        let proposal = self.propose(kind, parent, socket, turn);
+        Ok((proposal.verdict?, proposal.part.id))
     }
 
     /// Whether the part in hand, turned as it is, fits `socket` of `parent`.
@@ -188,6 +442,18 @@ impl Workbench {
             .is_some_and(|kind| self.placed(kind, parent, socket, self.turn).is_ok())
     }
 
+    /// Commits `proposal` (made on this bench as it is) and selects the new part: exactly the
+    /// build it previewed.
+    ///
+    /// # Errors
+    ///
+    /// The rule the proposal breaks.
+    pub fn commit_proposal(&mut self, proposal: &Proposal) -> Result<PartId, Refusal> {
+        let draft = proposal.verdict?;
+        self.commit(draft, Some(proposal.part.id));
+        Ok(proposal.part.id)
+    }
+
     /// Puts the part in hand on `socket` of `parent` and selects it.
     ///
     /// # Errors
@@ -195,10 +461,8 @@ impl Workbench {
     /// If nothing is in hand, or the placement breaks a rule.
     pub fn place(&mut self, parent: PartId, socket: SocketId) -> Result<PartId, Refusal> {
         let kind = self.hand.ok_or(Refusal::Nothing)?;
-        let (draft, id) = self.placed(kind, parent, socket, self.turn)?;
-        self.draft = draft;
-        self.selected = Some(id);
-        Ok(id)
+        let proposal = self.propose(kind, parent, socket, self.turn);
+        self.commit_proposal(&proposal)
     }
 
     /// Removes the selected part and everything mounted on it.
@@ -217,26 +481,24 @@ impl Workbench {
         candidate
             .parts
             .retain(|part| !gone.contains(&PartId(part.id)));
-        self.draft = BENCH.validate(&candidate)?;
-        self.selected = None;
+        let draft = BENCH.validate(&candidate)?;
+        self.commit(draft, None);
         Ok(())
     }
 
-    /// Turns the selected part `steps` binary angles about `axis` on its socket (negative turns
-    /// back), or the part in hand when nothing is selected.
+    /// Turns the part in hand `steps` binary angles about `axis` of the socket it will go on
+    /// (negative turns back), or, with nothing in hand, the selected part on its socket.
     ///
     /// # Errors
     ///
-    /// If nothing is selected or in hand, the selected part is the root, or the turn breaks a
+    /// If nothing is in hand or selected, the selected part is the root, or the turn breaks a
     /// rule (its footprint would overlap another's): it stays as it was.
     pub fn rotate(&mut self, axis: Axis, steps: i32) -> Result<(), Refusal> {
-        let Some(id) = self.selected else {
-            if self.hand.is_none() {
-                return Err(Refusal::Nothing);
-            }
+        if self.hand.is_some() {
             self.turn = turned(self.turn, axis, steps);
             return Ok(());
-        };
+        }
+        let id = self.selected.ok_or(Refusal::Nothing)?;
         let mut candidate = self.draft.candidate();
         let raw = candidate
             .parts
@@ -246,7 +508,8 @@ impl Workbench {
         let mount = raw.mount.as_mut().ok_or(Refusal::Root)?;
         let now = Orientation::canonical(mount.yaw, mount.pitch, mount.roll);
         (mount.yaw, mount.pitch, mount.roll) = turned(now, axis, steps).raw();
-        self.draft = BENCH.validate(&candidate)?;
+        let draft = BENCH.validate(&candidate)?;
+        self.commit(draft, Some(id));
         Ok(())
     }
 
@@ -282,7 +545,7 @@ impl Workbench {
                 raw.modification = choice.map(|id| id.0);
             }
             if let Ok(draft) = BENCH.validate(&candidate) {
-                self.draft = draft;
+                self.commit(draft, Some(id));
                 return Ok(choice);
             }
         }
@@ -336,10 +599,13 @@ pub fn part_name(kind: &PartType) -> String {
             u16::from(kind.cells[2]) * 20
         ),
         Kind::Beam => format!("Beam {} cm", u16::from(kind.cells[2]) * 20),
+        Kind::Rail => format!("Mount rail {} cm", u16::from(kind.cells[1]) * 20),
+        Kind::Adapter => "Adapter".to_owned(),
         Kind::Joint(Joint::Hinge) => "Hinge".to_owned(),
         Kind::Joint(Joint::Rotor) => "Rotor".to_owned(),
         Kind::Battery => "Battery".to_owned(),
         Kind::Sensor => "Sensor".to_owned(),
+        Kind::Repair => "Repair module".to_owned(),
         Kind::Locomotion(Locomotion::Leg) => "Leg".to_owned(),
         Kind::Locomotion(Locomotion::Wheel) => "Wheel".to_owned(),
         Kind::Locomotion(Locomotion::Track) => "Track".to_owned(),
@@ -381,6 +647,43 @@ mod tests {
         }
     }
 
+    /// The extension fixtures (shooter#126) built on the bench a part at a time, the turned rails
+    /// turned with the bench's own yaw: the same build as authored, socket for socket, and its
+    /// preview of each placement is what the placement makes.
+    #[test]
+    fn the_bench_builds_rails_and_adapters_socket_for_socket() {
+        use shooter_sim::mechanics::sockets;
+        use shooter_sim::robot::{ADAPTER_MAST, CROSS_RAIL, RAIL_RACK};
+        for build in [RAIL_RACK, CROSS_RAIL, ADAPTER_MAST] {
+            let mut bench = Workbench::new(STANDARD);
+            bench.new_frame(build.parts()[0].kind).unwrap();
+            for part in &build.parts()[1..] {
+                let mount = part.mount.unwrap();
+                bench.selected = None;
+                bench.hand = Some(part.kind);
+                bench.turn = Orientation::IDENTITY;
+                let (yaw, _, _) = mount.orientation.raw();
+                bench.rotate(Axis::Yaw, i32::from(yaw)).unwrap();
+                assert_eq!(bench.turn, mount.orientation);
+                let preview = bench.placed(part.kind, mount.parent, mount.socket, bench.turn);
+                let id = bench.place(mount.parent, mount.socket).unwrap();
+                assert_eq!(id, part.id);
+                assert_eq!(preview, Ok((*bench.draft(), id)));
+            }
+            assert_eq!(*bench.draft(), build);
+            assert_eq!(bench.check(), Ok(build));
+            assert_eq!(sockets(bench.draft()), sockets(&build));
+            // Removing a rail takes what it carries.
+            bench.selected = Some(PartId(3));
+            bench.remove().unwrap();
+            assert!(bench.draft().part(PartId(3)).is_none());
+            assert_eq!(
+                bench.draft().parts().len(),
+                build.parts().len() - subtree(&build, PartId(3)).len()
+            );
+        }
+    }
+
     #[test]
     fn a_part_from_the_catalogue_goes_on_a_free_socket_and_is_selected() {
         let mut bench = holding(&BATTERY);
@@ -396,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn a_taken_socket_or_a_second_copy_of_a_weapon_is_refused() {
+    fn a_taken_socket_is_refused_and_a_second_copy_of_a_weapon_goes_on() {
         let mut bench = holding(&BATTERY);
         // The rifle holds the front's cell (1, 2).
         let rifle = CHASSIS_S.socket(Face::PosX, 1, 2).unwrap();
@@ -408,12 +711,48 @@ mod tests {
         assert_eq!(*bench.draft(), STANDARD);
         bench.hand = Some(SHOTGUN.id);
         let back = CHASSIS_S.socket(Face::NegX, 0, 0).unwrap();
+        // A second copy of a weapon is no rule broken (shooter#125): it goes on, its own part.
+        let copy = bench.place(PartId(0), back).unwrap();
+        assert_eq!(bench.check().map(|build| build == *bench.draft()), Ok(true));
+        let shotguns: Vec<PartId> = BETA
+            .weapons(bench.draft())
+            .filter(|instance| instance.weapon == Weapon::Shotgun)
+            .map(|instance| instance.part)
+            .collect();
+        // The lowest free ID (1), so it is the first copy by part ID.
+        assert_eq!(shotguns, [copy, PartId(10)]);
         assert_eq!(
-            bench.place(PartId(0), back),
-            Err(Refusal::Rule(AssemblyError::DuplicateWeapon(
-                Weapon::Shotgun
-            )))
+            crate::overlay::copy_name(
+                bench.draft(),
+                shooter_sim::Instance {
+                    part: copy,
+                    weapon: Weapon::Shotgun
+                }
+            ),
+            "Shotgun 1/2"
         );
+    }
+
+    /// The rocket pod on the bench (shooter#125): four launchers, each listed by its own number,
+    /// one removed leaving the other three numbered anew; it stays a valid build.
+    #[test]
+    fn the_bench_holds_and_names_every_copy_of_a_weapon() {
+        use shooter_sim::robot::ROCKET_POD;
+        let mut bench = Workbench::new(ROCKET_POD);
+        assert_eq!(bench.check(), Ok(ROCKET_POD));
+        let names = |bench: &Workbench| -> Vec<String> {
+            BETA.weapons(bench.draft())
+                .map(|copy| crate::overlay::copy_name(bench.draft(), copy))
+                .collect()
+        };
+        assert_eq!(
+            names(&bench),
+            ["Rockets 1/4", "Rockets 2/4", "Rockets 3/4", "Rockets 4/4"]
+        );
+        bench.selected = Some(PartId(8));
+        bench.remove().unwrap();
+        assert_eq!(names(&bench), ["Rockets 1/3", "Rockets 2/3", "Rockets 3/3"]);
+        assert!(bench.check().is_ok());
     }
 
     #[test]

@@ -4,13 +4,15 @@
 //! longer fire, a robot that no longer walks), the root chassis as the only kill and respawn
 //! restoring the build, a destroyed battery's energy and blast, the wire and a predictor following the
 //! host, and bot matches that lose parts and replay exactly.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
+use shooter_sim::aim;
 use shooter_sim::damage::{BATTERY_BLAST_DAMAGE, PartDamage};
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{ARMOR_PLATE, BEAM_LONG, CHASSIS_L, CHASSIS_S, SENSOR};
 use shooter_sim::robot::{ARMORY, BETA, Face, HEAVY, PartId, RawMount, RawPart, STANDARD};
-use shooter_sim::trig;
 use shooter_sim::weapons::{SPLASH_DAMAGE, Weapon};
 use shooter_sim::wire::{decode_snapshot, encode_snapshot};
 use shooter_sim::{Arena, Assembly, Event, Input, Intent, Rules, Session, Spawn};
@@ -57,10 +59,9 @@ fn duel() -> Session {
 
 /// `slot` is built as `build`, whole and fully charged, this life.
 fn rebuild(session: &mut Session, slot: usize, build: Assembly) {
+    session.fighters[slot].configured = build;
+    session.rebuild(u8::try_from(slot).unwrap(), build).unwrap();
     let fighter = &mut session.fighters[slot];
-    fighter.build = build;
-    fighter.configured = build;
-    fighter.parts = PartDamage::fresh(&build);
     fighter.energy = fighter.pool().capacity;
 }
 
@@ -73,19 +74,13 @@ fn part_center(session: &Session, slot: usize, part: PartId) -> [f32; 3] {
         .iter()
         .position(|p| p.id == part)
         .unwrap();
-    let parts = fighter.hitboxes(fighter.player.center(&session.world), fighter.intent.yaw);
+    let parts = fighter.hitboxes();
     parts.get(index).expect("a connected part").center
 }
 
-/// The yaw and pitch from `slot`'s eye to `point`.
-#[allow(clippy::cast_possible_truncation)]
+/// The yaw and pitch that put `slot`'s reticle on `point` ([`aim::at`]).
 fn aim_at(session: &Session, slot: usize, point: [f32; 3]) -> (u16, i16) {
-    let eye = session.fighters[slot].player.eye(&session.world);
-    let d = [0, 1, 2].map(|axis| point[axis] - eye[axis]);
-    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
-    let run = d[0].hypot(d[2]).round() as i32;
-    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
-    (yaw, pitch)
+    aim::at(Some(&session.world), session.fighters[slot].eye(), point)
 }
 
 /// One tick: A holds `a`, B holds `b` (both seeing the match as it is).
@@ -122,13 +117,15 @@ fn shoot(
     point: impl Fn(&Session) -> [f32; 3],
 ) -> Vec<Event> {
     let take = Intent {
-        select: Some(weapon),
+        select: Some(weapon.into()),
         ..Intent::IDLE
     };
-    for _ in 0..120 {
+    // A quarter second at least: B turns to face `b_yaw` meanwhile.
+    for waited in 0..120 {
         step(session, take, facing(b_yaw));
-        let held = session.fighters[0].arsenal.held == weapon;
-        if held && session.fighters[0].energy == session.fighters[0].pool().capacity {
+        let held = session.fighters[0].arsenal.held.weapon == weapon;
+        if waited >= 15 && held && session.fighters[0].energy == session.fighters[0].pool().capacity
+        {
             break;
         }
     }
@@ -138,7 +135,7 @@ fn shoot(
             yaw,
             pitch,
             fire: true,
-            select: Some(weapon),
+            select: Some(weapon.into()),
             ..Intent::IDLE
         };
         step(session, fire, facing(b_yaw));
@@ -220,7 +217,7 @@ fn front_and_side_shots_strike_the_parts_they_meet() {
 fn a_rocket_splash_strikes_each_part_in_reach_once() {
     let mut session = duel();
     let events = shoot(&mut session, Weapon::RocketLauncher, 32_768, |session| {
-        let center = session.fighters[1].player.center(&session.world);
+        let center = session.fighters[1].center();
         [center[0], 0.0, center[2] - 60.0]
     });
     assert!(struck(&events).is_empty(), "the rocket is still flying");
@@ -361,7 +358,7 @@ fn several_parts_come_off_at_once_and_lost_weapons_cannot_fire() {
                 yaw: 32_768,
                 fire: weapon != Weapon::EnergyBlade,
                 melee: weapon == Weapon::EnergyBlade,
-                select: Some(weapon),
+                select: Some(weapon.into()),
                 ..Intent::IDLE
             };
             step(&mut session, Intent::IDLE, intent);
@@ -393,8 +390,15 @@ fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_t
     assert_eq!(b.chassis_health(), 270);
     assert!(!b.parts.mobile(&b.build));
     assert!(!b.parts.weapon_lost(&b.build, Weapon::Shotgun));
-    // It cannot walk or jump (no leg, wheel or track), only turn.
-    let before = session.fighters[1].player.center(&session.world);
+    // Its legs came off its robot (shooter#73): they no longer hold it up, so it drops onto
+    // its chassis and can no longer walk, jump or turn itself.
+    assert!(session.mechanics.robot(1).unwrap().lost != 0);
+    let standing = session.fighters[1].center();
+    for _ in 0..30 {
+        step(&mut session, Intent::IDLE, facing(32_768));
+    }
+    let before = session.fighters[1].center();
+    assert!(before[1] < standing[1] - 50.0, "{standing:?} {before:?}");
     for _ in 0..60 {
         let run = Intent {
             yaw: 32_768,
@@ -405,32 +409,48 @@ fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_t
         };
         step(&mut session, Intent::IDLE, run);
     }
-    let after = session.fighters[1].player.center(&session.world);
+    let after = session.fighters[1].center();
     assert!(
-        (0..3).all(|axis| (after[axis] - before[axis]).abs() < 0.5),
+        (0..3).all(|axis| (after[axis] - before[axis]).abs() < 15.0),
         "{before:?} {after:?}"
     );
-    // The root chassis (270) is the kill: four rail beams to it (below the weapons on its
-    // chest), the fourth kills.
+    // The root chassis (270) is the kill. Without legs it no longer turns toward the camera,
+    // so weapons on its fallen chest can intercept a rail beam before the chassis; remove
+    // any obstructing parts by shooting through the same line until the root is exposed.
     let chest = |session: &Session| {
         let mut at = part_center(session, 1, PartId(0));
         at[1] -= 20.0;
         at
     };
-    for left in [185, 100, 15] {
+    let mut killed = false;
+    let mut root_hits = 0;
+    for _ in 0..12 {
         let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
-        assert_eq!(struck(&events), [(PartId(0), 85)]);
-        assert!(detached(&events).is_empty());
-        assert!(session.fighters[1].alive());
-        assert_eq!(session.fighters[1].chassis_health(), left);
+        if struck(&events)
+            .iter()
+            .any(|&(part, damage)| part == PartId(0) && damage > 0)
+        {
+            root_hits += 1;
+        }
+        if events.contains(&Event::Killed {
+            victim: 1,
+            killer: Some(0),
+            weapon: Some(Weapon::RailGun),
+        }) {
+            killed = true;
+            break;
+        }
+        assert!(
+            session.fighters[1].alive(),
+            "only the root chassis is vital"
+        );
     }
-    let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
-    assert_eq!(struck(&events), [(PartId(0), 85)]);
-    assert!(events.contains(&Event::Killed {
-        victim: 1,
-        killer: Some(0),
-        weapon: Some(Weapon::RailGun),
-    }));
+    assert!(
+        killed,
+        "the exposed root chassis must eventually be destroyable"
+    );
+    assert_eq!(root_hits, 4);
+    assert_eq!(session.fighters[1].chassis_health(), 0);
     assert_eq!(session.fighters[0].frags, 1);
     // Respawn restores the configured build, whole.
     while !session.fighters[1].alive() {
@@ -543,7 +563,7 @@ fn part_damage_travels_in_snapshots_and_a_predictor_follows_it() {
     });
     let snapshot = decode_snapshot(&encode_snapshot(&host.snapshot())).unwrap();
     assert_eq!(snapshot, host.snapshot());
-    let me = *snapshot.slot(1).unwrap();
+    let me = snapshot.slot(1).unwrap().clone();
     assert_eq!(me.parts, host.fighters[1].parts);
     assert!(me.parts.weapon_lost(&me.build, Weapon::EnergyRifle));
     assert_eq!(me.chassis_health(), 270);
@@ -557,7 +577,7 @@ fn part_damage_travels_in_snapshots_and_a_predictor_follows_it() {
     // not fire there either, its shotgun does.
     let mut predictor = Session::new(host.arena.clone()).unwrap();
     predictor
-        .place(0, me.position, me.velocity, me.motion, me.held, me.hook)
+        .place(0, me.robot.as_ref().unwrap(), me.motion, me.held, me.hook)
         .unwrap();
     predictor.fighters[0].build = me.build;
     predictor.fighters[0].parts = me.parts;
@@ -567,7 +587,7 @@ fn part_damage_travels_in_snapshots_and_a_predictor_follows_it() {
         let intent = Intent {
             yaw: 32_768,
             fire: true,
-            select: Some(weapon),
+            select: Some(weapon.into()),
             ..Intent::IDLE
         };
         for _ in 0..40 {
@@ -629,23 +649,24 @@ fn b_takes(session: &mut Session, intent: Intent) -> Vec<Weapon> {
 #[test]
 fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
     let mut session = duel();
-    let select = |weapon| Intent {
+    let select = |weapon: Weapon| Intent {
         yaw: 32_768,
-        select: Some(weapon),
+        select: Some(weapon.into()),
         ..Intent::IDLE
     };
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::EnergyRifle);
     // Not carried: refused, whatever the client asks.
     for weapon in [Weapon::RailGun, Weapon::Laser, Weapon::Flamethrower] {
         b_takes(&mut session, select(weapon));
-        assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+        assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::EnergyRifle);
     }
     // The blade is not held while a gun is left.
     b_takes(&mut session, select(Weapon::EnergyBlade));
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::EnergyRifle);
     b_takes(&mut session, select(Weapon::Shotgun));
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::Shotgun);
-    // The grapple lost: refused; back to the rifle is fine.
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::Shotgun);
+    // The grapple module is never held, whole or lost (Atlas D2.i104.2); back to the rifle is
+    // fine.
     let b = &mut session.fighters[1];
     let build = b.build;
     let index = |weapon| {
@@ -659,9 +680,9 @@ fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
     b.parts.hurt(&build, grapple, 1_000);
     assert!(!b.parts.armed(&build, Weapon::Grapple));
     b_takes(&mut session, select(Weapon::Grapple));
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::Shotgun);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::Shotgun);
     b_takes(&mut session, select(Weapon::EnergyRifle));
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyRifle);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::EnergyRifle);
     // The rifle and the shotgun lost too: the blade is the last weapon, held and swung by the
     // trigger.
     let b = &mut session.fighters[1];
@@ -669,7 +690,7 @@ fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
         b.parts.hurt(&build, index(weapon), 1_000);
     }
     b_takes(&mut session, select(Weapon::EnergyBlade));
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::EnergyBlade);
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::EnergyBlade);
     let mut fired = Vec::new();
     for _ in 0..40 {
         fired.extend(b_takes(
@@ -684,6 +705,6 @@ fn the_host_refuses_switching_to_a_weapon_the_robot_does_not_have() {
     assert!(fired.iter().all(|weapon| *weapon == Weapon::EnergyBlade));
     assert!(!fired.is_empty());
     // Rebuilt (as at a spawn), it takes up its build's first weapon.
-    session.fighters[1].rebuild(HEAVY);
-    assert_eq!(session.fighters[1].arsenal.held, Weapon::RailGun);
+    session.rebuild(1, HEAVY).unwrap();
+    assert_eq!(session.fighters[1].arsenal.held.weapon, Weapon::RailGun);
 }

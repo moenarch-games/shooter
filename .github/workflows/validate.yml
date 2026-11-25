@@ -18,6 +18,10 @@ jobs:
       install_command: ""
       cache_bun: false
       cache_cargo: true
+      # Share one target directory between Clippy, tests and the native build.
+      # Rust cache restores intermediate compilation outputs across runs.
+      concurrency_group: ${{ github.workflow }}-${{ github.ref }}-native
+      cancel_in_progress: true
       # kira's cpal output (ALSA) and gilrs (udev) on Linux.
       apt_packages: libasound2-dev libudev-dev
       format_command: cargo fmt --all -- --check
@@ -28,13 +32,32 @@ jobs:
       test_command: scripts/fetch-robot-kit.sh && cargo test --workspace --all-features --locked
       build_command: |
         cargo build --workspace --locked
-        cargo check -p shooter-client --lib --target wasm32-unknown-unknown --locked
+        # Native and wasm32 must simulate the same match bit for bit (shooter#120): 30 s of the
+        # scripted match on every map, compared tick by tick.
+        scripts/cross-build-hashes.sh all 1800
+      artifact_paths: ""
+
+  wasm:
+    permissions:
+      contents: read
+      packages: read
+    uses: moritzbrantner/reusable-workflows/.github/workflows/validate-repo.yml@d6e2fe0d4f9decc88a0073a317cf3efbe12ee6d6
+    with:
+      bun_version: ""
+      node_version: ""
+      install_command: ""
+      cache_bun: false
+      cache_cargo: true
+      concurrency_group: ${{ github.workflow }}-${{ github.ref }}-wasm
+      cancel_in_progress: true
+      # Independent target; run alongside native lint/tests/build instead of at their end.
+      build_command: cargo check -p shooter-client --lib --target wasm32-unknown-unknown --locked
       artifact_paths: ""
 
   merge-ready:
     name: merge-ready
     if: ${{ always() }}
-    needs: [rust]
+    needs: [rust, wasm]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,4 +65,4 @@ jobs:
       - uses: moritzbrantner/reusable-workflows/.github/actions/merge-ready@d6e2fe0d4f9decc88a0073a317cf3efbe12ee6d6
         with:
           needs: ${{ toJSON(needs) }}
-          required: '["rust"]'
+          required: '["rust", "wasm"]'
