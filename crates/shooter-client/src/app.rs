@@ -397,7 +397,16 @@ impl App {
             return false;
         };
         if profile.end(started) {
-            profile.finish();
+            // The cover broken by then (shooter#60), for captures to say what they show.
+            let broken: Vec<u16> = self.game.snapshot().map_or_else(Vec::new, |snapshot| {
+                snapshot
+                    .scenery
+                    .iter()
+                    .filter(|placeable| placeable.health == 0)
+                    .map(|placeable| placeable.id)
+                    .collect()
+            });
+            profile.finish(&broken);
             return false;
         }
         true
