@@ -22,7 +22,7 @@ use shooter_client::robots::weapon::{self, Memory};
 use shooter_sim::Assembly;
 use shooter_sim::mechanics::{Controls, Layout, Mechanics, fixtures, placements};
 use shooter_sim::robot::{HEAVY, LOADOUTS, MARKSMAN, PartId, SKIRMISHER, STANDARD};
-use shooter_sim::weapons::Weapon;
+use shooter_sim::weapons::{Instance, Weapon};
 use std::sync::OnceLock;
 
 fn kit() -> &'static KitData {
@@ -42,9 +42,10 @@ fn standing() -> RobotState {
         sliding: false,
         hook: None,
         since_fired: f32::INFINITY,
-        fired: Weapon::EnergyRifle,
+        fired: Instance::new(7, Weapon::EnergyRifle),
         shots: 0,
-        held: Weapon::EnergyRifle,
+        recent: shooter_client::robots::pose::Recent::NONE,
+        held: Instance::new(7, Weapon::EnergyRifle),
         energy: 1.0,
         swing: None,
         dead_for: None,
@@ -314,7 +315,7 @@ fn mini_tank() -> Assembly {
         .expect("the mini-tank is a valid build")
 }
 
-/// The named loadouts, the mechanics fixtures and the mini-tank.
+/// The named loadouts, the mechanics fixtures, the mini-tank and the mount-rail fixtures.
 fn builds() -> Vec<(&'static str, Assembly)> {
     let mut builds = LOADOUTS.to_vec();
     builds.extend([
@@ -328,6 +329,9 @@ fn builds() -> Vec<(&'static str, Assembly)> {
         ("dog", fixtures::dog(false)),
         ("upside-down-legs", fixtures::upside_down_legs()),
         ("mini-tank", mini_tank()),
+        ("rail-rack", shooter_sim::robot::RAIL_RACK),
+        ("cross-rail", shooter_sim::robot::CROSS_RAIL),
+        ("adapter-mast", shooter_sim::robot::ADAPTER_MAST),
     ]);
     builds
 }
@@ -851,6 +855,126 @@ fn every_weapon_has_its_states_channels_and_muzzle_in_the_kit() {
     }
 }
 
+/// The simulation's muzzle table ([`shooter_sim::aim::MUZZLE_ANCHORS_MM`]) is the pinned weapons
+/// kit's: each weapon's muzzle anchor (the rocket pod's first tube), and the long barrel's
+/// muzzle on the weapon's `mod-muzzle` anchor.
+#[test]
+fn the_simulations_muzzles_are_the_kits() {
+    let kit = kit();
+    let gear = |key: &str| {
+        kit.entries[kit.entry(key, "default").unwrap()]
+            .gear
+            .clone()
+            .unwrap()
+    };
+    let mm = |at: Vec3| (at * 1_000.0).round().to_array().map(|axis| axis as i32);
+    let barrel = gear("mod.long-barrel");
+    let barrel_muzzle = barrel.anchor("muzzle").unwrap();
+    for (weapon, modification, table) in shooter_sim::aim::MUZZLE_ANCHORS_MM {
+        let key = shooter_sim::robot::BETA
+            .parts
+            .iter()
+            .find(|p| p.kind == shooter_sim::robot::Kind::Weapon(weapon))
+            .unwrap()
+            .key;
+        let weapon_gear = gear(key);
+        let at = match modification {
+            None => {
+                let name = if weapon == Weapon::RocketLauncher {
+                    "muzzle-a"
+                } else {
+                    "muzzle"
+                };
+                weapon_gear.anchor(name).unwrap().position
+            }
+            Some(modification) => {
+                assert_eq!(modification, shooter_sim::robot::LONG_BARREL);
+                let mount = weapon_gear.anchor("mod-muzzle").unwrap();
+                mount.frame().transform_point3(barrel_muzzle.position)
+            }
+        };
+        assert_eq!(mm(at), table, "{key} {modification:?}");
+    }
+    // Every weapon but the blade has one, every long-barrel weapon its own.
+    for weapon in Weapon::ALL {
+        assert_eq!(
+            shooter_sim::aim::muzzle_anchor_mm(weapon, None).is_none(),
+            weapon == Weapon::EnergyBlade
+        );
+    }
+}
+
+/// Where the simulation fires from is where the client draws the muzzle at rest: every
+/// weapon of the armory, the marksman's long barrel and every copy of the twin rail's rail gun
+/// (shooter#125), and every weapon on a mount rail or an adapter (shooter#126); the rocket
+/// launchers' tubes alternate, so each launcher's drawn tube is within a tube's width of its
+/// simulated muzzle, every launcher of the rocket pod at its own.
+#[test]
+fn the_simulations_muzzles_are_where_the_robot_draws_them() {
+    use shooter_sim::damage::{Hitboxes, PartDamage};
+    use shooter_sim::physics::articulated::Pose;
+    use shooter_sim::robot::{ADAPTER_MAST, ARMORY, CROSS_RAIL, RAIL_RACK, ROCKET_POD, TWIN_RAIL};
+    let kit = kit();
+    for build in [
+        ARMORY,
+        MARKSMAN,
+        TWIN_RAIL,
+        ROCKET_POD,
+        RAIL_RACK,
+        CROSS_RAIL,
+        ADAPTER_MAST,
+    ] {
+        let model = Model::of(&build, kit).unwrap();
+        let idle = posed(&model, &standing(), &PartStates::default());
+        let shot = RobotState {
+            shots: 1,
+            ..standing()
+        };
+        let tube_a = posed(&model, &shot, &PartStates::default());
+        // The parts in the robot's own frame.
+        let frames: Vec<(PartId, Pose)> = build
+            .parts()
+            .iter()
+            .map(|part| (part.id, Pose::IDENTITY))
+            .collect();
+        let boxes = Hitboxes::posed(&build, &PartDamage::fresh(&build), &frames);
+        // A muzzle drawn for every mounted copy that has one (the blade has none).
+        let copies = shooter_sim::robot::BETA
+            .weapons(&build)
+            .filter(|copy| copy.weapon != Weapon::EnergyBlade)
+            .count();
+        assert_eq!(idle.muzzles.len(), copies);
+        for drawn in &idle.muzzles {
+            if drawn.weapon == Weapon::Grapple {
+                continue;
+            }
+            let copy = Instance {
+                part: drawn.part,
+                weapon: drawn.weapon,
+            };
+            let muzzle = shooter_sim::aim::muzzle(&build, &boxes, copy).unwrap();
+            let at = idle
+                .world_from_robot
+                .transform_point3(Vec3::from(muzzle.at) * 0.01);
+            // A launcher draws its first tube after an odd number of shots.
+            let drawn = if drawn.weapon == Weapon::RocketLauncher {
+                tube_a
+                    .muzzles
+                    .iter()
+                    .find(|tube| tube.part == drawn.part)
+                    .unwrap()
+            } else {
+                drawn
+            };
+            assert!(
+                (at - drawn.position).length() < 0.01,
+                "{copy:?}: simulation {at} drawn {}",
+                drawn.position
+            );
+        }
+    }
+}
+
 #[test]
 fn shots_start_at_the_muzzles_and_mods_ride_their_weapons() {
     let kit = kit();
@@ -964,7 +1088,10 @@ fn weapon_states_follow_the_shots_hook_and_blade() {
         weapon::locals(
             entry.rig.as_ref().unwrap(),
             entry.gear.as_ref().unwrap(),
-            held,
+            shooter_sim::Instance {
+                part: part.id,
+                weapon: held,
+            },
             part.refire,
             state,
             memory,
@@ -983,7 +1110,7 @@ fn weapon_states_follow_the_shots_hook_and_blade() {
     // The rocket pod's tubes alternate; then both reload over its refire.
     let rocket = |shots, since| {
         let state = RobotState {
-            fired: Weapon::RocketLauncher,
+            fired: Instance::new(9, Weapon::RocketLauncher),
             since_fired: since,
             shots,
             ..standing()
@@ -1015,7 +1142,7 @@ fn weapon_states_follow_the_shots_hook_and_blade() {
     assert!((rail_refire(&heavy) - 1.2).abs() < 1e-4);
     assert!(rail_refire(&marksman) > 1.5);
     let recharging = RobotState {
-        fired: Weapon::RailGun,
+        fired: Instance::new(7, Weapon::RailGun),
         since_fired: 0.75,
         ..standing()
     };
@@ -1386,4 +1513,141 @@ fn a_lost_wheel_lies_at_rest_and_a_damaged_one_draws_its_damaged_look() {
             assert!(!other.detached && !other.damaged);
         }
     }
+}
+
+/// Several copies of one weapon (shooter#125): the twin rail draws both rail guns at their own
+/// mounts with their own muzzles, only the copy that fired plays its shot, and a lost copy comes
+/// off while the other stays on, muzzle and all.
+#[test]
+fn every_copy_of_a_weapon_is_drawn_at_its_mount_and_on_its_own() {
+    use shooter_sim::robot::TWIN_RAIL;
+    let kit = kit();
+    let model = Model::of(&TWIN_RAIL, kit).unwrap();
+    let index = |id: u8| {
+        model
+            .parts
+            .iter()
+            .position(|part| part.id == PartId(id))
+            .unwrap()
+    };
+    let (left, right) = (index(7), index(9));
+    let idle = posed(&model, &standing(), &PartStates::default());
+    let rails: Vec<_> = idle
+        .muzzles
+        .iter()
+        .filter(|muzzle| muzzle.weapon == Weapon::RailGun)
+        .collect();
+    assert_eq!(
+        rails.iter().map(|muzzle| muzzle.part).collect::<Vec<_>>(),
+        [PartId(7), PartId(9)]
+    );
+    assert!((rails[0].position - rails[1].position).length() > 0.15);
+    let mount = |posed: &Posed, at: usize| posed.parts[at].world_from_local.w_axis.truncate();
+    assert!((mount(&idle, left) - mount(&idle, right)).length() > 0.15);
+    // The right one fired: its rig plays the shot, the left one stays at rest.
+    let fired = RobotState {
+        held: Instance::new(9, Weapon::RailGun),
+        fired: Instance::new(9, Weapon::RailGun),
+        since_fired: 0.05,
+        ..standing()
+    };
+    let shot = posed(&model, &fired, &PartStates::default());
+    assert_eq!(shot.parts[left].palette, idle.parts[left].palette);
+    assert_ne!(shot.parts[right].palette, idle.parts[right].palette);
+    // Both fired together (shooter#127): each plays its own shot.
+    let mut recent = shooter_client::robots::pose::Recent::NONE;
+    recent.fired(PartId(7));
+    recent.fired(PartId(9));
+    recent.advance(0.05);
+    let together = posed(
+        &model,
+        &RobotState { recent, ..fired },
+        &PartStates::default(),
+    );
+    assert_eq!(together.parts[right].palette, shot.parts[right].palette);
+    assert_ne!(together.parts[left].palette, idle.parts[left].palette);
+    // The left one lost: it comes off, the right one stays on with its muzzle.
+    let away = Mat4::from_translation(Vec3::new(0.0, -1.0, 2.0));
+    let detached = [(PartId(7), away)];
+    let lost = posed(
+        &model,
+        &standing(),
+        &PartStates {
+            detached: &detached,
+            ..PartStates::default()
+        },
+    );
+    assert!(lost.parts[left].detached);
+    assert!(!lost.parts[right].detached);
+    assert_eq!(
+        lost.parts[right].world_from_local,
+        idle.parts[right].world_from_local
+    );
+    let rails: Vec<PartId> = lost
+        .muzzles
+        .iter()
+        .filter(|muzzle| muzzle.weapon == Weapon::RailGun)
+        .map(|muzzle| muzzle.part)
+        .collect();
+    assert_eq!(rails, [PartId(9)]);
+}
+
+/// Mount rails and adapters (shooter#126): every fixture's parts, the rails, the adapter and
+/// what they carry, are drawn on the simulation's bodies where it holds them; with the rack's
+/// long rail shot off, the rail and its four weapons come off and the short rail's stay drawn
+/// where the simulation keeps them.
+#[test]
+fn what_rails_and_adapters_carry_is_drawn_where_the_simulation_holds_it() {
+    use shooter_sim::robot::{ADAPTER_MAST, CROSS_RAIL, RAIL_RACK};
+    let kit = kit();
+    for (name, build) in [
+        ("rail-rack", RAIL_RACK),
+        ("cross-rail", CROSS_RAIL),
+        ("adapter-mast", ADAPTER_MAST),
+    ] {
+        let model = Model::of(&build, kit).expect(name);
+        let settled = mechanics(build, 0, 30, |_| Controls::IDLE);
+        let frames = frames_of(&settled);
+        let posed = posed(
+            &model,
+            &standing(),
+            &PartStates {
+                frames: Some(&frames),
+                ..PartStates::default()
+            },
+        );
+        assert_on_the_simulations_bodies(&model, &posed, &settled);
+    }
+    let index = |id: u8| {
+        RAIL_RACK
+            .parts()
+            .iter()
+            .position(|part| part.id == PartId(id))
+            .unwrap()
+    };
+    let lost: u32 = [3, 4, 5, 6, 7].iter().map(|&id| 1 << index(id)).sum();
+    let model = Model::of(&RAIL_RACK, kit).unwrap();
+    let severed = mechanics(RAIL_RACK, lost, 30, |_| Controls::IDLE);
+    let frames = frames_of(&severed);
+    let detached: Vec<(PartId, Mat4)> = [3, 4, 5, 6, 7]
+        .iter()
+        .map(|&id| (PartId(id), Mat4::from_translation(Vec3::new(3.0, 0.0, 0.0))))
+        .collect();
+    let posed = posed(
+        &model,
+        &standing(),
+        &PartStates {
+            frames: Some(&frames),
+            detached: &detached,
+            ..PartStates::default()
+        },
+    );
+    assert_on_the_simulations_bodies(&model, &posed, &severed);
+    for (at, part) in model.parts.iter().enumerate() {
+        let lost_here = lost & (1 << at) != 0;
+        assert_eq!(posed.parts[at].detached, lost_here, "{}", part.key);
+    }
+    // The muzzles left are the short rail's: the laser and the flamethrower.
+    let muzzles: Vec<PartId> = posed.muzzles.iter().map(|muzzle| muzzle.part).collect();
+    assert_eq!(muzzles, [PartId(9), PartId(10)]);
 }

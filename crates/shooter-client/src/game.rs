@@ -237,13 +237,15 @@ pub mod online {
     use super::Tick;
     use crate::interpolation::{Interpolation, ONLINE_DELAY_TICKS};
     use crate::net::{Connection, NetEvent, Trust};
+    use shooter_sim::aim;
     use shooter_sim::damage::{Hitboxes, PartDamage};
     use shooter_sim::grapple::Hook;
     use shooter_sim::names;
     use shooter_sim::player::Motion;
     use shooter_sim::repair::Repair;
     use shooter_sim::scenery::PlaceableState;
-    use shooter_sim::weapons::Delivery;
+    use shooter_sim::session::{body_of, slot_of};
+    use shooter_sim::weapons::{Delivery, Instance};
     use shooter_sim::wire::encode_input;
     use shooter_sim::{
         Assembly, Event, Intent, MapId, Rules, Session, Snapshot, StepReport, Weapon,
@@ -264,7 +266,7 @@ pub mod online {
         /// The charge in its energy pool (milli-units).
         energy: u32,
         /// The weapon it holds (the host may refuse a switch the prediction made).
-        held: Weapon,
+        held: Instance,
         /// Its field repair (the host may refuse an order, or pause it for a hit the
         /// prediction cannot see).
         repair: Option<Repair>,
@@ -432,25 +434,92 @@ pub mod online {
                 })
                 .collect();
             let mut shots = Vec::new();
-            for event in self
-                .live()
-                .into_iter()
-                .flat_map(|predictor| &predictor.events)
-            {
+            let Some(predictor) = self.live() else {
+                return shots;
+            };
+            let me = predictor.local();
+            let owner = body_of(local);
+            // A hitscan shot aimed again as the host aims it ([`aim::aimed`]): the camera picks
+            // its target among the others as drawn too, the beam leaves the predicted muzzle.
+            let mut aimed: Option<(Weapon, aim::Sight)> = None;
+            for event in &predictor.events {
                 match *event {
                     Event::Fired { weapon, .. } | Event::Beam { weapon, .. }
                         if weapon == Weapon::EnergyBlade => {}
                     Event::Fired {
                         weapon,
-                        eye,
-                        direction,
+                        part,
+                        from,
+                        mut direction,
                         ..
-                    } => shots.push(Event::Fired {
-                        slot: local,
+                    } => {
+                        if let Delivery::Hitscan { range_units, .. } =
+                            me.tuning(Instance { part, weapon }).delivery(weapon)
+                        {
+                            let muzzle = aim::Muzzle {
+                                mount: from,
+                                at: from,
+                            };
+                            let shot = aim::aimed(
+                                &predictor.world,
+                                me.eye(),
+                                Some(muzzle),
+                                me.intent.yaw,
+                                me.intent.pitch,
+                                owner,
+                                |body| slot_of(body).is_none(),
+                                others.iter().enumerate(),
+                            );
+                            let sight = aim::sight(
+                                &predictor.world,
+                                from,
+                                shot.direction(),
+                                range_units,
+                                owner,
+                                |body| slot_of(body).is_none(),
+                                others.iter().enumerate(),
+                            );
+                            direction = aim::unit(shot.direction());
+                            aimed = Some((weapon, sight));
+                        }
+                        shots.push(Event::Fired {
+                            slot: local,
+                            weapon,
+                            part,
+                            from,
+                            direction,
+                        });
+                    }
+                    Event::Beam {
                         weapon,
-                        eye,
-                        direction,
-                    }),
+                        from,
+                        end: _,
+                        normal: _,
+                        struck: _,
+                    } if aimed.is_some_and(|(fired, _)| fired == weapon) => {
+                        let Some((_, sight)) = aimed.take() else {
+                            continue;
+                        };
+                        let normal = sight.scenery.hit.map_or([0.0; 3], |hit| hit.normal);
+                        shots.push(Event::Beam {
+                            weapon,
+                            from,
+                            end: sight.end,
+                            normal: if sight.fighter.is_some() {
+                                let along = [0, 1, 2].map(|axis| sight.end[axis] - from[axis]);
+                                let length = along
+                                    .iter()
+                                    .map(|axis| axis * axis)
+                                    .sum::<f32>()
+                                    .sqrt()
+                                    .max(f32::EPSILON);
+                                along.map(|axis| -axis / length)
+                            } else {
+                                normal
+                            },
+                            struck: sight.met(),
+                        });
+                    }
                     Event::Beam {
                         weapon,
                         from,
@@ -538,9 +607,9 @@ pub mod online {
             predictor.tick(intent).map_err(|error| error.to_string())
         }
 
-        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, u32, Weapon) {
+        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, u32, Instance) {
             self.live().map_or(
-                ([0.0; 3], Motion::default(), None, 0, Weapon::default()),
+                ([0.0; 3], Motion::default(), None, 0, Instance::default()),
                 |predictor| {
                     let local = predictor.local();
                     (
@@ -602,6 +671,10 @@ pub mod online {
                     .ok_or("the host sent a living robot without its state")?;
                 predictor
                     .place(0, robot, me.motion, me.held, me.hook)
+                    .map_err(|error| error.to_string())?;
+                // Among the host's physical debris, exactly (shooter#75).
+                predictor
+                    .place_debris(&snapshot.debris)
                     .map_err(|error| error.to_string())?;
                 predictor.fighters[0].energy = me.energy;
                 predictor.fighters[0].repair = me.repair;

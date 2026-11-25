@@ -1,6 +1,6 @@
 //! The mechanics fixtures (shooter#73): valid beta builds and the fixed controls that drive
-//! them, shared by the tests, the Rapier A/B and the performance scene. Bindings are
-//! shooter#74; these controls are what a binding would send.
+//! them, shared by the tests, the Rapier A/B and the performance scene. A control layout
+//! ([`crate::bindings`]) sends commands like these.
 //!
 //! Every wheeled fixture is the large chassis (40 × 60 × 80 cm, standing on end) with four
 //! wheels at its bottom corners, each turned on its socket so it hangs below the chassis. A
@@ -10,7 +10,7 @@
 use super::{Command, Controls};
 use crate::physics::{BodyId, RigidBody, Vec3i};
 use crate::robot::parts::{
-    BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_S, ENERGY_RIFLE, HINGE, LEG, ROTOR, SENSOR, WHEEL,
+    BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_S, ENERGY_RIFLE, HINGE, LEG, ROTOR, SENSOR, TRACK, WHEEL,
 };
 use crate::robot::{
     Assembly, BETA, Candidate, Face, Orientation, PartId, PartType, RawMount, RawPart,
@@ -235,6 +235,33 @@ pub fn walled(distance: i32) -> Vec<RigidBody> {
         BodyId(2),
         Vec3i::new(distance + 20, 100, 0),
         Vec3i::new(20, 100, 200),
+    ));
+    statics
+}
+
+/// A tracked robot: the large chassis on two tracks along its sides (the left one turned a
+/// quarter so it lies along the side, as the robot tests' mini-tank has them) and a sensor on
+/// its roof.
+#[must_use]
+pub fn tank() -> Assembly {
+    valid(vec![
+        root(0, &CHASSIS_L),
+        on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+        yawed(on(2, &TRACK, 0, &CHASSIS_L, Face::PosY, 3, 0), QUARTER),
+        on(3, &TRACK, 0, &CHASSIS_L, Face::NegY, 0, 0),
+    ])
+}
+
+/// The floor and a ramp rising toward +X from `start` units ahead of the origin, `length`
+/// long and `height` high (body 2): a slope to drive up.
+#[must_use]
+pub fn slope(start: i32, length: i32, height: i32) -> Vec<RigidBody> {
+    let mut statics = floor();
+    statics.push(RigidBody::ramp(
+        BodyId(2),
+        Vec3i::new(start + length / 2, height / 2, 0),
+        Vec3i::new(length / 2, height / 2, 400),
+        crate::physics::RampRise::PosX,
     ));
     statics
 }

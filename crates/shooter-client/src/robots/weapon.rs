@@ -20,7 +20,7 @@
 use super::kit::{Gear, Local, Rig};
 use super::pose::RobotState;
 use render_engine::glam::{Quat, Vec3};
-use shooter_sim::weapons::Weapon;
+use shooter_sim::weapons::{Instance, Weapon};
 
 /// How long after its last tick's shot a continuous weapon still shows firing (seconds).
 pub const CONTINUOUS_SECONDS: f32 = 0.1;
@@ -76,7 +76,7 @@ impl Memory {
 
 /// The blade is out while held or swinging.
 fn blade_out(state: &RobotState) -> bool {
-    state.held == Weapon::EnergyBlade || state.swing.is_some()
+    state.held.weapon == Weapon::EnergyBlade || state.swing.is_some()
 }
 
 /// Where a grapple's hook is drawn this frame: toward `target` (metres) by `reach` (0 at its
@@ -115,14 +115,14 @@ fn then_recover(
     }
 }
 
-/// The weapon `weapon`'s joint transforms this frame (its rig `rig`, its descriptor `gear`,
+/// The weapon copy `instance`'s joint transforms this frame (its rig `rig`, its descriptor `gear`,
 /// `refire` seconds between its shots in this build), and where its hook reaches if it is the
 /// grapple and its hook is out (in the world; the caller turns it into the weapon's frame).
 #[must_use]
 pub fn locals(
     rig: &Rig,
     gear: &Gear,
-    weapon: Weapon,
+    instance: Instance,
     refire: f32,
     state: &RobotState,
     memory: &Memory,
@@ -131,11 +131,17 @@ pub fn locals(
     if let Some(joint) = gear.charge.as_deref().and_then(|node| rig.joint(node)) {
         locals[joint].scale.y = state.energy.clamp(0.0, 1.0);
     }
-    let since = if state.fired == weapon {
-        state.since_fired
-    } else {
-        f32::INFINITY
-    };
+    let weapon = instance.weapon;
+    // Only the copy that fired shows the shot (shooter#125); copies that fire together each
+    // show their own (shooter#127).
+    let since = state
+        .recent
+        .since(instance.part)
+        .unwrap_or(if state.fired == instance {
+            state.since_fired
+        } else {
+            f32::INFINITY
+        });
     let mut reach = None;
     match weapon {
         Weapon::EnergyRifle | Weapon::Shotgun => play(rig, "fire", since, &mut locals),

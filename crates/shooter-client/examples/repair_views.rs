@@ -16,7 +16,7 @@ use shooter_client::robots::{self, PartStates, RobotState, RobotView, Robots};
 use shooter_client::scene::{self, METRES_PER_UNIT};
 use shooter_sim::repair::Order;
 use shooter_sim::robot::{MECHANIC, PartId};
-use shooter_sim::{Arena, Intent, Session, Weapon};
+use shooter_sim::{Arena, Instance, Intent, Session, Weapon};
 
 const SIZE: (u32, u32) = (1280, 720);
 
@@ -41,8 +41,9 @@ fn shoot(
             sliding: false,
             hook: None,
             since_fired: f32::INFINITY,
-            fired: Weapon::EnergyRifle,
+            fired: Instance::new(7, Weapon::EnergyRifle),
             shots: 0,
+            recent: robots::pose::Recent::NONE,
             held: me.arsenal.held,
             energy: 1.0,
             swing: None,

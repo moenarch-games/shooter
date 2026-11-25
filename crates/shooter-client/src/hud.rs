@@ -5,7 +5,7 @@
 //! its uses left), the round clock, a feed of kills, module pickups and drops, a respawn
 //! or connection banner, and the scoreboard (held Tab, or between rounds).
 
-use crate::overlay::{mod_name, weapon_name};
+use crate::overlay::{copy_name, mod_name, weapon_name};
 use shooter_sim::damage::PartDamage;
 use shooter_sim::robot::BETA;
 use shooter_sim::{
@@ -81,7 +81,10 @@ fn parts(me: &FighterState) -> String {
 fn equipped(build: &Assembly) -> String {
     let mods: Vec<String> = BETA
         .mods(build)
-        .map(|(_, weapon, id)| format!("{} + {}", weapon_name(weapon), mod_name(id)))
+        .map(|(part, weapon, id)| {
+            let name = copy_name(build, shooter_sim::Instance { part, weapon });
+            format!("{name} + {}", mod_name(id))
+        })
         .collect();
     if mods.is_empty() {
         String::new()
@@ -360,6 +363,7 @@ mod tests {
             scenery: Vec::new(),
             events: Vec::new(),
             names: Vec::new(),
+            debris: Vec::new(),
         };
         let carried = Carried {
             module: ArenaModule::Thrusters,

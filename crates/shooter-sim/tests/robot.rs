@@ -4,6 +4,8 @@
 //! rejection, the budgets at their limits, builds from untrusted bytes, and builds through a
 //! match (configured while alive, applied at the next spawn, carried in snapshots, replayed
 //! exactly, firing with their weapon mods).
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use shooter_sim::damage::PartDamage;
 use shooter_sim::energy::Pool;
@@ -20,10 +22,10 @@ use shooter_sim::robot::{
     SocketId, Tuning, loadout,
 };
 
-use shooter_sim::trig;
+use shooter_sim::aim;
 use shooter_sim::weapons::Delivery;
 use shooter_sim::wire::{WireError, decode_input, decode_snapshot, encode_input, encode_snapshot};
-use shooter_sim::{Arena, Assembly, Event, Input, Intent, Rules, Session, Spawn, Weapon};
+use shooter_sim::{Arena, Assembly, Event, Input, Instance, Intent, Rules, Session, Spawn, Weapon};
 
 const QUARTER: u16 = Orientation::QUARTER;
 
@@ -82,6 +84,13 @@ fn armed() -> Vec<RawPart> {
 
 fn with(parts: &mut [RawPart], id: u8) -> &mut RawPart {
     parts.iter_mut().find(|part| part.id == id).unwrap()
+}
+/// The first copy of `weapon` `build` mounts (one on no part when it mounts none: it fires as
+/// shipped).
+/// The first copy of `weapon` `build` mounts.
+fn first(build: &Assembly, weapon: Weapon) -> Instance {
+    BETA.first(build, weapon)
+        .unwrap_or(Instance::new(u8::MAX, weapon))
 }
 
 #[test]
@@ -542,11 +551,90 @@ fn mods_and_weapons_follow_their_rules() {
         reject(shotgun),
         AssemblyError::DoesNotFit(LONG_BARREL, Weapon::Shotgun)
     );
+    // A weapon mounted again is no rule broken (shooter#125).
     let mut twice = standard();
     twice.push(on(11, &ENERGY_RIFLE, 0, &CHASSIS_S, Face::PosX, 0, 0));
+    assert!(BETA.validate(&build(twice)).is_ok());
+}
+
+/// A robot may mount one weapon several times (shooter#125): two rail guns, four rocket
+/// launchers, each copy its own part with its own mount, and each copy numbered for display.
+/// The sockets and the build points still bound them.
+#[test]
+fn a_weapon_may_be_mounted_again_on_other_sockets_within_the_budget() {
+    use shooter_sim::damage::Hitboxes;
+    use shooter_sim::robot::{ROCKET_POD, TWIN_RAIL};
+    for (name, built, weapon, copies) in [
+        ("twin-rail", TWIN_RAIL, Weapon::RailGun, 2),
+        ("rocket-pod", ROCKET_POD, Weapon::RocketLauncher, 4),
+    ] {
+        assert_eq!(BETA.validate(&built.candidate()), Ok(built), "{name}");
+        let instances: Vec<Instance> = BETA
+            .weapons(&built)
+            .filter(|instance| instance.weapon == weapon)
+            .collect();
+        assert_eq!(instances.len(), copies, "{name}");
+        let boxes = Hitboxes::place(&built, &PartDamage::fresh(&built), [0.0, 100.0, 0.0], 0);
+        let mut centers = Vec::new();
+        for (number, instance) in instances.iter().enumerate() {
+            // Distinct part IDs, numbered by part ID among their copies.
+            assert_eq!(
+                BETA.copy(&built, *instance),
+                Some((
+                    u8::try_from(number + 1).unwrap(),
+                    u8::try_from(copies).unwrap()
+                ))
+            );
+            assert_eq!(BETA.instance(&built, instance.part), Some(*instance));
+            let index = built
+                .parts()
+                .iter()
+                .position(|part| part.id == instance.part)
+                .unwrap();
+            centers.push(boxes.get(index).unwrap().center);
+        }
+        // Each copy sits on its own socket.
+        for (a, first) in centers.iter().enumerate() {
+            for second in &centers[a + 1..] {
+                let apart = (0..3).map(|axis| (first[axis] - second[axis]).abs());
+                assert!(apart.fold(0.0, f32::max) >= 19.0, "{name}: {centers:?}");
+            }
+        }
+    }
+    // A copy on another face, turned a quarter on its socket: valid, its box turned with it.
+    let mut parts = TWIN_RAIL.candidate().parts;
+    *with(&mut parts, 9) = turned(
+        on(9, &RAIL_GUN, 0, &CHASSIS_M, Face::PosY, 1, 1),
+        QUARTER,
+        0,
+        0,
+    );
+    let side = BETA.validate(&build(parts)).unwrap();
+    let boxes = Hitboxes::place(&side, &PartDamage::fresh(&side), [0.0, 100.0, 0.0], 0);
+    let index = |id: u8| {
+        side.parts()
+            .iter()
+            .position(|part| part.id == PartId(id))
+            .unwrap()
+    };
+    let (front, turned_box) = (boxes.get(index(7)).unwrap(), boxes.get(index(9)).unwrap());
+    assert_ne!(front.axes, turned_box.axes);
+    // The sockets bound the copies: a fifth launcher on a cell another holds overlaps it...
+    let mut crowded = ROCKET_POD.candidate().parts;
+    crowded.push(on(11, &ROCKET_LAUNCHER, 0, &CHASSIS_S, Face::PosX, 1, 1));
     assert_eq!(
-        reject(twice),
-        AssemblyError::DuplicateWeapon(Weapon::EnergyRifle)
+        BETA.validate(&build(crowded)),
+        Err(AssemblyError::Overlap(PartId(7), PartId(11)))
+    );
+    // ...and the build points: on a free face it costs 129 of the 110.
+    let mut over = ROCKET_POD.candidate().parts;
+    over.push(on(11, &ROCKET_LAUNCHER, 0, &CHASSIS_S, Face::NegX, 0, 0));
+    assert_eq!(
+        BETA.validate(&build(over)),
+        Err(AssemblyError::OverBudget {
+            points: 129,
+            build_points: 110
+        })
     );
 }
 
@@ -727,8 +815,11 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         let budget = BETA.budget(&build);
         assert!(budget.capacity >= 100 && budget.regen == 24, "{name}");
         assert!(budget.points <= budget.build_points);
-        // The arsenal they mount, once each.
-        let weapons: Vec<Weapon> = BETA.weapons(&build).map(|(_, weapon)| weapon).collect();
+        // Four weapons each.
+        let weapons: Vec<Weapon> = BETA
+            .weapons(&build)
+            .map(|instance| instance.weapon)
+            .collect();
         assert_eq!(weapons.len(), 4, "{name}");
     }
     assert_eq!(loadout(" Marksman "), Some(MARKSMAN));
@@ -745,7 +836,7 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
     assert_eq!(loadout("PYRO"), Some(PYRO));
     assert_eq!(
         BETA.weapons(&PYRO)
-            .map(|(_, weapon)| weapon)
+            .map(|instance| instance.weapon)
             .collect::<Vec<_>>(),
         [
             Weapon::Laser,
@@ -759,17 +850,32 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         [(PartId(7), Weapon::Laser, LONG_BARREL)]
     );
     assert_eq!(
-        BETA.mod_on(&SKIRMISHER, Weapon::EnergyRifle),
+        BETA.mod_at(
+            &SKIRMISHER,
+            BETA.first(&SKIRMISHER, Weapon::EnergyRifle).unwrap().part
+        ),
         Some(RAPID_CYCLER)
     );
     assert_eq!(
-        BETA.mod_on(&SKIRMISHER, Weapon::Shotgun),
+        BETA.mod_at(
+            &SKIRMISHER,
+            BETA.first(&SKIRMISHER, Weapon::Shotgun).unwrap().part
+        ),
         Some(EFFICIENCY_COIL)
     );
     assert_eq!(HEAVY.parts().len(), 9, "the heavy build carries a battery");
-    assert_eq!(BETA.mod_on(&MARKSMAN, Weapon::RailGun), Some(OVERCHARGER));
     assert_eq!(
-        BETA.mod_on(&MARKSMAN, Weapon::EnergyRifle),
+        BETA.mod_at(
+            &MARKSMAN,
+            BETA.first(&MARKSMAN, Weapon::RailGun).unwrap().part
+        ),
+        Some(OVERCHARGER)
+    );
+    assert_eq!(
+        BETA.mod_at(
+            &MARKSMAN,
+            BETA.first(&MARKSMAN, Weapon::EnergyRifle).unwrap().part
+        ),
         Some(LONG_BARREL)
     );
     assert_eq!(BETA.mods(&STANDARD).count(), 0);
@@ -782,7 +888,7 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
     );
 
     let fire = |build: &Assembly, weapon: Weapon| {
-        let tuning = BETA.tuning(build, weapon);
+        let tuning = BETA.tuning(build, first(build, weapon));
         (tuning.refire_ticks(weapon), tuning.delivery(weapon))
     };
     // The skirmisher's rifle fires faster and lighter.
@@ -842,7 +948,8 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         (68, Weapon::Shotgun.delivery())
     );
     // What each activation costs (milli-units): the shipped weapons' own, the mods' tuned.
-    let energy = |build: &Assembly, weapon: Weapon| BETA.tuning(build, weapon).energy(weapon);
+    let energy =
+        |build: &Assembly, weapon: Weapon| BETA.tuning(build, first(build, weapon)).energy(weapon);
     for weapon in Weapon::ALL {
         assert_eq!(energy(&STANDARD, weapon), weapon.energy());
     }
@@ -1022,9 +1129,8 @@ fn played_duel() -> Session {
     session
 }
 
-/// The yaw and pitch from `from`'s eye to `to`'s root chassis a cell below its middle, where the
-/// host places it (straight ahead while `to` is dead).
-#[allow(clippy::cast_possible_truncation)]
+/// The yaw and pitch that put `from`'s reticle ([`aim::at`]) on `to`'s root chassis a cell below
+/// its middle, where the host places it (straight ahead while `to` is dead).
 fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
     let target = &session.fighters[to];
     if !target.alive() {
@@ -1038,11 +1144,7 @@ fn at_chassis(session: &Session, from: usize, to: usize) -> (u16, i16) {
         .center;
     // A cell below its middle: below the weapons on a loadout's chest.
     chassis[1] -= 20.0;
-    let d = [0, 1, 2].map(|axis| chassis[axis] - eye[axis]);
-    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
-    let run = d[0].hypot(d[2]).round() as i32;
-    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
-    (yaw, pitch)
+    aim::at(Some(&session.world), eye, chassis)
 }
 
 /// Person 1 holds the rail gun's trigger for `ticks` ticks, aimed at person 2's root chassis
@@ -1054,7 +1156,7 @@ fn rail(session: &mut Session, ticks: u32) {
             fire: true,
             yaw,
             pitch,
-            select: Some(Weapon::RailGun),
+            select: Some(Weapon::RailGun.into()),
             ..Intent::IDLE
         };
         let sequence = session.fighters[0].ack + 1;
@@ -1186,8 +1288,10 @@ fn the_overcharged_rail_gun_kills_in_fewer_hits_and_fires_slower() {
     assert_eq!(rail_record(STANDARD, 120), (vec![], 0));
     assert_eq!(rail_record(HEAVY, 300), (vec![0, 72, 144, 216, 288], 1));
     // Overcharged (106): 94 ticks apart, three hits a kill, as before (two for the chassis, then
-    // one for the core).
-    assert_eq!(rail_record(MARKSMAN, 220), (vec![12, 106, 200], 1));
+    // one for the core). The marksman fires the moment it takes the rail gun up (no switch
+    // delay since shooter#127), so like the heavy's its shot on tick 0 goes wide of B still
+    // settling; its fourth waits for the pool (45 a shot).
+    assert_eq!(rail_record(MARKSMAN, 300), (vec![0, 94, 188, 299], 1));
 }
 
 #[test]
@@ -1227,28 +1331,33 @@ fn respawned_holding(build: Assembly) -> Weapon {
         session.step().unwrap();
     }
     assert_eq!(session.fighters[0].build, build);
-    session.fighters[0].arsenal.held
+    session.fighters[0].arsenal.held.weapon
 }
 
 #[test]
-fn a_robot_spawns_holding_its_first_weapon_that_is_not_the_grapple() {
-    // The grapple comes before the laser in the rotation, but the pyro spawns with the laser
-    // (shooter#96); the other loadouts with their first gun.
+fn a_robot_spawns_holding_its_first_gun_never_the_grapple_module() {
+    // The pyro spawns with the laser (shooter#96); the other loadouts with their first gun.
     assert_eq!(respawned_holding(PYRO), Weapon::Laser);
     assert_eq!(respawned_holding(STANDARD), Weapon::EnergyRifle);
     assert_eq!(respawned_holding(HEAVY), Weapon::RailGun);
-    // Nothing but the grapple and the blade: the grapple.
+    // Nothing but the grapple module and the blade: the blade; the module is never held
+    // (Atlas D2.i104.2).
     let mut hooked = PYRO.candidate();
     hooked.parts.retain(|part| part.id != 7 && part.id != 9);
     let hooked = BETA.validate(&hooked).unwrap();
-    assert_eq!(respawned_holding(hooked), Weapon::Grapple);
+    assert_eq!(respawned_holding(hooked), Weapon::EnergyBlade);
 }
 
 #[test]
 fn a_configured_modded_build_applies_at_the_next_spawn() {
     let mut session = played_duel();
     assert!(session.configure(1, MARKSMAN));
-    let rail_tuning = |session: &Session| BETA.tuning(&session.fighters[0].build, Weapon::RailGun);
+    let rail_tuning = |session: &Session| {
+        BETA.tuning(
+            &session.fighters[0].build,
+            first(&session.fighters[0].build, Weapon::RailGun),
+        )
+    };
     assert_eq!(rail_tuning(&session), Tuning::BASE);
     while session.fighters[0].deaths == 0 {
         let (yaw, pitch) = at_chassis(&session, 1, 0);
@@ -1256,7 +1365,7 @@ fn a_configured_modded_build_applies_at_the_next_spawn() {
             yaw,
             pitch,
             fire: true,
-            select: Some(Weapon::RailGun),
+            select: Some(Weapon::RailGun.into()),
             ..Intent::IDLE
         };
         let sequence = session.fighters[1].ack + 1;
@@ -1281,11 +1390,127 @@ fn a_configured_modded_build_applies_at_the_next_spawn() {
 
 #[test]
 fn the_armory_mounts_every_weapon_and_is_over_budget_only() {
-    let mut weapons: Vec<Weapon> = BETA.weapons(&ARMORY).map(|(_, weapon)| weapon).collect();
+    let mut weapons: Vec<Weapon> = BETA
+        .weapons(&ARMORY)
+        .map(|instance| instance.weapon)
+        .collect();
     weapons.sort();
     assert_eq!(weapons, Weapon::ALL.to_vec());
     assert!(matches!(
         BETA.validate(&ARMORY.candidate()),
         Err(AssemblyError::OverBudget { .. })
     ));
+}
+
+/// The footprint a placement would reserve (shooter#124's preview) is the one the validation
+/// checks: a placement is refused for an overlap exactly when its footprint meets a claimed cell,
+/// and a part's footprint on its parent is what the build claims for it.
+#[test]
+fn a_placement_s_footprint_is_the_one_validation_checks() {
+    let front = |u, v| CHASSIS_S.socket(Face::PosX, u, v).unwrap();
+    let claimed = BETA.claims(&STANDARD, PartId(0));
+    for (socket, owner) in &claimed {
+        let part = STANDARD.part(*owner).unwrap();
+        let mount = part.mount.unwrap();
+        assert!(
+            BETA.footprint(
+                &STANDARD,
+                PartId(0),
+                mount.socket,
+                part.kind,
+                part.modification,
+                mount.orientation
+            )
+            .contains(socket)
+        );
+    }
+    for turn in [0, QUARTER, 2 * QUARTER, 3 * QUARTER, QUARTER / 2, 3] {
+        let orientation = Orientation::canonical(turn, 0, 0);
+        for u in 0..2 {
+            for v in 0..4 {
+                let cells = BETA.footprint(
+                    &STANDARD,
+                    PartId(0),
+                    front(u, v),
+                    BATTERY.id,
+                    None,
+                    orientation,
+                );
+                assert!(cells.contains(&front(u, v)), "its own socket");
+                let meets = claimed.iter().find(|(cell, _)| cells.contains(cell));
+                let mut candidate = STANDARD.candidate();
+                candidate
+                    .parts
+                    .push(on(20, &BATTERY, 0, &CHASSIS_S, Face::PosX, u, v));
+                let (yaw, pitch, roll) = orientation.raw();
+                let mount = candidate.parts.last_mut().unwrap().mount.as_mut().unwrap();
+                (mount.yaw, mount.pitch, mount.roll) = (yaw, pitch, roll);
+                match BETA.validate(&candidate) {
+                    Err(AssemblyError::Overlap(owner, PartId(20))) => {
+                        assert!(
+                            claimed
+                                .iter()
+                                .any(|(cell, by)| *by == owner && cells.contains(cell)),
+                            "{u} {v} {turn}"
+                        );
+                    }
+                    other => assert!(meets.is_none(), "{u} {v} {turn}: {other:?} {meets:?}"),
+                }
+            }
+        }
+    }
+    // A heavy mod lengthens the footprint; past the face's edge reserves nothing.
+    let rifle = BETA.footprint(
+        &STANDARD,
+        PartId(0),
+        front(1, 3),
+        ENERGY_RIFLE.id,
+        Some(LONG_BARREL),
+        Orientation::IDENTITY,
+    );
+    assert_eq!(rifle, [front(1, 3)]);
+    let rifle = BETA.footprint(
+        &STANDARD,
+        PartId(0),
+        front(1, 2),
+        ENERGY_RIFLE.id,
+        Some(LONG_BARREL),
+        Orientation::IDENTITY,
+    );
+    assert_eq!(rifle, [front(1, 2), front(1, 3)]);
+    assert!(
+        BETA.footprint(
+            &STANDARD,
+            PartId(9),
+            front(0, 0),
+            BATTERY.id,
+            None,
+            Orientation::IDENTITY
+        )
+        .is_empty()
+    );
+}
+
+/// A part's preview placement, valid or not, is where the build puts it once placed.
+#[test]
+fn a_preview_placement_is_where_the_placed_part_lands() {
+    use shooter_sim::mechanics::{placement_of, placements};
+    let mut candidate = STANDARD.candidate();
+    let mut part = on(20, &BATTERY, 0, &CHASSIS_S, Face::NegX, 1, 1);
+    let mount = part.mount.as_mut().unwrap();
+    (mount.yaw, mount.pitch, mount.roll) = (QUARTER, 3_000, 7);
+    candidate.parts.push(part);
+    let build = BETA.validate(&candidate).unwrap();
+    let placed = *build.part(PartId(20)).unwrap();
+    let preview = placement_of(&STANDARD, &placed).unwrap();
+    let committed = placements(&build)
+        .into_iter()
+        .find(|placement| placement.part == PartId(20))
+        .unwrap();
+    assert_eq!(preview, committed);
+    // The root has no mount, and a missing parent no place.
+    assert!(placement_of(&STANDARD, STANDARD.part(PartId(0)).unwrap()).is_none());
+    let mut orphan = placed;
+    orphan.mount.as_mut().unwrap().parent = PartId(30);
+    assert!(placement_of(&STANDARD, &orphan).is_none());
 }

@@ -2229,10 +2229,11 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "physics-engine"
 version = "0.1.0"
-source = "git+https://github.com/moritzbrantner/physics-engine?rev=034bccfcfdfefd2c37be415b52ee4fa7b433084a#034bccfcfdfefd2c37be415b52ee4fa7b433084a"
+source = "git+https://github.com/moritzbrantner/physics-engine?rev=302416a98cf9d06ca84520e5b217834fef66c479#302416a98cf9d06ca84520e5b217834fef66c479"
 dependencies = [
  "bvh-kernels",
  "geometry-kernels",
+ "libm",
  "spatial-kernels",
 ]
 
@@ -2911,6 +2912,7 @@ name = "shooter-client"
 version = "0.1.0"
 dependencies = [
  "basisu",
+ "bytemuck",
  "console_error_panic_hook",
  "game-audio",
  "game-server",
@@ -2929,6 +2931,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+ "wgpu",
  "winit",
  "wtransport",
 ]
@@ -2946,6 +2949,7 @@ dependencies = [
 name = "shooter-sim"
 version = "0.1.0"
 dependencies = [
+ "libm",
  "physics-engine",
  "rapier3d",
 ]
@@ -3797,6 +3801,7 @@ dependencies = [
  "thiserror 2.0.21",
  "wgpu-core-deps-apple",
  "wgpu-core-deps-emscripten",
+ "wgpu-core-deps-wasm",
  "wgpu-core-deps-windows-linux-android",
  "wgpu-hal",
  "wgpu-naga-bridge",
@@ -3817,6 +3822,15 @@ name = "wgpu-core-deps-emscripten"
 version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98b86cf4abf524a902dd35f18ca6a3f08fc2ae9847c8f10b48e30491b1f0b86"
+dependencies = [
+ "wgpu-hal",
+]
+
+[[package]]
+name = "wgpu-core-deps-wasm"
+version = "30.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b20f43aeb9962d05e61e3ccb717e2e27ba1b04e979d4ca7e361384f8ee03db56"
 dependencies = [
  "wgpu-hal",
 ]

@@ -130,7 +130,7 @@ pub fn run_legs(session: &mut Session, legs: &[Leg]) -> Result<Vec<Sample>, Phys
     let mut tick = 0;
     for leg in legs {
         for _ in 0..leg.ticks {
-            let report = session.tick(leg.intent)?;
+            let report = session.tick(session.with_preset(0, leg.intent))?;
             tick += 1;
             samples.push(Sample {
                 tick,
@@ -140,7 +140,7 @@ pub fn run_legs(session: &mut Session, legs: &[Leg]) -> Result<Vec<Sample>, Phys
                 sliding: report.sliding,
                 launched: report.launched,
                 air_jumped: report.air_jumped,
-                fired: report.fired,
+                fired: report.fired.map(|fired| fired.weapon),
                 damage: report.damage,
                 exploded: report.exploded,
                 hooked: session.local().hook.is_some(),

@@ -12,7 +12,7 @@ use crate::arena::Arena;
 use crate::fixed::{subunits_per_tick, subunits_per_tick_squared};
 use crate::physics::{StepUp, Vec3i};
 use crate::trig;
-use crate::weapons::Weapon;
+use crate::weapons::{Select, Triggers};
 
 /// The reference fighter box, 0.6 m × 1.8 m × 0.6 m: the dummies' bodies, and how high above its feet
 /// a robot's centre is.
@@ -74,12 +74,18 @@ pub struct Intent {
     /// Where the player aims up (positive) or down, in `trig` angle steps within
     /// ±[`crate::weapons::MAX_PITCH`].
     pub pitch: i16,
-    /// Trigger held: fires whenever the held weapon is ready.
+    /// The primary trigger held: fires the held weapon copy whenever it is ready (a convenience
+    /// beside the direct weapon bindings, shooter#127).
     pub fire: bool,
     /// Melee held: swings the energy blade whenever it is ready ([`crate::melee`]).
     pub melee: bool,
-    /// Switch to this weapon (it stays held until another is selected).
-    pub select: Option<Weapon>,
+    /// Grapple held (Atlas D2.i104.2): the robot's mounted grapple module hooks whenever it is
+    /// ready, and a set hook holds (reeling and swinging) until this is let go
+    /// ([`crate::grapple`]). Its own key, whatever gun is held.
+    pub grapple: bool,
+    /// Switch to this weapon copy, or to a copy of this weapon ([`crate::weapons::resolve`]); it
+    /// stays held until another is selected.
+    pub select: Option<Select>,
     /// Edit Robot held (Atlas D2.i70.11): while its robot is dead, the person is in the builder
     /// and it does not come back until this is released (Ready). It does nothing while the
     /// robot is alive: a living robot is never rebuilt (D2.i46.7).
@@ -87,6 +93,16 @@ pub struct Intent {
     /// Start or stop a field repair ([`crate::repair`]): sent once, like a weapon switch; the
     /// host checks it and refuses a part that is not eligible.
     pub repair: Option<crate::repair::Order>,
+    /// What the person's control layout tells the robot's actuators this tick (Atlas D2.i70.7,
+    /// [`crate::bindings`]): its joints, legs, wheels and tracks. The host keeps only commands
+    /// its connected actuators take ([`crate::bindings::Motors::controls`]); the rest stand at
+    /// rest.
+    pub motors: crate::bindings::Motors,
+    /// The weapon copies its direct weapon bindings and weapon groups ask to fire this tick
+    /// (shooter#127, [`crate::bindings`]), beside the primary trigger: each fires if it is ready,
+    /// its family's salvo limit allows and the pool grants its energy
+    /// ([`crate::weapons::Arsenal::trigger_tuned`]).
+    pub triggers: Triggers,
 }
 
 impl Intent {
@@ -101,9 +117,12 @@ impl Intent {
         pitch: 0,
         fire: false,
         melee: false,
+        grapple: false,
         select: None,
         edit: false,
         repair: None,
+        motors: crate::bindings::Motors::REST,
+        triggers: Triggers::NONE,
     };
 }
 

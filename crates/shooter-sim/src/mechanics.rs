@@ -24,7 +24,7 @@
 //!
 //! **Orientation is authoritative.** Nothing about a part's direction is corrected: a wheel
 //! turns about its own mount normal, so wheels on a robot's two sides turn opposite ways for the
-//! same command (a binding inverts one side, shooter#74), a wheel mounted on the front drives
+//! same command (a binding inverts one side, [`crate::bindings`]), a wheel mounted on the front drives
 //! the robot sideways, a mismatched drive spins it and lopsided mass tips it.
 //!
 //! **Commands** ([`Controls`]): one [`Command`] an actuator (joint or locomotion part) a tick,
@@ -56,9 +56,20 @@
 //! A part shot off leaves the bodies ([`Layout::connected`], [`Mechanics::sever`]): it no longer
 //! weighs, touches or drives anything, and the bodies that stay keep their pose and motion
 //! ([`crate::physics::articulated::rebase`]). The match's movement drive ([`Mechanics::drive`])
-//! sets the whole robot's velocity and turns it; its legs stride and its wheels roll along
-//! ([`Controls::carried`]), its bodies slide frictionless over the arena (the drive is what
-//! carries it) and its legs bend only within their gaits' range ([`Mechanics::for_match`]).
+//! sets the whole robot's velocity and turns it (an interim chassis drive: the bindings do not
+//! carry a robot yet, see [`crate::bindings`]); its actuators take the commands its person's
+//! control layout resolved ([`crate::bindings::Motors::controls`]), its bodies slide frictionless
+//! over the arena (the drive is what carries it) and its legs bend only within their gaits'
+//! range ([`Mechanics::for_match`]).
+//!
+//! **Debris** (shooter#75, Atlas D2.i70.10). In the match a part carried away whole (its parent
+//! broke) and at least [`DEBRIS_MIN_MASS_KG`] heavy becomes a body of its own where its robot
+//! carried it, moving as that point did ([`Mechanics::break_off`], [`DebrisState`]): one box with
+//! the part's mass and friction, colliding with the arena, the robots and other debris. It
+//! retires after [`DEBRIS_LIFETIME_TICKS`], or after lying still [`DEBRIS_REST_TICKS`], or when
+//! it falls out of the arena ([`Mechanics::retire_debris`]), or when its robot respawns
+//! ([`Mechanics::clear_debris`]); past [`MAX_DEBRIS`] the oldest piece retires. Debris is part of
+//! the [`State`], restored and continued exactly like the robots.
 
 pub mod fixtures;
 
@@ -106,6 +117,25 @@ const FOOT: [f32; 3] = [9.0, 14.0, 3.0];
 const WHEEL_INSET: f32 = 2.0;
 /// Spawned robots start this far (units) above the ground.
 const SPAWN_GAP: f32 = 0.5;
+
+/// The first debris body's id: debris ids follow the robots' (every slot's) and run in
+/// [`State::debris`] order.
+pub const FIRST_DEBRIS_BODY: u64 = FIRST_ROBOT_BODY + 256 * BODIES_PER_ROBOT;
+/// At most this many pieces of debris are physical at once in a world; a newer piece past the
+/// budget retires the oldest (Atlas Q2.i70.6, provisional).
+pub const MAX_DEBRIS: usize = 16;
+/// A piece of debris retires this many ticks (5 s) after it came off...
+pub const DEBRIS_LIFETIME_TICKS: u16 = 300;
+/// ...or once it has lain still this many ticks in a row (1 s)...
+pub const DEBRIS_REST_TICKS: u16 = 60;
+/// ...still meaning slower than this (units a second) and turning slower than
+/// [`DEBRIS_REST_SPIN`] (radians a second).
+pub const DEBRIS_REST_SPEED: f32 = 5.0;
+pub const DEBRIS_REST_SPIN: f32 = 0.5;
+/// A lost part this heavy (kg, its mod included) or heavier stays physical debris for a while;
+/// a lighter one is a cosmetic shard only, which clients draw falling on their own (Atlas
+/// D2.i70.10, provisional).
+pub const DEBRIS_MIN_MASS_KG: f32 = 12.0;
 
 // ---------------------------------------------------------------------------------------------
 // Geometry: exact rotations from binary angles, in `f32`.
@@ -297,17 +327,8 @@ fn frames(build: &Assembly) -> Vec<(PartId, Frame)> {
             Some(mount) => {
                 let parent_at = index(mount.parent).expect("validated parents exist");
                 let parent = resolve(parent_at, parts, frames, index);
-                let parent_cells = cells_of(&parts[parent_at]);
-                let site = part_type(&parts[parent_at])
-                    .site(mount.socket)
-                    .expect("validated sockets exist");
-                let socket = socket_frame(site.face, site.u, site.v, parent_cells);
-                let rotation = socket.rotation.then(turn(mount.orientation));
-                let pivot = [CELL / 2.0, CELL / 2.0, 0.0];
-                parent.then(Frame {
-                    rotation,
-                    origin: sub(socket.origin, rotation.apply(pivot)),
-                })
+                mounted(parent, &parts[parent_at], mount.socket, mount.orientation)
+                    .expect("validated sockets exist")
             }
         };
         frames[at] = Some(frame);
@@ -328,22 +349,55 @@ pub struct Placement {
     pub half_extents: [f32; 3],
 }
 
+/// The frame of a part mounted on `socket` of `parent` (whose frame is `at`), turned
+/// `orientation`, if `parent` has that socket.
+fn mounted(at: Frame, parent: &Part, socket: SocketId, orientation: Orientation) -> Option<Frame> {
+    let site = part_type(parent).site(socket)?;
+    let socket = socket_frame(site.face, site.u, site.v, cells_of(parent));
+    let rotation = socket.rotation.then(turn(orientation));
+    let pivot = [CELL / 2.0, CELL / 2.0, 0.0];
+    Some(at.then(Frame {
+        rotation,
+        origin: sub(socket.origin, rotation.apply(pivot)),
+    }))
+}
+
+/// `part`'s placement in the frame `frame`.
+fn placed(part: &Part, frame: Frame) -> Placement {
+    let half = scale(size(cells_of(part)), 0.5);
+    Placement {
+        part: part.id,
+        centre: frame.point(half),
+        orientation: frame.rotation.quaternion(),
+        half_extents: half,
+    }
+}
+
 /// Every part of `build` placed in its robot's frame, in part-ID order.
 #[must_use]
 pub fn placements(build: &Assembly) -> Vec<Placement> {
     frames(build)
         .into_iter()
         .zip(build.parts())
-        .map(|((id, frame), part)| {
-            let half = scale(size(cells_of(part)), 0.5);
-            Placement {
-                part: id,
-                centre: frame.point(half),
-                orientation: frame.rotation.quaternion(),
-                half_extents: half,
-            }
-        })
+        .map(|((_, frame), part)| placed(part, frame))
         .collect()
+}
+
+/// Where `part` (its kind, mod and mount, whatever its ID) would be placed in `build`'s frame
+/// if it were mounted as its mount says, valid or not: the same placement [`placements`] gives
+/// it once a build holds it (the builder's preview of a placement the rules refuse,
+/// shooter#124). `None` if the part is the root, its parent is not in `build`, the parent has no
+/// such socket or the part type is not in the catalog.
+#[must_use]
+pub fn placement_of(build: &Assembly, part: &Part) -> Option<Placement> {
+    let mount = part.mount?;
+    BETA.part_type(part.kind)?;
+    let (_, at) = frames(build)
+        .into_iter()
+        .find(|(id, _)| *id == mount.parent)?;
+    let parent = build.part(mount.parent)?;
+    let frame = mounted(at, parent, mount.socket, mount.orientation)?;
+    Some(placed(part, frame))
 }
 
 /// Where a socket is in its robot's frame (units): the centre of its cell on its part's face and
@@ -452,6 +506,9 @@ pub struct Layout {
     pub actuators: Vec<ActuatorPlan>,
     /// Every piece of every part, in part-ID order.
     pub segments: Vec<Segment>,
+    /// The guns among its parts (not the blade or the grapple module), in part-ID order: what
+    /// a fire binding may name (shooter#127).
+    pub guns: Vec<PartId>,
 }
 
 /// The quaternion that turns a capsule's local Y onto a part's local Z.
@@ -530,6 +587,7 @@ impl Layout {
             hinges: Vec::new(),
             actuators: Vec::new(),
             segments: Vec::new(),
+            guns: Vec::new(),
         };
         let body_of = |part: &Part| {
             groups
@@ -721,6 +779,12 @@ impl Layout {
         }
         layout.actuators.sort_by_key(|actuator| actuator.part);
         layout.segments.sort_by_key(|segment| segment.part);
+        // The guns a fire binding may name (shooter#127, [`crate::bindings::Output::Fire`]).
+        layout.guns = parts
+            .iter()
+            .filter(|part| matches!(part_type(part).kind, Kind::Weapon(weapon) if weapon.gun()))
+            .map(|part| part.id)
+            .collect();
         layout
     }
 
@@ -886,9 +950,9 @@ impl Controls {
         self
     }
 
-    /// The fixed walking mapping of the fixtures (bindings are shooter#74): every leg strides
-    /// `forward` percent, plus `turn` on the robot's left side and minus it on its right
-    /// (positive turns right).
+    /// The fixtures' fixed walking mapping (the presets bind the same, [`crate::bindings`]):
+    /// every leg strides `forward` percent, plus `turn` on the robot's left side and minus it on
+    /// its right (positive turns right).
     #[must_use]
     pub fn walk(mut self, layout: &Layout, forward: i8, turn: i8) -> Self {
         for leg in layout.legs() {
@@ -903,50 +967,6 @@ impl Controls {
             );
         }
         self
-    }
-
-    /// The match's fixed mapping (bindings are shooter#74) for a robot whose root's frame is
-    /// turned `orientation` and moving at `velocity` (units a second): every leg strides
-    /// `stride` percent on the suggested gait, every wheel and track turns at the rate that
-    /// rolls it along that velocity without slipping (about its own axle, as mounted), and
-    /// every joint holds its authored angle.
-    #[must_use]
-    pub fn carried(layout: &Layout, orientation: [f32; 4], velocity: [f32; 3], stride: i8) -> Self {
-        let turn = rotation_of(orientation);
-        let mut controls = Self::IDLE.walk(layout, stride, 0);
-        for actuator in &layout.actuators {
-            let command = match actuator.kind {
-                Actuator::Joint(_) => Command::Angle(0),
-                Actuator::Locomotion(Locomotion::Leg) => continue,
-                Actuator::Locomotion(_) => {
-                    let Some(hinge) = actuator.hinges.first().map(|&at| layout.hinges[at]) else {
-                        continue;
-                    };
-                    let radius = layout.bodies[hinge.b]
-                        .children
-                        .first()
-                        .map_or(0.0, |child| match child.shape {
-                            Shape::Sphere(radius) => radius,
-                            _ => 0.0,
-                        });
-                    // No slip: the velocity is the spin times the radius along axle × up.
-                    let axle = turn.apply(hinge.axis);
-                    let along = [-axle[2], 0.0, axle[0]];
-                    let reach = along[0] * along[0] + along[2] * along[2];
-                    if radius <= 0.0 || reach < 1e-4 {
-                        Command::Rate(0)
-                    } else {
-                        let spin =
-                            (velocity[0] * along[0] + velocity[2] * along[2]) / (radius * reach);
-                        #[allow(clippy::cast_possible_truncation)]
-                        let milli = (spin * 1000.0).clamp(-32_000.0, 32_000.0) as i16;
-                        Command::Rate(milli)
-                    }
-                }
-            };
-            controls = controls.with(actuator.part, command);
-        }
-        controls
     }
 }
 
@@ -1124,10 +1144,51 @@ fn part_frames(layout: &Layout, bodies: &[Motion]) -> Result<Vec<(PartId, Pose)>
     Ok(frames)
 }
 
-/// Everything [`Mechanics::restore`] needs besides the static arena: the robots in slot order.
+/// A large part that came off a robot (Atlas D2.i70.10, shooter#75): for a while a body of its
+/// own in the world, collidable and falling, until it retires ([`DEBRIS_LIFETIME_TICKS`],
+/// [`DEBRIS_REST_TICKS`], [`MAX_DEBRIS`]). It weighs, touches and drives nothing of its robot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DebrisState {
+    /// The slot of the robot it came off.
+    pub slot: u8,
+    pub part: PartId,
+    /// The part's box with its mass, authored in its robot's frame as it was when it came off:
+    /// the body's authored frame is that robot frame ([`DebrisState::frame`]).
+    pub piece: Child,
+    /// Ticks since it came off.
+    pub age: u16,
+    /// Ticks in a row it has lain still.
+    pub rest: u16,
+    pub motion: Motion,
+}
+
+impl DebrisState {
+    /// Where the robot frame it was authored in is now: with [`placements`] of its robot's
+    /// build, where its part is (what a client draws).
+    ///
+    /// # Errors
+    ///
+    /// If its piece has no valid mass properties.
+    pub fn frame(&self) -> Result<Pose, PhysicsError> {
+        crate::physics::articulated::origin_of(&[self.piece], &self.motion)
+    }
+
+    /// Whether it retires after this tick: past its lifetime, still long enough, or fallen out
+    /// of the arena.
+    #[must_use]
+    pub fn retired(&self) -> bool {
+        #[allow(clippy::cast_precision_loss)]
+        let fallen = self.motion.pose.position[1] < crate::player::KILL_HEIGHT_UNITS as f32;
+        self.age >= DEBRIS_LIFETIME_TICKS || self.rest >= DEBRIS_REST_TICKS || fallen
+    }
+}
+
+/// Everything [`Mechanics::restore`] needs besides the static arena: the robots in slot order
+/// and the debris in the order it came off.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct State {
     pub robots: Vec<RobotState>,
+    pub debris: Vec<DebrisState>,
 }
 
 /// A unit quaternion turning the robot's frame (+X forward) to face `yaw` (the game's binary
@@ -1193,8 +1254,10 @@ pub struct Mechanics {
     /// limits): the movement drive ([`Mechanics::drive`]) is what carries a robot over the ground,
     /// so its feet and wheels slide where it drives them instead of dragging it over, and it
     /// slides along walls as the capsule did (Atlas D2.3's fast movement on mechanical robots,
-    /// until shooter#74's bindings drive the actuators).
+    /// until the robots walk and roll on their actuators alone: Atlas D2.i70.5).
     traction: Option<f32>,
+    /// The physical debris, in the order it came off; motions as of the last step or rebuild.
+    debris: Vec<DebrisState>,
 }
 
 fn spec<'a>(id: BodyId, body: &'a BodyPlan) -> BodySpec<'a> {
@@ -1228,6 +1291,7 @@ impl Mechanics {
             gravity,
             regenerate: true,
             traction: None,
+            debris: Vec::new(),
         })
     }
 
@@ -1257,6 +1321,7 @@ impl Mechanics {
             gravity: self.gravity,
             regenerate: self.regenerate,
             traction: self.traction,
+            debris: Vec::new(),
         };
         let admitted = fresh.admit_all(state);
         if let Err(error) = admitted {
@@ -1371,12 +1436,24 @@ impl Mechanics {
     /// [`Layout::connected`]): they come off and stop weighing, touching and driving, while
     /// every body that stays keeps its authored pose, velocity field and spin
     /// ([`crate::physics::articulated::rebase`] when its children changed). Whether anything
-    /// changed.
+    /// changed. Nothing it lost stays physical ([`Mechanics::break_off`] leaves debris).
     ///
     /// # Errors
     ///
     /// If the rebuilt world refuses a body.
     pub fn sever(&mut self, slot: u8, lost: u32) -> Result<bool, PhysicsError> {
+        self.break_off(slot, lost, 0)
+    }
+
+    /// [`Mechanics::sever`], and each newly lost part in `intact` (by index: the parts carried
+    /// away whole, not destroyed ones, which shatter) at least [`DEBRIS_MIN_MASS_KG`] heavy
+    /// becomes physical debris where its robot carried it (Atlas D2.i70.10): the match's way.
+    /// Past [`MAX_DEBRIS`] the oldest pieces retire.
+    ///
+    /// # Errors
+    ///
+    /// If the rebuilt world refuses a body.
+    pub fn break_off(&mut self, slot: u8, lost: u32, intact: u32) -> Result<bool, PhysicsError> {
         let mut state = self.state();
         let Some(robot) = state.robots.iter_mut().find(|robot| robot.slot == slot) else {
             return Ok(false);
@@ -1386,6 +1463,7 @@ impl Mechanics {
             return Ok(false);
         }
         let old = robot.layout();
+        let fresh = Self::debris_of(robot, &old, lost & !robot.lost & intact)?;
         let new = Layout::connected(&robot.build, lost);
         let mut bodies = Vec::with_capacity(new.bodies.len());
         for plan in &new.bodies {
@@ -1405,8 +1483,112 @@ impl Mechanics {
         }
         robot.lost = lost;
         robot.bodies = bodies;
+        state.debris.extend(fresh);
+        while state.debris.len() > MAX_DEBRIS {
+            // Past the budget the oldest piece retires (ties: the one that came off first).
+            let oldest = (0..state.debris.len())
+                .rev()
+                .max_by_key(|&at| state.debris[at].age)
+                .unwrap_or(0);
+            state.debris.remove(oldest);
+        }
         self.rebuild(&state)?;
         Ok(true)
+    }
+
+    /// The debris the parts `newly` lost leave behind `robot` (laid out as `layout`): each
+    /// newly lost part at least [`DEBRIS_MIN_MASS_KG`] heavy becomes a body of its own where
+    /// its robot carried it, moving as that point of its body moved.
+    fn debris_of(
+        robot: &RobotState,
+        layout: &Layout,
+        newly: u32,
+    ) -> Result<Vec<DebrisState>, PhysicsError> {
+        if newly == 0 {
+            return Ok(Vec::new());
+        }
+        let frames = part_frames(layout, &robot.bodies)?;
+        let placed = placements(&robot.build);
+        let mut debris = Vec::new();
+        for (index, part) in robot.build.parts().iter().enumerate() {
+            let mass = mass_of(part);
+            if newly & (1 << index) == 0 || mass < DEBRIS_MIN_MASS_KG {
+                continue;
+            }
+            let (Some((_, frame)), Some(segment)) = (
+                frames.iter().find(|(id, _)| *id == part.id),
+                layout
+                    .segments
+                    .iter()
+                    .find(|segment| segment.part == part.id),
+            ) else {
+                continue;
+            };
+            let placement = placed[index];
+            let piece = Child {
+                shape: Shape::Box(placement.half_extents),
+                position: placement.centre,
+                orientation: placement.orientation,
+                mass,
+            };
+            let mut motion = crate::physics::articulated::motion_at(&[piece], *frame)?;
+            let carrier = robot.bodies[segment.body];
+            let lever = sub(motion.pose.position, carrier.pose.position);
+            let spin = carrier.angular_velocity;
+            let swing = [
+                spin[1] * lever[2] - spin[2] * lever[1],
+                spin[2] * lever[0] - spin[0] * lever[2],
+                spin[0] * lever[1] - spin[1] * lever[0],
+            ];
+            motion.velocity = add(carrier.velocity, swing);
+            motion.angular_velocity = spin;
+            debris.push(DebrisState {
+                slot: robot.slot,
+                part: part.id,
+                piece,
+                age: 0,
+                rest: 0,
+                motion,
+            });
+        }
+        Ok(debris)
+    }
+
+    /// The physical debris, in the order it came off.
+    #[must_use]
+    pub fn debris(&self) -> &[DebrisState] {
+        &self.debris
+    }
+
+    /// Retires the debris that came off the robot in `slot` (its next life starts). Whether any
+    /// did.
+    ///
+    /// # Errors
+    ///
+    /// If the rebuilt world refuses a body.
+    pub fn clear_debris(&mut self, slot: u8) -> Result<bool, PhysicsError> {
+        if self.debris.iter().all(|piece| piece.slot != slot) {
+            return Ok(false);
+        }
+        let mut state = self.state();
+        state.debris.retain(|piece| piece.slot != slot);
+        self.rebuild(&state)?;
+        Ok(true)
+    }
+
+    /// Puts the world's debris in the exact state `debris` (a client resuming its prediction
+    /// from a snapshot).
+    ///
+    /// # Errors
+    ///
+    /// If there is more than [`MAX_DEBRIS`] or the rebuilt world refuses a body.
+    pub fn place_debris(&mut self, debris: &[DebrisState]) -> Result<(), PhysicsError> {
+        if self.debris == debris {
+            return Ok(());
+        }
+        let mut state = self.state();
+        state.debris = debris.to_vec();
+        self.rebuild(&state)
     }
 
     /// The robot in `slot`'s bodies' motions with their masses.
@@ -1532,6 +1714,12 @@ impl Mechanics {
         part_frames(&robot.layout, &bodies)
     }
 
+    /// The world's gravity (m/s²).
+    #[must_use]
+    pub const fn gravity(&self) -> [f32; 3] {
+        self.gravity
+    }
+
     #[must_use]
     pub const fn world(&self) -> &Articulated {
         &self.world
@@ -1653,6 +1841,22 @@ impl Mechanics {
         Ok(mechanics)
     }
 
+    /// [`Self::for_match`] holding the robots and debris of `state` exactly as they were: a
+    /// match's world resumed (a client's prediction, a replay).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::restore_with`].
+    pub fn restore_for_match(
+        statics: &[RigidBody],
+        gravity: [f32; 3],
+        state: &State,
+    ) -> Result<Self, PhysicsError> {
+        let mut mechanics = Self::for_match(statics, gravity)?;
+        mechanics.admit_all(state)?;
+        Ok(mechanics)
+    }
+
     /// The robots of `state` into this world, which has none.
     fn admit_all(&mut self, state: &State) -> Result<(), PhysicsError> {
         let traction = self.traction;
@@ -1677,6 +1881,20 @@ impl Mechanics {
                 world.restore_body(spec, robot.bodies[index])
             })?;
         }
+        if state.debris.len() > MAX_DEBRIS {
+            return Err(crate::physics::error("more debris than its budget"));
+        }
+        for (at, piece) in state.debris.iter().enumerate() {
+            self.world.restore_body(
+                BodySpec {
+                    id: BodyId(FIRST_DEBRIS_BODY + at as u64),
+                    children: std::slice::from_ref(&piece.piece),
+                    friction: FRICTION,
+                },
+                piece.motion,
+            )?;
+        }
+        self.debris.clone_from(&state.debris);
         Ok(())
     }
 
@@ -1706,6 +1924,7 @@ impl Mechanics {
                         .collect(),
                 })
                 .collect(),
+            debris: self.debris.clone(),
         }
     }
 
@@ -1822,7 +2041,55 @@ impl Mechanics {
                 };
             }
         }
+        self.age_debris();
         Ok(())
+    }
+
+    /// After a step: every piece of debris reads its motion back and ages.
+    fn age_debris(&mut self) {
+        let length = |value: [f32; 3]| {
+            (value[0] * value[0] + value[1] * value[1] + value[2] * value[2]).sqrt()
+        };
+        for (at, piece) in self.debris.iter_mut().enumerate() {
+            if let Some(motion) = self.world.motion(BodyId(FIRST_DEBRIS_BODY + at as u64)) {
+                piece.motion = motion;
+            }
+            piece.age = piece.age.saturating_add(1);
+            let still = length(piece.motion.velocity) < DEBRIS_REST_SPEED
+                && length(piece.motion.angular_velocity) < DEBRIS_REST_SPIN;
+            piece.rest = if still {
+                piece.rest.saturating_add(1)
+            } else {
+                0
+            };
+        }
+    }
+
+    /// The pieces of debris that have retired ([`DebrisState::retired`]) leave the world: the
+    /// match does this first thing every tick, before anything moves a body, so the step that
+    /// follows finds every robot's footing again. Whether any left.
+    ///
+    /// # Errors
+    ///
+    /// If the rebuilt world refuses a body.
+    pub fn retire_debris(&mut self) -> Result<bool, PhysicsError> {
+        if self.debris.iter().any(DebrisState::retired) {
+            let mut state = self.state();
+            state.debris.retain(|piece| !piece.retired());
+            // The robots' actuators read back this step stay what they were.
+            let actuators: Vec<_> = self
+                .robots
+                .iter()
+                .map(|robot| (robot.actuators.clone(), robot.commanded.clone()))
+                .collect();
+            self.rebuild(&state)?;
+            for (robot, (actuators, commanded)) in self.robots.iter_mut().zip(actuators) {
+                robot.actuators = actuators;
+                robot.commanded = commanded;
+            }
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn in_slot(&self, slot: usize) -> Option<&Robot> {

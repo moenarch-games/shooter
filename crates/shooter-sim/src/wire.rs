@@ -5,8 +5,9 @@
 //! one's energy pool, every part's health (what it has lost follows from them,
 //! [`crate::damage`]) and the module each carries, the rockets, the shotgun pellets, the module
 //! pads, the modules dropped at deaths, the arena placeables' health ([`crate::scenery`]: the
-//! damaged ones, by stable ID) and the tick's events), and each fighter's field repair under way
-//! and the parts it may repair now ([`crate::repair`]). Robot builds travel as raw codes and are
+//! damaged ones, by stable ID) and the tick's events), each fighter's field repair under way
+//! and the parts it may repair now ([`crate::repair`]), and the physical debris with its exact
+//! motion ([`crate::mechanics::DebrisState`]). Robot builds travel as raw codes and are
 //! decoded
 //! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored; a
 //! part health above its catalog health, or a charge above the capacity of the parts still
@@ -16,27 +17,40 @@
 //! The in-process practice match builds the same [`Snapshot`], so both modes draw through one
 //! path.
 
+use crate::bindings::{
+    Binding, Bindings, MAX_BINDINGS, MAX_GROUP, MAX_MOTORS, Mode, Motors, Output, Source, Target,
+};
 use crate::damage::PartDamage;
 use crate::energy::Pool;
 use crate::grapple::Hook;
 use crate::maps::MapId;
 use crate::mechanics::{
-    Command as MechCommand, Controls, Gait, GaitChoice, Layout, RobotState, State as MechState,
+    Command as MechCommand, Controls, DebrisState, Gait, GaitChoice, Layout, MAX_DEBRIS,
+    RobotState, State as MechState,
 };
 use crate::physics::Vec3i;
-use crate::physics::articulated::{Motion as BodyMotion, Pose};
+use crate::physics::articulated::{Child, Motion as BodyMotion, Pose, Shape};
 use crate::pickups::{ArenaModule, Carried, DROP_LIFETIME_TICKS, Drop};
 use crate::player::{Intent, Motion};
 use crate::repair::{self, Order, Repair};
-use crate::robot::{Assembly, AssemblyError, BETA, Candidate, PartId, RawMount, RawPart};
+use crate::robot::{
+    Assembly, AssemblyError, BETA, Candidate, MAX_PARTS, PartId, RawMount, RawPart,
+};
 use crate::scenery::PlaceableState;
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
-use crate::weapons::Weapon;
+use crate::weapons::{Instance, Select, Triggers, Weapon};
 use std::fmt;
 
-/// 19: inputs carry a repair order, snapshots each fighter's repair and repairable parts
-/// (shooter#61); 18 added the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 19;
+/// 24: inputs carry per-copy fire requests (shooter#127, [`Triggers`]: the guns the person's
+/// direct weapon bindings and groups ask to fire) and a layout's binding may fire guns; 23:
+/// weapons are addressed by mounted copy (shooter#125): an input's switch names a weapon or
+/// an exact weapon part, a fighter's held weapon and a shot's `Fired` event carry the part;
+/// 22: inputs carry the actuator commands the person's control layout resolved
+/// ([`crate::bindings::Motors`], shooter#74); 21: inputs carry the grapple module's own key
+/// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
+/// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
+/// the dropped modules (shooter#62), 17 the placeables (shooter#60).
+pub const WIRE_VERSION: u8 = 24;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -79,7 +93,7 @@ pub struct FighterState {
     pub alive: bool,
     pub frags: i32,
     pub deaths: i32,
-    pub held: Weapon,
+    pub held: Instance,
     pub yaw: u16,
     pub pitch: i16,
     /// Its centre ([`Fighter::center`]), units (zero while dead).
@@ -146,7 +160,7 @@ pub struct RocketState {
 pub struct PelletState {
     pub from: [f32; 3],
     pub to: [f32; 3],
-    /// It was fired this tick (`from` is the shooter's eye).
+    /// It was fired this tick (`from` is the shooter's muzzle).
     pub launched: bool,
 }
 
@@ -172,6 +186,9 @@ pub struct Snapshot {
     pub events: Vec<Event>,
     /// The names people picked, by slot (slots without one show as "Player N").
     pub names: Vec<(u8, String)>,
+    /// The physical debris, in the order it came off, exactly (shooter#75): what clients draw
+    /// and a predictor resumes with.
+    pub debris: Vec<DebrisState>,
 }
 
 impl Snapshot {
@@ -296,6 +313,7 @@ impl Session {
                 .filter(|fighter| fighter.human().is_some())
                 .filter_map(|fighter| Some((fighter.slot, fighter.name.clone()?)))
                 .collect(),
+            debris: self.mechanics.debris().to_vec(),
         }
     }
 }
@@ -326,6 +344,25 @@ impl Out {
     }
     fn weapon(&mut self, weapon: Weapon) {
         self.u8(weapon.index());
+    }
+    /// A weapon copy: its part ID, then its weapon.
+    fn instance(&mut self, instance: Instance) {
+        self.u8(instance.part.0);
+        self.weapon(instance.weapon);
+    }
+    /// A switch request: [`NONE`], or 0 and a weapon, or 1 and a part ID.
+    fn select(&mut self, select: Option<Select>) {
+        match select {
+            None => self.u8(NONE),
+            Some(Select::Weapon(weapon)) => {
+                self.u8(0);
+                self.weapon(weapon);
+            }
+            Some(Select::Part(part)) => {
+                self.u8(1);
+                self.u8(part.0);
+            }
+        }
     }
     fn module(&mut self, module: ArenaModule) {
         self.u8(module.tag());
@@ -367,6 +404,43 @@ impl Out {
             if let Some(code) = part.modification {
                 self.u8(code);
             }
+        }
+    }
+    fn gait(&mut self, gait: GaitChoice) {
+        self.u8(match gait {
+            GaitChoice::Suggested => GAIT_SUGGESTED,
+            GaitChoice::Preset(Gait::Biped) => GAIT_BIPED,
+            GaitChoice::Preset(Gait::Quadruped) => GAIT_QUADRUPED,
+            GaitChoice::Unison => GAIT_UNISON,
+        });
+    }
+    /// A command's kind and value.
+    fn command(&mut self, command: MechCommand) {
+        let (kind, value) = match command {
+            MechCommand::Idle => (COMMAND_IDLE, 0),
+            MechCommand::Rate(rate) => (COMMAND_RATE, rate),
+            MechCommand::Angle(angle) => (COMMAND_ANGLE, angle),
+            MechCommand::Stride(stride) => (COMMAND_STRIDE, i16::from(stride)),
+        };
+        self.u8(kind);
+        self.0.extend_from_slice(&value.to_le_bytes());
+    }
+    /// An input's actuator commands ([`Motors`]): the gait, a count (at most [`MAX_MOTORS`]),
+    /// then per part its ID and its command.
+    fn motors(&mut self, motors: &Motors) {
+        self.gait(motors.gait);
+        self.u8(count(motors.commands().len()));
+        for &(part, command) in motors.commands() {
+            self.u8(part.0);
+            self.command(command);
+        }
+    }
+    /// An input's per-copy fire requests ([`Triggers`], shooter#127): a count (at most
+    /// [`MAX_PARTS`]), then each part's ID, ascending.
+    fn triggers(&mut self, triggers: &Triggers) {
+        self.u8(count(triggers.parts().len()));
+        for part in triggers.parts() {
+            self.u8(part.0);
         }
     }
     /// A length byte, then up to 255 bytes of UTF-8 (cut at a character boundary).
@@ -416,6 +490,20 @@ impl In<'_> {
     fn weapon(&mut self) -> Result<Weapon, WireError> {
         Weapon::from_index(self.u8()?).ok_or(WireError::Malformed("unknown weapon"))
     }
+    fn instance(&mut self) -> Result<Instance, WireError> {
+        Ok(Instance {
+            part: PartId(self.u8()?),
+            weapon: self.weapon()?,
+        })
+    }
+    fn select(&mut self) -> Result<Option<Select>, WireError> {
+        Ok(match self.u8()? {
+            NONE => None,
+            0 => Some(Select::Weapon(self.weapon()?)),
+            1 => Some(Select::Part(PartId(self.u8()?))),
+            _ => return Err(WireError::Malformed("unknown weapon switch")),
+        })
+    }
     fn module(&mut self) -> Result<ArenaModule, WireError> {
         ArenaModule::from_tag(self.u8()?).ok_or(WireError::Malformed("unknown module"))
     }
@@ -439,6 +527,10 @@ impl In<'_> {
     }
     /// Inverse of `Out::build`, validated against [`BETA`].
     fn build(&mut self) -> Result<Assembly, WireError> {
+        BETA.validate(&self.candidate()?).map_err(WireError::Build)
+    }
+    /// Inverse of `Out::build`, not yet validated.
+    fn candidate(&mut self) -> Result<Candidate, WireError> {
         let parts = (0..self.u8()?)
             .map(|_| {
                 let id = self.u8()?;
@@ -477,8 +569,70 @@ impl In<'_> {
                 })
             })
             .collect::<Result<Vec<_>, WireError>>()?;
-        BETA.validate(&Candidate { parts })
-            .map_err(WireError::Build)
+        Ok(Candidate { parts })
+    }
+    fn gait(&mut self) -> Result<GaitChoice, WireError> {
+        Ok(match self.u8()? {
+            GAIT_SUGGESTED => GaitChoice::Suggested,
+            GAIT_BIPED => GaitChoice::Preset(Gait::Biped),
+            GAIT_QUADRUPED => GaitChoice::Preset(Gait::Quadruped),
+            GAIT_UNISON => GaitChoice::Unison,
+            _ => return Err(WireError::Malformed("unknown gait")),
+        })
+    }
+    /// Inverse of `Out::command`: a stride past ±100 or an unknown kind is malformed.
+    fn command(&mut self) -> Result<MechCommand, WireError> {
+        let kind = self.u8()?;
+        let value = i16::from_le_bytes(self.take()?);
+        Ok(match kind {
+            COMMAND_IDLE if value == 0 => MechCommand::Idle,
+            COMMAND_RATE => MechCommand::Rate(value),
+            COMMAND_ANGLE => MechCommand::Angle(value),
+            COMMAND_STRIDE => MechCommand::Stride(
+                i8::try_from(value)
+                    .ok()
+                    .filter(|stride| (-100..=100).contains(stride))
+                    .ok_or(WireError::Malformed("stride out of range"))?,
+            ),
+            _ => return Err(WireError::Malformed("unknown command")),
+        })
+    }
+    /// Inverse of `Out::motors`: more than [`MAX_MOTORS`] commands, or a part commanded twice,
+    /// is malformed (a tampered input is refused whole).
+    fn motors(&mut self) -> Result<Motors, WireError> {
+        let mut motors = Motors::REST;
+        motors.gait = self.gait()?;
+        let commanded = usize::from(self.u8()?);
+        if commanded > MAX_MOTORS {
+            return Err(WireError::Malformed("too many motor commands"));
+        }
+        for _ in 0..commanded {
+            let part = PartId(self.u8()?);
+            let command = self.command()?;
+            if !motors.push(part, command) {
+                return Err(WireError::Malformed("a part commanded twice"));
+            }
+        }
+        Ok(motors)
+    }
+    /// Inverse of `Out::triggers`: more than [`MAX_PARTS`] parts, or parts not strictly
+    /// ascending (one asked twice), is malformed.
+    fn triggers(&mut self) -> Result<Triggers, WireError> {
+        let asked = usize::from(self.u8()?);
+        if asked > MAX_PARTS {
+            return Err(WireError::Malformed("too many fire requests"));
+        }
+        let mut triggers = Triggers::NONE;
+        let mut last: Option<PartId> = None;
+        for _ in 0..asked {
+            let part = PartId(self.u8()?);
+            if last.is_some_and(|last| last >= part) {
+                return Err(WireError::Malformed("fire requests out of order or twice"));
+            }
+            last = Some(part);
+            triggers.press(part);
+        }
+        Ok(triggers)
     }
     fn finish(self) -> Result<(), WireError> {
         if self.0.is_empty() {
@@ -495,6 +649,7 @@ const CROUCH: u8 = 4;
 const FIRE: u8 = 8;
 const MELEE: u8 = 16;
 const EDIT: u8 = 32;
+const GRAPPLE: u8 = 64;
 
 /// A person's command as the host decoded it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -531,17 +686,20 @@ pub fn encode_input(
         (intent.fire, FIRE),
         (intent.melee, MELEE),
         (intent.edit, EDIT),
+        (intent.grapple, GRAPPLE),
     ]
     .iter()
     .filter(|(held, _)| *held)
     .fold(0, |flags, (_, flag)| flags | flag));
-    out.option(intent.select.map(Weapon::index));
+    out.select(intent.select);
     out.u8(match intent.repair {
         None => NONE,
         Some(Order::Stop) => REPAIR_STOP,
         // A part ID is below MAX_PARTS in any valid build; the host refuses any other.
         Some(Order::Start(part)) => part.0.min(REPAIR_STOP - 1),
     });
+    out.motors(&intent.motors);
+    out.triggers(&intent.triggers);
     out.u32(view_tick);
     out.text(name.unwrap_or_default());
     match build {
@@ -571,17 +729,14 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
     let yaw = input.u16()?;
     let pitch = i16::from_le_bytes(input.take()?);
     let flags = input.u8()?;
-    let select = match input.option()? {
-        Some(index) => {
-            Some(Weapon::from_index(index).ok_or(WireError::Malformed("unknown weapon"))?)
-        }
-        None => None,
-    };
+    let select = input.select()?;
     let repair = match input.u8()? {
         NONE => None,
         REPAIR_STOP => Some(Order::Stop),
         part => Some(Order::Start(PartId(part))),
     };
+    let motors = input.motors()?;
+    let triggers = input.triggers()?;
     let view_tick = input.u32()?;
     let name = Some(input.text()?).filter(|name| !name.is_empty());
     let build = match input.u8()? {
@@ -601,8 +756,11 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
         fire: flags & FIRE != 0,
         melee: flags & MELEE != 0,
         edit: flags & EDIT != 0,
+        grapple: flags & GRAPPLE != 0,
         select,
         repair,
+        motors,
+        triggers,
     };
     Ok(Command {
         intent,
@@ -617,13 +775,15 @@ fn encode_event(out: &mut Out, event: &Event) {
         Event::Fired {
             slot,
             weapon,
-            eye,
+            part,
+            from,
             direction,
         } => {
             out.u8(0);
             out.u8(slot);
             out.weapon(weapon);
-            out.vec3(eye);
+            out.u8(part.0);
+            out.vec3(from);
             out.vec3(direction);
         }
         Event::Beam {
@@ -745,7 +905,8 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
         0 => Event::Fired {
             slot: input.u8()?,
             weapon: input.weapon()?,
-            eye: input.vec3()?,
+            part: PartId(input.u8()?),
+            from: input.vec3()?,
             direction: input.vec3()?,
         },
         1 => Event::Beam {
@@ -858,7 +1019,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         out.u8(u8::from(fighter.alive));
         out.i32(fighter.frags);
         out.i32(fighter.deaths);
-        out.weapon(fighter.held);
+        out.instance(fighter.held);
         out.u16(fighter.yaw);
         out.0.extend_from_slice(&fighter.pitch.to_le_bytes());
         out.vec3(fighter.position);
@@ -955,6 +1116,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         out.u8(*slot);
         out.text(name);
     }
+    out.debris(&snapshot.debris);
     out.0
 }
 
@@ -992,7 +1154,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 alive: input.u8()? != 0,
                 frags: input.i32()?,
                 deaths: input.i32()?,
-                held: input.weapon()?,
+                held: input.instance()?,
                 yaw: input.u16()?,
                 pitch: i16::from_le_bytes(input.take()?),
                 position: input.vec3()?,
@@ -1136,6 +1298,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
     let names = (0..input.u8()?)
         .map(|_| Ok((input.u8()?, input.text()?)))
         .collect::<Result<Vec<_>, WireError>>()?;
+    let debris = input.debris()?;
     input.finish()?;
     Ok(Snapshot {
         tick,
@@ -1150,6 +1313,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
         scenery,
         events,
         names,
+        debris,
     })
 }
 
@@ -1157,6 +1321,7 @@ const GAIT_SUGGESTED: u8 = 0;
 const GAIT_BIPED: u8 = 1;
 const GAIT_QUADRUPED: u8 = 2;
 const GAIT_UNISON: u8 = 3;
+const COMMAND_IDLE: u8 = 0;
 const COMMAND_RATE: u8 = 1;
 const COMMAND_ANGLE: u8 = 2;
 const COMMAND_STRIDE: u8 = 3;
@@ -1167,26 +1332,15 @@ const COMMAND_STRIDE: u8 = 3;
 #[must_use]
 pub fn encode_controls(controls: &Controls) -> Vec<u8> {
     let mut out = Out(Vec::new());
-    out.u8(match controls.gait {
-        GaitChoice::Suggested => GAIT_SUGGESTED,
-        GaitChoice::Preset(Gait::Biped) => GAIT_BIPED,
-        GaitChoice::Preset(Gait::Quadruped) => GAIT_QUADRUPED,
-        GaitChoice::Unison => GAIT_UNISON,
-    });
-    let commanded: Vec<(u8, u8, i16)> = (0..=u8::MAX)
-        .zip(&controls.commands)
-        .filter_map(|(part, command)| match *command {
-            MechCommand::Idle => None,
-            MechCommand::Rate(rate) => Some((part, COMMAND_RATE, rate)),
-            MechCommand::Angle(angle) => Some((part, COMMAND_ANGLE, angle)),
-            MechCommand::Stride(stride) => Some((part, COMMAND_STRIDE, i16::from(stride))),
-        })
+    out.gait(controls.gait);
+    let commanded: Vec<(u8, MechCommand)> = (0..=u8::MAX)
+        .zip(controls.commands)
+        .filter(|(_, command)| *command != MechCommand::Idle)
         .collect();
     out.u16(u16::try_from(commanded.len()).expect("at most 256 parts"));
-    for (part, kind, value) in commanded {
+    for (part, command) in commanded {
         out.u8(part);
-        out.u8(kind);
-        out.0.extend_from_slice(&value.to_le_bytes());
+        out.command(command);
     }
     out.0
 }
@@ -1199,18 +1353,16 @@ pub fn encode_controls(controls: &Controls) -> Vec<u8> {
 /// twice, or a stride past ±100.
 pub fn decode_controls(bytes: &[u8]) -> Result<Controls, WireError> {
     let mut input = In(bytes);
-    let mut controls = Controls::IDLE;
-    controls.gait = match input.u8()? {
-        GAIT_SUGGESTED => GaitChoice::Suggested,
-        GAIT_BIPED => GaitChoice::Preset(Gait::Biped),
-        GAIT_QUADRUPED => GaitChoice::Preset(Gait::Quadruped),
-        GAIT_UNISON => GaitChoice::Unison,
-        _ => return Err(WireError::Malformed("unknown gait")),
+    let mut controls = Controls {
+        gait: input.gait()?,
+        ..Controls::IDLE
     };
     for _ in 0..input.u16()? {
         let part = usize::from(input.u8()?);
-        let kind = input.u8()?;
-        let value = i16::from_le_bytes(input.take()?);
+        let command = input.command()?;
+        if command == MechCommand::Idle {
+            return Err(WireError::Malformed("unknown command"));
+        }
         let slot = controls
             .commands
             .get_mut(part)
@@ -1218,20 +1370,151 @@ pub fn decode_controls(bytes: &[u8]) -> Result<Controls, WireError> {
         if *slot != MechCommand::Idle {
             return Err(WireError::Malformed("a part commanded twice"));
         }
-        *slot = match kind {
-            COMMAND_RATE => MechCommand::Rate(value),
-            COMMAND_ANGLE => MechCommand::Angle(value),
-            COMMAND_STRIDE => MechCommand::Stride(
-                i8::try_from(value)
-                    .ok()
-                    .filter(|stride| (-100..=100).contains(stride))
-                    .ok_or(WireError::Malformed("stride out of range"))?,
-            ),
-            _ => return Err(WireError::Malformed("unknown command")),
-        };
+        *slot = command;
     }
     input.finish()?;
     Ok(controls)
+}
+
+const SOURCE_KEY: u8 = 0;
+const SOURCE_BUTTON: u8 = 1;
+const SOURCE_MOUSE_X: u8 = 2;
+const SOURCE_MOUSE_Y: u8 = 3;
+const MODES: [Mode; 4] = [Mode::Hold, Mode::Toggle, Mode::Relative, Mode::Offset];
+const OUTPUTS: [Output; 4] = [Output::Stride, Output::Rate, Output::Angle, Output::Fire];
+/// A binding's flag: inverted.
+const INVERTED: u8 = 1;
+
+/// A control layout ([`crate::bindings::Bindings`]): its gait, a binding count, then per
+/// binding its source (kind and index), mode, output, flags (inverted), strength and its group
+/// (a count, then per part its ID and whether it is reversed).
+#[must_use]
+pub fn encode_bindings(bindings: &Bindings) -> Vec<u8> {
+    let mut out = Out(Vec::new());
+    out.gait(bindings.gait);
+    out.u8(count(bindings.bindings.len()));
+    for binding in &bindings.bindings {
+        let (kind, index) = match binding.source {
+            Source::Key(index) => (SOURCE_KEY, index),
+            Source::Button(index) => (SOURCE_BUTTON, index),
+            Source::MouseX => (SOURCE_MOUSE_X, 0),
+            Source::MouseY => (SOURCE_MOUSE_Y, 0),
+        };
+        out.u8(kind);
+        out.u8(index);
+        out.u8(count(
+            MODES
+                .iter()
+                .position(|mode| *mode == binding.mode)
+                .unwrap_or(0),
+        ));
+        out.u8(count(
+            OUTPUTS
+                .iter()
+                .position(|output| *output == binding.output)
+                .unwrap_or(0),
+        ));
+        out.u8(if binding.invert { INVERTED } else { 0 });
+        out.u8(binding.strength);
+        out.u8(count(binding.targets.len()));
+        for target in &binding.targets {
+            out.u8(target.part.0);
+            out.u8(u8::from(target.invert));
+        }
+    }
+    out.0
+}
+
+/// Inverse of [`encode_bindings`], held to the layout's bounds
+/// ([`Bindings::check_bounds`]); [`Bindings::check`] against the build it is for is the
+/// caller's.
+///
+/// # Errors
+///
+/// If the bytes are truncated or trail, name an unknown source, mode, output, gait or flag, or
+/// the layout breaks a bound (too many bindings or parts, a key that is none, a mode that does
+/// not fit its source, a strength out of range, a part twice in a group).
+pub fn decode_bindings(bytes: &[u8]) -> Result<Bindings, WireError> {
+    let mut input = In(bytes);
+    let gait = input.gait()?;
+    let length = usize::from(input.u8()?);
+    if length > MAX_BINDINGS {
+        return Err(WireError::Malformed("too many bindings"));
+    }
+    let mut bindings = Vec::with_capacity(length);
+    for _ in 0..length {
+        let kind = input.u8()?;
+        let index = input.u8()?;
+        let source = match (kind, index) {
+            (SOURCE_KEY, index) => Source::Key(index),
+            (SOURCE_BUTTON, index) => Source::Button(index),
+            (SOURCE_MOUSE_X, 0) => Source::MouseX,
+            (SOURCE_MOUSE_Y, 0) => Source::MouseY,
+            _ => return Err(WireError::Malformed("unknown binding source")),
+        };
+        let mode = *MODES
+            .get(usize::from(input.u8()?))
+            .ok_or(WireError::Malformed("unknown binding mode"))?;
+        let output = *OUTPUTS
+            .get(usize::from(input.u8()?))
+            .ok_or(WireError::Malformed("unknown binding output"))?;
+        let flags = input.u8()?;
+        if flags & !INVERTED != 0 {
+            return Err(WireError::Malformed("unknown binding flags"));
+        }
+        let strength = input.u8()?;
+        let parts = usize::from(input.u8()?);
+        if parts > MAX_GROUP {
+            return Err(WireError::Malformed("too many parts in a group"));
+        }
+        let targets = (0..parts)
+            .map(|_| {
+                let part = PartId(input.u8()?);
+                let invert = match input.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(WireError::Malformed("unknown target flag")),
+                };
+                Ok(Target { part, invert })
+            })
+            .collect::<Result<Vec<_>, WireError>>()?;
+        bindings.push(Binding {
+            source,
+            mode,
+            output,
+            invert: flags & INVERTED != 0,
+            strength,
+            targets,
+        });
+    }
+    input.finish()?;
+    let bindings = Bindings { gait, bindings };
+    bindings
+        .check_bounds()
+        .map_err(|_| WireError::Malformed("a binding out of bounds"))?;
+    Ok(bindings)
+}
+
+/// A robot build alone, as a snapshot or an input carries it (`Out::build`): what the client's
+/// saved builds keep (shooter#140).
+#[must_use]
+pub fn encode_build(build: &Assembly) -> Vec<u8> {
+    let mut out = Out(Vec::new());
+    out.build(build);
+    out.0
+}
+
+/// Inverse of [`encode_build`], before validation: the caller validates the candidate against
+/// the catalog it builds with ([`crate::robot::Catalog::validate`]).
+///
+/// # Errors
+///
+/// If the bytes are truncated or trail, or a part has unknown flags or a turned root.
+pub fn decode_build(bytes: &[u8]) -> Result<Candidate, WireError> {
+    let mut input = In(bytes);
+    let candidate = input.candidate()?;
+    input.finish()?;
+    Ok(candidate)
 }
 
 /// The robots' exact mechanical state ([`crate::mechanics::State`]): a robot count, then per
@@ -1245,6 +1528,7 @@ pub fn encode_mechanics(state: &MechState) -> Vec<u8> {
         out.build(&robot.build);
         out.robot(robot);
     }
+    out.debris(&state.debris);
     out.0
 }
 
@@ -1349,6 +1633,117 @@ pub fn decode_mechanics(bytes: &[u8]) -> Result<MechState, WireError> {
         }
         robots.push(robot);
     }
+    let debris = input.debris()?;
     input.finish()?;
-    Ok(MechState { robots })
+    Ok(MechState { robots, debris })
+}
+
+impl Out {
+    /// The physical debris ([`crate::mechanics::DebrisState`]): a count, then per piece the
+    /// slot and part it came off, its age and still ticks, its box (half extents, centre and
+    /// orientation in its robot's frame, mass) and its body's motion, as exact `f32` bits.
+    fn debris(&mut self, debris: &[DebrisState]) {
+        self.u8(count(debris.len()));
+        for piece in debris.iter().take(usize::from(u8::MAX)) {
+            self.u8(piece.slot);
+            self.u8(piece.part.0);
+            self.u16(piece.age);
+            self.u16(piece.rest);
+            let Shape::Box(half) = piece.piece.shape else {
+                unreachable!("debris pieces are boxes")
+            };
+            self.vec3(half);
+            self.vec3(piece.piece.position);
+            self.quat(piece.piece.orientation);
+            self.u32(piece.piece.mass.to_bits());
+            self.motion(&piece.motion);
+        }
+    }
+
+    fn quat(&mut self, value: [f32; 4]) {
+        for axis in value {
+            self.u32(axis.to_bits());
+        }
+    }
+
+    fn motion(&mut self, motion: &BodyMotion) {
+        self.vec3(motion.pose.position);
+        self.quat(motion.pose.orientation);
+        self.vec3(motion.velocity);
+        self.vec3(motion.angular_velocity);
+    }
+}
+
+impl In<'_> {
+    fn quat(&mut self) -> Result<[f32; 4], WireError> {
+        Ok([
+            f32::from_bits(self.u32()?),
+            f32::from_bits(self.u32()?),
+            f32::from_bits(self.u32()?),
+            f32::from_bits(self.u32()?),
+        ])
+    }
+
+    /// Inverse of [`Out::debris`]: at most [`MAX_DEBRIS`] pieces, every value finite, every box
+    /// and mass positive.
+    fn debris(&mut self) -> Result<Vec<DebrisState>, WireError> {
+        let count = self.u8()?;
+        if usize::from(count) > MAX_DEBRIS {
+            return Err(WireError::Malformed("more debris than its budget"));
+        }
+        (0..count)
+            .map(|_| {
+                let slot = self.u8()?;
+                let part = PartId(self.u8()?);
+                let age = self.u16()?;
+                let rest = self.u16()?;
+                let half = self.vec3()?;
+                let position = self.vec3()?;
+                let orientation = self.quat()?;
+                let mass = f32::from_bits(self.u32()?);
+                let motion = BodyMotion {
+                    pose: Pose {
+                        position: self.vec3()?,
+                        orientation: self.quat()?,
+                    },
+                    velocity: self.vec3()?,
+                    angular_velocity: self.vec3()?,
+                };
+                let values = [
+                    &half[..],
+                    &position,
+                    &orientation,
+                    &[mass],
+                    &motion.pose.position,
+                    &motion.pose.orientation,
+                    &motion.velocity,
+                    &motion.angular_velocity,
+                ];
+                if !values
+                    .iter()
+                    .copied()
+                    .flatten()
+                    .all(|value| value.is_finite())
+                {
+                    return Err(WireError::Malformed("debris state not finite"));
+                }
+                if half.iter().any(|half| *half <= 0.0) || mass <= 0.0 {
+                    return Err(WireError::Malformed("debris without size or mass"));
+                }
+                Ok(DebrisState {
+                    slot,
+                    part,
+                    piece: Child {
+                        shape: Shape::Box(half),
+                        position,
+                        orientation,
+                        mass,
+                    },
+                    age,
+                    rest,
+                    motion,
+                })
+            })
+            .collect()
+    }
 }

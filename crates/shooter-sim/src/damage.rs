@@ -42,7 +42,8 @@
 //! sets off a small blast ([`BATTERY_BLAST_RADIUS_UNITS`], [`BATTERY_BLAST_DAMAGE`]) that
 //! damages nearby parts through the same resolution (another battery it destroys blasts in turn,
 //! at most once each; no chain-reaction subsystem); and a robot with no connected locomotion
-//! part (legs, wheels, tracks) cannot walk, jump or slide ([`PartDamage::mobile`]). A lost leg,
+//! part (legs, wheels, tracks) cannot walk or slide ([`PartDamage::mobile`]); natural jumping
+//! additionally requires an operational leg. A lost leg,
 //! wheel or track leaves its robot's bodies (shooter#73, [`crate::mechanics::Mechanics::sever`]): it
 //! no longer holds the robot up, and the robot walks at the share of its locomotion it still has
 //! ([`crate::player::Traction`]); a robot left on its chassis lies where it fell.
@@ -54,7 +55,7 @@ use crate::mechanics::placements;
 use crate::player::PLAYER_HALF_EXTENTS;
 use crate::robot::{Assembly, BETA, Kind, MAX_PARTS, Part, PartId, PartType};
 use crate::trig::{self, TRIG_ONE};
-use crate::weapons::{self, Weapon};
+use crate::weapons::{self, Instance, Weapon};
 
 /// A destroyed battery's blast reaches this far (units) from the battery's centre...
 pub const BATTERY_BLAST_RADIUS_UNITS: i32 = 80;
@@ -170,34 +171,72 @@ impl PartDamage {
         Self::root(build).map_or(0, |index| self.health[index])
     }
 
-    /// `build` carries `weapon` as a part and has lost it: it cannot fire.
+    /// `build` carries `weapon` as a part and has lost every copy: it cannot fire it.
     #[must_use]
     pub fn weapon_lost(&self, build: &Assembly, weapon: Weapon) -> bool {
-        build
+        let mut copies = build
             .parts()
             .iter()
-            .position(|part| part_type(part).kind == Kind::Weapon(weapon))
-            .is_some_and(|index| !self.attached(index))
+            .enumerate()
+            .filter(|(_, part)| part_type(part).kind == Kind::Weapon(weapon))
+            .peekable();
+        copies.peek().is_some() && copies.all(|(index, _)| !self.attached(index))
     }
 
-    /// `build` carries `weapon` as a part and still has it: it may hold, fire or swing it. A
-    /// weapon the build does not mount is never armed.
+    /// `build` carries `weapon` as a part and still has a copy: it may hold, fire or swing it.
+    /// A weapon the build does not mount is never armed.
     #[must_use]
     pub fn armed(&self, build: &Assembly, weapon: Weapon) -> bool {
+        self.instances(build)
+            .any(|instance| instance.weapon == weapon)
+    }
+
+    /// The weapon copies `build` mounts and still has, in part ID order (shooter#125): what it
+    /// may hold, fire, swing or hook with.
+    pub fn instances<'a>(&'a self, build: &'a Assembly) -> impl Iterator<Item = Instance> + 'a {
         build
             .parts()
             .iter()
-            .position(|part| part_type(part).kind == Kind::Weapon(weapon))
-            .is_some_and(|index| self.attached(index))
+            .enumerate()
+            .filter(|(index, _)| self.attached(*index))
+            .filter_map(|(_, part)| match part_type(part).kind {
+                Kind::Weapon(weapon) => Some(Instance {
+                    part: part.id,
+                    weapon,
+                }),
+                _ => None,
+            })
     }
 
-    /// It may hold `weapon` now ([`crate::weapons::holdable`]): the host refuses any other.
+    /// The copy `instance` is still on `build`'s robot: it may fire.
     #[must_use]
-    pub fn holdable(&self, build: &Assembly, weapon: Weapon) -> bool {
-        crate::weapons::holdable(|weapon| self.armed(build, weapon)).any(|held| held == weapon)
+    pub fn mounted(&self, build: &Assembly, instance: Instance) -> bool {
+        self.instances(build).any(|armed| armed == instance)
     }
 
-    /// It still has a connected leg, wheel or track: it may walk, jump and slide.
+    /// The first copy of `weapon` `build` still has (the lowest part ID), if any: the blade the
+    /// melee key swings and the grapple its key hooks.
+    #[must_use]
+    pub fn first(&self, build: &Assembly, weapon: Weapon) -> Option<Instance> {
+        self.instances(build)
+            .find(|instance| instance.weapon == weapon)
+    }
+
+    /// It may hold `instance` now ([`crate::weapons::holdable`]): the host refuses any other.
+    #[must_use]
+    pub fn holdable(&self, build: &Assembly, instance: Instance) -> bool {
+        self.holdable_all(build).contains(&instance)
+    }
+
+    /// Every copy it may hold now, in the cycle's order ([`crate::weapons::holdable`]).
+    #[must_use]
+    pub fn holdable_all(&self, build: &Assembly) -> Vec<Instance> {
+        let armed: Vec<Instance> = self.instances(build).collect();
+        weapons::holdable(&armed)
+    }
+
+    /// It still has a connected leg, wheel or track: it may walk and slide. Natural jumping
+    /// additionally requires an operational leg ([`crate::session`]).
     #[must_use]
     pub fn mobile(&self, build: &Assembly) -> bool {
         build.parts().iter().enumerate().any(|(index, part)| {

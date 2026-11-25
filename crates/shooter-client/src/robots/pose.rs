@@ -38,7 +38,7 @@ use super::model::{Model, ModelPart};
 use super::weapon::{self, Memory};
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3};
 use shooter_sim::robot::{Joint, Kind, Locomotion, PartId};
-use shooter_sim::weapons::Weapon;
+use shooter_sim::weapons::{Instance, Weapon};
 
 /// Horizontal speed (metres a second) above which a robot runs rather than idles.
 pub const RUN_SPEED: f32 = 0.5;
@@ -67,18 +67,82 @@ pub struct RobotState {
     pub sliding: bool,
     /// Where its grapple hook holds (metres), while it does.
     pub hook: Option<Vec3>,
-    /// Seconds since its last shot (or swing, or hook), and the weapon that made it.
+    /// Seconds since its last shot (or swing, or hook), and the weapon copy that made it
+    /// (shooter#125: only that copy shows the shot).
     pub since_fired: f32,
-    pub fired: Weapon,
+    pub fired: Instance,
     /// How many shots it has fired this life (the rocket pod's tubes alternate).
     pub shots: u32,
-    pub held: Weapon,
+    /// Seconds since each of its copies that fired lately last did (shooter#127: copies fire
+    /// together, each showing its own shot); a copy not in it shows `fired`'s.
+    pub recent: Recent,
+    /// The weapon copy it holds.
+    pub held: Instance,
     /// Its energy pool's share of its capacity (0..=1): the weapons' charge glow.
     pub energy: f32,
     /// How far through a blade swing it is (0..=1), while swinging.
     pub swing: Option<f32>,
     /// Seconds since it died, while dead.
     pub dead_for: Option<f32>,
+}
+
+/// Seconds since each weapon copy last fired, by part, for the most recent few.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recent {
+    len: u8,
+    entries: [(PartId, f32); RECENT],
+}
+
+/// How many copies [`Recent`] remembers.
+const RECENT: usize = 8;
+
+impl Default for Recent {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl Recent {
+    /// No copy has fired.
+    pub const NONE: Self = Self {
+        len: 0,
+        entries: [(PartId(0), f32::INFINITY); RECENT],
+    };
+
+    /// Seconds since the copy on `part` last fired, if it is remembered.
+    #[must_use]
+    pub fn since(&self, part: PartId) -> Option<f32> {
+        self.entries[..usize::from(self.len)]
+            .iter()
+            .find(|(at, _)| *at == part)
+            .map(|(_, since)| *since)
+    }
+
+    /// The copy on `part` fired now: it replaces its own entry, else the oldest.
+    pub fn fired(&mut self, part: PartId) {
+        let len = usize::from(self.len);
+        let at = self.entries[..len]
+            .iter()
+            .position(|(at, _)| *at == part)
+            .unwrap_or_else(|| {
+                if len < RECENT {
+                    self.len += 1;
+                    len
+                } else {
+                    (0..RECENT)
+                        .max_by(|a, b| self.entries[*a].1.total_cmp(&self.entries[*b].1))
+                        .unwrap_or(0)
+                }
+            });
+        self.entries[at] = (part, 0.0);
+    }
+
+    /// `seconds` later.
+    pub fn advance(&mut self, seconds: f32) {
+        for (_, since) in &mut self.entries[..usize::from(self.len)] {
+            *since += seconds;
+        }
+    }
 }
 
 /// What its legs and body do.
@@ -207,6 +271,8 @@ pub struct PosedPart {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Muzzle {
     pub weapon: Weapon,
+    /// The weapon part it is the muzzle of: every mounted copy has its own (shooter#125).
+    pub part: PartId,
     pub position: Vec3,
     pub direction: Vec3,
 }
@@ -376,7 +442,18 @@ pub fn pose(
                     .gear
                     .as_ref()
                     .unwrap_or_else(|| unreachable!());
-                weapons[index] = Some(weapon::locals(rig, gear, held, part.refire, state, memory));
+                let instance = Instance {
+                    part: part.id,
+                    weapon: held,
+                };
+                weapons[index] = Some(weapon::locals(
+                    rig,
+                    gear,
+                    instance,
+                    part.refire,
+                    state,
+                    memory,
+                ));
                 continue;
             }
             Kind::Locomotion(Locomotion::Wheel | Locomotion::Track) if attached => {
@@ -456,6 +533,7 @@ pub fn pose(
                 if let Some((frame, anchor)) = found {
                     let muzzle = Muzzle {
                         weapon: held,
+                        part: part.id,
                         position: frame.transform_point3(anchor.position),
                         direction: frame.transform_vector3(anchor.normal).normalize_or(Vec3::X),
                     };

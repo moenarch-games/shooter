@@ -214,7 +214,7 @@ fn regeneration_restarts_a_starved_weapon() {
     let mut sequence = 0;
     let rail = Intent {
         yaw: 32_768,
-        select: Some(Weapon::RailGun),
+        select: Some(Weapon::RailGun.into()),
         ..Intent::IDLE
     };
     act(&mut session, &mut sequence, rail);
@@ -255,7 +255,7 @@ fn regeneration_restarts_a_starved_weapon() {
     let mut sequence = 0;
     let laser = Intent {
         yaw: 32_768,
-        select: Some(Weapon::Laser),
+        select: Some(Weapon::Laser.into()),
         ..Intent::IDLE
     };
     act(&mut session, &mut sequence, laser);
@@ -315,7 +315,7 @@ fn tuned_weapons_pay_their_tuned_cost() {
         let mut sequence = 0;
         let aim = Intent {
             yaw: 32_768,
-            select: Some(weapon),
+            select: Some(weapon.into()),
             ..Intent::IDLE
         };
         act(&mut session, &mut sequence, aim);

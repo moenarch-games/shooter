@@ -18,7 +18,7 @@ use shooter_client::gpu::Gpu;
 use shooter_client::robots::{self, PartStates, RobotState, RobotView, Robots};
 use shooter_sim::robot::STANDARD;
 use shooter_sim::scenery::{PlaceableState, Scenery};
-use shooter_sim::{MapId, Weapon};
+use shooter_sim::{Instance, MapId, Weapon};
 
 const SIZE: (u32, u32) = (1600, 900);
 
@@ -132,9 +132,10 @@ fn main() -> Result<(), String> {
                     sliding: false,
                     hook: None,
                     since_fired: f32::INFINITY,
-                    fired: Weapon::EnergyRifle,
+                    fired: Instance::new(7, Weapon::EnergyRifle),
                     shots: 0,
-                    held: Weapon::EnergyRifle,
+                    recent: robots::pose::Recent::NONE,
+                    held: Instance::new(7, Weapon::EnergyRifle),
                     energy: 1.0,
                     swing: None,
                     dead_for: None,

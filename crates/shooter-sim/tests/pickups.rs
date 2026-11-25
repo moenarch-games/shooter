@@ -3,7 +3,10 @@
 //! death with its uses left, who takes a drop when several reach it, a drop's lifetime, the round
 //! and map transitions, the rail capacitor's lag-compensated hits and frags, thrusters, fighters
 //! of different builds, a client predicting a drop's pickup, and the wire.
+// The platform's floats only check results here; the simulation uses libm (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
+use shooter_sim::aim;
 use shooter_sim::damage::PartDamage;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::pickups::{
@@ -17,7 +20,6 @@ use shooter_sim::robot::parts::CHASSIS_S;
 use shooter_sim::robot::{ARMORY, BETA, HEAVY, MARKSMAN, SKIRMISHER};
 use shooter_sim::scenarios;
 use shooter_sim::tour::{end_of, run_legs};
-use shooter_sim::trig;
 use shooter_sim::wire::Snapshot;
 use shooter_sim::wire::{decode_snapshot, encode_snapshot};
 use shooter_sim::{
@@ -82,7 +84,9 @@ fn equip(session: &mut Session, slot: usize, build: Assembly) {
 /// Puts `slot` standing still with its feet at `feet` (units).
 fn stand_at(session: &mut Session, slot: u8, feet: [f32; 3]) {
     session.stand(slot, feet).unwrap();
-    session.fighters[usize::from(slot)].arsenal.held = Weapon::EnergyRifle;
+    session.fighters[usize::from(slot)].arsenal.held = session.fighters[usize::from(slot)]
+        .copy(Weapon::EnergyRifle)
+        .unwrap_or_default();
 }
 
 fn taken(session: &Session) -> Vec<(u8, u8, ArenaModule)> {
@@ -251,7 +255,7 @@ fn rocket_a(session: &mut Session, sequence: &mut u32) {
                     yaw: 32_768,
                     pitch: -1_500,
                     fire: true,
-                    select: Some(Weapon::RocketLauncher),
+                    select: Some(Weapon::RocketLauncher.into()),
                     ..Intent::IDLE
                 },
                 view_tick: session.ticks(),
@@ -723,7 +727,7 @@ fn rail_duel(seen_ticks_ago: u32, build: Assembly, capacitor: bool) -> Option<i3
         session.step().unwrap();
     };
     let take = Intent {
-        select: Some(Weapon::RailGun),
+        select: Some(Weapon::RailGun.into()),
         ..Intent::IDLE
     };
     for _ in 0..10 {
@@ -734,19 +738,24 @@ fn rail_duel(seen_ticks_ago: u32, build: Assembly, capacitor: bool) -> Option<i3
         session.fighters[0].carried.map(|c| c.module),
         capacitor.then_some(ArenaModule::RailCapacitor)
     );
+    // The reticle on B's chassis where it stands before it strafes.
+    let (yaw, pitch) = at_chassis(&session);
+    let aiming = Intent {
+        yaw,
+        pitch,
+        ..Intent::IDLE
+    };
     let strafe = Intent {
         strafe: 1,
         ..Intent::IDLE
     };
     for _ in 0..12 {
         let now = session.ticks();
-        step(&mut session, Intent::IDLE, strafe, now);
+        step(&mut session, aiming, strafe, now);
     }
-    // Level with the middle of B's chassis (120 units above its feet; the eye is at 165).
     let fire = Intent {
         fire: true,
-        pitch: trig::yaw_from_vector(-45, 1_190).unwrap() as i16,
-        ..Intent::IDLE
+        ..aiming
     };
     let seen = session.ticks() - seen_ticks_ago;
     step(&mut session, fire, strafe, seen);
@@ -781,9 +790,8 @@ fn the_rail_capacitor_hits_harder_through_lag_compensation_on_any_build() {
     assert_eq!(shot(SKIRMISHER, true), (None, Some(9)));
 }
 
-/// The yaw and pitch from A's eye to B's root chassis below the weapons on its chest, where the
-/// host places it.
-#[allow(clippy::cast_possible_truncation)]
+/// The yaw and pitch that put A's reticle ([`aim::at`]) on B's root chassis below the weapons on
+/// its chest, where the host places it.
 fn at_chassis(session: &Session) -> (u16, i16) {
     let eye = session.fighters[0].eye();
     let b = &session.fighters[1];
@@ -794,11 +802,7 @@ fn at_chassis(session: &Session) -> (u16, i16) {
         .center;
     // Below the weapons on its chest.
     chassis[1] -= 20.0;
-    let d = [0, 1, 2].map(|axis| chassis[axis] - eye[axis]);
-    let yaw = trig::yaw_from_vector(d[0].round() as i32, d[2].round() as i32).unwrap();
-    let run = d[0].hypot(d[2]).round() as i32;
-    let pitch = trig::yaw_from_vector(d[1].round() as i32, run).unwrap() as i16;
-    (yaw, pitch)
+    aim::at(Some(&session.world), eye, chassis)
 }
 
 /// With the capacitor three rail hits (127 each) kill and score on B's root chassis (270; two
@@ -818,7 +822,7 @@ fn rail_capacitor_kills_score() {
             fire: sequence > 10,
             yaw,
             pitch,
-            select: Some(Weapon::RailGun),
+            select: Some(Weapon::RailGun.into()),
             ..Intent::IDLE
         };
         session.queue(
@@ -870,10 +874,10 @@ fn the_rail_capacitor_is_spent_by_its_rail_shots() {
     let mut session = duel(vec![pad([0, 0, -600], ArenaModule::RailCapacitor)]);
     equip(&mut session, 0, ARMORY);
     // Facing away from B, at the wall.
-    let shoot = |weapon| Intent {
+    let shoot = |weapon: Weapon| Intent {
         yaw: 32_768,
         fire: true,
-        select: Some(weapon),
+        select: Some(weapon.into()),
         ..Intent::IDLE
     };
     let mut sequence = 0;
@@ -917,9 +921,10 @@ fn the_rail_capacitor_is_spent_by_its_rail_shots() {
     // The boosted shots recharge in 54 ticks, but each costs 45 energy (150 % of the rail
     // shot's 30) from the root chassis' 100, which regenerates 0.4 a tick less the legs' servos
     // (0.132 a tick, shooter#73): the second goes out at the boosted pace, then a shot waits for the pool
-    // to hold 45 again (80 ticks, then 168). Unboosted, a shot costs 30 and the pool pays it
+    // to hold 45 again (92 ticks: the first went out straight after the rifle, no switch delay
+    // since shooter#127; then 168). Unboosted, a shot costs 30 and the pool pays it
     // every 112 ticks, slower than the rail gun's own 72.
-    assert_eq!(gaps[..boosted - 1], [54, 80, 168, 168], "{gaps:?}");
+    assert_eq!(gaps[..boosted - 1], [54, 92, 168, 168], "{gaps:?}");
     assert!(
         gaps[boosted - 1..]
             .iter()
@@ -952,7 +957,9 @@ fn fighters_of_different_builds_take_and_use_any_module() {
         assert_eq!(BETA.validate(&fighter.build.candidate()), Ok(fighter.build));
     }
     assert_eq!(
-        session.fighters[1].tuning(Weapon::RailGun).damage_percent,
+        session.fighters[1]
+            .tuning(shooter_sim::Instance::new(u8::MAX, Weapon::RailGun))
+            .damage_percent,
         RAIL_CAPACITOR_DAMAGE_PERCENT
     );
     // Both jump: the thrusters leave faster.

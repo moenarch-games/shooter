@@ -23,8 +23,8 @@ use shooter_sim::robot::PartId;
 use shooter_sim::scenarios::scripted_intent;
 
 use shooter_sim::session::{body_of, slot_of};
-use shooter_sim::weapons;
-use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, TICK_HZ, Weapon};
+use shooter_sim::weapons::Delivery;
+use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, Select, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -162,9 +162,80 @@ pub struct App {
     builder_shown: bool,
     /// The pointer is locked to the game (native: grabbed; web: Pointer Lock).
     captured: bool,
+    /// The person's control layout for the robot's actuators (shooter#74).
+    driver: Driver,
     /// The browser profile run (`?frames=<n>`), timing each animation frame.
     #[cfg(target_arch = "wasm32")]
     profile: Option<crate::web::Profile>,
+}
+
+/// The person's control layout (Atlas D2.i70.7, [`shooter_sim::bindings`]) and what it needs
+/// between ticks: the layout edited in the builder (none: the build's preset), its toggles and
+/// cursor offsets, the mouse's movement since the last tick, and the robot's connected
+/// actuators with the layout pruned to them. The same natively and in the browser: the mouse
+/// counts arrive as the look's do (pointer-locked movement), so a cursor offset is the sum of
+/// that movement, not a screen position.
+#[derive(Debug, Default)]
+struct Driver {
+    layout: Option<shooter_sim::bindings::Bindings>,
+    state: shooter_sim::bindings::BindingState,
+    mouse: [f64; 2],
+    /// The build and lost parts the actuators and the effective layout are for.
+    resolved: Option<(
+        shooter_sim::Assembly,
+        u32,
+        shooter_sim::mechanics::Layout,
+        shooter_sim::bindings::Bindings,
+    )>,
+}
+
+impl Driver {
+    /// A new layout from the builder: its toggles and offsets start over.
+    fn adopt(&mut self, layout: shooter_sim::bindings::Bindings) {
+        self.layout = Some(layout);
+        self.state = shooter_sim::bindings::BindingState::default();
+        self.resolved = None;
+    }
+
+    /// The mouse moved (pointer locked).
+    fn mouse(&mut self, dx: f64, dy: f64) {
+        self.mouse[0] += dx;
+        self.mouse[1] += dy;
+    }
+
+    /// The whole counts the mouse moved since the last tick (the rest carries over).
+    #[allow(clippy::cast_possible_truncation)]
+    fn take_mouse(&mut self) -> [i32; 2] {
+        let whole = self.mouse.map(f64::trunc);
+        self.mouse = [self.mouse[0] - whole[0], self.mouse[1] - whole[1]];
+        whole.map(|counts| counts.clamp(-10_000.0, 10_000.0) as i32)
+    }
+
+    /// This tick's commands for the robot `build` with parts `lost`, and the guns it fires,
+    /// from what is `pressed`.
+    fn actions(
+        &mut self,
+        build: &shooter_sim::Assembly,
+        lost: u32,
+        pressed: shooter_sim::bindings::Pressed,
+    ) -> shooter_sim::bindings::Actions {
+        let stale = self
+            .resolved
+            .as_ref()
+            .is_none_or(|(had, gone, ..)| had != build || *gone != lost);
+        if stale {
+            let actuators = shooter_sim::mechanics::Layout::connected(build, lost);
+            let effective = self.layout.as_ref().map_or_else(
+                || shooter_sim::bindings::Bindings::preset(&actuators),
+                |layout| layout.pruned(&actuators),
+            );
+            self.resolved = Some((*build, lost, actuators, effective));
+        }
+        let Some((_, _, actuators, effective)) = &self.resolved else {
+            return shooter_sim::bindings::Actions::default();
+        };
+        effective.act(actuators, &mut self.state, pressed)
+    }
 }
 
 impl App {
@@ -218,6 +289,7 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             builder_shown: false,
             captured: false,
+            driver: Driver::default(),
             #[cfg(target_arch = "wasm32")]
             profile: None,
         }
@@ -227,7 +299,8 @@ impl App {
     /// nothing connects, until Ready.
     #[must_use]
     pub fn with_builder(mut self, build: shooter_sim::Assembly) -> Self {
-        self.builder = Some(Builder::new(build, Stage::Setup));
+        self.builder =
+            Some(Builder::new(build, Stage::Setup).with_controls(self.driver.layout.as_ref()));
         self
     }
 
@@ -238,7 +311,9 @@ impl App {
             return;
         }
         let build = self.game.configured().unwrap_or_default();
-        self.builder = Some(Builder::new(build, Stage::BetweenLives));
+        self.builder = Some(
+            Builder::new(build, Stage::BetweenLives).with_controls(self.driver.layout.as_ref()),
+        );
         self.capture(false);
         self.controls.release_all();
     }
@@ -254,12 +329,17 @@ impl App {
             .is_some_and(|me| !me.alive)
     }
 
-    /// What the builder asked: Ready sends the build. Before the match the match starts; between
-    /// lives the builder waits until the match shows the build configured.
+    /// What the builder asked: Ready sends the build and takes the control layout (none: the
+    /// build's preset). Before the match the match starts; between lives the builder waits
+    /// until the match shows the build configured.
     fn builder_action(&mut self, action: Option<Action>) {
-        let Some(Action::Ready(build)) = action else {
+        let Some(Action::Ready(build, layout)) = action else {
             return;
         };
+        match layout {
+            Some(layout) => self.driver.adopt(layout),
+            None => self.driver = Driver::default(),
+        }
         self.game.configure(build);
         if self
             .builder
@@ -380,6 +460,7 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             builder_shown: false,
             captured: false,
+            driver: Driver::default(),
         };
         app.attach(gpu);
         app
@@ -624,16 +705,49 @@ impl App {
                     self.controls.selected(),
                     steps,
                     me.arsenal.held,
-                    |weapon| me.parts.armed(&me.build, weapon),
+                    &me.instances(),
                 ),
                 None => {
                     self.selection = Selection::default();
-                    self.controls.selected()
+                    self.controls.selected().map(Select::Weapon)
                 }
+            };
+            // The robot's actuators through the person's control layout (shooter#74): the keys
+            // and buttons held and the mouse's movement while the game has it, and the guns its
+            // direct weapon buttons and groups fire (shooter#127; only with the mouse captured,
+            // like the primary trigger).
+            let mouse = self.driver.take_mouse();
+            let actions = match self.game.local_fighter() {
+                Some((me, _)) => {
+                    let pressed = self
+                        .controls
+                        .pressed(if self.captured { mouse } else { [0, 0] });
+                    let pressed = if self.captured {
+                        pressed
+                    } else {
+                        // Without the mouse, its buttons do nothing (the click that captures).
+                        shooter_sim::bindings::Pressed {
+                            buttons: 0,
+                            ..pressed
+                        }
+                    };
+                    let actions = self.driver.actions(&me.build, me.parts.lost(), pressed);
+                    shooter_sim::bindings::Actions {
+                        triggers: if self.captured {
+                            actions.triggers
+                        } else {
+                            shooter_sim::weapons::Triggers::NONE
+                        },
+                        ..actions
+                    }
+                }
+                None => shooter_sim::bindings::Actions::default(),
             };
             Intent {
                 forward,
                 strafe,
+                motors: actions.motors,
+                triggers: actions.triggers,
                 yaw: self.look.sim_yaw(),
                 jump: self.controls.jump_held(),
                 sprint: self.controls.sprint_held(),
@@ -642,6 +756,8 @@ impl App {
                 // Only a captured mouse shoots: the click that captures it does not.
                 fire: self.captured && self.controls.fire_held(),
                 melee: self.captured && self.controls.melee_held(),
+                // The grapple module's own key (shooter#104); the host refuses it without one.
+                grapple: self.captured && self.controls.grapple_held(),
                 select,
                 edit: false,
                 repair,
@@ -692,8 +808,14 @@ impl App {
         }
         self.local_swing += seconds;
         self.tracker
-            .tick(&tick.events, local, tick.report.fired, seconds);
-        if tick.report.fired == Some(Weapon::EnergyBlade) {
+            .tick(&tick.events, local, tick.report.volley.shots(), seconds);
+        if tick
+            .report
+            .volley
+            .shots()
+            .iter()
+            .any(|fired| fired.weapon == Weapon::EnergyBlade)
+        {
             self.local_swing = 0.0;
         }
         for event in &tick.events {
@@ -783,6 +905,11 @@ impl App {
             let Some(gpu) = &mut self.gpu else {
                 return true;
             };
+            // The pointer arrives in the window's pixels, the frame is the surface's.
+            if let Some(window) = &self.window {
+                let size = window.inner_size();
+                builder.resize(size.width, size.height);
+            }
             let (width, height) = gpu.size();
             let robots = self.robots.as_mut().map(|robots| (&mut gpu.world, robots));
             let scene = builder.frame(robots, width, height, seconds);
@@ -806,6 +933,11 @@ impl App {
 
         let local = self.game.local_slot();
         let snapshot = self.game.snapshot();
+        // The physical debris where the host has it (shooter#75): its parts are drawn there, not
+        // falling on their own.
+        if let Some(snapshot) = snapshot {
+            self.tracker.debris(&snapshot.debris);
+        }
         let rockets: Vec<Vec3> = snapshot
             .map(|snapshot| {
                 snapshot
@@ -851,7 +983,7 @@ impl App {
                 forward,
                 health: crate::hud::chassis_share(me),
                 glow: self.glows[usize::from(me.slot)],
-                held: me.held,
+                held: me.held.weapon,
                 hook: self
                     .game
                     .local_hook()
@@ -883,6 +1015,7 @@ impl App {
                         since_fired: self.tracker.since_fired(me.slot),
                         fired,
                         shots,
+                        recent: self.tracker.recent(me.slot),
                         held: me.held,
                         energy: energy_share(me),
                         swing: view.swing,
@@ -913,7 +1046,7 @@ impl App {
                 forward: looking(fighter.yaw, fighter.pitch),
                 health: crate::hud::chassis_share(fighter),
                 glow: self.glows[slot],
-                held: fighter.held,
+                held: fighter.held.weapon,
                 hook: fighter
                     .hook
                     .map(|hook| Vec3::from(hook.anchor_units()) * METRES_PER_UNIT),
@@ -948,6 +1081,7 @@ impl App {
                         since_fired: self.tracker.since_fired(fighter.slot),
                         fired,
                         shots,
+                        recent: self.tracker.recent(fighter.slot),
                         held: fighter.held,
                         energy: energy_share(fighter),
                         swing: view.swing,
@@ -973,6 +1107,7 @@ impl App {
                     since_fired: f32::INFINITY,
                     fired: remains.held,
                     shots: 0,
+                    recent: robots::pose::Recent::NONE,
                     held: remains.held,
                     energy: 0.0,
                     swing: None,
@@ -983,24 +1118,49 @@ impl App {
                 highlight: None,
             });
         }
-        // The reticle covers what a shot fired now meets: from the eye along the aim the
-        // simulation gets, against the arena and the others as drawn.
+        // The reticle covers what the camera targets, and a blocked marker where a shot fired
+        // now from the held weapon's muzzle would stop short of it ([`aim::aimed`]), against the
+        // arena and the others as drawn: the simulation's rule for the aim it gets.
         let reticle = match (alive, self.game.world()) {
             (Some(me), Some(world)) => {
-                let sight = aim::sight(
+                let eye_units = (eye / METRES_PER_UNIT).to_array();
+                // The predicted robot's muzzle, moved with the drawn eye.
+                let muzzle = self.game.local_fighter().and_then(|(fighter, _)| {
+                    let muzzle = fighter.muzzle(me.held)?;
+                    let at = fighter.eye();
+                    let shift = |point: [f32; 3]| {
+                        [0, 1, 2].map(|axis| point[axis] - at[axis] + eye_units[axis])
+                    };
+                    Some(aim::Muzzle {
+                        mount: shift(muzzle.mount),
+                        at: shift(muzzle.at),
+                    })
+                });
+                let muzzle = match me.held.weapon.delivery() {
+                    Delivery::Grapple | Delivery::Melee => None,
+                    _ => muzzle,
+                };
+                let others = || seen.iter().map(|(slot, parts)| (*slot, parts));
+                let shot = aim::aimed(
                     world,
-                    (eye / METRES_PER_UNIT).to_array(),
-                    weapons::aim(self.look.sim_yaw(), self.look.sim_pitch()),
+                    eye_units,
+                    muzzle,
+                    self.look.sim_yaw(),
+                    self.look.sim_pitch(),
+                    body_of(me.slot),
+                    |body| slot_of(body).is_none(),
+                    others(),
+                );
+                let actual = aim::sight(
+                    world,
+                    shot.from,
+                    shot.direction(),
                     RETICLE_RANGE_UNITS,
                     body_of(me.slot),
                     |body| slot_of(body).is_none(),
-                    seen.iter().map(|(slot, parts)| (*slot, parts)),
+                    others(),
                 );
-                Some(camera::reticle(
-                    camera,
-                    Vec3::from(sight.end) * METRES_PER_UNIT,
-                    forward,
-                ))
+                Some(camera::Reticle::of(camera, forward, &shot, &actual))
             }
             _ => None,
         };
@@ -1233,6 +1393,9 @@ impl ApplicationHandler<GpuReady> for App {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.resize(size.width, size.height);
                 }
+                if let Some(builder) = &mut self.builder {
+                    builder.resize(size.width, size.height);
+                }
             }
             WindowEvent::Focused(false) => {
                 self.capture(false);
@@ -1360,6 +1523,7 @@ impl ApplicationHandler<GpuReady> for App {
             && self.captured
         {
             self.look.mouse(dx, dy);
+            self.driver.mouse(dx, dy);
         }
     }
 }

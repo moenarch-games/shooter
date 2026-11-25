@@ -17,9 +17,9 @@ use crate::physics::Vec3i;
 use crate::pickups::{ArenaModule, ModulePad};
 use crate::player::Intent;
 use crate::proving_cell::STAGE_TOP;
-use crate::robot::{Assembly, HEAVY, SKIRMISHER};
+use crate::robot::{Assembly, HEAVY, RAIL_RACK, ROCKET_POD, SKIRMISHER, TWIN_RAIL};
 use crate::tour::{EAST, Leg, NORTH, SOUTH, WEST, hold, stand, walk};
-use crate::weapons::{MAX_PITCH, Weapon};
+use crate::weapons::{MAX_PITCH, Select, Weapon};
 
 /// One scripted scenario.
 #[derive(Clone, Copy, Debug)]
@@ -138,7 +138,7 @@ pub const THRUSTER_JUMP: Scenario = Scenario {
         walk("run up", SOUTH, 6),
         jump_toward("jump", SOUTH),
         walk("climb", SOUTH, 50),
-        stand("on the ledge", 30),
+        stand("on the ledge", 45),
     ],
 };
 
@@ -214,17 +214,19 @@ pub const STEP: Scenario = Scenario {
 /// Straight down.
 const DOWN: i16 = -MAX_PITCH;
 
-/// A 2.5 m ledge 3.3 m south: out of reach of a double jump (about 2 m), in reach of a rocket
-/// jump. Jump, fire a rocket at the feet, then steer onto the ledge.
+/// A 2.5 m ledge 3.3 m south, 12 m wide: out of reach of a double jump (about 2 m), in reach of
+/// a rocket jump. Jump, fire a rocket down at the reticle (the camera looks down from over the
+/// right shoulder, so the blast lands beside the feet and shoves the robot sideways too), then
+/// steer onto the ledge.
 pub const ROCKET_JUMP: Scenario = Scenario {
     name: "rocket jump onto a ledge",
-    arena: || open([0, 0, -330], vec![block([0, 125, 600], [300, 125, 600])]),
+    arena: || open([0, 0, -330], vec![block([0, 125, 600], [600, 125, 600])]),
     legs: &[
         hold(
             "take the launcher",
             Intent {
                 yaw: SOUTH,
-                select: Some(Weapon::RocketLauncher),
+                select: Some(Select::Weapon(Weapon::RocketLauncher)),
                 ..Intent::IDLE
             },
             20,
@@ -254,13 +256,14 @@ pub const ROCKET_JUMP: Scenario = Scenario {
     ],
 };
 
-/// Pitch steps from the grapple scenario's eye (0, 165, -600) up to the pillar's face at
-/// (0, 500, 650): atan(335 / 1250) ≈ 15.0°.
-const PILLAR_PITCH: i16 = 2_731;
+/// Pitch steps from the grapple scenario's eye (0, 165, -600) that put the camera's target, and
+/// so the line from the grapple module's muzzle (a hand left of, below and ahead of the eye),
+/// on the pillar's face at (0, 500, 650): about 16.1°.
+const PILLAR_PITCH: i16 = 2_931;
 
 /// A 3 m ledge 9 m south (beyond a double jump and a rocket jump) with an 8 m pillar on it.
-/// Take the grapple, hook the pillar's face 5 m up over the ledge's edge, get reeled up and over
-/// the edge, let go and step onto the ledge.
+/// Aim the grapple module (its own key; the standard build mounts it), hook the pillar's face
+/// 5 m up over the ledge's edge, get reeled up and over the edge, let go and step onto the ledge.
 pub const GRAPPLE: Scenario = Scenario {
     name: "grapple onto a ledge",
     arena: || {
@@ -274,11 +277,10 @@ pub const GRAPPLE: Scenario = Scenario {
     },
     legs: &[
         hold(
-            "take the grapple",
+            "aim the grapple",
             Intent {
                 yaw: SOUTH,
                 pitch: PILLAR_PITCH,
-                select: Some(Weapon::Grapple),
                 ..Intent::IDLE
             },
             15,
@@ -288,7 +290,7 @@ pub const GRAPPLE: Scenario = Scenario {
             Intent {
                 yaw: SOUTH,
                 pitch: PILLAR_PITCH,
-                fire: true,
+                grapple: true,
                 ..Intent::IDLE
             },
             90,
@@ -312,7 +314,7 @@ const fn shoot(name: &'static str, yaw: u16, weapon: Weapon, ticks: u32) -> Leg 
         Intent {
             yaw,
             fire: true,
-            select: Some(weapon),
+            select: Some(Select::Weapon(weapon)),
             ..Intent::IDLE
         },
         ticks,
@@ -324,7 +326,7 @@ const fn aim_with(name: &'static str, yaw: u16, weapon: Weapon, ticks: u32) -> L
         name,
         Intent {
             yaw,
-            select: Some(weapon),
+            select: Some(Select::Weapon(weapon)),
             ..Intent::IDLE
         },
         ticks,
@@ -530,25 +532,25 @@ pub const WORKS_STEPS: Scenario = Scenario {
     ],
 };
 
-/// Pitch steps from the tower grapple's eye (2350, 165, -1450) up to the crane mast's ring.
-const MAST_PITCH: i16 = 6_200;
+/// Pitch steps from the tower grapple's eye (2330, 165, -1450) that put the line from the grapple
+/// module's muzzle on the crane mast's ring, over the tower's lip.
+const MAST_PITCH: i16 = 6_400;
 
 /// The assembly works' crane mast from the floor south of the tower: hook its ring, reel up the
 /// tower's face and over its edge, and let go onto the top.
 pub const WORKS_GRAPPLE: Scenario = Scenario {
     name: "the works' grapple onto the crane tower",
     arena: || Arena {
-        spawn: Vec3i::new(2_350, 0, -1_450),
+        spawn: Vec3i::new(2_330, 0, -1_450),
         spawn_yaw: NORTH,
         ..Arena::assembly_works()
     },
     legs: &[
         hold(
-            "take the grapple",
+            "aim the grapple",
             Intent {
                 yaw: NORTH,
                 pitch: MAST_PITCH,
-                select: Some(Weapon::Grapple),
                 ..Intent::IDLE
             },
             15,
@@ -558,7 +560,7 @@ pub const WORKS_GRAPPLE: Scenario = Scenario {
             Intent {
                 yaw: NORTH,
                 pitch: MAST_PITCH,
-                fire: true,
+                grapple: true,
                 ..Intent::IDLE
             },
             90,
@@ -638,11 +640,10 @@ pub const CELL_GRAPPLE: Scenario = Scenario {
     },
     legs: &[
         hold(
-            "take the grapple",
+            "aim the grapple",
             Intent {
                 yaw: NORTH,
                 pitch: GALLERY_PITCH,
-                select: Some(Weapon::Grapple),
                 ..Intent::IDLE
             },
             15,
@@ -652,7 +653,7 @@ pub const CELL_GRAPPLE: Scenario = Scenario {
             Intent {
                 yaw: NORTH,
                 pitch: GALLERY_PITCH,
-                fire: true,
+                grapple: true,
                 ..Intent::IDLE
             },
             90,
@@ -715,8 +716,9 @@ pub const DOCK_PAD: Scenario = Scenario {
 };
 
 /// Pitch steps from the outer lane's eye (-3300, 165, -2200) up to the bow mast's top on the
-/// foredeck, (-2200, 670, -2200): atan(505 / 1100) ≈ 24.7°.
-const BOW_MAST_PITCH: i16 = 4_497;
+/// foredeck, (-2200, 670, -2200): atan(505 / 1100) ≈ 24.7°, raised about 1.6° so the line from
+/// the grapple module's muzzle (below the eye) still meets the mast's top.
+const BOW_MAST_PITCH: i16 = 4_797;
 
 /// The drydock's west outer lane: hook the bow mast over the hull, get reeled up over the
 /// shoulder and flung toward the mast, let go and step back to land on the foredeck short of
@@ -730,11 +732,10 @@ pub const DOCK_GRAPPLE: Scenario = Scenario {
     },
     legs: &[
         hold(
-            "take the grapple",
+            "aim the grapple",
             Intent {
                 yaw: EAST,
                 pitch: BOW_MAST_PITCH,
-                select: Some(Weapon::Grapple),
                 ..Intent::IDLE
             },
             15,
@@ -744,7 +745,7 @@ pub const DOCK_GRAPPLE: Scenario = Scenario {
             Intent {
                 yaw: EAST,
                 pitch: BOW_MAST_PITCH,
-                fire: true,
+                grapple: true,
                 ..Intent::IDLE
             },
             95,
@@ -785,17 +786,21 @@ pub const ALL: &[Scenario] = &[
 
 /// This tick's controls for scripted person `index`: run and strafe in turns, sweep the view
 /// round, hop, slide, hold the trigger two thirds of the time, swap weapons every 5 s and swing
-/// the blade now and then. A pure function of the tick, so a replay needs nothing else. The
-/// match replays (`shooter-replay`) and the native client's offscreen profile run play it.
+/// the blade now and then, its legs on the named loadouts' preset layout
+/// ([`crate::bindings::Bindings::preset`]; every named loadout has the same legs). A pure
+/// function of the tick, so a replay needs nothing else. The match replays (`shooter-replay`)
+/// and the native client's offscreen profile run play it.
 #[must_use]
 pub fn scripted_intent(index: u8, tick: u32) -> Intent {
     let person = u32::from(index);
     let segment = (tick + 45 * person) / 90;
     let weapons = Weapon::ROTATION;
+    let forward = if segment % 4 == 3 { -1 } else { 1 };
+    let strafe = if segment.is_multiple_of(2) { 1 } else { -1 };
     #[allow(clippy::cast_possible_truncation)]
     Intent {
-        forward: if segment % 4 == 3 { -1 } else { 1 },
-        strafe: if segment.is_multiple_of(2) { 1 } else { -1 },
+        forward,
+        strafe,
         yaw: (tick.wrapping_mul(40 + 13 * person) + person * 16_384) as u16,
         jump: (tick + 30 * person) % 120 < 2,
         sprint: segment.is_multiple_of(3),
@@ -803,22 +808,54 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
         pitch: 0,
         fire: (tick + 20 * person) % 60 < 40,
         melee: (tick + 50 * person).is_multiple_of(200),
-        select: tick
-            .is_multiple_of(300)
-            .then(|| weapons[(tick / 300 + person) as usize % weapons.len()]),
+        // The grapple module's own key, a second held every four (shooter#104).
+        grapple: (tick + 70 * person) % 240 < 60,
+        // A weapon every 5 s and, halfway between, the copy on part 9 (the twin rail's second
+        // rail gun, the rocket pod's third launcher; refused where it is no gun, shooter#125).
+        select: if tick.is_multiple_of(300) {
+            Some(Select::Weapon(
+                weapons[(tick / 300 + person) as usize % weapons.len()],
+            ))
+        } else if tick % 300 == 150 {
+            Some(Select::Part(crate::robot::PartId(9)))
+        } else {
+            None
+        },
         edit: false,
         repair: None,
+        // A weapon group: the parts 7 to 12 asked to fire together for 0.75 s every 4 s
+        // (shooter#127; the twin rail's two rail guns at once, the rocket pod staggered by its
+        // salvo limit, refused where a part is no gun).
+        triggers: if (tick + 35 * person) % 240 < 45 {
+            (7..=12).map(crate::robot::PartId).collect()
+        } else {
+            crate::weapons::Triggers::NONE
+        },
+        motors: {
+            let layout = crate::mechanics::Layout::of(&crate::robot::STANDARD);
+            crate::bindings::Bindings::preset(&layout).resolve(
+                &layout,
+                &mut crate::bindings::BindingState::default(),
+                crate::bindings::Pressed::wasd(forward, strafe),
+            )
+        },
     }
 }
 
 /// The robot build scripted person `index` asks for when it joins: the first person comes back
 /// as the [`HEAVY`] build after its first death, the second as the modded [`SKIRMISHER`]
-/// (rapid-cycler rifle, efficiency-coiled shotgun), the others keep the standard build.
+/// (rapid-cycler rifle, efficiency-coiled shotgun), the third as the [`TWIN_RAIL`] and the fourth
+/// as the [`ROCKET_POD`] (one weapon mounted several times, shooter#125) and the fifth as the
+/// [`RAIL_RACK`] (six weapons on two mount rails, shooter#126); the others keep the
+/// standard build.
 #[must_use]
 pub const fn scripted_build(index: u8) -> Option<Assembly> {
     match index {
         0 => Some(HEAVY),
         1 => Some(SKIRMISHER),
+        2 => Some(TWIN_RAIL),
+        3 => Some(ROCKET_POD),
+        4 => Some(RAIL_RACK),
         _ => None,
     }
 }

@@ -6,33 +6,56 @@
 //! Ready along the bottom.
 //!
 //! **Mouse.** Drag a part from the catalogue onto a socket, or click it to take it in hand and
-//! click sockets to place copies (the sockets it fits light up; hovering one previews the part
-//! there with its real geometry and footprint). Click a part on the robot to select it. Right
-//! drag (or the arrow keys) turns the view round the robot, the wheel zooms; a right click
-//! drops what is in hand.
+//! click sockets to place copies. The sockets it fits light up. The socket under the pointer is
+//! found by a ray from the camera through the pointer ([`Builder::pick`]): the first part box it
+//! meets, and the socket cell of that box's face it meets (so a crowded face, a cell beside a
+//! taken footprint, a large part and a turned parent all resolve to the cell actually under the
+//! pointer, and sockets behind other parts are never taken); where the ray meets no socket face
+//! (over a part with no sockets, or just off the robot), the nearest lit socket within a few
+//! pixels. The socket under the pointer previews the part there turned as it is in hand: its
+//! real geometry, its box and the cells its footprint reserves, or, if the rules refuse it, its
+//! box and footprint in red, the cells another part holds marked, and the reason. Click a part
+//! on the robot to select it. Right drag (or the arrow keys) turns the view round the robot, the
+//! wheel zooms; a right click drops what is in hand.
 //!
-//! **Keys.** R, T and F turn the selected part (or the part in hand) an eighth of a turn about
-//! its socket's normal, pitch and roll axes (Shift back, Ctrl a degree instead); M changes a
-//! weapon's mod, Delete removes the selected part and what hangs from it, Escape drops or
-//! deselects, Enter is Ready.
+//! **Keys.** R, T and F turn the part in hand (or, with nothing in hand, the selected part) about
+//! its socket's normal, pitch and roll axes by the step (G changes it: a quarter turn, an eighth,
+//! about a degree; Shift turns back, Ctrl a degree whatever the step); M changes a weapon's mod,
+//! Delete removes the selected part and what hangs from it, Z undoes and Shift+Z or Y redoes,
+//! Escape cancels a drag, drops what is in hand or deselects, Enter is Ready.
+//!
+//! **Saved builds** (shooter#140). B (or BUILDS) opens the builds panel in the inspector's place
+//! ([`super::saved`]): letters, digits, `-` and Space type the name, Backspace erases, Enter or
+//! SAVE saves the build and its control layout (a name already saved waits for a second press
+//! to overwrite), a click on a listed save picks it, LOAD puts it on the bench (one edit undo
+//! takes back) and DELETE removes it on a second press. Escape or BACK closes the panel.
+//!
+//! **Pointer geometry.** The pointer arrives in the window's pixels and the frame is drawn in
+//! the surface's ([`Builder::resize`] tells the builder the window's size): in the browser both
+//! are device pixels (CSS pixels times the device pixel ratio), and a surface the GPU limits to a
+//! smaller size than the canvas still maps the pointer onto what is drawn under it.
 //!
 //! The bench stands far above the arena ([`BENCH_AT`]), the robot facing +X with its root
 //! chassis' centre there, so the match goes on unseen while the person builds.
 
-use super::{Axis, FINE, Refusal, SNAP, Workbench, degrees, part_name, weapon_of};
+use super::controls::{ControlsBench, gait_name, mode_name, output_name, source_name};
+use super::saved::{self, Confirm, SavedBuilds, Shelf};
+use super::{
+    Axis, BENCH, FINE, Proposal, Refusal, Step, Workbench, degrees, describe, part_name, weapon_of,
+};
 use crate::camera::FOV_Y;
+use crate::gfx::World;
 use crate::overlay::palette::{GRAPHITE, MUTED, OLIVE, ORANGE, PALE, RED, STEEL};
 use crate::overlay::{Painter, mod_name, srgb, text_width};
 use crate::robots::track::rest_frame;
 use crate::robots::{RobotState, RobotView, Robots};
 use crate::scene::{self, METRES_PER_UNIT};
-use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+use render_engine::glam::{Quat, Vec2, Vec3, Vec4};
 use render_engine::scene::{OverlayQuad, Scene};
-use render_engine::world::World;
-use shooter_sim::Weapon;
-use shooter_sim::mechanics::{placements, sockets};
+use shooter_sim::bindings::Bindings;
+use shooter_sim::mechanics::{Placement, placement_of, placements, sockets};
 use shooter_sim::robot::{
-    Assembly, BETA, Kind, LOADOUTS, MAX_PARTS, Orientation, PartId, PartTypeId, SocketId,
+    Assembly, BETA, CELL_MM, Kind, LOADOUTS, MAX_PARTS, Orientation, PartId, PartTypeId, SocketId,
 };
 use winit::keyboard::KeyCode;
 
@@ -51,10 +74,11 @@ pub enum Stage {
 }
 
 /// What the person asked of the match.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
-    /// Ready with this valid build.
-    Ready(Assembly),
+    /// Ready with this valid build and the control layout the person edited for it (none:
+    /// they kept the build's preset, [`super::controls`]).
+    Ready(Assembly, Option<Bindings>),
 }
 
 /// A clickable panel item.
@@ -65,9 +89,64 @@ pub enum Target {
     /// A new robot from the chassis in hand.
     NewFrame,
     Rotate(Axis, i32),
+    /// The next rotation step.
+    Step,
     Mod,
     Remove,
+    Undo,
+    Redo,
     Ready,
+    /// Opens or closes the controls panel in the inspector's place.
+    Controls,
+    /// A binding's row in the controls panel.
+    Binding(usize),
+    /// The controls panel's buttons.
+    Edit(ControlEdit),
+    /// Opens or closes the builds panel in the inspector's place.
+    Builds,
+    /// A saved build's row in the builds panel.
+    Saved(usize),
+    /// The builds panel's buttons.
+    Shelf(ShelfEdit),
+}
+
+/// What a builds panel button does ([`super::saved::Shelf`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShelfEdit {
+    Save,
+    Load,
+    Delete,
+}
+
+/// What the inspector's place shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Side {
+    Parts,
+    /// The controls panel, with this many bindings.
+    Controls(usize),
+    /// The builds panel, with this many saves.
+    Builds(usize),
+}
+
+/// What a controls panel button does to the layout ([`super::controls::ControlsBench`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlEdit {
+    Preset,
+    /// A new binding for the selected part.
+    Add,
+    Delete,
+    /// Waits for the key that binds the selected binding.
+    Key,
+    Mouse,
+    Mode,
+    Output,
+    Invert,
+    Weaker,
+    Stronger,
+    /// Puts the selected part in the binding's group, or takes it out.
+    Part,
+    FlipPart,
+    Gait,
 }
 
 /// A rectangle in layout units (720 high).
@@ -103,6 +182,9 @@ const CATALOGUE_WIDTH: f32 = 248.0;
 const INSPECTOR_WIDTH: f32 = 272.0;
 const BAR_HEIGHT: f32 = 92.0;
 const ROW: f32 = 18.0;
+/// A catalogue or loadout row: tighter than [`ROW`], so every catalogue part and loadout fits
+/// above the bar at 720 lines.
+const CATALOGUE_ROW: f32 = 16.0;
 const CELL: f32 = 2.0;
 /// The font cell of the smaller text: a glyph cell snaps to whole pixels, so below 2 it reads no
 /// smaller at 720 lines; it stays one name for the lines that would shrink first.
@@ -110,8 +192,23 @@ const SMALL: f32 = 2.0;
 /// A line of text.
 const LINE: f32 = 18.0;
 const READY_WIDTH: f32 = 196.0;
-/// The inspector's key help at its foot: six lines.
-const HELP_HEIGHT: f32 = 6.0 * LINE + 8.0;
+/// The inspector's key help at its foot.
+const HELP: [&str; 7] = [
+    "SHIFT+KEY: TURN BACK",
+    "CTRL+KEY: 1 DEGREE",
+    "Z UNDO, Y REDO",
+    "RIGHT DRAG: VIEW",
+    "WHEEL: ZOOM",
+    "ESC: CANCEL, DROP",
+    "ENTER: READY",
+];
+#[allow(clippy::cast_precision_loss)]
+const HELP_HEIGHT: f32 = HELP.len() as f32 * LINE + 8.0;
+/// The binding rows the controls panel shows.
+const CONTROL_ROWS: usize = 14;
+/// The saves the builds panel lists, from this far down it.
+const SHELF_ROWS: usize = 20;
+const SHELF_TOP: f32 = 146.0;
 
 /// The panels for a frame `width` units wide.
 struct Layout {
@@ -149,43 +246,143 @@ impl Layout {
         let mut rows = Vec::new();
         let mut y = self.catalogue.y + 28.0;
         for kind in BETA.parts {
-            rows.push((Rect::new(x, y, width, ROW), Target::Catalogue(kind.id)));
-            y += ROW;
+            rows.push((
+                Rect::new(x, y, width, CATALOGUE_ROW),
+                Target::Catalogue(kind.id),
+            ));
+            y += CATALOGUE_ROW;
         }
         y += 30.0;
         for index in 0..LOADOUTS.len() {
-            rows.push((Rect::new(x, y, width, ROW), Target::Loadout(index)));
-            y += ROW;
+            rows.push((
+                Rect::new(x, y, width, CATALOGUE_ROW),
+                Target::Loadout(index),
+            ));
+            y += CATALOGUE_ROW;
         }
         rows
     }
 
     /// Where the loadouts' heading is.
     fn loadouts_heading(&self) -> f32 {
-        self.catalogue.y + 28.0 + ROW * BETA.parts.len() as f32 + 12.0
+        self.catalogue.y + 28.0 + CATALOGUE_ROW * BETA.parts.len() as f32 + 12.0
     }
 
     /// The inspector's buttons.
     fn buttons(&self) -> Vec<(Rect, Target)> {
         let x = self.inspector.x + 10.0;
         let half = (self.inspector.width - 26.0) / 2.0;
-        let mut y = self.inspector.y + 262.0;
+        let mut y = self.inspector.y + 250.0;
         let mut buttons = Vec::new();
-        for axis in [Axis::Yaw, Axis::Pitch, Axis::Roll] {
-            buttons.push((Rect::new(x, y, half, 24.0), Target::Rotate(axis, -1)));
+        let rows = [
+            (Target::Rotate(Axis::Yaw, -1), Target::Rotate(Axis::Yaw, 1)),
+            (
+                Target::Rotate(Axis::Pitch, -1),
+                Target::Rotate(Axis::Pitch, 1),
+            ),
+            (
+                Target::Rotate(Axis::Roll, -1),
+                Target::Rotate(Axis::Roll, 1),
+            ),
+            (Target::Step, Target::NewFrame),
+            (Target::Mod, Target::Remove),
+            (Target::Undo, Target::Redo),
+        ];
+        for (left, right) in rows {
+            buttons.push((Rect::new(x, y, half, 24.0), left));
+            buttons.push((Rect::new(x + half + 6.0, y, half, 24.0), right));
+            y += 28.0;
+        }
+        buttons.push((Rect::new(x, y, half, 24.0), Target::Controls));
+        buttons.push((Rect::new(x + half + 6.0, y, half, 24.0), Target::Builds));
+        buttons
+    }
+
+    /// The builds panel's name field.
+    fn name_field(&self) -> Rect {
+        Rect::new(
+            self.inspector.x + 10.0,
+            self.inspector.y + 30.0,
+            self.inspector.width - 20.0,
+            24.0,
+        )
+    }
+
+    /// The builds panel's buttons, in pairs under the name field.
+    fn builds_buttons(&self) -> Vec<(Rect, Target)> {
+        let x = self.inspector.x + 10.0;
+        let half = (self.inspector.width - 26.0) / 2.0;
+        let y = self.inspector.y + 62.0;
+        vec![
+            (Rect::new(x, y, half, 24.0), Target::Shelf(ShelfEdit::Save)),
+            (
+                Rect::new(x + half + 6.0, y, half, 24.0),
+                Target::Shelf(ShelfEdit::Load),
+            ),
+            (
+                Rect::new(x, y + 28.0, half, 24.0),
+                Target::Shelf(ShelfEdit::Delete),
+            ),
+            (
+                Rect::new(x + half + 6.0, y + 28.0, half, 24.0),
+                Target::Builds,
+            ),
+        ]
+    }
+
+    /// The builds panel's rows (the first [`SHELF_ROWS`] of `count` saves).
+    fn builds_rows(&self, count: usize) -> Vec<(Rect, Target)> {
+        let x = self.inspector.x + 6.0;
+        let width = self.inspector.width - 12.0;
+        (0..count.min(SHELF_ROWS))
+            .map(|index| {
+                #[allow(clippy::cast_precision_loss)]
+                let y = self.inspector.y + SHELF_TOP + ROW * index as f32;
+                (Rect::new(x, y, width, ROW), Target::Saved(index))
+            })
+            .collect()
+    }
+
+    /// The controls panel's binding rows (the first [`CONTROL_ROWS`] of `count`).
+    fn control_rows(&self, count: usize) -> Vec<(Rect, Target)> {
+        let x = self.inspector.x + 6.0;
+        let width = self.inspector.width - 12.0;
+        (0..count.min(CONTROL_ROWS))
+            .map(|index| {
+                #[allow(clippy::cast_precision_loss)]
+                let y = self.inspector.y + 58.0 + ROW * index as f32;
+                (Rect::new(x, y, width, ROW), Target::Binding(index))
+            })
+            .collect()
+    }
+
+    /// The controls panel's buttons: the gait at the top, the edits in pairs at the foot, and
+    /// the way back to the parts.
+    fn control_buttons(&self) -> Vec<(Rect, Target)> {
+        let x = self.inspector.x + 10.0;
+        let full = self.inspector.width - 20.0;
+        let half = (self.inspector.width - 26.0) / 2.0;
+        let mut buttons = vec![(
+            Rect::new(x, self.inspector.y + 28.0, full, 22.0),
+            Target::Edit(ControlEdit::Gait),
+        )];
+        let mut y = self.inspector.y + 58.0 + ROW * CONTROL_ROWS as f32 + 30.0;
+        for (left, right) in [
+            (ControlEdit::Preset, ControlEdit::Add),
+            (ControlEdit::Key, ControlEdit::Mouse),
+            (ControlEdit::Mode, ControlEdit::Output),
+            (ControlEdit::Invert, ControlEdit::Delete),
+            (ControlEdit::Weaker, ControlEdit::Stronger),
+            (ControlEdit::Part, ControlEdit::FlipPart),
+        ] {
+            buttons.push((Rect::new(x, y, half, 24.0), Target::Edit(left)));
             buttons.push((
                 Rect::new(x + half + 6.0, y, half, 24.0),
-                Target::Rotate(axis, 1),
+                Target::Edit(right),
             ));
-            y += 30.0;
+            y += 28.0;
         }
-        buttons.push((Rect::new(x, y, half, 24.0), Target::Mod));
-        buttons.push((Rect::new(x + half + 6.0, y, half, 24.0), Target::Remove));
-        y += 30.0;
-        buttons.push((
-            Rect::new(x, y, self.inspector.width - 20.0, 24.0),
-            Target::NewFrame,
-        ));
+        buttons.push((Rect::new(x, y, full, 24.0), Target::Controls));
         buttons
     }
 
@@ -198,10 +395,20 @@ impl Layout {
         )
     }
 
-    /// Every clickable item.
-    fn targets(&self) -> Vec<(Rect, Target)> {
+    /// Every clickable item: the catalogue's, what the inspector's place shows, and Ready.
+    fn targets(&self, side: Side) -> Vec<(Rect, Target)> {
         let mut targets = self.catalogue_rows();
-        targets.extend(self.buttons());
+        match side {
+            Side::Controls(bindings) => {
+                targets.extend(self.control_rows(bindings));
+                targets.extend(self.control_buttons());
+            }
+            Side::Builds(saves) => {
+                targets.extend(self.builds_rows(saves));
+                targets.extend(self.builds_buttons());
+            }
+            Side::Parts => targets.extend(self.buttons()),
+        }
         targets.push((self.ready(), Target::Ready));
         targets
     }
@@ -222,8 +429,18 @@ struct Spot {
     /// Where it is on screen (layout units), and whether it faces the camera.
     at: Vec2,
     facing: bool,
+    /// Whether the camera sees it: it faces the camera and no part is in front of it.
+    visible: bool,
     world: Vec3,
+    normal: Vec3,
 }
+
+/// A socket cell's half width (metres): a ray meets a socket's cell within this of its centre.
+#[allow(clippy::cast_precision_loss)]
+const HALF_CELL: f32 = CELL_MM as f32 / 2_000.0;
+/// How far (layout units) from a lit socket the pointer still snaps to it when its ray meets no
+/// socket face.
+const SNAP_REACH: f32 = 14.0;
 
 /// A part's box in the world (metres).
 #[derive(Clone, Copy, Debug)]
@@ -242,10 +459,18 @@ impl PartBox {
         })
     }
 
-    /// Whether `point` is within the box, `slack` metres beyond its faces.
-    fn holds(&self, point: Vec3, slack: f32) -> bool {
+    /// The outward normal of the face `point` (on the box) is on: the face it is nearest.
+    fn normal_at(&self, point: Vec3) -> Vec3 {
         let local = self.rotation.inverse() * (point - self.centre);
-        (local.abs() - self.half).max_element() <= slack
+        let gap = local.abs() - self.half;
+        let axis = if gap.x >= gap.y && gap.x >= gap.z {
+            Vec3::X
+        } else if gap.y >= gap.z {
+            Vec3::Y
+        } else {
+            Vec3::Z
+        };
+        self.rotation * (axis * local.signum())
     }
 
     /// How far along the ray from `origin` along unit `direction` it meets the box.
@@ -272,39 +497,78 @@ impl PartBox {
 
 /// Every part's box of `build` on the bench.
 fn boxes(build: &Assembly) -> Vec<PartBox> {
-    placements(build)
-        .into_iter()
-        .map(|placement| PartBox {
-            part: placement.part,
-            centre: BENCH_AT + Vec3::from(placement.centre) * METRES_PER_UNIT,
-            rotation: Quat::from_array(placement.orientation).normalize(),
-            half: Vec3::from(placement.half_extents) * METRES_PER_UNIT,
-        })
-        .collect()
+    placements(build).into_iter().map(box_of).collect()
 }
 
-/// The camera's clip-from-world at `eye` looking at `target`: render-engine's right-handed view
-/// with +Y up and its perspective ([`scene::frame`]'s field of view), with a far plane (only
-/// what lands where on screen matters here).
-fn clip_from_world(eye: Vec3, target: Vec3, aspect: f32) -> Mat4 {
-    let back = (eye - target).normalize_or(Vec3::Z);
-    let right = Vec3::Y.cross(back).normalize_or(Vec3::X);
-    let up = back.cross(right);
-    let world_from_view = Mat4::from_cols(
-        right.extend(0.0),
-        up.extend(0.0),
-        back.extend(0.0),
-        eye.extend(1.0),
-    );
-    let (near, far) = (0.05, 100.0);
-    let h = 1.0 / (0.5 * FOV_Y).tan();
-    let projection = Mat4::from_cols(
-        Vec4::new(h / aspect, 0.0, 0.0, 0.0),
-        Vec4::new(0.0, h, 0.0, 0.0),
-        Vec4::new(0.0, 0.0, far / (near - far), -1.0),
-        Vec4::new(0.0, 0.0, near * far / (near - far), 0.0),
-    );
-    projection * world_from_view.inverse()
+/// A part's placement as its box on the bench.
+fn box_of(placement: Placement) -> PartBox {
+    PartBox {
+        part: placement.part,
+        centre: BENCH_AT + Vec3::from(placement.centre) * METRES_PER_UNIT,
+        rotation: Quat::from_array(placement.orientation).normalize(),
+        half: Vec3::from(placement.half_extents) * METRES_PER_UNIT,
+    }
+}
+
+/// The bench's camera: render-engine's right-handed view at `eye` with +Y up and its perspective
+/// ([`scene::frame`]'s field of view) on a frame of `size` pixels. Points go on screen, and the
+/// pointer's pixels back into rays, relative to the eye, so the bench's height above the arena
+/// costs no precision.
+#[derive(Clone, Copy, Debug)]
+struct Camera {
+    eye: Vec3,
+    right: Vec3,
+    up: Vec3,
+    back: Vec3,
+    /// The projection's focal length (1 / tan of half the vertical field of view).
+    focal: f32,
+    /// The frame in pixels, and pixels a layout unit.
+    size: Vec2,
+    scale: f32,
+}
+
+impl Camera {
+    /// At `eye` looking at `target`, on a `size` frame.
+    #[allow(clippy::cast_precision_loss)]
+    fn new(eye: Vec3, target: Vec3, size: (u32, u32)) -> Self {
+        let back = (eye - target).normalize_or(Vec3::Z);
+        let right = Vec3::Y.cross(back).normalize_or(Vec3::X);
+        let size = Vec2::new(size.0.max(1) as f32, size.1.max(1) as f32);
+        Self {
+            eye,
+            right,
+            up: back.cross(right),
+            back,
+            focal: 1.0 / (0.5 * FOV_Y).tan(),
+            size,
+            scale: size.y / 720.0,
+        }
+    }
+
+    /// Where `point` is drawn (layout units), if it is in front of the camera.
+    fn screen(&self, point: Vec3) -> Option<Vec2> {
+        let offset = point - self.eye;
+        let depth = -offset.dot(self.back);
+        (depth > 1e-4).then(|| {
+            let aspect = self.size.x / self.size.y;
+            let ndc = Vec2::new(
+                offset.dot(self.right) * self.focal / aspect,
+                offset.dot(self.up) * self.focal,
+            ) / depth;
+            Vec2::new((ndc.x + 1.0) / 2.0, (1.0 - ndc.y) / 2.0) * self.size / self.scale
+        })
+    }
+
+    /// The unit direction from the eye through `pixels` on the frame.
+    fn ray(&self, pixels: Vec2) -> Vec3 {
+        let aspect = self.size.x / self.size.y;
+        let ndc = Vec2::new(
+            pixels.x / self.size.x * 2.0 - 1.0,
+            1.0 - pixels.y / self.size.y * 2.0,
+        );
+        (self.right * (ndc.x * aspect / self.focal) + self.up * (ndc.y / self.focal) - self.back)
+            .normalize_or_zero()
+    }
 }
 
 /// The capsule centre that puts `build`'s root chassis at [`BENCH_AT`] facing +X.
@@ -316,14 +580,28 @@ fn bench_center(build: &Assembly) -> Vec3 {
 #[derive(Clone, Debug)]
 pub struct Builder {
     pub bench: Workbench,
+    /// The control layout for the robot on the bench ([`super::controls`]).
+    pub controls: ControlsBench,
+    /// The controls panel is open in the inspector's place.
+    pub controls_open: bool,
+    /// The saved builds ([`super::saved`]) and whether their panel is open in the inspector's
+    /// place.
+    pub shelf: Shelf,
+    pub builds_open: bool,
     pub stage: Stage,
     /// The build Ready sent, until the match shows it configured (the host accepted it).
     pub ready: Option<Assembly>,
     /// The last edit refused, or why the robot is not drawn.
     pub notice: Option<String>,
-    /// The pointer (pixels) and the frame size.
+    /// How far a rotation key turns.
+    pub step: Step,
+    /// The pointer (the window's pixels), the window's size (the pointer's space, once known)
+    /// and the frame's size (the drawn surface's pixels).
     cursor: Vec2,
+    window: Option<(u32, u32)>,
     size: (u32, u32),
+    /// The placement under the pointer in the last frame.
+    proposal: Option<Proposal>,
     /// The view round the robot: radians about +Y from +X, radians up, and a zoom factor.
     azimuth: f32,
     elevation: f32,
@@ -338,7 +616,7 @@ pub struct Builder {
     spots: Vec<Spot>,
     parts: Vec<PartBox>,
     eye: Vec3,
-    view_proj: Mat4,
+    camera: Camera,
     /// Which sockets the part in hand fits: for the bench state it was worked out for.
     fits: Vec<bool>,
     fits_for: Option<(Assembly, Option<PartTypeId>, Orientation)>,
@@ -349,11 +627,18 @@ impl Builder {
     pub fn new(build: Assembly, stage: Stage) -> Self {
         Self {
             bench: Workbench::new(build),
+            controls: ControlsBench::new(build, None),
+            controls_open: false,
+            shelf: Shelf::new(saved::platform()),
+            builds_open: false,
             stage,
             ready: None,
             notice: None,
+            step: Step::default(),
             cursor: Vec2::ZERO,
+            window: None,
             size: (1280, 720),
+            proposal: None,
             azimuth: 0.55,
             elevation: 0.3,
             zoom: 1.0,
@@ -364,9 +649,36 @@ impl Builder {
             spots: Vec::new(),
             parts: Vec::new(),
             eye: Vec3::ZERO,
-            view_proj: Mat4::IDENTITY,
+            camera: Camera::new(Vec3::X, Vec3::ZERO, (1280, 720)),
             fits: Vec::new(),
             fits_for: None,
+        }
+    }
+
+    /// The builder with the person's control layout `layout` (none, or one that does not fit
+    /// the build: the build's preset).
+    #[must_use]
+    pub fn with_controls(mut self, layout: Option<&Bindings>) -> Self {
+        self.controls = ControlsBench::new(*self.bench.draft(), layout);
+        self
+    }
+
+    /// The builder keeping its saved builds in `store` (by default this client's,
+    /// [`saved::platform`]).
+    #[must_use]
+    pub fn with_store(mut self, store: std::rc::Rc<dyn SavedBuilds>) -> Self {
+        self.shelf = Shelf::new(store);
+        self
+    }
+
+    /// What the inspector's place shows.
+    fn side(&self) -> Side {
+        if self.builds_open {
+            Side::Builds(self.shelf.names.len())
+        } else if self.controls_open {
+            Side::Controls(self.controls.layout().bindings.len())
+        } else {
+            Side::Parts
         }
     }
 
@@ -382,9 +694,46 @@ impl Builder {
         Layout::of(width)
     }
 
+    /// The pointer in the frame's pixels: the window's pixels scaled onto the drawn surface.
+    #[allow(clippy::cast_precision_loss)]
+    fn pointer_pixels(&self) -> Vec2 {
+        let Some((width, height)) = self.window else {
+            return self.cursor;
+        };
+        self.cursor
+            * Vec2::new(
+                self.size.0 as f32 / width.max(1) as f32,
+                self.size.1 as f32 / height.max(1) as f32,
+            )
+    }
+
     /// The pointer in layout units.
     fn pointer(&self) -> Vec2 {
-        self.cursor / self.scale()
+        self.pointer_pixels() / self.scale()
+    }
+
+    /// Puts the pointer at `at` (layout units).
+    #[allow(clippy::cast_precision_loss)]
+    fn put_pointer(&mut self, at: Vec2) {
+        let pixels = at * self.scale();
+        self.cursor = match self.window {
+            Some((width, height)) => {
+                pixels
+                    * Vec2::new(
+                        width as f32 / self.size.0.max(1) as f32,
+                        height as f32 / self.size.1.max(1) as f32,
+                    )
+            }
+            None => pixels,
+        };
+    }
+
+    /// The window is `width` × `height` pixels: the space the pointer arrives in (in the browser,
+    /// the canvas' device pixels), which may differ from the drawn surface's.
+    pub const fn resize(&mut self, width: u32, height: u32) {
+        if width > 0 && height > 0 {
+            self.window = Some((width, height));
+        }
     }
 
     /// The panel item under the pointer.
@@ -392,7 +741,7 @@ impl Builder {
     pub fn target(&self) -> Option<Target> {
         let at = self.pointer();
         self.layout()
-            .targets()
+            .targets(self.side())
             .into_iter()
             .find(|(rect, _)| rect.contains(at))
             .map(|(_, target)| target)
@@ -428,20 +777,42 @@ impl Builder {
         self.elevation = elevation;
     }
 
-    /// Puts the pointer on the first socket, facing the camera in the last frame, that the
-    /// part in hand fits; whether there was one (scripted views and tests).
+    /// Puts the pointer on the first socket, seen in the last frame, that the part in hand fits;
+    /// whether there was one (scripted views and tests).
     pub fn point_at_a_fitting_socket(&mut self) -> bool {
         let Some(at) = self
             .spots
             .iter()
             .zip(&self.fits)
-            .find(|(spot, fits)| **fits && spot.facing)
+            .find(|(spot, fits)| **fits && spot.visible)
             .map(|(spot, _)| spot.at)
         else {
             return false;
         };
-        self.cursor = at * self.scale();
+        self.put_pointer(at);
         true
+    }
+
+    /// Puts the pointer on `socket` of `part` where the last frame drew it; whether the camera
+    /// saw it (scripted views and tests).
+    pub fn point_at(&mut self, part: PartId, socket: SocketId) -> bool {
+        let Some(spot) = self
+            .spots
+            .iter()
+            .find(|spot| spot.part == part && spot.socket == socket)
+            .copied()
+        else {
+            return false;
+        };
+        self.put_pointer(spot.at);
+        spot.visible
+    }
+
+    /// The placement under the pointer in the last frame: the part in hand on the socket picked,
+    /// its footprint and the simulation's verdict.
+    #[must_use]
+    pub const fn proposal(&self) -> Option<&Proposal> {
+        self.proposal.as_ref()
     }
 
     /// The wheel turned `lines` (positive away from the person: closer).
@@ -450,21 +821,59 @@ impl Builder {
     }
 
     fn refused(&mut self, result: Result<impl Sized, Refusal>) {
-        self.notice = result.err().map(|refusal| refusal.to_string());
+        let draft = *self.bench.draft();
+        let subject = self.bench.selected.filter(|_| self.bench.hand.is_none());
+        self.notice = result
+            .err()
+            .map(|refusal| refusal.describe(&draft, subject));
     }
 
-    /// The socket under the pointer the part in hand fits.
-    fn hovered_spot(&self) -> Option<Spot> {
+    /// The unit direction of the ray from the eye through the pointer.
+    fn pointer_ray(&self) -> Vec3 {
+        self.camera.ray(self.pointer_pixels())
+    }
+
+    /// The nearest part box along the ray from the eye along `direction`, and how far.
+    fn first_hit(&self, direction: Vec3) -> Option<(&PartBox, f32)> {
+        self.parts
+            .iter()
+            .filter_map(|part| Some((part, part.ray(self.eye, direction)?)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// The socket under the pointer, while a part is in hand, whether the part fits it or not:
+    /// the socket cell the pointer's ray meets on the first part box it meets; where that is no
+    /// socket face (a part without sockets there, or nothing), the nearest lit socket within
+    /// [`SNAP_REACH`] of the pointer.
+    fn pick(&self) -> Option<Spot> {
         if self.bench.hand.is_none() || self.layout().on_panel(self.pointer()) {
             return None;
+        }
+        let direction = self.pointer_ray();
+        if let Some((part, distance)) = self.first_hit(direction) {
+            let point = self.eye + direction * distance;
+            let normal = part.normal_at(point);
+            let cell = self
+                .spots
+                .iter()
+                .filter(|spot| spot.part == part.part && spot.normal.dot(normal) > 0.9)
+                .map(|spot| {
+                    let off = part.rotation.inverse() * (spot.world - point);
+                    (spot, off.abs().max_element())
+                })
+                .filter(|(_, off)| *off <= HALF_CELL * 1.01)
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((spot, _)) = cell {
+                return Some(*spot);
+            }
         }
         let at = self.pointer();
         self.spots
             .iter()
             .zip(&self.fits)
-            .filter(|(spot, fits)| **fits && spot.facing)
+            .filter(|(spot, fits)| **fits && spot.visible)
             .map(|(spot, _)| (spot, spot.at.distance(at)))
-            .filter(|(_, distance)| *distance < 14.0)
+            .filter(|(_, distance)| *distance < SNAP_REACH)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(spot, _)| *spot)
     }
@@ -474,18 +883,23 @@ impl Builder {
         if self.layout().on_panel(self.pointer()) {
             return None;
         }
-        let ndc = Vec2::new(
-            self.cursor.x / self.size.0.max(1) as f32 * 2.0 - 1.0,
-            1.0 - self.cursor.y / self.size.1.max(1) as f32 * 2.0,
-        );
-        let inverse = self.view_proj.inverse();
-        let far = inverse.project_point3(ndc.extend(0.5));
-        let direction = (far - self.eye).normalize_or_zero();
-        self.parts
-            .iter()
-            .filter_map(|part| Some((part.part, part.ray(self.eye, direction)?)))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(part, _)| part)
+        self.first_hit(self.pointer_ray())
+            .map(|(part, _)| part.part)
+    }
+
+    /// Places the part in hand on `spot` as the preview shows it; whether it was placed (else
+    /// the notice says why).
+    fn place_at(&mut self, spot: Spot) -> bool {
+        let Some(kind) = self.bench.hand else {
+            return false;
+        };
+        let proposal = self
+            .bench
+            .propose(kind, spot.part, spot.socket, self.bench.turn);
+        let placed = self.bench.commit_proposal(&proposal);
+        let done = placed.is_ok();
+        self.refused(placed);
+        done
     }
 
     /// The left or right button `pressed` or released; Ready when it was pressed.
@@ -501,11 +915,13 @@ impl Builder {
             return None;
         }
         if !pressed {
+            // A drop places one copy; a refused drop keeps the part in hand (the notice says
+            // why) to turn it or try another socket; a drop off the robot puts it back.
             if std::mem::take(&mut self.dragging) {
-                if let Some(spot) = self.hovered_spot() {
-                    let placed = self.bench.place(spot.part, spot.socket);
-                    self.refused(placed);
-                    self.bench.hand = None;
+                if let Some(spot) = self.pick() {
+                    if self.place_at(spot) {
+                        self.bench.hand = None;
+                    }
                 } else if !self.layout().on_panel(self.pointer()) {
                     self.bench.hand = None;
                 }
@@ -518,9 +934,8 @@ impl Builder {
         if self.layout().on_panel(self.pointer()) {
             return None;
         }
-        if let Some(spot) = self.hovered_spot() {
-            let placed = self.bench.place(spot.part, spot.socket);
-            self.refused(placed);
+        if let Some(spot) = self.pick() {
+            self.place_at(spot);
         } else if let Some(part) = self.hovered_part() {
             self.bench.hand = None;
             self.bench.selected = Some(part);
@@ -555,15 +970,27 @@ impl Builder {
                     })
                     .ok_or(Refusal::Nothing);
                 let made = chassis.and_then(|chassis| self.bench.new_frame(chassis));
+                let missing = made == Err(Refusal::Nothing);
                 self.refused(made);
-                if self.notice.is_some() {
+                if missing {
                     self.notice = Some("take a chassis from the catalogue first".to_owned());
                 }
             }
             Target::Rotate(axis, sign) => {
-                let step = if self.ctrl { FINE } else { SNAP };
+                let step = if self.ctrl { FINE } else { self.step.angle() };
                 let turned = self.bench.rotate(axis, sign * i32::from(step));
                 self.refused(turned);
+            }
+            Target::Step => {
+                self.step = self.step.next();
+            }
+            Target::Undo => {
+                let undone = self.bench.undo();
+                self.refused(undone);
+            }
+            Target::Redo => {
+                let redone = self.bench.redo();
+                self.refused(redone);
             }
             Target::Mod => {
                 let changed = self.bench.cycle_mod();
@@ -579,23 +1006,174 @@ impl Builder {
                 }
                 let build = self.bench.check().ok()?;
                 self.ready = Some(build);
-                return Some(Action::Ready(build));
+                self.controls.follow(&build);
+                let layout = self
+                    .controls
+                    .custom()
+                    .then(|| self.controls.layout().clone());
+                return Some(Action::Ready(build, layout));
+            }
+            Target::Controls => {
+                self.controls_open = !self.controls_open;
+                self.builds_open = false;
+                self.controls.capturing = false;
+                self.notice = None;
+            }
+            Target::Builds => {
+                self.builds_open = !self.builds_open;
+                self.controls.capturing = false;
+                self.shelf.confirm = None;
+                self.notice = None;
+                if self.builds_open {
+                    self.controls_open = false;
+                    self.notice = self.shelf.refresh().err();
+                }
+            }
+            Target::Saved(index) => {
+                self.shelf.select(index);
+                self.notice = None;
+            }
+            Target::Shelf(edit) => self.edit_shelf(edit),
+            Target::Binding(index) => {
+                self.controls.selected = Some(index);
+                self.controls.capturing = false;
+                self.notice = None;
+            }
+            Target::Edit(edit) => {
+                let edited = self.edit_controls(edit);
+                self.refused(edited);
             }
         }
         None
     }
 
+    /// A builds panel button: saves the bench's build with its layout (none while it is the
+    /// build's preset), loads a save onto the bench as one edit (the bench keeps its build if
+    /// the save is refused) or deletes one; the notice says what happened, or why not.
+    fn edit_shelf(&mut self, edit: ShelfEdit) {
+        self.notice = Some(match edit {
+            ShelfEdit::Save => {
+                let draft = *self.bench.draft();
+                self.controls.follow(&draft);
+                let layout = self
+                    .controls
+                    .custom()
+                    .then(|| self.controls.layout().clone());
+                self.shelf
+                    .save(draft, layout)
+                    .unwrap_or_else(|error| format!("can't save: {error}"))
+            }
+            ShelfEdit::Load => match self.shelf.load() {
+                Ok(saved) => {
+                    self.bench.hand = None;
+                    self.bench.load(saved.build);
+                    self.controls = ControlsBench::new(saved.build, saved.layout.as_ref());
+                    format!("loaded {}", saved.name)
+                }
+                Err(error) => format!("can't load: {error}"),
+            },
+            ShelfEdit::Delete => self
+                .shelf
+                .delete()
+                .unwrap_or_else(|error| format!("can't delete: {error}")),
+        });
+    }
+
+    /// A key while the builds panel is open: the name's letters, Backspace, Enter saves,
+    /// Escape closes the panel.
+    fn shelf_key(&mut self, code: KeyCode) -> Option<Action> {
+        let typed = match code {
+            KeyCode::Escape => return self.act(Target::Builds),
+            KeyCode::Enter | KeyCode::NumpadEnter => {
+                return self.act(Target::Shelf(ShelfEdit::Save));
+            }
+            KeyCode::Backspace => {
+                self.shelf.erase();
+                return None;
+            }
+            KeyCode::Space => Some('_'),
+            KeyCode::Minus | KeyCode::NumpadSubtract => Some('-'),
+            code => {
+                let name = format!("{code:?}");
+                name.strip_prefix("Key")
+                    .or_else(|| name.strip_prefix("Digit"))
+                    .or_else(|| name.strip_prefix("Numpad"))
+                    .filter(|rest| rest.len() == 1)
+                    .and_then(|rest| rest.chars().next())
+            }
+        };
+        if let Some(c) = typed {
+            self.shelf.type_char(c);
+        }
+        None
+    }
+
+    /// A controls panel edit, on the layout for the build on the bench now.
+    fn edit_controls(&mut self, edit: ControlEdit) -> Result<(), Refusal> {
+        self.controls.follow(self.bench.draft());
+        let part = self.bench.selected;
+        match edit {
+            ControlEdit::Preset => {
+                self.controls.preset();
+                Ok(())
+            }
+            ControlEdit::Add => self.controls.add(part),
+            ControlEdit::Delete => self.controls.delete(),
+            ControlEdit::Key => {
+                self.controls.selected.ok_or(Refusal::Nothing)?;
+                self.controls.capturing = true;
+                Ok(())
+            }
+            ControlEdit::Mouse => self.controls.cycle_mouse(),
+            ControlEdit::Mode => self.controls.cycle_mode(),
+            ControlEdit::Output => self.controls.cycle_output(),
+            ControlEdit::Invert => self.controls.invert(),
+            ControlEdit::Weaker => self.controls.strength(-10),
+            ControlEdit::Stronger => self.controls.strength(10),
+            ControlEdit::Part => self.controls.toggle_part(part),
+            ControlEdit::FlipPart => self.controls.flip_part(part),
+            ControlEdit::Gait => {
+                self.controls.cycle_gait();
+                Ok(())
+            }
+        }
+    }
+
     /// A key pressed; Ready on Enter.
     pub fn key(&mut self, code: KeyCode) -> Option<Action> {
+        // Waiting for a binding's key: this one binds it (Escape gives up).
+        if self.controls.capturing {
+            if code == KeyCode::Escape {
+                self.controls.capturing = false;
+            } else {
+                self.controls.follow(self.bench.draft());
+                let bound = self.controls.bind_key(&format!("{code:?}"));
+                self.refused(bound);
+            }
+            return None;
+        }
+        // The builds panel takes the keys for the name.
+        if self.builds_open {
+            return self.shelf_key(code);
+        }
         let sign = if self.shift { -1 } else { 1 };
         match code {
+            KeyCode::KeyK => self.act(Target::Controls),
+            KeyCode::KeyB => self.act(Target::Builds),
             KeyCode::KeyR => self.act(Target::Rotate(Axis::Yaw, sign)),
             KeyCode::KeyT => self.act(Target::Rotate(Axis::Pitch, sign)),
             KeyCode::KeyF => self.act(Target::Rotate(Axis::Roll, sign)),
+            KeyCode::KeyG => self.act(Target::Step),
+            KeyCode::KeyZ if self.shift => self.act(Target::Redo),
+            KeyCode::KeyZ => self.act(Target::Undo),
+            KeyCode::KeyY => self.act(Target::Redo),
             KeyCode::KeyM => self.act(Target::Mod),
             KeyCode::Delete | KeyCode::Backspace | KeyCode::KeyX => self.act(Target::Remove),
             KeyCode::Enter | KeyCode::NumpadEnter => self.act(Target::Ready),
+            // Cancels a drag (nothing is placed when the button comes up), else drops what is in
+            // hand, else deselects.
             KeyCode::Escape => {
+                self.dragging = false;
                 if self.bench.hand.take().is_none() {
                     self.bench.selected = None;
                 }
@@ -647,6 +1225,7 @@ impl Builder {
     ) -> Scene {
         self.size = (width.max(1), height.max(1));
         let draft = *self.bench.draft();
+        self.controls.follow(&draft);
         let socket_spots = sockets(&draft);
         self.refresh_fits(&socket_spots);
 
@@ -665,20 +1244,10 @@ impl Builder {
             self.elevation.cos() * self.azimuth.sin(),
         );
         self.eye = target + direction * distance;
-        #[allow(clippy::cast_precision_loss)]
-        let aspect = self.size.0 as f32 / self.size.1 as f32;
-        self.view_proj = clip_from_world(self.eye, target, aspect);
+        self.camera = Camera::new(self.eye, target, self.size);
         let scale = self.scale();
-        let project = |point: Vec3| -> Option<Vec2> {
-            let clip = self.view_proj * point.extend(1.0);
-            (clip.w > 0.0).then(|| {
-                let ndc = clip.truncate() / clip.w;
-                Vec2::new(
-                    (ndc.x + 1.0) / 2.0 * self.size.0 as f32,
-                    (1.0 - ndc.y) / 2.0 * self.size.1 as f32,
-                ) / scale
-            })
-        };
+        let camera = self.camera;
+        let project = move |point: Vec3| camera.screen(point);
         self.spots = socket_spots
             .iter()
             .filter_map(|spot| {
@@ -689,21 +1258,39 @@ impl Builder {
                     socket: spot.socket,
                     at: project(world)?,
                     facing: normal.dot(self.eye - world) > 0.0,
+                    visible: false,
                     world,
+                    normal,
                 })
             })
             .collect();
         self.parts = parts;
+        // A socket is seen when it faces the camera and the first box on the way to it is its
+        // own (a part on it, or in front of it, hides it).
+        for index in 0..self.spots.len() {
+            let spot = self.spots[index];
+            let offset = spot.world - self.eye;
+            let length = offset.length();
+            self.spots[index].visible = spot.facing
+                && self
+                    .first_hit(offset / length)
+                    .is_none_or(|(_, distance)| distance >= length - 0.25 * METRES_PER_UNIT);
+        }
 
-        // What is shown: the placement under the pointer, else the bench's build.
-        let hovered = self.hovered_spot();
-        let preview = hovered.and_then(|spot| {
+        // What is shown: the placement under the pointer if the rules take it, else the bench's
+        // build.
+        self.proposal = self.pick().and_then(|spot| {
             let kind = self.bench.hand?;
-            self.bench
-                .placed(kind, spot.part, spot.socket, self.bench.turn)
-                .ok()
+            Some(
+                self.bench
+                    .propose(kind, spot.part, spot.socket, self.bench.turn),
+            )
         });
-        let shown = preview.map_or(draft, |(build, _)| build);
+        let shown = self
+            .proposal
+            .as_ref()
+            .and_then(|proposal| proposal.verdict.ok())
+            .unwrap_or(draft);
         let drawn = robots.map(|(world, robots)| {
             let view = RobotView {
                 slot: BENCH_SLOT,
@@ -715,13 +1302,10 @@ impl Builder {
                     sliding: false,
                     hook: None,
                     since_fired: f32::INFINITY,
-                    fired: Weapon::EnergyRifle,
+                    fired: shooter_sim::Instance::default(),
                     shots: 0,
-                    held: BETA
-                        .weapons(&shown)
-                        .map(|(_, weapon)| weapon)
-                        .next()
-                        .unwrap_or_default(),
+                    recent: crate::robots::pose::Recent::NONE,
+                    held: BETA.weapons(&shown).next().unwrap_or_default(),
                     energy: 1.0,
                     swing: None,
                     dead_for: None,
@@ -749,7 +1333,7 @@ impl Builder {
                 dotted_box(&mut painter, &project, part, srgb(MUTED, 0.6));
             }
         }
-        self.blueprint(&mut painter, &project, hovered, preview);
+        self.blueprint(&mut painter, &project);
         self.catalogue(&mut painter, &layout);
         self.inspector(&mut painter, &layout);
         self.status(&mut painter, &layout, kit_missing.as_deref());
@@ -760,17 +1344,13 @@ impl Builder {
         scene
     }
 
-    /// The sockets, and the selected or previewed part's box and footprint.
-    fn blueprint(
-        &self,
-        painter: &mut Painter,
-        project: &dyn Fn(Vec3) -> Option<Vec2>,
-        hovered: Option<Spot>,
-        preview: Option<(Assembly, PartId)>,
-    ) {
+    /// The sockets the camera sees (those the part in hand fits lit), the placement under the
+    /// pointer (its box and footprint; refused, in red with the cells another part holds and
+    /// that part's box marked) and the selected part's box and footprint.
+    fn blueprint(&self, painter: &mut Painter, project: &dyn Fn(Vec3) -> Option<Vec2>) {
         let holding = self.bench.hand.is_some();
         for (spot, fits) in self.spots.iter().zip(&self.fits) {
-            if !spot.facing {
+            if !spot.visible {
                 continue;
             }
             let (size, color) = if holding && *fits {
@@ -786,41 +1366,73 @@ impl Builder {
                 color,
             );
         }
-        // The previewed part: its box and the cells its footprint takes on its parent's face.
-        if let (Some(spot), Some((build, id))) = (hovered, preview)
-            && let Some(part) = boxes(&build).into_iter().find(|part| part.part == id)
-        {
-            self.footprint(painter, &part, spot.part, srgb(ORANGE, 0.9));
-            dotted_box(painter, project, &part, srgb(ORANGE, 1.0));
-            painter.frame(
-                spot.at.x - 7.0,
-                spot.at.y - 7.0,
-                14.0,
-                14.0,
-                1.5,
-                srgb(ORANGE, 1.0),
-            );
+        // The placement under the pointer: where its box would be (the simulation's placement,
+        // the same whether the rules take it or not) and the cells its footprint reserves.
+        if let Some(proposal) = &self.proposal {
+            let colour = if proposal.verdict.is_ok() {
+                ORANGE
+            } else {
+                RED
+            };
+            let parent = proposal.parent();
+            self.footprint(painter, parent, &proposal.footprint, srgb(colour, 0.9));
+            for (cell, holder) in &proposal.blocked {
+                if let Some(spot) = self.spot(parent, *cell)
+                    && spot.facing
+                {
+                    painter.rect(spot.at.x - 4.0, spot.at.y - 4.0, 8.0, 8.0, srgb(RED, 0.9));
+                }
+                if let Some(part) = self.parts.iter().find(|part| part.part == *holder) {
+                    dotted_box(painter, project, part, srgb(RED, 0.8));
+                }
+            }
+            if let Some(placement) = placement_of(self.bench.draft(), &proposal.part) {
+                dotted_box(painter, project, &box_of(placement), srgb(colour, 1.0));
+            }
+            if let Some(spot) = self.spot(parent, proposal.socket()) {
+                painter.frame(
+                    spot.at.x - 7.0,
+                    spot.at.y - 7.0,
+                    14.0,
+                    14.0,
+                    1.5,
+                    srgb(colour, 1.0),
+                );
+            }
         }
         if let Some(selected) = self.bench.selected
             && let Some(part) = self.parts.iter().find(|part| part.part == selected)
         {
-            if let Some(parent) = self
-                .bench
-                .draft()
-                .part(selected)
-                .and_then(|part| part.mount)
+            let draft = self.bench.draft();
+            if let Some(placed) = draft.part(selected)
+                && let Some(mount) = placed.mount
             {
-                self.footprint(painter, part, parent.parent, srgb(PALE, 0.8));
+                let cells = BENCH.footprint(
+                    draft,
+                    mount.parent,
+                    mount.socket,
+                    placed.kind,
+                    placed.modification,
+                    mount.orientation,
+                );
+                self.footprint(painter, mount.parent, &cells, srgb(PALE, 0.8));
             }
             dotted_box(painter, project, part, srgb(PALE, 1.0));
         }
     }
 
-    /// The sockets of `parent` under `part`'s base: its footprint.
-    fn footprint(&self, painter: &mut Painter, part: &PartBox, parent: PartId, color: Vec4) {
-        let slack = 0.3 * METRES_PER_UNIT;
+    /// `socket` of `part` as the last frame drew it.
+    fn spot(&self, part: PartId, socket: SocketId) -> Option<Spot> {
+        self.spots
+            .iter()
+            .find(|spot| spot.part == part && spot.socket == socket)
+            .copied()
+    }
+
+    /// The `cells` (sockets) of `parent` facing the camera, framed: a footprint.
+    fn footprint(&self, painter: &mut Painter, parent: PartId, cells: &[SocketId], color: Vec4) {
         for spot in &self.spots {
-            if spot.part == parent && spot.facing && part.holds(spot.world, slack) {
+            if spot.part == parent && spot.facing && cells.contains(&spot.socket) {
                 painter.frame(spot.at.x - 5.0, spot.at.y - 5.0, 10.0, 10.0, 2.0, color);
             }
         }
@@ -875,11 +1487,11 @@ impl Builder {
             } else if hovered == Some(target) {
                 painter.rect(rect.x, rect.y, rect.width, rect.height, srgb(PALE, 0.08));
             }
-            painter.rect(rect.x + 2.0, rect.y + 6.0, 3.0, 7.0, srgb(kind_colour, 1.0));
-            painter.text(rect.x + 10.0, rect.y + 3.0, CELL, &label, srgb(PALE, 1.0));
+            painter.rect(rect.x + 2.0, rect.y + 4.5, 3.0, 7.0, srgb(kind_colour, 1.0));
+            painter.text(rect.x + 10.0, rect.y + 1.0, CELL, &label, srgb(PALE, 1.0));
             painter.text_right(
                 rect.x + rect.width - 4.0,
-                rect.y + 3.0,
+                rect.y + 1.0,
                 CELL,
                 &points,
                 srgb(MUTED, 1.0),
@@ -895,21 +1507,41 @@ impl Builder {
     }
 
     fn inspector(&self, painter: &mut Painter, layout: &Layout) {
+        if self.builds_open {
+            self.builds_panel(painter, layout);
+            return;
+        }
+        if self.controls_open {
+            self.controls_panel(painter, layout);
+            return;
+        }
         let panel = layout.inspector;
         panel_back(painter, panel);
         let x = panel.x + 10.0;
         let mut y = panel.y + 10.0;
         let draft = self.bench.draft();
-        let selected = self.bench.selected.and_then(|id| draft.part(id));
-        let (heading, kind) = match (selected, self.bench.hand) {
-            (Some(part), _) => ("SELECTED", BETA.part_type(part.kind)),
-            (None, Some(hand)) => ("IN HAND", BETA.part_type(hand)),
+        // What the rotation keys turn: the part in hand, else the selected part.
+        let selected = self
+            .bench
+            .selected
+            .and_then(|id| draft.part(id))
+            .filter(|_| self.bench.hand.is_none());
+        let (heading, kind) = match (self.bench.hand, selected) {
+            (Some(hand), _) => ("IN HAND", BETA.part_type(hand)),
+            (None, Some(part)) => ("SELECTED", BETA.part_type(part.kind)),
             (None, None) => ("NOTHING SELECTED", None),
         };
         painter.text(x, y, CELL, heading, srgb(MUTED, 1.0));
         y += 22.0;
         if let Some(kind) = kind {
-            painter.text(x, y, CELL, &part_name(kind), srgb(ORANGE, 1.0));
+            // A weapon mounted more than once: which copy this one is (shooter#125).
+            let name = selected
+                .and_then(|part| BETA.instance(draft, part.id))
+                .map_or_else(
+                    || part_name(kind),
+                    |instance| crate::overlay::copy_name(draft, instance),
+                );
+            painter.text(x, y, CELL, &name, srgb(ORANGE, 1.0));
             y += 22.0;
             let [cx, cy, cz] = kind.cells;
             let mut rows = vec![
@@ -973,33 +1605,35 @@ impl Builder {
             }
         }
         let hovered = self.target();
+        let (can_undo, can_redo) = self.bench.history();
         for (rect, target) in layout.buttons() {
             let label = match target {
-                Target::Rotate(Axis::Yaw, -1) => "YAW- (R)",
-                Target::Rotate(Axis::Yaw, _) => "YAW+",
-                Target::Rotate(Axis::Pitch, -1) => "PITCH- (T)",
-                Target::Rotate(Axis::Pitch, _) => "PITCH+",
-                Target::Rotate(Axis::Roll, -1) => "ROLL- (F)",
-                Target::Rotate(Axis::Roll, _) => "ROLL+",
+                Target::Rotate(Axis::Yaw, -1) => "YAW-",
+                Target::Rotate(Axis::Yaw, _) => "YAW+ (R)",
+                Target::Rotate(Axis::Pitch, -1) => "PITCH-",
+                Target::Rotate(Axis::Pitch, _) => "PITCH+ (T)",
+                Target::Rotate(Axis::Roll, -1) => "ROLL-",
+                Target::Rotate(Axis::Roll, _) => "ROLL+ (F)",
+                Target::Step => match self.step {
+                    Step::Quarter => "90 DEG (G)",
+                    Step::Eighth => "45 DEG (G)",
+                    Step::Fine => "1 DEG (G)",
+                },
                 Target::Mod => "MOD (M)",
                 Target::Remove => "REMOVE (X)",
-                Target::NewFrame => "NEW FRAME (CHASSIS)",
+                Target::NewFrame => "NEW FRAME",
+                Target::Undo if can_undo => "UNDO (Z)",
+                Target::Redo if can_redo => "REDO (Y)",
+                Target::Undo => "NO UNDO",
+                Target::Redo => "NO REDO",
+                Target::Controls => "CONTROLS (K)",
+                Target::Builds => "BUILDS (B)",
                 _ => continue,
             };
             button(painter, rect, label, hovered == Some(target), false);
         }
         let help_y = panel.y + panel.height - HELP_HEIGHT;
-        for (index, help) in [
-            "SHIFT+KEY: TURN BACK",
-            "CTRL+KEY: 1 DEGREE",
-            "RIGHT DRAG: VIEW",
-            "WHEEL: ZOOM",
-            "RIGHT CLICK: DROP",
-            "ENTER: READY",
-        ]
-        .iter()
-        .enumerate()
-        {
+        for (index, help) in HELP.iter().enumerate() {
             #[allow(clippy::cast_precision_loss)]
             painter.text(
                 x,
@@ -1007,6 +1641,205 @@ impl Builder {
                 SMALL,
                 help,
                 srgb(MUTED, 0.9),
+            );
+        }
+    }
+
+    /// The controls panel in the inspector's place: the gait, a row per binding (its input,
+    /// command, mode, strength and how many parts it drives), the selected binding's parts, and
+    /// the edits. Parts are chosen by clicking them on the robot.
+    fn controls_panel(&self, painter: &mut Painter, layout: &Layout) {
+        let panel = layout.inspector;
+        panel_back(painter, panel);
+        let x = panel.x + 10.0;
+        let heading = if self.controls.custom() {
+            "CONTROLS"
+        } else {
+            "CONTROLS: PRESET"
+        };
+        painter.text(x, panel.y + 10.0, CELL, heading, srgb(MUTED, 1.0));
+        let hovered = self.target();
+        let bindings = &self.controls.layout().bindings;
+        for (rect, target) in layout.control_rows(bindings.len()) {
+            let Target::Binding(index) = target else {
+                continue;
+            };
+            let binding = &bindings[index];
+            let selected = self.controls.selected == Some(index);
+            if selected || hovered == Some(target) {
+                painter.rect(
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    srgb(STEEL, if selected { 0.9 } else { 0.5 }),
+                );
+            }
+            let source = if selected && self.controls.capturing {
+                "PRESS".to_owned()
+            } else {
+                source_name(binding.source)
+            };
+            let sign = if binding.invert { '-' } else { '+' };
+            let row = format!(
+                "{source:<8}{} {}{sign}{}",
+                &output_name(binding.output)[..3],
+                &mode_name(binding.mode)[..1],
+                binding.strength,
+            );
+            painter.text(rect.x + 4.0, rect.y + 2.0, SMALL, &row, srgb(PALE, 1.0));
+            let parts = format!("{}P", binding.targets.len());
+            let width = text_width(&parts, painter.snap_cell(SMALL));
+            painter.text(
+                rect.x + rect.width - width - 4.0,
+                rect.y + 2.0,
+                SMALL,
+                &parts,
+                srgb(MUTED, 1.0),
+            );
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let detail_y = panel.y + 58.0 + ROW * CONTROL_ROWS as f32 + 6.0;
+        let detail = self
+            .controls
+            .selected
+            .and_then(|index| bindings.get(index))
+            .map_or_else(
+                || {
+                    if bindings.len() > CONTROL_ROWS {
+                        format!("+{} MORE", bindings.len() - CONTROL_ROWS)
+                    } else {
+                        "CLICK A ROW, THEN A PART".to_owned()
+                    }
+                },
+                |binding| {
+                    let parts: Vec<String> = binding
+                        .targets
+                        .iter()
+                        .map(|target| {
+                            format!("{}{}", target.part.0, if target.invert { "-" } else { "" })
+                        })
+                        .collect();
+                    format!("PARTS {}", parts.join(" "))
+                },
+            );
+        painter.text(x, detail_y, SMALL, &detail, srgb(ORANGE, 1.0));
+        for (rect, target) in layout.control_buttons() {
+            let gait;
+            let label = match target {
+                Target::Edit(ControlEdit::Gait) => {
+                    gait = format!("GAIT: {}", gait_name(self.controls.layout().gait));
+                    gait.as_str()
+                }
+                Target::Edit(ControlEdit::Preset) => "PRESET",
+                Target::Edit(ControlEdit::Add) => "NEW (PART)",
+                Target::Edit(ControlEdit::Key) => "KEY...",
+                Target::Edit(ControlEdit::Mouse) => "MOUSE",
+                Target::Edit(ControlEdit::Mode) => "MODE",
+                Target::Edit(ControlEdit::Output) => "COMMAND",
+                Target::Edit(ControlEdit::Invert) => "INVERT",
+                Target::Edit(ControlEdit::Delete) => "DELETE",
+                Target::Edit(ControlEdit::Weaker) => "STRENGTH-",
+                Target::Edit(ControlEdit::Stronger) => "STRENGTH+",
+                Target::Edit(ControlEdit::Part) => "PART +/-",
+                Target::Edit(ControlEdit::FlipPart) => "FLIP PART",
+                Target::Controls => "PARTS (K)",
+                _ => continue,
+            };
+            button(painter, rect, label, hovered == Some(target), false);
+        }
+    }
+
+    /// The builds panel in the inspector's place: the name being typed, the buttons, and a row
+    /// per save (the picked one marked).
+    fn builds_panel(&self, painter: &mut Painter, layout: &Layout) {
+        let panel = layout.inspector;
+        panel_back(painter, panel);
+        let x = panel.x + 10.0;
+        painter.text(x, panel.y + 10.0, CELL, "SAVED BUILDS", srgb(MUTED, 1.0));
+        let field = layout.name_field();
+        painter.rect(
+            field.x,
+            field.y,
+            field.width,
+            field.height,
+            srgb(GRAPHITE, 1.0),
+        );
+        painter.frame(
+            field.x,
+            field.y,
+            field.width,
+            field.height,
+            1.0,
+            srgb(ORANGE, 1.0),
+        );
+        let (name, tone) = if self.shelf.name.is_empty() {
+            ("TYPE A NAME".to_owned(), MUTED)
+        } else {
+            (format!("{}_", self.shelf.name), PALE)
+        };
+        painter.text(field.x + 6.0, field.y + 6.0, SMALL, &name, srgb(tone, 1.0));
+        let hovered = self.target();
+        for (rect, target) in layout.builds_buttons() {
+            let confirm = self.shelf.confirm.as_ref();
+            let (label, strong) = match target {
+                Target::Shelf(ShelfEdit::Save) => match confirm {
+                    Some(Confirm::Overwrite(_)) => ("OVERWRITE?", true),
+                    _ => ("SAVE", false),
+                },
+                Target::Shelf(ShelfEdit::Load) => ("LOAD", false),
+                Target::Shelf(ShelfEdit::Delete) => match confirm {
+                    Some(Confirm::Delete(_)) => ("DELETE?", true),
+                    _ => ("DELETE", false),
+                },
+                Target::Builds => ("BACK (ESC)", false),
+                _ => continue,
+            };
+            button(painter, rect, label, hovered == Some(target), strong);
+        }
+        let names = &self.shelf.names;
+        let hint = if names.is_empty() {
+            "NO SAVED BUILDS YET".to_owned()
+        } else {
+            format!("{} SAVED: CLICK ONE", names.len())
+        };
+        painter.text(
+            x,
+            panel.y + SHELF_TOP - 22.0,
+            SMALL,
+            &hint,
+            srgb(MUTED, 1.0),
+        );
+        for (rect, target) in layout.builds_rows(names.len()) {
+            let Target::Saved(index) = target else {
+                continue;
+            };
+            let selected = self.shelf.selected == Some(index);
+            if selected || hovered == Some(target) {
+                painter.rect(
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    srgb(STEEL, if selected { 0.9 } else { 0.5 }),
+                );
+            }
+            painter.text(
+                rect.x + 4.0,
+                rect.y + 2.0,
+                SMALL,
+                &names[index],
+                srgb(PALE, 1.0),
+            );
+        }
+        if names.len() > SHELF_ROWS {
+            #[allow(clippy::cast_precision_loss)]
+            painter.text(
+                x,
+                panel.y + SHELF_TOP + ROW * SHELF_ROWS as f32 + 4.0,
+                SMALL,
+                &format!("+{} MORE", names.len() - SHELF_ROWS),
+                srgb(MUTED, 1.0),
             );
         }
     }
@@ -1073,10 +1906,43 @@ impl Builder {
             Err(error) => (format!("INVALID: {error}"), RED),
         };
         painter.text(text_x, bar.y + 30.0, CELL, &verdict, srgb(colour, 1.0));
-        if let Some(note) = self.notice.as_deref().or(kit_missing) {
-            painter.text(text_x, bar.y + 58.0, SMALL, note, srgb(ORANGE, 1.0));
-        }
+        // Why the placement under the pointer is refused, else the last refused edit.
+        let refused = self.proposal.as_ref().and_then(|proposal| {
+            let error = proposal.verdict.err()?;
+            Some(format!(
+                "CAN'T PLACE: {}",
+                describe(self.bench.draft(), error, None)
+            ))
+        });
         let ready = layout.ready();
+        let (note, tone) = match (refused, self.notice.as_deref().or(kit_missing)) {
+            (Some(reason), _) => (Some(reason), RED),
+            (None, note) => (note.map(str::to_owned), ORANGE),
+        };
+        // Over the blueprint, just above the bar between the panels.
+        if let Some(note) = note {
+            let left = layout.catalogue.x + layout.catalogue.width + 12.0;
+            let room = layout.inspector.x - 12.0 - left;
+            let cell = painter.snap_cell(SMALL);
+            let lines = wrap(&note.to_uppercase(), room - 16.0, cell);
+            let lines = &lines[..lines.len().min(3)];
+            #[allow(clippy::cast_precision_loss)]
+            let height = lines.len() as f32 * LINE + 10.0;
+            let width = lines
+                .iter()
+                .map(|line| text_width(line, cell))
+                .fold(0.0, f32::max)
+                + 16.0;
+            let x = left + (room - width) / 2.0;
+            let y = bar.y - 10.0 - height;
+            painter.rect(x, y, width, height, srgb(GRAPHITE, 0.92));
+            painter.frame(x, y, width, height, 1.0, srgb(tone, 1.0));
+            for (index, line) in lines.iter().enumerate() {
+                #[allow(clippy::cast_precision_loss)]
+                let at = y + 6.0 + index as f32 * LINE;
+                painter.text(x + 8.0, at, SMALL, line, srgb(tone, 1.0));
+            }
+        }
         let label = if self.ready.is_some() {
             "WAITING FOR HOST"
         } else {
@@ -1090,6 +1956,21 @@ impl Builder {
             self.can_ready(),
         );
     }
+}
+
+/// `text` broken at spaces into lines at most `width` layout units wide in a font of `cell`.
+fn wrap(text: &str, width: f32, cell: f32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if text_width(&format!("{line} {word}"), cell) <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_owned()),
+        }
+    }
+    lines
 }
 
 /// A panel's background and edge.
@@ -1281,7 +2162,10 @@ mod tests {
         let ready = builder.layout().ready();
         builder.cursor_moved(ready.x + 5.0, ready.y + 5.0);
         assert_eq!(builder.target(), Some(Target::Ready));
-        assert_eq!(builder.mouse(false, true), Some(Action::Ready(STANDARD)));
+        assert_eq!(
+            builder.mouse(false, true),
+            Some(Action::Ready(STANDARD, None))
+        );
         assert_eq!(builder.ready, Some(STANDARD));
         assert!(!builder.can_ready());
         assert_eq!(builder.key(KeyCode::Enter), None, "already sent");
@@ -1299,9 +2183,8 @@ mod tests {
         // bench's.
         builder.azimuth += std::f32::consts::PI;
         builder.frame(None, 1280, 720, 0.0);
-        let clip = builder.view_proj * BENCH_AT.extend(1.0);
-        let ndc = clip.truncate() / clip.w;
-        builder.cursor_moved((ndc.x + 1.0) / 2.0 * 1280.0, (1.0 - ndc.y) / 2.0 * 720.0);
+        let at = builder.camera.screen(BENCH_AT).unwrap();
+        builder.cursor_moved(at.x, at.y);
         builder.mouse(false, true);
         assert_eq!(builder.bench.selected, Some(PartId(0)));
         builder.key(KeyCode::Delete);
@@ -1315,7 +2198,7 @@ mod tests {
             .unwrap()
             .mount
             .unwrap();
-        assert_eq!(turned.orientation.yaw, SNAP);
+        assert_eq!(turned.orientation.yaw, crate::builder::COARSE);
         builder.key(KeyCode::Delete);
         assert!(builder.bench.draft().part(PartId(2)).is_none());
     }
@@ -1332,5 +2215,644 @@ mod tests {
         assert!(
             lowest.y + lowest.height < layout.inspector.y + layout.inspector.height - HELP_HEIGHT
         );
+        let controls = layout.control_buttons();
+        let lowest = controls.last().unwrap().0;
+        assert!(lowest.y + lowest.height <= layout.inspector.y + layout.inspector.height);
+        let rows = layout.control_rows(CONTROL_ROWS);
+        assert!(rows.last().unwrap().0.y + ROW < controls[1].0.y);
+    }
+
+    /// Clicks the panel item `target` (its rectangle's middle).
+    fn click(builder: &mut Builder, target: Target) -> Option<Action> {
+        let (rect, _) = builder
+            .layout()
+            .targets(builder.side())
+            .into_iter()
+            .find(|(_, item)| *item == target)
+            .unwrap_or_else(|| panic!("{target:?} is on screen"));
+        let scale = builder.scale();
+        builder.cursor_moved(
+            (rect.x + rect.width / 2.0) * scale,
+            (rect.y + rect.height / 2.0) * scale,
+        );
+        builder.mouse(false, true)
+    }
+
+    #[test]
+    fn the_controls_panel_edits_the_layout_and_ready_sends_it() {
+        let mut builder = drawn(Stage::Setup);
+        // K opens the panel in the inspector's place, on the build's preset.
+        builder.key(KeyCode::KeyK);
+        assert!(builder.controls_open);
+        builder.frame(None, 1280, 720, 0.0);
+        assert!(!builder.controls.custom());
+        // Pick the W binding, wait for a key, press I: the legs stride on I.
+        click(&mut builder, Target::Binding(0));
+        click(&mut builder, Target::Edit(ControlEdit::Key));
+        assert!(builder.controls.capturing);
+        builder.key(KeyCode::KeyI);
+        assert_eq!(
+            builder.controls.layout().bindings[0].source,
+            shooter_sim::bindings::Source::Key(shooter_sim::bindings::key("KeyI").unwrap())
+        );
+        // Toggle, and weaker.
+        click(&mut builder, Target::Edit(ControlEdit::Mode));
+        click(&mut builder, Target::Edit(ControlEdit::Weaker));
+        let binding = &builder.controls.layout().bindings[0];
+        assert_eq!(binding.mode, shooter_sim::bindings::Mode::Toggle);
+        assert_eq!(binding.strength, 90);
+        // The chassis selected on the bench is no actuator: the panel says why.
+        builder.bench.selected = Some(PartId(0));
+        click(&mut builder, Target::Edit(ControlEdit::Part));
+        assert!(builder.notice.is_some());
+        // Ready sends the edited layout with the build; back to the preset sends none.
+        let Some(Action::Ready(build, Some(layout))) = click(&mut builder, Target::Ready) else {
+            panic!("Ready with the edited layout");
+        };
+        assert_eq!(build, STANDARD);
+        assert_eq!(layout.bindings[0].strength, 90);
+        let mut builder = drawn(Stage::Setup).with_controls(Some(&layout));
+        builder.key(KeyCode::KeyK);
+        assert!(builder.controls.custom());
+        click(&mut builder, Target::Edit(ControlEdit::Preset));
+        assert_eq!(
+            click(&mut builder, Target::Ready),
+            Some(Action::Ready(STANDARD, None))
+        );
+    }
+
+    fn typed(builder: &mut Builder, codes: &[KeyCode]) {
+        for code in codes {
+            builder.key(*code);
+        }
+    }
+
+    #[test]
+    fn a_saved_build_and_its_layout_come_back_after_a_change_in_either_stage() {
+        for stage in [Stage::Setup, Stage::BetweenLives] {
+            let store = std::rc::Rc::new(saved::MemoryBuilds::default());
+            let mut builder = drawn(stage).with_store(store.clone());
+            // An edited layout to save with the build.
+            builder.key(KeyCode::KeyK);
+            click(&mut builder, Target::Binding(0));
+            click(&mut builder, Target::Edit(ControlEdit::Weaker));
+            let layout = builder.controls.layout().clone();
+            // B opens the panel; the name is typed (B and the builder's shortcuts type too).
+            builder.key(KeyCode::KeyB);
+            assert!(builder.builds_open && !builder.controls_open);
+            typed(
+                &mut builder,
+                &[
+                    KeyCode::KeyB,
+                    KeyCode::KeyO,
+                    KeyCode::KeyT,
+                    KeyCode::KeyX,
+                    KeyCode::Backspace,
+                    KeyCode::Space,
+                    KeyCode::Digit1,
+                    KeyCode::Period,
+                ],
+            );
+            assert_eq!(builder.shelf.name, "BOT_1");
+            builder.key(KeyCode::Enter);
+            assert_eq!(builder.notice.as_deref(), Some("saved BOT_1"));
+            assert_eq!(store.names(), Ok(vec!["BOT_1".to_owned()]));
+            assert_eq!(builder.bench.draft(), &STANDARD, "typing edits nothing");
+
+            // Change the build and the layout.
+            builder.key(KeyCode::Escape);
+            assert!(!builder.builds_open);
+            click(&mut builder, Target::Loadout(1));
+            builder.frame(None, 1280, 720, 0.0);
+            assert_eq!(builder.bench.draft(), &HEAVY);
+            builder.controls.preset();
+            assert_ne!(builder.controls.layout(), &layout);
+
+            // Load restores both, as one edit.
+            click(&mut builder, Target::Builds);
+            builder.frame(None, 1280, 720, 0.0);
+            click(&mut builder, Target::Saved(0));
+            click(&mut builder, Target::Shelf(ShelfEdit::Load));
+            assert_eq!(builder.notice.as_deref(), Some("loaded BOT_1"));
+            assert_eq!(builder.bench.draft(), &STANDARD);
+            assert_eq!(builder.controls.layout(), &layout);
+            assert!(builder.controls.custom());
+            builder.key(KeyCode::Escape);
+            builder.key(KeyCode::KeyZ);
+            assert_eq!(builder.bench.draft(), &HEAVY, "undo takes the load back");
+            builder.key(KeyCode::KeyY);
+
+            // Saving over it waits for a second press.
+            click(&mut builder, Target::Builds);
+            click(&mut builder, Target::Saved(0));
+            builder.bench.load(HEAVY);
+            click(&mut builder, Target::Shelf(ShelfEdit::Save));
+            assert_eq!(
+                builder.shelf.confirm,
+                Some(Confirm::Overwrite("BOT_1".to_owned()))
+            );
+            click(&mut builder, Target::Shelf(ShelfEdit::Save));
+            assert_eq!(builder.notice.as_deref(), Some("overwrote BOT_1"));
+
+            // A damaged save is refused with its reason, and the bench keeps its build.
+            store.write("BAD", "53484244ff00").unwrap();
+            builder.shelf.refresh().unwrap();
+            builder.shelf.name = "BAD".to_owned();
+            builder.bench.load(STANDARD);
+            click(&mut builder, Target::Shelf(ShelfEdit::Load));
+            let notice = builder.notice.clone().unwrap();
+            assert!(notice.starts_with("can't load:"), "{notice}");
+            assert_eq!(builder.bench.draft(), &STANDARD);
+
+            // Delete on a second press.
+            builder.frame(None, 1280, 720, 0.0);
+            click(&mut builder, Target::Saved(1));
+            click(&mut builder, Target::Shelf(ShelfEdit::Delete));
+            click(&mut builder, Target::Shelf(ShelfEdit::Delete));
+            assert_eq!(builder.notice.as_deref(), Some("deleted BOT_1"));
+            assert_eq!(store.names(), Ok(vec!["BAD".to_owned()]));
+        }
+    }
+}
+
+/// Snapping and turning on the bench (shooter#124): the socket under the pointer, the preview of
+/// the turned part and its footprint, what is committed, refusals, undo and redo, cancelling and
+/// selecting again, through the builder's own pointer and keys.
+#[cfg(test)]
+mod snapping {
+    use super::*;
+    use crate::builder::{COARSE, Step};
+    use shooter_sim::robot::parts::{
+        BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_M, CHASSIS_S, SENSOR, TRACK,
+    };
+    use shooter_sim::robot::{AssemblyError, Face, HEAVY, STANDARD};
+
+    const SIZE: (u32, u32) = (1280, 720);
+
+    fn draw(builder: &mut Builder) {
+        builder.frame(None, SIZE.0, SIZE.1, 0.0);
+    }
+
+    /// A builder on `build` holding `kind`, seen from `azimuth` and `elevation`, drawn once.
+    fn holding(build: Assembly, kind: PartTypeId, azimuth: f32, elevation: f32) -> Builder {
+        let mut builder = Builder::new(build, Stage::Setup);
+        builder.bench.hand = Some(kind);
+        builder.look_from(azimuth, elevation);
+        draw(&mut builder);
+        builder
+    }
+
+    /// Where `world` is drawn, in layout units.
+    fn screen(builder: &Builder, world: Vec3) -> Vec2 {
+        builder.camera.screen(world).unwrap()
+    }
+
+    fn picked(builder: &Builder) -> Option<(PartId, SocketId)> {
+        builder.pick().map(|spot| (spot.part, spot.socket))
+    }
+
+    /// Every socket the camera sees is picked wherever the pointer is on its cell (its centre
+    /// and four points a quarter cell out, where the ray meets its own part first): the cell
+    /// under the pointer, never a neighbour's. Returns how many sockets were checked.
+    fn every_seen_socket_is_picked(builder: &mut Builder) -> usize {
+        let spots: Vec<Spot> = builder
+            .spots
+            .iter()
+            .filter(|spot| spot.visible)
+            .copied()
+            .collect();
+        for spot in &spots {
+            let across = if spot.normal.y.abs() < 0.9 {
+                spot.normal.cross(Vec3::Y)
+            } else {
+                spot.normal.cross(Vec3::X)
+            }
+            .normalize();
+            let up = spot.normal.cross(across);
+            let quarter = HALF_CELL / 2.0;
+            for offset in [
+                Vec3::ZERO,
+                across * quarter,
+                -across * quarter,
+                up * quarter,
+                -up * quarter,
+            ] {
+                // Only where its own part is first along the ray, by a clear margin (a millimetre
+                // beside another part's edge is that part's).
+                let point = spot.world + offset;
+                let direction = (point - builder.eye).normalize();
+                let own = (point - builder.eye).length();
+                if builder.parts.iter().any(|part| {
+                    part.part != spot.part
+                        && part
+                            .ray(builder.eye, direction)
+                            .is_some_and(|distance| distance < own + 0.005)
+                }) {
+                    continue;
+                }
+                builder.put_pointer(screen(builder, point));
+                assert_eq!(
+                    picked(builder),
+                    Some((spot.part, spot.socket)),
+                    "{spot:?} at {offset:?}"
+                );
+            }
+        }
+        spots.len()
+    }
+
+    #[test]
+    fn crowded_faces_and_cells_beside_footprints_pick_the_cell_under_the_pointer() {
+        // The standard build's front holds four weapons; its free cells sit beside them.
+        for (build, azimuth, elevation) in [
+            (STANDARD, 0.0, 0.0),
+            (STANDARD, 0.55, 0.3),
+            (STANDARD, 2.6, 0.35),
+            (STANDARD, -1.4, -0.15),
+            (HEAVY, 0.3, 0.2),
+            (HEAVY, 3.6, 0.5),
+        ] {
+            let mut builder = holding(build, BATTERY.id, azimuth, elevation);
+            let seen = every_seen_socket_is_picked(&mut builder);
+            assert!(seen >= 4, "{azimuth} {elevation}: {seen}");
+        }
+        // A socket a weapon covers is hidden and never picked: the rifle holds the front's (1, 2).
+        let builder = holding(STANDARD, BATTERY.id, 0.0, 0.0);
+        let covered = CHASSIS_S.socket(Face::PosX, 1, 2).unwrap();
+        let spot = builder.spot(PartId(0), covered).unwrap();
+        assert!(spot.facing && !spot.visible);
+    }
+
+    #[test]
+    fn large_parts_and_turned_parents_pick_the_cell_under_the_pointer() {
+        // A large chassis with a long beam turned an eighth and a few degrees on its side, a
+        // medium chassis on top turned an eighth, and the sockets on both turned parts.
+        let mut bench = Workbench::new(STANDARD);
+        bench.new_frame(CHASSIS_L.id).unwrap();
+        bench.hand = Some(BEAM_LONG.id);
+        bench.turn = Orientation::canonical(COARSE / 2, 3_000, 1_000);
+        let beam = bench
+            .place(PartId(0), CHASSIS_L.socket(Face::PosY, 1, 1).unwrap())
+            .unwrap();
+        bench.hand = Some(CHASSIS_M.id);
+        bench.turn = Orientation::canonical(COARSE / 2, 0, 0);
+        let top = bench
+            .place(PartId(0), CHASSIS_L.socket(Face::PosZ, 0, 0).unwrap())
+            .unwrap();
+        let build = *bench.draft();
+        let mut checked = 0;
+        let mut seen = [0; 2];
+        for azimuth in [0.4, 1.2, 2.0, 2.8, 3.8, 5.0] {
+            let mut builder = holding(build, SENSOR.id, azimuth, 0.45);
+            checked += every_seen_socket_is_picked(&mut builder);
+            for (count, turned) in seen.iter_mut().zip([beam, top]) {
+                *count += builder
+                    .spots
+                    .iter()
+                    .filter(|spot| spot.part == turned && spot.visible)
+                    .count();
+            }
+        }
+        assert!(checked > 60, "{checked}");
+        assert!(seen.iter().all(|count| *count > 6), "{seen:?}");
+        // A large part in hand: a track's footprint is its four cells, as the rules count them.
+        let mut builder = holding(STANDARD, TRACK.id, 1.4, 0.1);
+        let side = CHASSIS_S.socket(Face::NegY, 0, 0).unwrap();
+        assert!(builder.point_at(PartId(0), side));
+        draw(&mut builder);
+        let proposal = builder.proposal().unwrap();
+        assert_eq!(proposal.socket(), side);
+        assert_eq!(
+            proposal.footprint,
+            BENCH.footprint(
+                &STANDARD,
+                PartId(0),
+                side,
+                TRACK.id,
+                None,
+                Orientation::IDENTITY
+            )
+        );
+        assert_eq!(proposal.footprint.len(), 4);
+    }
+
+    /// The battery in hand over the back's free cell (0, 1) of the standard build.
+    fn over_the_back() -> (Builder, SocketId) {
+        let mut builder = holding(STANDARD, BATTERY.id, std::f32::consts::PI, 0.1);
+        let back = CHASSIS_S.socket(Face::NegX, 0, 1).unwrap();
+        assert!(builder.point_at(PartId(0), back));
+        draw(&mut builder);
+        (builder, back)
+    }
+
+    #[test]
+    fn each_axis_turns_the_preview_and_the_commit_is_the_preview() {
+        let (mut builder, back) = over_the_back();
+        let mut expected = Orientation::IDENTITY;
+        for (key, axis) in [
+            (KeyCode::KeyR, Axis::Yaw),
+            (KeyCode::KeyT, Axis::Pitch),
+            (KeyCode::KeyF, Axis::Roll),
+        ] {
+            let before = builder.proposal().unwrap().part.mount.unwrap().orientation;
+            builder.key(key);
+            expected = crate::builder::turned(expected, axis, i32::from(COARSE));
+            draw(&mut builder);
+            let proposal = builder.proposal().unwrap();
+            let after = proposal.part.mount.unwrap().orientation;
+            assert_ne!(after, before, "{axis:?} turns the part");
+            assert_eq!(after, expected);
+            assert!(proposal.verdict.is_ok(), "{axis:?}: {:?}", proposal.verdict);
+        }
+        // Shift turns back; G steps to an eighth, then a degree; Ctrl is a degree.
+        builder.modifiers(true, false);
+        builder.key(KeyCode::KeyF);
+        builder.modifiers(false, false);
+        expected = crate::builder::turned(expected, Axis::Roll, -i32::from(COARSE));
+        builder.key(KeyCode::KeyG);
+        assert_eq!(builder.step, Step::Eighth);
+        builder.key(KeyCode::KeyR);
+        expected = crate::builder::turned(expected, Axis::Yaw, i32::from(COARSE / 2));
+        builder.modifiers(false, true);
+        builder.key(KeyCode::KeyT);
+        builder.modifiers(false, false);
+        expected = crate::builder::turned(expected, Axis::Pitch, i32::from(FINE));
+        assert_eq!(builder.bench.turn, expected);
+        draw(&mut builder);
+        let proposal = builder.proposal().unwrap().clone();
+        assert_eq!(proposal.socket(), back);
+        assert_eq!(proposal.part.mount.unwrap().orientation, expected);
+        // What the preview drew is what is committed: the same build, the same part, the same
+        // placement, and the simulation takes it.
+        let before = *builder.bench.draft();
+        let previewed = placement_of(&before, &proposal.part).unwrap();
+        builder.mouse(false, true);
+        builder.mouse(false, false);
+        assert_eq!(builder.notice, None);
+        let draft = *builder.bench.draft();
+        assert_eq!(Ok(draft), proposal.verdict);
+        assert_eq!(draft.part(proposal.part.id), Some(&proposal.part));
+        let committed = placements(&draft)
+            .into_iter()
+            .find(|placement| placement.part == proposal.part.id)
+            .unwrap();
+        assert_eq!(committed, previewed);
+        assert_eq!(BENCH.validate(&draft.candidate()), Ok(draft));
+        assert_eq!(builder.bench.check(), Ok(draft));
+    }
+
+    #[test]
+    fn a_blocked_footprint_is_refused_with_its_reason_and_nothing_changes() {
+        // The battery is two cells long: on the front's free (1, 1) it would reach the rifle's
+        // (1, 2).
+        let mut builder = holding(STANDARD, BATTERY.id, 0.0, 0.0);
+        let below = CHASSIS_S.socket(Face::PosX, 1, 1).unwrap();
+        let rifle_cell = CHASSIS_S.socket(Face::PosX, 1, 2).unwrap();
+        assert!(builder.point_at(PartId(0), below));
+        draw(&mut builder);
+        let proposal = builder.proposal().unwrap().clone();
+        assert_eq!(proposal.socket(), below);
+        assert!(
+            matches!(
+                proposal.verdict,
+                Err(AssemblyError::Overlap(first, second)) if [first, second].contains(&PartId(7))
+            ),
+            "{:?}",
+            proposal.verdict
+        );
+        assert_eq!(proposal.blocked, [(rifle_cell, PartId(7))]);
+        builder.mouse(false, true);
+        assert_eq!(*builder.bench.draft(), STANDARD);
+        assert_eq!(builder.bench.hand, Some(BATTERY.id), "still in hand");
+        let notice = builder.notice.clone().unwrap();
+        assert!(notice.to_lowercase().contains("energy rifle"), "{notice}");
+        assert!(notice.contains("turn it"), "{notice}");
+        assert_eq!(builder.bench.history(), (false, false));
+        // Turned a half turn, it reaches down to the free (1, 0) instead: placed.
+        builder.key(KeyCode::KeyR);
+        builder.key(KeyCode::KeyR);
+        draw(&mut builder);
+        assert!(builder.proposal().unwrap().verdict.is_ok());
+        builder.mouse(false, true);
+        assert_eq!(builder.notice, None);
+        assert_eq!(
+            builder.bench.draft().parts().len(),
+            STANDARD.parts().len() + 1
+        );
+    }
+
+    #[test]
+    fn undo_and_redo_restore_the_exact_builds() {
+        let (mut builder, _) = over_the_back();
+        let mut builds = vec![*builder.bench.draft()];
+        // Place, drop the hand, turn the new part, give the rifle a mod, remove the sensor,
+        // load a loadout.
+        builder.mouse(false, true);
+        builds.push(*builder.bench.draft());
+        let placed = builder.bench.selected.unwrap();
+        builder.key(KeyCode::Escape);
+        builder.bench.selected = Some(placed);
+        builder.key(KeyCode::KeyT);
+        builds.push(*builder.bench.draft());
+        builder.bench.selected = Some(PartId(7));
+        builder.key(KeyCode::KeyM);
+        builds.push(*builder.bench.draft());
+        builder.bench.selected = Some(PartId(2));
+        builder.key(KeyCode::Delete);
+        builds.push(*builder.bench.draft());
+        builder.act(Target::Loadout(1));
+        builds.push(*builder.bench.draft());
+        for pair in builds.windows(2) {
+            assert_ne!(pair[0], pair[1], "every step is an edit");
+        }
+        for build in builds.iter().rev().skip(1) {
+            builder.key(KeyCode::KeyZ);
+            assert_eq!(builder.bench.draft(), build);
+        }
+        builder.key(KeyCode::KeyZ);
+        assert_eq!(builder.notice.as_deref(), Some("nothing to undo"));
+        for build in builds.iter().skip(1) {
+            builder.key(KeyCode::KeyY);
+            assert_eq!(builder.bench.draft(), build);
+        }
+        // Shift+Z redoes too; a new edit after an undo drops what was undone.
+        builder.key(KeyCode::KeyZ);
+        builder.modifiers(true, false);
+        builder.key(KeyCode::KeyZ);
+        builder.modifiers(false, false);
+        assert_eq!(builder.bench.draft(), builds.last().unwrap());
+        builder.key(KeyCode::KeyZ);
+        builder.key(KeyCode::KeyZ);
+        builder.bench.selected = Some(PartId(7));
+        builder.key(KeyCode::KeyM);
+        assert_eq!(builder.bench.history(), (true, false));
+        // Every build undo and redo restored is one the simulation validates to itself.
+        for build in &builds {
+            assert_eq!(BENCH.validate(&build.candidate()).as_ref(), Ok(build));
+        }
+    }
+
+    #[test]
+    fn escape_cancels_a_drag_and_a_refused_drop_keeps_the_part() {
+        let mut builder = Builder::new(STANDARD, Stage::Setup);
+        builder.look_from(std::f32::consts::PI, 0.1);
+        draw(&mut builder);
+        let (row, _) = builder
+            .layout()
+            .catalogue_rows()
+            .into_iter()
+            .find(|(_, target)| *target == Target::Catalogue(BATTERY.id))
+            .unwrap();
+        // Drag, turn it, Escape: dropped on a socket, nothing is placed.
+        builder.put_pointer(Vec2::new(row.x + 20.0, row.y + 5.0));
+        builder.mouse(false, true);
+        builder.key(KeyCode::KeyR);
+        draw(&mut builder);
+        let back = CHASSIS_S.socket(Face::NegX, 0, 1).unwrap();
+        assert!(builder.point_at(PartId(0), back));
+        draw(&mut builder);
+        assert!(builder.proposal().is_some());
+        builder.key(KeyCode::Escape);
+        builder.mouse(false, false);
+        assert_eq!(*builder.bench.draft(), STANDARD);
+        assert_eq!(builder.bench.hand, None);
+        draw(&mut builder);
+        assert!(builder.proposal().is_none(), "no preview after cancelling");
+        // A right click drops what is in hand too.
+        builder.bench.hand = Some(BATTERY.id);
+        builder.mouse(true, true);
+        builder.mouse(true, false);
+        assert_eq!(builder.bench.hand, None);
+        // A drop the rules refuse keeps the part in hand, with the reason: a battery on the
+        // back's (0, 0) holds (0, 1), which a second battery turned a quarter on (1, 1) reaches.
+        builder.bench.hand = Some(BATTERY.id);
+        builder.bench.turn = Orientation::IDENTITY;
+        builder
+            .bench
+            .place(PartId(0), CHASSIS_S.socket(Face::NegX, 0, 0).unwrap())
+            .unwrap();
+        builder.bench.selected = None;
+        builder.bench.turn = Orientation::canonical(COARSE, 0, 0);
+        let before = *builder.bench.draft();
+        builder.dragging = true;
+        draw(&mut builder);
+        let beside = CHASSIS_S.socket(Face::NegX, 1, 1).unwrap();
+        assert!(builder.point_at(PartId(0), beside));
+        draw(&mut builder);
+        builder.mouse(false, false);
+        assert_eq!(*builder.bench.draft(), before);
+        assert_eq!(builder.bench.hand, Some(BATTERY.id));
+        assert!(
+            builder
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("the footprint meets the Battery")),
+            "{:?}",
+            builder.notice
+        );
+    }
+
+    #[test]
+    fn parts_are_selected_again_and_edited_where_they_are() {
+        let (mut builder, _) = over_the_back();
+        builder.mouse(false, true);
+        let battery = builder.bench.selected.unwrap();
+        // With the battery still in hand the keys turn the next copy, not the placed one.
+        builder.key(KeyCode::KeyR);
+        assert_eq!(builder.bench.turn.yaw, COARSE);
+        let placed = |builder: &Builder, id| {
+            builder
+                .bench
+                .draft()
+                .part(id)
+                .unwrap()
+                .mount
+                .unwrap()
+                .orientation
+        };
+        assert_eq!(placed(&builder, battery), Orientation::IDENTITY);
+        builder.key(KeyCode::Escape);
+        // Click the sensor on the top: selected; turn it.
+        builder.look_from(std::f32::consts::PI, 0.7);
+        draw(&mut builder);
+        let sensor = builder
+            .parts
+            .iter()
+            .find(|part| part.part == PartId(2))
+            .unwrap()
+            .centre;
+        builder.put_pointer(screen(&builder, sensor));
+        builder.mouse(false, true);
+        assert_eq!(builder.bench.selected, Some(PartId(2)));
+        builder.key(KeyCode::KeyF);
+        assert_eq!(placed(&builder, PartId(2)).roll, COARSE);
+        // Back to the battery: selected again, turned on its own socket.
+        let at = builder
+            .parts
+            .iter()
+            .find(|part| part.part == battery)
+            .unwrap()
+            .centre;
+        builder.put_pointer(screen(&builder, at));
+        builder.mouse(false, true);
+        assert_eq!(builder.bench.selected, Some(battery));
+        builder.key(KeyCode::KeyR);
+        assert_eq!(placed(&builder, battery).yaw, COARSE);
+        assert_eq!(placed(&builder, PartId(2)).roll, COARSE, "the sensor stays");
+        // Undo takes back the battery's turn, then the sensor's.
+        builder.key(KeyCode::KeyZ);
+        assert_eq!(placed(&builder, battery), Orientation::IDENTITY);
+        builder.key(KeyCode::KeyZ);
+        assert_eq!(placed(&builder, PartId(2)), Orientation::IDENTITY);
+    }
+
+    #[test]
+    fn the_pointer_maps_from_the_window_onto_the_drawn_surface() {
+        // The browser's canvas at a device pixel ratio of 2 drawn on a surface the GPU limits to
+        // half its size, and a window smaller than its surface: the same pointer in the window's
+        // pixels picks the same socket.
+        let (builder, back) = over_the_back();
+        let at = builder.spot(PartId(0), back).unwrap().at * builder.scale();
+        for window in [(2560, 1440), (640, 360), (1280, 720)] {
+            let mut builder = builder.clone();
+            builder.resize(window.0, window.1);
+            #[allow(clippy::cast_precision_loss)]
+            let factor = window.0 as f32 / SIZE.0 as f32;
+            builder.cursor_moved(at.x * factor, at.y * factor);
+            assert_eq!(picked(&builder), Some((PartId(0), back)), "{window:?}");
+        }
+        // Without the window's size the pointer is the surface's.
+        let mut builder = builder;
+        builder.cursor_moved(at.x, at.y);
+        assert_eq!(picked(&builder), Some((PartId(0), back)));
+    }
+
+    /// While the controls panel waits for a binding's key, the builder's shortcuts (turning,
+    /// the step, undo and redo) do not fire: the key binds.
+    #[test]
+    fn a_key_the_controls_panel_captures_is_no_shortcut() {
+        let (mut builder, _) = over_the_back();
+        builder.mouse(false, true);
+        let placed = *builder.bench.draft();
+        builder.key(KeyCode::KeyK);
+        assert!(builder.controls_open);
+        builder.controls.selected = Some(0);
+        builder.controls.capturing = true;
+        builder.key(KeyCode::KeyR);
+        assert_eq!(
+            builder.bench.turn,
+            Orientation::IDENTITY,
+            "R bound, not turned"
+        );
+        for key in [KeyCode::KeyG, KeyCode::KeyZ, KeyCode::KeyY, KeyCode::KeyT] {
+            builder.controls.capturing = true;
+            builder.key(key);
+        }
+        assert_eq!(builder.step, Step::Quarter);
+        assert_eq!(*builder.bench.draft(), placed, "nothing undone");
+        assert_eq!(builder.bench.turn, Orientation::IDENTITY);
+        // Not capturing, the same keys are shortcuts again.
+        builder.key(KeyCode::KeyZ);
+        assert_eq!(*builder.bench.draft(), STANDARD);
     }
 }

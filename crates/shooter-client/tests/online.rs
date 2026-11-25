@@ -11,7 +11,7 @@ use shooter_client::controls::Selection;
 use shooter_client::game::Game;
 use shooter_client::game::online::Online;
 use shooter_sim::robot::{SKIRMISHER, STANDARD};
-use shooter_sim::{Controller, Intent, MapId, Weapon};
+use shooter_sim::{Controller, Instance, Intent, MapId, Select, Weapon};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use wtransport::Identity;
@@ -197,7 +197,7 @@ fn the_weapon_cycle_goes_through_the_host() {
     let deadline = Instant::now() + Duration::from_secs(30);
     // Ticks `game` with `select` until the host shows `want` held (or `ticks` pass): whether it
     // did, and whether the fighter died meanwhile (a bot can end the life mid-check).
-    let hold = |game: &mut Game, select: Option<Weapon>, want: Weapon, ticks: u32| {
+    let hold = |game: &mut Game, select: Option<Select>, want: Weapon, ticks: u32| {
         let deaths = |game: &Game| {
             let slot = game.local_slot()?;
             Some(game.snapshot()?.slot(slot)?.deaths)
@@ -212,7 +212,7 @@ fn the_weapon_cycle_goes_through_the_host() {
             .unwrap();
             let held = game
                 .local_slot()
-                .and_then(|slot| game.snapshot()?.slot(slot).map(|me| me.held));
+                .and_then(|slot| game.snapshot()?.slot(slot).map(|me| me.held.weapon));
             shown = held == Some(want);
             std::thread::sleep(Duration::from_millis(16));
         }
@@ -225,22 +225,22 @@ fn the_weapon_cycle_goes_through_the_host() {
         let Some((me, _)) = game.local_fighter() else {
             continue;
         };
-        if me.arsenal.held != Weapon::EnergyRifle {
+        if me.arsenal.held.weapon != Weapon::EnergyRifle {
             continue;
         }
-        // Two notches down: rifle, grapple, shotgun.
+        // One notch down: rifle, shotgun (the grapple module is never in the cycle).
         let mut selection = Selection::default();
-        let (build, parts) = (me.build, me.parts);
-        let armed = |weapon| parts.armed(&build, weapon);
-        let select = selection.intent(None, 2, Weapon::EnergyRifle, armed);
-        assert_eq!(select, Some(Weapon::Shotgun));
+
+        let (held, armed) = (me.arsenal.held, me.instances());
+        let select = selection.intent(None, 1, held, &armed);
+        assert_eq!(select, Some(Instance::new(10, Weapon::Shotgun).into()));
         game.tick(Intent {
             select,
             ..Intent::IDLE
         })
         .unwrap();
         assert_eq!(
-            game.local_fighter().map(|(me, _)| me.arsenal.held),
+            game.local_fighter().map(|(me, _)| me.arsenal.held.weapon),
             Some(Weapon::Shotgun),
             "predicted at once"
         );
@@ -253,7 +253,7 @@ fn the_weapon_cycle_goes_through_the_host() {
         // follows the host.
         let (shotgun, alive) = hold(
             &mut game,
-            Some(Weapon::RailGun),
+            Some(Weapon::RailGun.into()),
             Weapon::Shotgun,
             Selection::ASK_TICKS,
         );
@@ -262,7 +262,7 @@ fn the_weapon_cycle_goes_through_the_host() {
         }
         assert!(shotgun, "the host kept the shotgun");
         assert_eq!(
-            game.local_fighter().map(|(me, _)| me.arsenal.held),
+            game.local_fighter().map(|(me, _)| me.arsenal.held.weapon),
             Some(Weapon::Shotgun)
         );
         checked = true;

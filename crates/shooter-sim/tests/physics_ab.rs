@@ -4,8 +4,9 @@
 //! (sprint, slide, double jump, a thruster-module jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
 //! a shooting range, a close range for the shotgun, laser and flamethrower) on physics-engine and on the Rapier oracle
 //! (`shooter_sim::physics::using_backend`), and the mechanics fixtures (shooter#73: rolling,
-//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog) and broken cover
-//! (shooter#60: rays across it, a robot on its remains) on both.
+//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog), broken cover
+//! (shooter#60: rays across it, a robot on its remains) and a fall's collision damage and debris
+//! (shooter#75) on both.
 //! Both must follow the same path within a few centimetres, agree on support at the end of every
 //! leg, and fire, hit and explode on the same ticks for the same damage (rays and the rocket and
 //! pellet sweeps are the backends' `cast_ray`, the flame their `overlap_box`).
@@ -161,9 +162,11 @@ fn flat_ground_moves_match_the_rapier_oracle() {
             .flat_map(|(a, b)| (0..3).map(move |axis| (a.center[axis] - b.center[axis]).abs()))
             .fold(0.0f32, f32::max);
         println!("one leg lost {lose_leg}: worst path gap {worst:.3} units");
-        // On one leg the robot rocks on that leg's one foot: the backends part a little more.
+        // On one leg the robot rocks on that leg's one foot: the backends part a little more,
+        // and more since shooter#74 (the default layout strides that leg on through the sprint
+        // and the slide while W is held: about 34 units at worst, against 24 before).
         let tolerance = if lose_leg {
-            4.0 * PATH_TOLERANCE_UNITS
+            6.0 * PATH_TOLERANCE_UNITS
         } else {
             PATH_TOLERANCE_UNITS
         };
@@ -323,7 +326,11 @@ fn the_proving_cell_routes_land_alike_on_the_rapier_oracle() {
         // launch or a landing a tick apart).
         let resting = scenario.legs.iter().filter(|leg| {
             let intent = leg.intent;
-            intent.forward == 0 && intent.strafe == 0 && !intent.jump && !intent.fire
+            intent.forward == 0
+                && intent.strafe == 0
+                && !intent.jump
+                && !intent.fire
+                && !intent.grapple
         });
         for leg in resting {
             let (a, b) = (
@@ -368,7 +375,11 @@ fn the_drydock_routes_land_alike_on_the_rapier_oracle() {
         let rapier = run_as(Backend::Rapier, scenario.arena, scenario.legs, STANDARD);
         let resting = scenario.legs.iter().filter(|leg| {
             let intent = leg.intent;
-            intent.forward == 0 && intent.strafe == 0 && !intent.jump && !intent.fire
+            intent.forward == 0
+                && intent.strafe == 0
+                && !intent.jump
+                && !intent.fire
+                && !intent.grapple
         });
         for leg in resting {
             let (a, b) = (
@@ -676,4 +687,161 @@ mod mechanics {
             assert!(up(outcome.root)[1] > 0.8, "{:?}", outcome.root);
         }
     }
+
+    /// The preset layouts (shooter#74) through the same commands on both backends, narrowed
+    /// like the routes: W rolls the car ahead and the strafer sideways at speeds within a
+    /// tenth, D turns the car the same way on the spot (narrowed to the direction: the wheels
+    /// skid round about ten times faster on Rapier, 1.3 rad/s against 0.13), and the mouse's
+    /// offset aims the paired turret to the same angles within 0.05 rad.
+    #[test]
+    fn the_presets_drive_alike_on_the_rapier_oracle() {
+        use shooter_sim::bindings::{BindingState, Bindings, Pressed};
+        let preset = |pressed: Pressed| {
+            move |mechanics: &Mechanics| {
+                let layout = &mechanics.robots()[0].layout;
+                Bindings::preset(layout)
+                    .resolve(layout, &mut BindingState::default(), pressed)
+                    .controls(layout)
+            }
+        };
+        let w = Pressed::default().with_key("KeyW");
+        for (build, along) in [(fixtures::car(), 0), (fixtures::strafer(), 2)] {
+            let (engine, rapier) = both(&floor(), build, 120, preset(w));
+            let (ev, rv) = (engine.motion.velocity[along], rapier.motion.velocity[along]);
+            assert!(ev > 100.0 && (ev - rv).abs() < 0.1 * rv.abs(), "{ev} {rv}");
+        }
+        let (engine, rapier) = both(
+            &floor(),
+            fixtures::car(),
+            120,
+            preset(Pressed::default().with_key("KeyD")),
+        );
+        let (ew, rw) = (
+            engine.motion.angular_velocity[1],
+            rapier.motion.angular_velocity[1],
+        );
+        assert!(ew * rw > 0.0 && ew.abs() > 0.05, "{ew} {rw}");
+        // The offset is the layout's own state: one pushed for 30 ticks, then left.
+        let aimed = |mechanics: &Mechanics| {
+            let layout = &mechanics.robots()[0].layout;
+            let preset = Bindings::preset(layout);
+            let mut state = BindingState::default();
+            for _ in 0..30 {
+                let _ = preset.resolve(
+                    layout,
+                    &mut state,
+                    Pressed {
+                        mouse: [-10, -8],
+                        ..Pressed::default()
+                    },
+                );
+            }
+            preset
+                .resolve(layout, &mut state, Pressed::default())
+                .controls(layout)
+        };
+        let (engine, rapier) = both(&floor(), fixtures::paired_turret(), 120, aimed);
+        for part in [ROTOR_PART, HINGE_PART] {
+            let (e, r) = (angle(&engine, part).0, angle(&rapier, part).0);
+            assert!((e - r).abs() < 0.05 && e.abs() > 0.5, "{part:?}: {e} {r}");
+        }
+    }
+}
+
+/// Collision damage and debris (shooter#75), narrowed as the routes above are: a robot standing
+/// on a beam with a battery on it falls 30 m onto the floor on each backend; both measure an
+/// impact on the same tick (within one), strike the same part (the beam's foot) for damage
+/// within a fifth of each other, break it and leave the battery as debris that comes to rest on
+/// the floor and retires; and a fall from 8 m does nothing on either. Narrowed: the battery
+/// tumbles to rest on another face on each backend (engine about 19 units up, Rapier about 7.5:
+/// a 10-unit half extent a little into the floor), so only "on the floor" is compared; it retires
+/// after a different time (still at rest a second, or its 5 s lifetime).
+#[test]
+fn a_fall_and_its_debris_land_alike_on_the_rapier_oracle() {
+    use shooter_sim::robot::parts::{BATTERY, BEAM_LONG};
+    use shooter_sim::robot::{BETA, Face, PartId, RawMount, RawPart, STANDARD};
+    use shooter_sim::{Event, Intent};
+    let underside = STANDARD
+        .candidate()
+        .parts
+        .iter()
+        .find(|part| part.id == 5)
+        .and_then(|part| part.mount)
+        .unwrap()
+        .socket;
+    let mut candidate = STANDARD.candidate();
+    candidate.parts.retain(|part| part.id != 5 && part.id != 6);
+    candidate.parts.push(RawPart {
+        id: 3,
+        kind: BEAM_LONG.id.0,
+        mount: Some(RawMount {
+            parent: 0,
+            socket: underside,
+            ..RawMount::default()
+        }),
+        modification: None,
+    });
+    candidate.parts.push(RawPart {
+        id: 4,
+        kind: BATTERY.id.0,
+        mount: Some(RawMount {
+            parent: 3,
+            socket: BEAM_LONG.socket(Face::PosX, 0, 0).unwrap().0,
+            ..RawMount::default()
+        }),
+        modification: None,
+    });
+    let pole = BETA.validate(&candidate).unwrap();
+    // (tick of the impact, part, damage), the debris' lowest height, ticks until it retired.
+    let fall = |backend, height: f32| {
+        using_backend(backend, || {
+            let mut session = Session::new(Arena::greybox()).expect("arena builds");
+            session.rebuild(0, pole).unwrap();
+            session.stand(0, [0.0, height, -800.0]).unwrap();
+            let mut struck = Vec::new();
+            let mut lowest = f32::MAX;
+            let mut retired = None;
+            let mut seen = false;
+            for tick in 0..600u32 {
+                session.tick(Intent::IDLE).unwrap();
+                for event in &session.events {
+                    if let Event::Hit {
+                        attacker: None,
+                        part,
+                        damage,
+                        ..
+                    } = *event
+                    {
+                        struck.push((tick, part, damage));
+                    }
+                }
+                match session.mechanics.debris().first() {
+                    Some(piece) => {
+                        assert_eq!(piece.part, PartId(4));
+                        seen = true;
+                        lowest = lowest.min(piece.motion.pose.position[1]);
+                    }
+                    None if seen && retired.is_none() => retired = Some(tick),
+                    None => {}
+                }
+            }
+            (struck, lowest, retired)
+        })
+    };
+    for backend in [Backend::Engine, Backend::Rapier] {
+        let (struck, _, _) = fall(backend, 800.0);
+        assert!(struck.is_empty(), "{backend:?}: {struck:?}");
+    }
+    let engine = fall(Backend::Engine, 3_000.0);
+    let rapier = fall(Backend::Rapier, 3_000.0);
+    println!("engine {engine:?}\nrapier {rapier:?}");
+    for (struck, lowest, retired) in [&engine, &rapier] {
+        assert_eq!(struck.len(), 1, "{struck:?}");
+        assert_eq!(struck[0].1, PartId(3));
+        assert!(*lowest > 0.0 && *lowest < 40.0, "{lowest}");
+        assert!(retired.is_some());
+    }
+    let (a, b) = (engine.0[0], rapier.0[0]);
+    assert!(a.0.abs_diff(b.0) <= 1, "{a:?} {b:?}");
+    assert!((a.2 - b.2).abs() * 5 <= a.2.max(b.2), "{a:?} {b:?}");
 }

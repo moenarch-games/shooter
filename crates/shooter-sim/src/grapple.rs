@@ -1,6 +1,13 @@
-//! The grapple hook (Atlas D2.5): fired at arena geometry, it reels the player toward the hit
-//! point while the rope keeps them within its length, so momentum across the rope swings them
-//! round the anchor.
+//! The grapple hook (Atlas D2.i104.1, D2.i104.2): an optional socket-mounted robot module
+//! (`weapon.grapple-hook` in [`crate::robot::BETA`], build points and mass like any part) on its
+//! own key ([`crate::player::Intent::grapple`]), never a gun in the rotation. Fired from the
+//! module's muzzle toward the camera's target ([`crate::aim`]) at arena geometry, it reels the
+//! robot toward the hit point while the rope keeps it within its length, so momentum across the
+//! rope swings it round the anchor: pull and swing at once. Each hook costs the module's
+//! activation energy from the shared pool ([`crate::energy`]) and waits its refire
+//! ([`crate::weapons::Weapon::refire_ticks`]); a robot whose module is lost or cut off cannot
+//! hook, and a set hook lets go the tick it loses the module, its key is released or it dies.
+//! Fighters are never hooked. Reach and interval are provisional tuning, not approved values.
 //!
 //! A deterministic stand-in for a rope joint: each tick before the world steps, [`Hook::pull`]
 //! adds the reel's acceleration toward the anchor to the robot's velocity and removes any that
@@ -53,17 +60,19 @@ fn narrow(value: i64) -> i32 {
 }
 
 impl Hook {
-    /// Fires a hook from `eye` (units) along the Q16 `direction`, ignoring `owner`: set where it
-    /// first meets arena geometry within [`RANGE_UNITS`], or `None` with where the shot ended
-    /// (a miss, or a fighter or dummy in the way).
+    /// Fires a hook from the module's muzzle `from` (units) along the Q16 `direction`, ignoring
+    /// `owner`: set where it first meets arena geometry within [`RANGE_UNITS`], or `None` with
+    /// where the shot ended (a miss, or a fighter or dummy in the way). The rope is tied at the
+    /// robot's `eye` ([`Hook::pull`]): its length is the eye's distance to the anchor.
     #[must_use]
     pub fn fire(
         world: &World,
+        from: [f32; 3],
         eye: [f32; 3],
         direction: [i32; 3],
         owner: BodyId,
     ) -> (Option<Self>, weapons::Trace) {
-        let trace = weapons::trace(world, eye, direction, RANGE_UNITS, owner, |_| true);
+        let trace = weapons::trace(world, from, direction, RANGE_UNITS, owner, |_| true);
         let hook = trace.hit.filter(|hit| holds_on(hit.body)).map(|_| {
             let anchor = subunits(trace.end);
             let from = subunits(eye);

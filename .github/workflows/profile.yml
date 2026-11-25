@@ -6,20 +6,9 @@ name: Profile
 # Evidence only: no thresholds, and merge-ready does not wait for it.
 
 on:
-  pull_request:
-    paths:
-      - "crates/**"
-      - "profiles/**"
-      - "scripts/**"
-      - "assets/**"
-      - "web/**"
-      - "package.json"
-      - "bun.lock"
-      - "Cargo.lock"
-      - ".github/workflows/profile.yml"
-  push:
-    branches:
-      - main
+  schedule:
+    # Full performance evidence once per night, not for every PR or main push.
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -39,7 +28,7 @@ jobs:
       cache_cargo: true
       # The client's audio (ALSA) and gamepads (udev); lavapipe (software Vulkan) draws it.
       apt_packages: libasound2-dev libudev-dev mesa-vulkan-drivers libvulkan1
-      # native-perf (bot match) needs perf_event_paranoid <= 2; Ubuntu runners default to 4.
+      # perf_event_paranoid <= 2 for native-perf once runtime-profiler#151 brings it back (runners default to 4).
       build_command: |
         sudo sysctl -w kernel.perf_event_paranoid=1
         WGPU_FORCE_FALLBACK_ADAPTER=1 scripts/profile.sh target/profile native
