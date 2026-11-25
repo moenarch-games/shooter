@@ -303,26 +303,3 @@ fn particle_fs(in: ParticleOut) -> @location(0) vec4<f32> {
     }
     return vec4(display(in.color.rgb), saturate(in.color.a));
 }
-
-// ---------------------------------------------------------------- overlay
-
-struct OverlayIn {
-    @location(0) position: vec2<f32>,
-    @location(1) color: vec4<f32>,
-}
-
-struct OverlayOut {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) color: vec4<f32>,
-}
-
-@vertex
-fn overlay_vs(in: OverlayIn) -> OverlayOut {
-    return OverlayOut(vec4(in.position, 0.0, 1.0), in.color);
-}
-
-// Overlay colours are linear and neither exposed nor tone mapped.
-@fragment
-fn overlay_fs(in: OverlayOut) -> @location(0) vec4<f32> {
-    return vec4(encode(in.color.rgb), in.color.a);
-}

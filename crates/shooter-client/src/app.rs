@@ -903,8 +903,8 @@ impl App {
             }
             let (width, height) = gpu.size();
             let robots = self.robots.as_mut().map(|robots| (&mut gpu.world, robots));
-            let (scene, ui) = builder.frame(robots, width, height, seconds);
-            if let Err(error) = gpu.render(&scene, &ui, ticks) {
+            let (mut scene, ui) = builder.frame(robots, width, height, seconds);
+            if let Err(error) = gpu.render(&mut scene, &ui, ticks) {
                 crate::log(&error);
             }
             return true;
@@ -1257,7 +1257,7 @@ impl App {
             .as_mut()
             .map(|effects| effects.lights(seconds, &rockets))
             .unwrap_or_default();
-        let scene = scene::frame(camera, forward, point_lights);
+        let mut scene = scene::frame(camera, forward, point_lights);
         // The drawn HUD: the held weapon (as predicted), the carried ones, chassis and energy.
         let vitals = self
             .game
@@ -1286,7 +1286,7 @@ impl App {
         if let Some(actors) = &mut self.actors {
             actors.update(&mut gpu.world, &fighters, &rockets, &modules, reticle);
         }
-        if let Err(error) = gpu.render(&scene, &ui, ticks) {
+        if let Err(error) = gpu.render(&mut scene, &ui, ticks) {
             crate::log(&error);
         }
         true

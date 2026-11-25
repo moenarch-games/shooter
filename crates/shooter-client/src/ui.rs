@@ -1,15 +1,21 @@
 //! The drawn UI's primitives (the HUD, the builder, the death prompt): rounded rectangles and text
-//! in a real font, as items in frame pixels that [`crate::gfx::ui`] draws over the frame after
-//! either renderer, natively and in the browser (WebGL 2 included).
+//! in a real font, as items in frame pixels, turned into overlay quads ([`Atlas::quads`]) that
+//! either renderer draws over the frame (render-engine's `Scene::overlay`, the lite renderer's
+//! overlay on WebGL 2), natively and in the browser.
 //!
-//! render-engine's screen overlay draws solid rectangles only (no text, no rounded corners), so
-//! the client draws its UI in a pass of its own. The font is Barlow Semi Condensed SemiBold (SIL
-//! Open Font License, `assets/fonts/OFL.txt`), rasterized on demand into a glyph atlas at the
-//! size it is drawn.
+//! Text is quads showing glyphs of an atlas texture in the frame's world: each glyph is
+//! rasterized once at the size it is drawn, in target pixels, and written into the atlas as it is
+//! first needed. The font is Barlow Semi Condensed SemiBold (SIL Open Font License,
+//! `assets/fonts/OFL.txt`).
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use render_engine::glam::{Vec2, Vec4};
+use render_engine::material::{Sampler, TextureData};
+use render_engine::wgpu;
+
+use crate::gfx::{OverlayImage, OverlayQuad, TextureId, World};
 
 /// The UI font.
 pub static FONT: LazyLock<fontdue::Font> = LazyLock::new(|| {
@@ -109,6 +115,150 @@ pub fn glyphs(text: &str, pen: Vec2, size: f32, color: Vec4) -> impl Iterator<It
         previous = Some(character);
         item
     })
+}
+
+/// The glyph atlas' side in texels.
+const ATLAS: u32 = 1024;
+
+/// A glyph's bitmap in the atlas and its offset from the pen (target pixels).
+#[derive(Clone, Copy, Debug)]
+struct Placed {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    xmin: i32,
+    ymin: i32,
+}
+
+/// The UI's glyph atlas: an `ATLAS`² texture in the frame's world, white with each glyph's
+/// coverage in its alpha, the glyphs shelf-packed as they are first drawn. A full atlas starts
+/// over (glyphs placed earlier in that frame may show wrongly for the frame).
+pub struct Atlas {
+    texture: TextureId,
+    glyphs: HashMap<(char, u32), Placed>,
+    /// The shelf being filled: its next free column, its top and its height.
+    shelf: (u32, u32, u32),
+}
+
+impl Atlas {
+    /// An empty atlas in `world`.
+    pub fn new(world: &mut World) -> Self {
+        let texels = (ATLAS * ATLAS) as usize;
+        let texture = world.add_texture(&TextureData {
+            width: ATLAS,
+            height: ATLAS,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            levels: vec![[255, 255, 255, 0].repeat(texels)],
+            // Glyphs are drawn texel for pixel.
+            sampler: Sampler {
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            },
+        });
+        Self {
+            texture,
+            glyphs: HashMap::new(),
+            shelf: (0, 0, 0),
+        }
+    }
+
+    /// `character` at `size` pixels, rasterized and written into the atlas on first use.
+    fn place(&mut self, world: &mut World, character: char, size: u32) -> Placed {
+        if let Some(placed) = self.glyphs.get(&(character, size)) {
+            return *placed;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let (metrics, coverage) = FONT.rasterize(character, size as f32);
+        let (width, height) = (
+            u32::try_from(metrics.width).unwrap_or(0).min(ATLAS),
+            u32::try_from(metrics.height).unwrap_or(0).min(ATLAS),
+        );
+        let (mut x, mut y, mut row) = self.shelf;
+        if width > 0 && height > 0 {
+            if x + width > ATLAS {
+                (x, y, row) = (0, y + row + 1, 0);
+            }
+            if y + height > ATLAS {
+                self.glyphs.clear();
+                (x, y, row) = (0, 0, 0);
+            }
+            let pixels: Vec<u8> = coverage
+                .iter()
+                .take((width * height) as usize)
+                .flat_map(|&alpha| [255, 255, 255, alpha])
+                .collect();
+            world.write_texture(self.texture, (x, y), (width, height), &pixels);
+            self.shelf = (x + width + 1, y, row.max(height));
+        }
+        let placed = Placed {
+            x,
+            y,
+            width,
+            height,
+            xmin: metrics.xmin,
+            ymin: metrics.ymin,
+        };
+        self.glyphs.insert((character, size), placed);
+        placed
+    }
+
+    /// `items` (laid out in layout pixels) as overlay quads, the glyphs rasterized at `pixels`
+    /// target pixels to a layout pixel and placed on whole target pixels.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn quads(&mut self, world: &mut World, items: &[Item], pixels: f32) -> Vec<OverlayQuad> {
+        let pixels = pixels.max(f32::EPSILON);
+        let texel = 1.0 / ATLAS as f32;
+        let mut quads = Vec::with_capacity(items.len());
+        for item in items {
+            match *item {
+                Item::Rect {
+                    position,
+                    size,
+                    radius,
+                    color,
+                } => quads.push(OverlayQuad {
+                    position,
+                    size,
+                    color,
+                    corner_radius: radius,
+                    image: None,
+                }),
+                Item::Glyph {
+                    pen,
+                    character,
+                    size,
+                    color,
+                } => {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let target_size = (size * pixels).round().max(1.0) as u32;
+                    let placed = self.place(world, character, target_size);
+                    if placed.width == 0 || placed.height == 0 {
+                        continue;
+                    }
+                    let (w, h) = (placed.width as f32, placed.height as f32);
+                    let left = (pen.x * pixels).round() + placed.xmin as f32;
+                    let top = (pen.y * pixels).round() - placed.ymin as f32 - h;
+                    let uv_min = Vec2::new(placed.x as f32, placed.y as f32) * texel;
+                    quads.push(OverlayQuad {
+                        position: Vec2::new(left, top) / pixels,
+                        size: Vec2::new(w, h) / pixels,
+                        color,
+                        corner_radius: 0.0,
+                        image: Some(OverlayImage {
+                            texture: self.texture,
+                            uv_min,
+                            uv_max: uv_min + Vec2::new(w, h) * texel,
+                        }),
+                    });
+                }
+            }
+        }
+        quads
+    }
 }
 
 #[cfg(test)]
