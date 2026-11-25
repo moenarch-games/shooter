@@ -721,14 +721,18 @@ fn perspective(fov_y: f32, aspect: f32, near: f32) -> Mat4 {
 }
 
 /// A buffer that grows to what a frame needs.
-struct Growing {
-    buffer: wgpu::Buffer,
+pub(super) struct Growing {
+    pub(super) buffer: wgpu::Buffer,
     usage: wgpu::BufferUsages,
     label: &'static str,
 }
 
 impl Growing {
-    fn new(device: &wgpu::Device, label: &'static str, usage: wgpu::BufferUsages) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        label: &'static str,
+        usage: wgpu::BufferUsages,
+    ) -> Self {
         let usage = usage | wgpu::BufferUsages::COPY_DST;
         Self {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
@@ -742,7 +746,7 @@ impl Growing {
         }
     }
 
-    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
+    pub(super) fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }

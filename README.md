@@ -232,21 +232,25 @@ mouse. Steer in the air with WASD. R opens the quick repair menu (below, **Field
 same keys and the mouse drive the robot's actuators through its control layout (below,
 **Control layouts**), edited in the builder's controls panel (K).
 
-**HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser:
-render-engine's screen-overlay quads in the robot kits' palette (pale grey on graphite, olive, an
-orange accent), in the bottom corners clear of the reticle, laid out for 720 lines and scaled with
-the window. Bottom right, the held weapon: its silhouette, name and mod, the energy a shot costs
-(a second, for the laser and the flamethrower), whether it is ready, recharging (a bar filling to
-its next shot), short of energy or lost, and above it a slot for every weapon copy the build
-carries with its key (lost ones red and struck out), each with its own readiness bar along its
-foot whether held or not (olive ready, filling orange while it recharges or waits out its
-family's salvo spacing, red when the pool cannot pay it, #127); a switch flashes the panel and
-sweeps a highlight across it. Bottom left, the root chassis' health and the energy pool, with the share one shot of
-the held weapon takes marked in orange, and above them, in teal, the field repair panel (the
-quick repair menu while it is open, else the repair under way, else how many parts may be
-repaired). render-engine's overlay draws solid rectangles only, so
-the text is a 5×7 bitmap font and the weapons are pixel silhouettes, both drawn as quads in the
-client. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
+**HUD.** The drawn HUD (`shooter-client`'s `overlay`) is the same natively and in the browser, in
+the bottom corners clear of the reticle, laid out for 720 lines and scaled with the window. It
+has no panels: text floats over the scene on a soft shadow, bars are pills on a dark track and
+the weapons are rounded chips. Bottom right, a chip for every weapon copy the build carries (its
+key on a badge, its short name and copy number; lost ones red and struck out), each with its own
+readiness bar whether held or not (olive ready, filling orange while it recharges or waits out
+its family's salvo spacing, red when the pool cannot pay it, #127), the held one opaque with an
+orange badge and glowing for a moment after a switch; under them the held weapon's name, its
+refire filling while it recharges, and a line with its mod and, when it cannot fire, why (lost,
+low energy). Bottom left, the root chassis' health as a large reading over its bar (red under a
+third) and the energy pool as a thin blue bar under it, with the share one shot of the held
+weapon takes marked in orange, and above them, in teal, the field repair panel (the quick repair
+menu while it is open, else the repair under way, else how many parts may be repaired).
+render-engine's screen overlay draws solid rectangles only, so the client draws its UI (the HUD,
+the builder and the death prompt) in a pass of its own over either renderer's frame (`ui`,
+`gfx::ui`: instanced rounded rectangles and glyphs, uniforms only, so WebGL 2 runs it too), the
+text in Barlow Semi Condensed SemiBold (SIL Open Font License,
+`crates/shooter-client/assets/fonts/OFL.txt`) rasterized into a glyph atlas at the size it is
+drawn. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
 the carried module and its uses left, the kill and pickup feed, banners and the scoreboard) is
 still text: the page's overlay in the browser and the window title natively.
 
@@ -690,7 +694,7 @@ repair module on the chassis' back, **Field repair**),
 each a two-legged component tree with a sensor
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads
-them too. The weapon panel shows the held
+them too. The HUD shows the held
 weapon's mod and the status line every equipped one.
 
 **Module pickups.** A few powerful modules lie on pads at contested points of a map, placed in

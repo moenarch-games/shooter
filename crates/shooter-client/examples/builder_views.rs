@@ -29,8 +29,8 @@ fn shoot(
     path: &std::path::Path,
 ) -> Result<(), String> {
     for _ in 0..2 {
-        let scene = builder.frame(Some((&mut gpu.world, robots)), SIZE.0, SIZE.1, 0.0);
-        gpu.render(&scene, 0)?;
+        let (scene, ui) = builder.frame(Some((&mut gpu.world, robots)), SIZE.0, SIZE.1, 0.0);
+        gpu.render(&scene, &ui, 0)?;
     }
     let (width, height, pixels) = gpu.read_frame()?;
     shooter_client::write_ppm(path, width, height, &pixels)?;

@@ -16,6 +16,8 @@ render-engine.workspace = true
 input-bindings-core.workspace = true
 # The lite renderer's vertex and uniform layouts (`gfx::lite`).
 bytemuck = { version = "1.25.2", features = ["derive"] }
+# The drawn UI's font (`ui`): glyphs rasterized into an atlas, metrics for layout.
+fontdue = "0.9.5"
 winit = "0.30.13"
 gilrs = "0.11.2"
 web-time = "1.1.0"
