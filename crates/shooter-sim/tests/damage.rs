@@ -391,7 +391,7 @@ fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_t
     assert!(!b.parts.mobile(&b.build));
     assert!(!b.parts.weapon_lost(&b.build, Weapon::Shotgun));
     // Its legs came off its robot (shooter#73): they no longer hold it up, so it drops onto
-    // its chassis; and it cannot walk or jump (no leg, wheel or track), only turn.
+    // its chassis and can no longer walk, jump or turn itself.
     assert!(session.mechanics.robot(1).unwrap().lost != 0);
     let standing = session.fighters[1].center();
     for _ in 0..30 {
@@ -414,27 +414,43 @@ fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_t
         (0..3).all(|axis| (after[axis] - before[axis]).abs() < 15.0),
         "{before:?} {after:?}"
     );
-    // The root chassis (270) is the kill: four rail beams to it (below the weapons on its
-    // chest), the fourth kills.
+    // The root chassis (270) is the kill. Without legs it no longer turns toward the camera,
+    // so weapons on its fallen chest can intercept a rail beam before the chassis; remove
+    // any obstructing parts by shooting through the same line until the root is exposed.
     let chest = |session: &Session| {
         let mut at = part_center(session, 1, PartId(0));
         at[1] -= 20.0;
         at
     };
-    for left in [185, 100, 15] {
+    let mut killed = false;
+    let mut root_hits = 0;
+    for _ in 0..12 {
         let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
-        assert_eq!(struck(&events), [(PartId(0), 85)]);
-        assert!(detached(&events).is_empty());
-        assert!(session.fighters[1].alive());
-        assert_eq!(session.fighters[1].chassis_health(), left);
+        if struck(&events)
+            .iter()
+            .any(|&(part, damage)| part == PartId(0) && damage > 0)
+        {
+            root_hits += 1;
+        }
+        if events.contains(&Event::Killed {
+            victim: 1,
+            killer: Some(0),
+            weapon: Some(Weapon::RailGun),
+        }) {
+            killed = true;
+            break;
+        }
+        assert!(
+            session.fighters[1].alive(),
+            "only the root chassis is vital"
+        );
     }
-    let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
-    assert_eq!(struck(&events), [(PartId(0), 85)]);
-    assert!(events.contains(&Event::Killed {
-        victim: 1,
-        killer: Some(0),
-        weapon: Some(Weapon::RailGun),
-    }));
+    assert!(
+        killed,
+        "the exposed root chassis must eventually be destroyable"
+    );
+    assert_eq!(root_hits, 4);
+    assert_eq!(session.fighters[1].chassis_health(), 0);
     assert_eq!(session.fighters[0].frags, 1);
     // Respawn restores the configured build, whole.
     while !session.fighters[1].alive() {

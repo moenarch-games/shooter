@@ -40,7 +40,7 @@ sleep 1
 if [[ "$mode" == web ]]; then
   hash="$(openssl x509 -in "$dir/cert.pem" -outform der | openssl dgst -sha256 -r | cut -d' ' -f1)"
   echo
-  echo "Open in Chrome or Edge (WebTransport + WebGPU):"
+  echo "Open in Chrome or Edge (WebTransport; WebGPU, else WebGL 2):"
   echo "  http://localhost:$web_port/?connect=https://127.0.0.1:$port/shooter/matches/dm&certHash=$hash"
   echo
   python3 -m http.server "$web_port" -d web/dist

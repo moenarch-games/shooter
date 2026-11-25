@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>shooter</title>
     <style>
+      /* The drawn UI's font (crates/shooter-client/assets/fonts, SIL Open Font License). */
+      @font-face {
+        font-family: "Barlow Semi Condensed";
+        font-weight: 600;
+        src: url("fonts/BarlowSemiCondensed-SemiBold.ttf") format("truetype");
+      }
       html,
       body {
         margin: 0;
@@ -12,7 +18,7 @@
         overflow: hidden;
         background: #10131a;
         color: #e6e9ef;
-        font: 15px/1.5 system-ui, sans-serif;
+        font: 15px/1.5 "Barlow Semi Condensed", system-ui, sans-serif;
       }
       canvas {
         position: fixed;
@@ -100,7 +106,8 @@
         inset: 0;
         z-index: 1;
         pointer-events: none;
-        font: 600 15px/1.4 ui-monospace, monospace;
+        font: 600 16px/1.4 "Barlow Semi Condensed", system-ui, sans-serif;
+        letter-spacing: 0.02em;
         text-shadow: 0 1px 2px rgb(0 0 0 / 80%);
       }
       /* Between the drawn panels in the bottom corners. */
@@ -269,11 +276,8 @@
           event.preventDefault();
         }
       });
-      if (!navigator.gpu) {
-        const error = document.getElementById("error");
-        error.textContent = "This browser has no WebGPU. Try a current Chrome, Edge, Firefox or Safari.";
-        error.setAttribute("data-shown", "");
-      }
+      // Without WebGPU the client draws with its lite renderer on WebGL 2 (?renderer=lite forces
+      // it); it reports an error itself when the browser has neither.
       import init from "./shooter_client.js";
       await init();
     </script>

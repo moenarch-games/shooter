@@ -175,17 +175,18 @@ fn shoot(
         actors.update(&mut gpu.world, &[], &[], &[], shown);
         let (from, toward) = aside.unwrap_or((camera, forward));
         let mut frame = scene::frame(from, toward, Vec::new());
+        let mut ui = Vec::new();
         if aside.is_none() {
             frame.camera.fov_y = precision.fov_y();
-            frame.overlay = scope(SIZE.0, SIZE.1, precision.zoom());
+            ui = scope(SIZE.0, SIZE.1, precision.zoom());
         }
-        frame.overlay.extend(overlay.draw(
+        ui.extend(overlay.draw(
             Some(&Vitals::of(me, session.ticks())),
             SIZE.0,
             SIZE.1,
             0.016,
         ));
-        gpu.render(&frame, 0)?;
+        gpu.render(&mut frame, &ui, 0)?;
     }
     let (width, height, pixels) = gpu.read_frame()?;
     shooter_client::write_ppm(path, width, height, &pixels)?;

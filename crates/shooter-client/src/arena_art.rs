@@ -8,11 +8,11 @@
 //! shooter#60). The greybox maps have no placements and keep their boxes
 //! (`crate::scene`).
 
+use crate::gfx::{Instance, InstanceId, MaterialId, MeshId, TextureId, World};
 use crate::robots::draw::material;
 use crate::robots::kit::KitData;
 use crate::scene::METRES_PER_UNIT;
 use render_engine::glam::{Mat4, Quat, Vec3};
-use render_engine::world::{Instance, InstanceId, MaterialId, MeshId, TextureId, World};
 use shooter_sim::Arena;
 use shooter_sim::arena_kit::{Module, Placement, Variant};
 use shooter_sim::scenery::PlaceableState;
