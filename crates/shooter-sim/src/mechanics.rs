@@ -36,9 +36,13 @@
 //! knee servos along the gait's cycle, so legs move the robot only through their contacts, can
 //! push it over and never place it.
 //!
-//! **Energy** (D2.i70.3): every commanded actuator asks the pool for its part's draw each tick
-//! (a flat cost a tick while commanded: simplest, provisional), actuators in part-ID order;
-//! one that is refused is off that tick. Regeneration follows the requests.
+//! **Energy** (D2.i70.3 as D2.i123.2 amends it, shooter#128): every commanded actuator asks the
+//! robot's electricity for its work each tick ([`draw`]): its part's rated draw scaled by how
+//! hard the command drives it (a stride's length, a rate against the top rate, a servo angle away
+//! from centre) and, for locomotion, by the mass the robot carries ([`load`]). A motor at rest (a
+//! zero stride, rate or angle) or idle costs nothing. Actuators ask in part-ID order; one that is
+//! refused is off that tick, and only it. The generators run after the requests
+//! ([`crate::energy::Pool::generate`]).
 //!
 //! **Stalls.** After the step each actuator reports its joint's angle, rate and motor torque;
 //! it stalls when its motor gives its most torque yet the rate stays far from the command (or
@@ -292,11 +296,77 @@ fn cells_of(part: &Part) -> [u8; 3] {
 
 /// A part's mass (kg) with its mod's.
 fn mass_of(part: &Part) -> f32 {
+    f32::from(whole_mass(part))
+}
+
+/// A part's mass (whole kg) with its mod's.
+fn whole_mass(part: &Part) -> u16 {
     let modification = part
         .modification
         .and_then(|id| BETA.modification(id))
         .map_or(0, |modification| modification.mass);
-    f32::from(part_type(part).mass + modification)
+    part_type(part).mass + modification
+}
+
+/// The mass (kg) at which a locomotion part draws its rated draw (provisional, Atlas Q2.i70.1):
+/// a heavier robot costs its legs, wheels and tracks proportionally more to move.
+pub const RATED_LOAD_KG: u32 = 200;
+
+/// The mass (whole kg) of `build`'s parts that are still `attached` (by index): what its
+/// locomotion carries.
+pub fn load(build: &Assembly, attached: impl Fn(usize) -> bool) -> u32 {
+    build
+        .parts()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| attached(*index))
+        .map(|(_, part)| u32::from(whole_mass(part)))
+        .sum()
+}
+
+/// How hard `command` works an actuator of `kind` turning at most `drive`'s top rate, in
+/// thousandths: a stride's length (a leg's), a rate against the top rate, a servo's angle away
+/// from centre against a quarter turn; nothing idle or at rest.
+#[must_use]
+pub fn activity(kind: Actuator, drive: Drive, command: Command) -> u32 {
+    let full = 1_000;
+    match command {
+        Command::Idle => 0,
+        Command::Stride(stride) if kind == Actuator::Locomotion(Locomotion::Leg) => {
+            (u32::from(stride.unsigned_abs()) * 10).min(full)
+        }
+        Command::Stride(_) => 0,
+        // Milliradians a second against the top rate's tenths of a radian a second.
+        Command::Rate(rate) => {
+            (u32::from(rate.unsigned_abs()) * 10 / u32::from(drive.rate.max(1))).min(full)
+        }
+        Command::Angle(angle) => {
+            (u32::from(angle.unsigned_abs()) * full / u32::from(Orientation::QUARTER)).min(full)
+        }
+    }
+}
+
+/// The electricity (milli-units) a part rated to draw `draw` a second ([`Drive::draw`]) uses in
+/// one tick working at `activity` thousandths while carrying `load_kg` (locomotion) or its rated
+/// load (`None`: joints). Rounded up, so any work costs something; nothing at no activity.
+#[must_use]
+pub fn work(draw: u16, activity: u32, load_kg: Option<u32>) -> u32 {
+    let load = u64::from(load_kg.unwrap_or(RATED_LOAD_KG));
+    let numerator = u64::from(draw) * u64::from(MILLI) * u64::from(activity) * load;
+    let denominator = u64::from(TICK_HZ) * 1_000 * u64::from(RATED_LOAD_KG);
+    u32::try_from(numerator.div_ceil(denominator)).unwrap_or(u32::MAX)
+}
+
+/// What `actuator` draws (milli-units) for one tick of `command` on a robot of `load_kg`
+/// ([`activity`], [`work`]): locomotion scales with the load, joints do not.
+#[must_use]
+pub fn draw(actuator: &ActuatorPlan, command: Command, load_kg: u32) -> u32 {
+    let load = matches!(actuator.kind, Actuator::Locomotion(_)).then_some(load_kg);
+    work(
+        actuator.drive.draw,
+        activity(actuator.kind, actuator.drive, command),
+        load,
+    )
 }
 
 /// Each part's frame, in part-ID order.
@@ -1069,8 +1139,10 @@ pub struct Robot {
     pub lost: u32,
     pub layout: Layout,
     pub pool: Pool,
-    /// Milli-units ([`crate::energy`]).
+    /// Electricity, milli-units ([`crate::energy`]).
     pub charge: u32,
+    /// Fuel, milli-units.
+    pub fuel: u32,
     /// Ticks since it spawned: the gait's clock.
     pub clock: u32,
     /// The first body id.
@@ -1097,6 +1169,7 @@ pub struct RobotState {
     pub build: Assembly,
     pub lost: u32,
     pub charge: u32,
+    pub fuel: u32,
     pub clock: u32,
     /// Every body's motion, in [`Layout::bodies`] order (of [`Layout::connected`]).
     pub bodies: Vec<Motion>,
@@ -1247,9 +1320,11 @@ pub struct Mechanics {
     robots: Vec<Robot>,
     statics: Vec<RigidBody>,
     gravity: [f32; 3],
-    /// Whether [`Mechanics::step`] regenerates the robots' pools (the match regenerates them
-    /// itself, after every request of the tick).
-    pub regenerate: bool,
+    /// Whether [`Mechanics::step`] meters the robots' resources itself: pays each commanded
+    /// actuator's draw and runs the generators. The match meters them itself ([`crate::session`]):
+    /// it pays the motors first in the tick and passes a refused one as idle, and runs the
+    /// generators after every request.
+    pub metered: bool,
     /// The match's friction for every robot body, if not their own (and its legs' narrower
     /// limits): the movement drive ([`Mechanics::drive`]) is what carries a robot over the ground,
     /// so its feet and wheels slide where it drives them instead of dragging it over, and it
@@ -1289,7 +1364,7 @@ impl Mechanics {
             robots: Vec::new(),
             statics: statics.to_vec(),
             gravity,
-            regenerate: true,
+            metered: true,
             traction: None,
             debris: Vec::new(),
         })
@@ -1319,7 +1394,7 @@ impl Mechanics {
             robots: Vec::new(),
             statics: std::mem::take(&mut self.statics),
             gravity: self.gravity,
-            regenerate: self.regenerate,
+            metered: self.metered,
             traction: self.traction,
             debris: Vec::new(),
         };
@@ -1348,8 +1423,8 @@ impl Mechanics {
         rebuilt
     }
 
-    /// The match's robots ([`crate::session`]): under `gravity` (m/s²), their pools
-    /// regenerated by the match, every body frictionless (the movement drive carries them) and
+    /// The match's robots ([`crate::session`]): under `gravity` (m/s²), their resources
+    /// metered by the match, every body frictionless (the movement drive carries them) and
     /// their legs bending only within the gait presets' range.
     ///
     /// # Errors
@@ -1357,7 +1432,7 @@ impl Mechanics {
     /// If the physics world refuses a static body.
     pub fn for_match(statics: &[RigidBody], gravity: [f32; 3]) -> Result<Self, PhysicsError> {
         let mut mechanics = Self::with_gravity(statics, gravity)?;
-        mechanics.regenerate = false;
+        mechanics.metered = false;
         mechanics.traction = Some(0.0);
         Ok(mechanics)
     }
@@ -1394,6 +1469,7 @@ impl Mechanics {
             build,
             lost: 0,
             charge: Pool::of(&build).capacity,
+            fuel: Pool::of(&build).fuel,
             clock: 0,
             bodies,
         });
@@ -1735,6 +1811,7 @@ impl Mechanics {
             build,
             lost,
             charge,
+            fuel,
             clock,
             ..
         } = *robot;
@@ -1783,11 +1860,12 @@ impl Mechanics {
         let commanded = vec![MotorDrive::Off; layout.actuators.len()];
         self.robots.push(Robot {
             slot,
-            pool: Pool::of(&build),
+            pool: Pool::connected(&build, |index| index >= 32 || lost & (1 << index) == 0),
             build,
             lost,
             layout,
             charge,
+            fuel,
             clock,
             base,
             hinges,
@@ -1914,6 +1992,7 @@ impl Mechanics {
                     build: robot.build,
                     lost: robot.lost,
                     charge: robot.charge,
+                    fuel: robot.fuel,
                     clock: robot.clock,
                     bodies: (0..robot.layout.bodies.len())
                         .map(|index| {
@@ -1928,9 +2007,11 @@ impl Mechanics {
         }
     }
 
-    /// One tick: each robot's actuators ask its pool for energy and set their motors from
-    /// `controls` (one per robot, in order; missing ones idle), the pools regenerate, the
-    /// world steps, and every actuator's state is read back.
+    /// One tick: each robot's actuators set their motors from `controls` (one per robot, in
+    /// order; missing ones idle), the world steps, and every actuator's state is read back.
+    /// [`Mechanics::metered`]: each actuator first asks its robot's electricity for its
+    /// [`draw`] (a refused one is off) and the generators run after them; otherwise (the match)
+    /// every command given is already paid for.
     ///
     /// # Errors
     ///
@@ -1938,6 +2019,10 @@ impl Mechanics {
     pub fn step(&mut self, controls: &[Controls]) -> Result<(), PhysicsError> {
         for (index, robot) in self.robots.iter_mut().enumerate() {
             let controls = controls.get(index).copied().unwrap_or(Controls::IDLE);
+            let lost = robot.lost;
+            let carried = load(&robot.build, |index| {
+                index >= 32 || lost & (1 << index) == 0
+            });
             let gait = match controls.gait {
                 GaitChoice::Suggested => robot.layout.suggested_gait(),
                 GaitChoice::Preset(gait) => Some(gait),
@@ -1960,8 +2045,9 @@ impl Mechanics {
                     Command::Stride(_) => is_leg,
                     Command::Rate(_) | Command::Angle(_) => true,
                 };
-                let draw = u32::from(actuator.drive.draw) * MILLI / u32::from(TICK_HZ);
-                let powered = active && spend(&mut robot.charge, draw);
+                let powered = active
+                    && (!self.metered
+                        || spend(&mut robot.charge, draw(actuator, command, carried)));
                 let max_torque = f32::from(actuator.drive.torque);
                 let max_rate = f32::from(actuator.drive.rate) / 10.0;
                 let servo = |angle: f32| MotorDrive::Angle {
@@ -2005,8 +2091,8 @@ impl Mechanics {
                 robot.commanded[at] = drives.first().copied().unwrap_or_default();
                 robot.actuators[at].powered = powered;
             }
-            if self.regenerate {
-                robot.pool.regenerate(&mut robot.charge);
+            if self.metered {
+                robot.pool.generate(&mut robot.charge, &mut robot.fuel);
             }
             robot.clock = robot.clock.wrapping_add(1);
         }

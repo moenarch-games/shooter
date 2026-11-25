@@ -2,8 +2,9 @@
 //! shot from the front or the side strikes, splash on every part in reach once, armor plates
 //! and penetration, several parts lost at once and what they take with them (weapons that no
 //! longer fire, a robot that no longer walks), the root chassis as the only kill and respawn
-//! restoring the build, a destroyed battery's energy and blast, the wire and a predictor following the
-//! host, and bot matches that lose parts and replay exactly.
+//! restoring the build, a destroyed battery's energy and blast, a lost generator or fuel tank
+//! stopping the recharge (shooter#128), the wire and a predictor following the host, and bot
+//! matches that lose parts and replay exactly.
 // The platform's floats only check results here; the simulation uses libm (clippy.toml).
 #![allow(clippy::disallowed_methods)]
 
@@ -550,6 +551,69 @@ fn a_destroyed_battery_takes_its_energy_once_and_blasts_its_neighbours() {
     let b = &session.fighters[1];
     assert_eq!(b.pool().capacity, 100_000);
     assert_eq!(b.energy, 100_000);
+    // The battery held electricity only: the fuel and the generator are untouched.
+    assert_eq!((b.pool().fuel, b.pool().burn), (1_000_000, 200));
+    assert_eq!(b.fuel, 1_000_000);
+}
+
+/// Losing a resource module changes what the robot has (shooter#128): a generator shot off
+/// leaves the fuel but nothing recharges the electricity; a tank shot off takes its fuel and the
+/// generator it carries. Either way the robot lives on what it holds, and nothing drains it.
+#[test]
+fn losing_the_generator_or_the_tank_stops_the_recharge() {
+    const TANK: PartId = PartId(20);
+    const GENERATOR: PartId = PartId(21);
+    // Half empty, standing: nothing changes over a second.
+    let holds = |session: &mut Session, fuel: u32| {
+        session.fighters[1].energy = 50_000;
+        for _ in 0..60 {
+            step(session, Intent::IDLE, facing(0));
+        }
+        let b = &session.fighters[1];
+        assert!(b.alive());
+        assert_eq!((b.energy, b.fuel), (50_000, fuel));
+    };
+
+    // The generator on the roof.
+    let mut session = duel();
+    rebuild(&mut session, 1, STANDARD);
+    let events = shoot(&mut session, Weapon::RailGun, 0, |session| {
+        part_center(session, 1, GENERATOR)
+    });
+    assert_eq!(struck(&events)[0].0, GENERATOR, "{:?}", struck(&events));
+    assert!(detached(&events).contains(&(GENERATOR, true)));
+    let b = &session.fighters[1];
+    assert_eq!(
+        b.pool(),
+        Pool {
+            capacity: 100_000,
+            fuel: 1_000_000,
+            burn: 0
+        }
+    );
+    assert_eq!(b.fuel, 1_000_000, "the fuel stays");
+    holds(&mut session, 1_000_000);
+
+    // The tank under it: its fuel goes, and the generator on it comes off whole.
+    let mut session = duel();
+    rebuild(&mut session, 1, STANDARD);
+    let events = shoot(&mut session, Weapon::RailGun, 0, |session| {
+        part_center(session, 1, TANK)
+    });
+    assert_eq!(struck(&events)[0].0, TANK, "{:?}", struck(&events));
+    let lost = detached(&events);
+    assert!(lost.contains(&(TANK, true)) && lost.contains(&(GENERATOR, false)));
+    let b = &session.fighters[1];
+    assert_eq!(
+        b.pool(),
+        Pool {
+            capacity: 100_000,
+            fuel: 0,
+            burn: 0
+        }
+    );
+    assert_eq!(b.fuel, 0, "its fuel went with it");
+    holds(&mut session, 0);
 }
 
 #[test]

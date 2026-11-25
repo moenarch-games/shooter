@@ -14,14 +14,18 @@
 //! shooter#127), the held one opaque with an orange badge and glowing for a moment after a
 //! switch. Under them the held weapon's name, its refire filling while it recharges, and a line
 //! with its mod and, when it cannot fire, why (lost, low energy). The bottom left shows the root
-//! chassis' health as a large reading over its bar and the energy pool as a thin bar under it,
-//! the share one shot of the held weapon takes marked on it, and above them, in teal, field
+//! chassis' health as a large reading over its bar and under it the robot's resources
+//! (shooter#128): its electricity ("power", blue, the share one shot of the held weapon takes
+//! marked on its bar) with what it used and made a second, and its fuel (amber) with what its
+//! generators burn a second; in red instead, what cannot work (a walk refused for want of power,
+//! a generator without fuel) or, muted, that nothing recharges it (no generator). Above them, in
+//! teal, field
 //! repair ([`repair_panel`], [`crate::repair_menu`]): the quick repair menu while it is open,
 //! else the repair under way, else how many parts may be repaired.
 
 use crate::ui::{self, CAP_HEIGHT, Item};
 use render_engine::glam::{Vec2, Vec4};
-use shooter_sim::energy::MILLI;
+use shooter_sim::energy::{Flow, MILLI};
 use shooter_sim::robot::{BETA, ModId};
 use shooter_sim::session::Fighter;
 use shooter_sim::{Assembly, Instance, TICK_HZ, Weapon};
@@ -51,13 +55,15 @@ pub(crate) mod palette {
     pub const RED: u32 = 0xE0_4A_2F;
     /// Field repair: the menu, the part under repair and its glow on the robot.
     pub const TEAL: u32 = 0x4F_D1_A5;
-    /// The energy pool in the HUD.
+    /// The electricity in the HUD.
     pub const ENERGY: u32 = 0x5C_C8_FF;
+    /// The fuel in the HUD.
+    pub const FUEL: u32 = 0xE6_C2_4C;
     /// Behind the HUD's text and bars: a drop shadow and the empty part of a bar.
     pub const SHADOW: u32 = 0x0B_0D_0F;
 }
 use crate::repair_menu::{Entry, RepairView};
-use palette::{ENERGY, GRAPHITE, MUTED, OLIVE, ORANGE, PALE, RED, SHADOW, TEAL};
+use palette::{ENERGY, FUEL, GRAPHITE, MUTED, OLIVE, ORANGE, PALE, RED, SHADOW, TEAL};
 
 /// A weapon's name on the HUD.
 #[must_use]
@@ -327,8 +333,16 @@ pub struct Vitals {
     pub cost: u32,
     /// Whether the held weapon fires every tick the trigger is held (laser, flamethrower).
     pub continuous: bool,
+    /// Its electricity and storage (milli-units).
     pub energy: u32,
     pub capacity: u32,
+    /// Its fuel and its tanks' storage (milli-units).
+    pub fuel: u32,
+    pub fuel_capacity: u32,
+    /// The fuel its connected generators may burn a tick (none: nothing recharges it).
+    pub burn: u32,
+    /// What its resources did in the last tick: used, made, burned, a refused walk.
+    pub flow: Flow,
     pub chassis: u16,
     pub chassis_whole: u16,
 }
@@ -369,6 +383,10 @@ impl Vitals {
             continuous: tuning.refire_ticks(held.weapon) <= 1,
             energy: fighter.energy,
             capacity: fighter.pool().capacity,
+            fuel: fighter.fuel,
+            fuel_capacity: fighter.pool().fuel,
+            burn: fighter.pool().burn,
+            flow: fighter.flow,
             chassis: fighter.chassis_health(),
             chassis_whole: shooter_sim::damage::PartDamage::fresh(build).chassis_health(build),
         }
@@ -408,6 +426,32 @@ pub struct Overlay {
     /// The longest cooldown since the held weapon was last ready: what the refire bar fills.
     period: u32,
     last_cooldown: u32,
+    /// The electricity used and made and the fuel burned a second, smoothed over the last
+    /// half second or so (units a second): the HUD's consumption readings.
+    rates: Rates,
+}
+
+/// Resource rates a second ([`Overlay::rates`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Rates {
+    pub used: f32,
+    pub made: f32,
+    pub burned: f32,
+}
+
+/// How long the consumption readings take to follow a change (seconds).
+const RATE_SECONDS: f32 = 0.5;
+
+impl Rates {
+    /// The rates moved toward `flow` (a tick's amounts) over `seconds`.
+    fn follow(&mut self, flow: Flow, seconds: f32) {
+        #[allow(clippy::cast_precision_loss)]
+        let per_second = |amount: u32| amount as f32 * f32::from(TICK_HZ) / MILLI as f32;
+        let step = (seconds / RATE_SECONDS).clamp(0.0, 1.0);
+        self.used += (per_second(flow.used) - self.used) * step;
+        self.made += (per_second(flow.made) - self.made) * step;
+        self.burned += (per_second(flow.burned) - self.burned) * step;
+    }
 }
 
 /// Layout units (the frame is 720 high in them).
@@ -416,7 +460,7 @@ const BOTTOM: f32 = 720.0 - MARGIN;
 /// The chassis and energy bars' width.
 const BAR_WIDTH: f32 = 240.0;
 /// The top of the bottom left block (the chassis reading): the repair panel sits above it.
-const VITALS_TOP: f32 = BOTTOM - 52.0;
+const VITALS_TOP: f32 = BOTTOM - 86.0;
 /// The held weapon's name, its cap top.
 const NAME_TOP: f32 = BOTTOM - 46.0;
 /// The weapon chips: their height, the gap between them and their top.
@@ -470,6 +514,7 @@ impl Overlay {
             self.period = self.period.max(vitals.cooldown);
         }
         self.last_cooldown = vitals.cooldown;
+        self.rates.follow(vitals.flow, seconds);
         #[allow(clippy::cast_precision_loss)]
         let (width, height) = (width as f32, height as f32);
         let scale = height / 720.0;
@@ -480,7 +525,7 @@ impl Overlay {
         let right = width / scale - MARGIN;
         chips(&mut painter, vitals, right, self.highlight());
         self.held_weapon(&mut painter, vitals, right);
-        bars(&mut painter, vitals, MARGIN);
+        bars(&mut painter, vitals, self.rates, MARGIN);
         painter.quads
     }
 
@@ -781,9 +826,99 @@ fn entry_line(painter: &mut Painter, x: f32, width: f32, y: f32, entry: &Entry, 
     }
 }
 
-/// The root chassis' health (a large reading over its bar) and the energy pool (a thin bar under
-/// it, the share one shot of the held weapon takes marked at its end), from `x`.
-fn bars(painter: &mut Painter, vitals: &Vitals, x: f32) {
+/// What keeps a resource's consumers or producers from working, if anything (shooter#128).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Shortage {
+    /// The locomotion was refused the electricity to walk.
+    DriveStalled,
+    /// No generator is connected: nothing recharges the electricity.
+    NoGenerator,
+    /// The generators have no fuel left to burn.
+    NoFuel,
+}
+
+impl Shortage {
+    /// Its words on the HUD.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::DriveStalled => "drive: no power",
+            Self::NoGenerator => "no generator",
+            Self::NoFuel => "generator: no fuel",
+        }
+    }
+}
+
+impl Vitals {
+    /// What stops the electricity's consumers: a refused walk.
+    #[must_use]
+    pub const fn power_shortage(&self) -> Option<Shortage> {
+        if self.flow.stalled {
+            Some(Shortage::DriveStalled)
+        } else {
+            None
+        }
+    }
+
+    /// What stops the recharge: no generator connected, or no fuel for it.
+    #[must_use]
+    pub const fn fuel_shortage(&self) -> Option<Shortage> {
+        if self.burn == 0 {
+            Some(Shortage::NoGenerator)
+        } else if self.fuel == 0 {
+            Some(Shortage::NoFuel)
+        } else {
+            None
+        }
+    }
+}
+
+/// A rate a second as the HUD reads it: whole units, with its sign.
+fn rate(sign: char, value: f32) -> String {
+    format!("{sign}{value:.0}")
+}
+
+/// One resource's row from `y`: its name and amount on the left in `color`, on the right what
+/// keeps it from working (red) or its rates a second (muted), and its thin bar under them.
+#[allow(clippy::too_many_arguments)]
+fn resource(
+    painter: &mut Painter,
+    x: f32,
+    y: f32,
+    (name, color): (&str, u32),
+    (amount, whole): (u32, u32),
+    shortage: Option<Shortage>,
+    rates: &str,
+    track: Vec4,
+) -> f32 {
+    painter.label(
+        x,
+        y,
+        SMALL,
+        &format!("{name} {}", amount / MILLI),
+        srgb(color, 1.0),
+    );
+    match shortage {
+        Some(shortage) => {
+            painter.label_right(x + BAR_WIDTH, y, SMALL, shortage.label(), srgb(RED, 1.0));
+        }
+        None if !rates.is_empty() => {
+            painter.label_right(x + BAR_WIDTH, y, SMALL, rates, srgb(MUTED, 1.0));
+        }
+        None => {}
+    }
+    let bar_y = y + 7.0 * painter.snap_cell(SMALL) + 1.0;
+    #[allow(clippy::cast_precision_loss)]
+    let share = (amount as f32 / whole.max(1) as f32).clamp(0.0, 1.0);
+    painter.pill(x, bar_y, BAR_WIDTH, 4.0, share, (track, srgb(color, 1.0)));
+    bar_y
+}
+
+/// The root chassis' health (a large reading over its bar), then the robot's resources
+/// (shooter#128): its electricity (a thin bar, the share one shot of the held weapon takes marked
+/// at its end) and its fuel, each with its amount, its rates a second (`rates`: electricity used
+/// and made, fuel burned) and what keeps it from working, from `x`.
+fn bars(painter: &mut Painter, vitals: &Vitals, rates: Rates, x: f32) {
     let share = |value: u32, whole: u32| {
         #[allow(clippy::cast_precision_loss)]
         let share = value as f32 / whole.max(1) as f32;
@@ -807,13 +942,6 @@ fn bars(painter: &mut Painter, vitals: &Vitals, x: f32) {
         &format!("/ {}", vitals.chassis_whole),
         srgb(MUTED, 1.0),
     );
-    painter.label_right(
-        x + BAR_WIDTH,
-        small,
-        SMALL,
-        &(vitals.energy / MILLI).to_string(),
-        srgb(ENERGY, 1.0),
-    );
     let chassis_y = VITALS_TOP + 37.0;
     painter.pill(
         x,
@@ -830,19 +958,35 @@ fn bars(painter: &mut Painter, vitals: &Vitals, x: f32) {
         vitals.cost
     };
     let cost = share(shot.min(vitals.energy), vitals.capacity);
-    let energy_y = chassis_y + 12.0;
     let energy_track = if vitals.energy < vitals.cost {
         srgb(RED, 0.55)
     } else {
         track()
     };
-    painter.pill(
+    let energy_y = resource(
+        painter,
         x,
-        energy_y,
-        BAR_WIDTH,
-        4.0,
-        charge,
-        (energy_track, srgb(ENERGY, 1.0)),
+        chassis_y + 11.0,
+        ("power", ENERGY),
+        (vitals.energy, vitals.capacity),
+        vitals.power_shortage(),
+        &format!("{}  {} /s", rate('-', rates.used), rate('+', rates.made)),
+        energy_track,
+    );
+    let burning = if rates.burned >= 0.5 {
+        format!("{} /s", rate('-', rates.burned))
+    } else {
+        String::new()
+    };
+    resource(
+        painter,
+        x,
+        energy_y + 7.0,
+        ("fuel", FUEL),
+        (vitals.fuel, vitals.fuel_capacity),
+        vitals.fuel_shortage(),
+        &burning,
+        track(),
     );
     if cost > 0.0 {
         painter.round_rect(
@@ -1007,6 +1151,65 @@ mod tests {
             }
         }
         assert!(overlay.draw(None, 1280, 720, 0.016).is_empty());
+    }
+
+    /// The resources on the HUD (shooter#128): electricity and fuel with their storage, the rates
+    /// a second following the ticks' flow, and what cannot work: a walk refused for want of
+    /// power, a generator out of fuel, a robot without one.
+    #[test]
+    fn the_hud_shows_both_pools_their_rates_and_what_cannot_work() {
+        use shooter_sim::robot::{BETA, STANDARD};
+        let vitals = standard();
+        assert_eq!((vitals.energy, vitals.capacity), (100_000, 100_000));
+        assert_eq!((vitals.fuel, vitals.fuel_capacity), (1_000_000, 1_000_000));
+        assert_eq!(vitals.burn, 200);
+        assert_eq!(
+            (vitals.power_shortage(), vitals.fuel_shortage()),
+            (None, None)
+        );
+
+        // A tick's flow held for 10 s: 92 used, 400 made from 200 burned, at 60 ticks a second.
+        let mut rates = Rates::default();
+        let flow = Flow {
+            used: 92,
+            made: 400,
+            burned: 200,
+            stalled: false,
+        };
+        for _ in 0..600 {
+            rates.follow(flow, 1.0 / 60.0);
+        }
+        assert!((rates.used - 5.52).abs() < 0.05, "{rates:?}");
+        assert!((rates.made - 24.0).abs() < 0.1, "{rates:?}");
+        assert!((rates.burned - 12.0).abs() < 0.1, "{rates:?}");
+
+        // Drained of both: the walk refused, the generator without fuel.
+        let mut session = Session::new(shooter_sim::Arena::greybox()).unwrap();
+        // On its feet first.
+        for _ in 0..30 {
+            session.tick(shooter_sim::Intent::IDLE).unwrap();
+        }
+        session.fighters[0].energy = 0;
+        session.fighters[0].fuel = 0;
+        session
+            .tick(shooter_sim::Intent {
+                forward: 1,
+                ..shooter_sim::Intent::IDLE
+            })
+            .unwrap();
+        let drained = Vitals::of(session.local(), session.ticks());
+        assert_eq!(drained.power_shortage(), Some(Shortage::DriveStalled));
+        assert_eq!(drained.fuel_shortage(), Some(Shortage::NoFuel));
+        assert_eq!(Shortage::DriveStalled.label(), "drive: no power");
+        let quads = Overlay::default().draw(Some(&drained), 1280, 720, 0.016);
+        assert!(!quads.is_empty());
+
+        // No generator at all: the standard build without its roof's tank and generator.
+        let mut bare = STANDARD.candidate();
+        bare.parts.retain(|part| part.id < 20);
+        session.rebuild(0, BETA.validate(&bare).unwrap()).unwrap();
+        let bare = Vitals::of(session.local(), session.ticks());
+        assert_eq!(bare.fuel_shortage(), Some(Shortage::NoGenerator));
     }
 
     #[test]

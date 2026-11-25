@@ -360,19 +360,26 @@ fn the_proving_cell_routes_land_alike_on_the_rapier_oracle() {
 
 /// The drydock (shooter#55): up the gantry's ramp and over a gangway onto the foredeck, up the
 /// stern ramp, the outer lane's pad and a grapple on the bow mast onto the foredeck. As on the
-/// proving cell, the standard robot stands on the same level on both backends after every
-/// route's resting legs, and the pad and the hook act alike.
+/// proving cell, the standard robot's frame stands on the same level on both backends after
+/// every route's resting legs, and the pad and the hook act alike. The frame is the standard
+/// build without its roof's tank and generator (shooter#128): on the stern ramp's landing the
+/// Rapier oracle tips the robot carrying them where physics-engine lands it upright (which
+/// `tests/moves.rs` checks on the shipped build), so the oracle compares the frame both landed
+/// alike before them.
 #[test]
 fn the_drydock_routes_land_alike_on_the_rapier_oracle() {
-    use shooter_sim::robot::STANDARD;
+    use shooter_sim::robot::{BETA, STANDARD};
+    let mut frame = STANDARD.candidate();
+    frame.parts.retain(|part| part.id < 20);
+    let frame = BETA.validate(&frame).unwrap();
     for scenario in [
         scenarios::DOCK_GANTRY,
         scenarios::DOCK_STERN,
         scenarios::DOCK_PAD,
         scenarios::DOCK_GRAPPLE,
     ] {
-        let engine = run_as(Backend::Engine, scenario.arena, scenario.legs, STANDARD);
-        let rapier = run_as(Backend::Rapier, scenario.arena, scenario.legs, STANDARD);
+        let engine = run_as(Backend::Engine, scenario.arena, scenario.legs, frame);
+        let rapier = run_as(Backend::Rapier, scenario.arena, scenario.legs, frame);
         let resting = scenario.legs.iter().filter(|leg| {
             let intent = leg.intent;
             intent.forward == 0

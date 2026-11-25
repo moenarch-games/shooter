@@ -1,103 +1,160 @@
-//! The shared robot energy pool (Atlas D2.i70.3, D2.i70.4): one pool a robot, no wiring graph,
-//! no circuits, no heat.
+//! A robot's resources (Atlas D2.i70.3, D2.i70.4 as D2.i123.1–4 amend them, shooter#128):
+//! electricity and fuel, one pool of each a robot, no wiring graph, no circuits, no heat.
 //!
-//! **Capacity and regeneration.** The root chassis holds a baseline capacity and regenerates it
-//! (Atlas D2.i89.1, [`crate::robot::ROOT_CAPACITY`], [`crate::robot::ROOT_REGEN`]); each battery
-//! adds stored capacity only ([`crate::robot::Kind::Battery`]). A robot's pool is its
-//! build's ([`Pool::of`]); it comes to life full and refills by [`Pool::regen`] every tick, never
-//! past its capacity. A battery the robot loses ([`crate::damage`]) takes its capacity with it
-//! ([`Pool::attached`]) and its share of the charge, once ([`Pool::shrink`]). Everything is
-//! integer: charges and costs are milli-units ([`MILLI`] to one energy unit), regeneration a
-//! whole number of milli-units a tick.
+//! **Storage.** The root chassis holds a baseline of electricity (Atlas D2.i89.1,
+//! [`crate::robot::ROOT_CAPACITY`]); each battery adds electricity storage
+//! ([`crate::robot::Kind::Battery`]) and each fuel tank fuel storage
+//! ([`crate::robot::Kind::FuelTank`]). A robot's pools are its build's ([`Pool::of`]); it comes
+//! to life with both full. A battery or tank the robot loses ([`crate::damage`]) takes its
+//! storage with it ([`Pool::attached`]) and its share of the stored amount, once
+//! ([`Pool::shrink`], [`Pool::shrink_fuel`]). Everything is integer: amounts and costs are
+//! milli-units ([`MILLI`] to one unit).
 //!
-//! **Spending.** Every activation asks the pool for its whole cost ([`spend`]): a weapon's shot,
-//! swing, hook or continuous tick ([`crate::robot::Tuning::energy`], its weapon mod and any
-//! carried module included), and a thruster jump ([`crate::pickups`]). A request is granted whole
-//! or not at all: the charge never goes negative and nothing is paid twice. A refused request
-//! simply does not happen (no shot, no cooldown spent, a plain jump instead of a boosted one);
-//! the same request a later tick succeeds once regeneration has refilled enough. There is no
-//! automatic equalisation and no player-set priority.
+//! **Recovery is component-driven** (D2.i123.1): nothing refills by itself, and there is no idle
+//! drain. Each connected generator ([`crate::robot::Kind::Generator`]) burns fuel from the tanks
+//! and makes [`ELECTRICITY_PER_FUEL`] milli-units of electricity for each milli-unit of fuel
+//! ([`Pool::generate`]): at most its burn rate a tick, never more than the fuel there is, and only
+//! as much as the electricity storage has room for, so a full robot burns nothing and no
+//! electricity comes from nothing. A robot without a connected generator, or without fuel, never
+//! recharges (until its next life; arena stations are shooter#129).
+//!
+//! **Spending.** Every consumer asks for its whole cost ([`spend`]): a weapon's shot, swing, hook
+//! or continuous tick ([`crate::robot::Tuning::energy`], its weapon mod and any carried module
+//! included), a thruster jump ([`crate::pickups`]), a repair tick ([`crate::repair`]) and the
+//! motors' work ([`crate::mechanics::draw`]: by activity and load, nothing at rest). Every
+//! consumer today runs on electricity; fuel only feeds the generators. A request is granted
+//! whole or not at all: an amount never goes negative and nothing is paid twice. A refused
+//! request simply does not happen (no shot, no cooldown spent, a plain jump instead of a boosted
+//! one, a motor that stays limp, a walk that does not start): only the consumer that was refused
+//! stops (D2.i123.4); there is no zero-energy death or limp mode.
 //!
 //! **Order within a tick** (first come, first served; provisional, Atlas Q2.i70.4): a robot's
-//! requests are granted in the order the tick resolves its actions: its jump (a thruster jump,
-//! during movement), then its grapple module's hook, then its blade swing, then its gun (one
-//! fires a tick; a refused swing leaves the gun its turn). Regeneration comes after every
-//! request of the tick. Robots resolve in slot order, but each has its own pool, so no robot's
-//! request ever waits on another's.
-//! A mechanical robot's motors ([`crate::mechanics`]) ask for their draw each commanded tick, in
-//! part-ID order, before its pool regenerates. A field repair ([`crate::repair`]) asks between
-//! the two: after the gun and every hit of the tick, before the motors.
+//! requests are granted in the order the tick resolves them: its motors (the locomotion's walk,
+//! then its joints in part-ID order), its jump (a thruster jump, during movement), then its
+//! grapple module's hook, then its blade swing, then its guns (by part ID), then a field repair
+//! (after every hit of the tick). The generators run after every request of the tick. Robots
+//! resolve in slot order, but each has its own pools, so no robot's request ever waits on
+//! another's.
 //!
-//! The capacities, regeneration and costs are provisional defaults (Atlas Q2.i70.1), not
-//! owner-approved balance.
+//! The storage, rates and costs are provisional defaults (Atlas Q2.i70.1), not owner-approved
+//! balance.
 
 use crate::TICK_HZ;
 use crate::damage::PartDamage;
-use crate::robot::{Assembly, BETA, energy};
+use crate::robot::{Assembly, BETA, capacity};
 
-/// Milli-units in one energy unit: the fixed point of charges and costs.
+/// Milli-units in one unit: the fixed point of amounts and costs.
 pub const MILLI: u32 = 1_000;
 
-/// A robot's energy pool: its capacity and its regeneration, from its build.
+/// The electricity a generator makes from one unit of fuel (provisional, Atlas Q2.i70.1).
+pub const ELECTRICITY_PER_FUEL: u32 = 2;
+
+/// A robot's pools: how much electricity and fuel it can store and how much fuel its generators
+/// may burn, from its build.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub struct Pool {
-    /// Milli-units.
+    /// Electricity storage, milli-units.
     pub capacity: u32,
-    /// Milli-units a tick.
-    pub regen: u32,
+    /// Fuel storage, milli-units.
+    pub fuel: u32,
+    /// Fuel the generators burn a tick at most, milli-units.
+    pub burn: u32,
+}
+
+/// What a robot's resources did in one tick: a report for the HUD, not state.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct Flow {
+    /// Electricity granted to its consumers, milli-units.
+    pub used: u32,
+    /// Electricity its generators made, milli-units.
+    pub made: u32,
+    /// Fuel its generators burned, milli-units.
+    pub burned: u32,
+    /// The locomotion was refused the electricity to walk.
+    pub stalled: bool,
 }
 
 impl Pool {
-    /// The pool `build` gives (its parts in [`BETA`]): capacity in milli-units, and the root
-    /// chassis' regeneration a second spread over the ticks of a second (rounded down).
+    /// The pools `build` gives (its parts in [`BETA`]).
     #[must_use]
     pub fn of(build: &Assembly) -> Self {
         let budget = BETA.budget(build);
-        Self {
-            capacity: budget.capacity * MILLI,
-            regen: budget.regen * MILLI / u32::from(TICK_HZ),
-        }
+        Self::from_units(budget.capacity, budget.fuel, budget.burn)
     }
 
-    /// The pool of `build`'s parts still connected ([`crate::damage`]): a lost battery's
-    /// capacity is gone (and a destroyed root chassis' baseline, though that is the kill).
+    /// The pools of `build`'s parts still connected ([`crate::damage`]): a lost battery's or
+    /// tank's storage and a lost generator's burn are gone (and a destroyed root chassis'
+    /// baseline, though that is the kill).
     #[must_use]
     pub fn attached(build: &Assembly, damage: &PartDamage) -> Self {
-        let (capacity, regen) = build
+        Self::connected(build, |index| damage.attached(index))
+    }
+
+    /// The pools of `build`'s parts that are `attached` (by index).
+    #[must_use]
+    pub fn connected(build: &Assembly, attached: impl Fn(usize) -> bool) -> Self {
+        let (stored, fuel, burn) = build
             .parts()
             .iter()
             .enumerate()
-            .filter(|(index, _)| damage.attached(*index))
-            .filter_map(|(_, part)| Some(energy(part, BETA.part_type(part.kind)?)))
-            .fold((0, 0), |(capacity, regen), (more, faster)| {
-                (capacity + u32::from(more), regen + u32::from(faster))
+            .filter(|(index, _)| attached(*index))
+            .filter_map(|(_, part)| Some((part, BETA.part_type(part.kind)?)))
+            .fold((0, 0, 0), |(stored, fuel, burn), (part, kind)| {
+                (
+                    stored + u32::from(capacity(part, kind)),
+                    fuel + u32::from(kind.fuel),
+                    burn + u32::from(kind.burn),
+                )
             });
+        Self::from_units(stored, fuel, burn)
+    }
+
+    fn from_units(capacity: u32, fuel: u32, burn: u32) -> Self {
         Self {
             capacity: capacity * MILLI,
-            regen: regen * MILLI / u32::from(TICK_HZ),
+            fuel: fuel * MILLI,
+            burn: burn * MILLI / u32::from(TICK_HZ),
         }
     }
 
-    /// The charge left when the pool shrinks from `self` to `smaller` (a battery lost): the
-    /// lost capacity's share of `charge` goes with it (rounded up), and what remains fits the
+    /// The electricity left when the pool shrinks from `self` to `smaller` (a battery lost):
+    /// the lost storage's share of `charge` goes with it (rounded up), and what remains fits the
     /// smaller pool.
     #[must_use]
     pub fn shrink(self, smaller: Self, charge: u32) -> u32 {
-        if smaller.capacity >= self.capacity || self.capacity == 0 {
-            return charge.min(smaller.capacity);
-        }
-        let gone = u64::from(self.capacity - smaller.capacity);
-        let share = (u64::from(charge) * gone).div_ceil(u64::from(self.capacity));
-        let left = u64::from(charge).saturating_sub(share);
-        u32::try_from(left)
-            .unwrap_or(u32::MAX)
-            .min(smaller.capacity)
+        shrink(self.capacity, smaller.capacity, charge)
     }
 
-    /// One tick of regeneration on `charge`, never past the capacity.
-    pub fn regenerate(self, charge: &mut u32) {
-        *charge = charge.saturating_add(self.regen).min(self.capacity);
+    /// The fuel left when the pool shrinks from `self` to `smaller` (a tank lost), as
+    /// [`Pool::shrink`] does the electricity.
+    #[must_use]
+    pub fn shrink_fuel(self, smaller: Self, fuel: u32) -> u32 {
+        shrink(self.fuel, smaller.fuel, fuel)
     }
+
+    /// One tick of the generators: they burn fuel for the electricity storage's room, at most
+    /// their burn a tick and never more fuel than there is, and make [`ELECTRICITY_PER_FUEL`]
+    /// times as much electricity. What they burned and made.
+    pub fn generate(self, charge: &mut u32, fuel: &mut u32) -> (u32, u32) {
+        let room = self.capacity.saturating_sub(*charge);
+        let burned = self.burn.min(*fuel).min(room / ELECTRICITY_PER_FUEL);
+        let made = burned * ELECTRICITY_PER_FUEL;
+        *fuel -= burned;
+        *charge += made;
+        (burned, made)
+    }
+}
+
+/// `amount` of a store shrinking from `whole` to `left`: the lost share goes (rounded up) and
+/// the rest fits.
+fn shrink(whole: u32, left: u32, amount: u32) -> u32 {
+    if left >= whole || whole == 0 {
+        return amount.min(left);
+    }
+    let gone = u64::from(whole - left);
+    let share = (u64::from(amount) * gone).div_ceil(u64::from(whole));
+    let rest = u64::from(amount).saturating_sub(share);
+    u32::try_from(rest).unwrap_or(u32::MAX).min(left)
 }
 
 /// Grants a request for `cost` milli-units from `charge` whole, or refuses it and leaves the

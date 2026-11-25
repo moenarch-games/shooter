@@ -25,6 +25,8 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
+/// 18: the digests cover wire-25 snapshots (each robot's fuel beside its electricity,
+/// shooter#128).
 /// 17: the logged commands are wire-24 inputs (per-copy fire requests, shooter#127: every
 /// scripted person asks the parts 7 to 12 to fire as a weapon group now and then) and the
 /// digests cover wire-24 snapshots.
@@ -47,7 +49,7 @@ const MAGIC: &[u8; 4] = b"SHRP";
 /// robot's part healths, part hits and detachments); 7 carried wire 12 (shared energy charge,
 /// batteries, no heat), 6 wire 11 (robot builds as socket-grid component trees), 5 wire 10
 /// (module pickups), 4 wire 9 (robot builds with weapon mods).
-const FORMAT: u8 = 17;
+const FORMAT: u8 = 18;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 
@@ -384,34 +386,37 @@ mod tests {
         assert!(Replay::decode(&bytes[..HEADER_BYTES + 3]).is_err());
     }
 
-    /// Every robot's energy charge is part of the replayed match: two replays of the same log
-    /// spend and regenerate it alike, the robots do spend it, and the heavy build's battery
-    /// shows in its capacity.
+    /// Every robot's electricity and fuel are part of the replayed match: two replays of the
+    /// same log spend and generate them alike, the robots do spend electricity and burn fuel for
+    /// it, and the heavy build's battery shows in its capacity.
     #[test]
     fn a_replay_reproduces_every_energy_pool() {
         let replay = record(Script::DEFAULT).unwrap();
         let pools = || {
             let mut charges = Vec::new();
-            let (mut spent, mut battery) = (false, false);
+            let (mut spent, mut burned, mut battery) = (false, false, false);
             replay
                 .play(u64::MAX, |session| {
                     for fighter in session.fighters.iter().filter(|f| f.alive()) {
                         let pool = fighter.pool();
                         assert!(fighter.energy <= pool.capacity);
+                        assert!(fighter.fuel <= pool.fuel);
                         spent |= fighter.energy < pool.capacity;
+                        burned |= fighter.fuel < pool.fuel;
                         battery |= fighter.build == HEAVY && pool.capacity == 160_000;
                     }
                     charges.push(
                         session
                             .fighters
                             .iter()
-                            .map(|f| f.energy)
+                            .map(|f| (f.energy, f.fuel))
                             .collect::<Vec<_>>(),
                     );
                     Ok(())
                 })
                 .unwrap();
             assert!(spent, "the match spends energy");
+            assert!(burned, "and the generators burn fuel for it");
             assert!(battery, "the heavy person comes back with its battery");
             charges
         };

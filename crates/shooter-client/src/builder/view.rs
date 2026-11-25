@@ -1552,11 +1552,24 @@ impl Builder {
             ];
             if kind.capacity > 0 || kind.kind == Kind::Chassis {
                 let root = selected.is_some_and(|part| part.mount.is_none());
-                let (capacity, regen) = selected.map_or((kind.capacity, kind.regen), |part| {
-                    shooter_sim::robot::energy(part, kind)
+                let capacity = selected.map_or(kind.capacity, |part| {
+                    shooter_sim::robot::capacity(part, kind)
                 });
                 let root = if root { " (ROOT)" } else { "" };
-                rows.push(("ENERGY", format!("{capacity} +{regen}/S{root}")));
+                rows.push(("POWER", format!("{capacity} STORED{root}")));
+            }
+            if kind.fuel > 0 {
+                rows.push(("FUEL", format!("{} STORED", kind.fuel)));
+            }
+            if kind.burn > 0 {
+                rows.push((
+                    "GENERATES",
+                    format!(
+                        "{} POWER/S FROM {} FUEL/S",
+                        u32::from(kind.burn) * shooter_sim::energy::ELECTRICITY_PER_FUEL,
+                        kind.burn
+                    ),
+                ));
             }
             if kind.drive.torque > 0 {
                 rows.push((
@@ -1890,8 +1903,11 @@ impl Builder {
             bar.y + 66.0,
             SMALL,
             &format!(
-                "MASS {} KG   ENERGY {} +{}/S",
-                budget.mass, budget.capacity, budget.regen
+                "MASS {} KG   POWER {}   FUEL {}   +{}/S",
+                budget.mass,
+                budget.capacity,
+                budget.fuel,
+                budget.burn * shooter_sim::energy::ELECTRICITY_PER_FUEL
             ),
             srgb(PALE, 1.0),
         );

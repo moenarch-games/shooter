@@ -140,14 +140,17 @@ impl Bundle {
 /// no model for yet: the repair module draws as the sensor (the nearest small utility module,
 /// moritzbrantner/asset-tooling#742), the mount rails as the beams of their length and the
 /// adapter as the short beam (the nearest structural parts, moritzbrantner/asset-tooling#743),
-/// fitted to their cuboids by [`stand_in`].
+/// fitted to their cuboids by [`stand_in`]; until the kit models them (shooter#128) the fuel
+/// tank draws as the battery at half its length and the generator as the sensor (the same cube).
 #[must_use]
 pub fn drawn_key(key: &str) -> &str {
     use shooter_sim::robot::parts::{
-        ADAPTER, BEAM_LONG, BEAM_SHORT, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, REPAIR_MODULE, SENSOR,
+        ADAPTER, BATTERY, BEAM_LONG, BEAM_SHORT, FUEL_TANK, GENERATOR, MOUNT_RAIL_LONG,
+        MOUNT_RAIL_SHORT, REPAIR_MODULE, SENSOR,
     };
     match key {
-        _ if key == REPAIR_MODULE.key => SENSOR.key,
+        _ if key == REPAIR_MODULE.key || key == GENERATOR.key => SENSOR.key,
+        _ if key == FUEL_TANK.key => BATTERY.key,
         _ if key == MOUNT_RAIL_SHORT.key || key == ADAPTER.key => BEAM_SHORT.key,
         _ if key == MOUNT_RAIL_LONG.key => BEAM_LONG.key,
         _ => key,
@@ -156,17 +159,20 @@ pub fn drawn_key(key: &str) -> &str {
 
 /// How catalog part `key`'s stand-in mesh ([`drawn_key`]) is fitted to the part's cuboid, in the
 /// part's frame (metres from its cuboid's minimum corner): a mount rail's beam laid flat along
-/// the rail's y (the beam's z turned onto it), the adapter's short beam at half its length;
-/// identity for a part drawn with its own model.
+/// the rail's y (the beam's z turned onto it), the adapter's short beam and the fuel tank's
+/// battery at half their length; identity for a part drawn with its own model.
 #[must_use]
 pub fn stand_in(key: &str) -> Mat4 {
-    use shooter_sim::robot::parts::{ADAPTER, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT};
+    use shooter_sim::robot::parts::{ADAPTER, FUEL_TANK, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT};
     let cell = crate::robots::model::CELL;
     if key == MOUNT_RAIL_SHORT.key || key == MOUNT_RAIL_LONG.key {
         Mat4::from_translation(Vec3::new(0.0, 0.0, cell))
             * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2)
     } else if key == ADAPTER.key {
         Mat4::from_scale(Vec3::new(1.0, 1.0, 0.5))
+    } else if key == FUEL_TANK.key {
+        // The battery is two cells along its y; the tank one.
+        Mat4::from_scale(Vec3::new(1.0, 0.5, 1.0))
     } else {
         Mat4::IDENTITY
     }

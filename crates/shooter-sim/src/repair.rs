@@ -19,8 +19,8 @@
 //!
 //! **Work** ([`Repair::tick`]), each tick while it is not paused: the repair asks the pool for
 //! [`ENERGY_PER_TICK`] (granted whole or refused, [`crate::energy::spend`]); a refused tick does
-//! nothing and the repair waits for regeneration. Every [`TICKS_PER_HEALTH`] granted ticks
-//! restore one health point. The repair ends when the part is whole, and stops when the part or
+//! nothing and the repair waits for the generators to refill it. Every [`TICKS_PER_HEALTH`]
+//! granted ticks restore one health point. The repair ends when the part is whole, and stops when the part or
 //! its module is lost or the part leaves the module's reach. Nothing locks the robot: it walks,
 //! jumps and fires while it repairs, and they all draw on the same pool.
 //!

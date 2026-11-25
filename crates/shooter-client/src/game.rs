@@ -263,8 +263,8 @@ pub mod online {
         position: [f32; 3],
         motion: Motion,
         hook: Option<Hook>,
-        /// The charge in its energy pool (milli-units).
-        energy: u32,
+        /// Its electricity and fuel (milli-units).
+        energy: [u32; 2],
         /// The weapon it holds (the host may refuse a switch the prediction made).
         held: Instance,
         /// Its field repair (the host may refuse an order, or pause it for a hit the
@@ -607,16 +607,22 @@ pub mod online {
             predictor.tick(intent).map_err(|error| error.to_string())
         }
 
-        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, u32, Instance) {
+        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, [u32; 2], Instance) {
             self.live().map_or(
-                ([0.0; 3], Motion::default(), None, 0, Instance::default()),
+                (
+                    [0.0; 3],
+                    Motion::default(),
+                    None,
+                    [0, 0],
+                    Instance::default(),
+                ),
                 |predictor| {
                     let local = predictor.local();
                     (
                         local.center(),
                         local.motion,
                         local.hook,
-                        local.energy,
+                        [local.energy, local.fuel],
                         local.arsenal.held,
                     )
                 },
@@ -677,6 +683,7 @@ pub mod online {
                     .place_debris(&snapshot.debris)
                     .map_err(|error| error.to_string())?;
                 predictor.fighters[0].energy = me.energy;
+                predictor.fighters[0].fuel = me.fuel;
                 predictor.fighters[0].repair = me.repair;
                 Ok::<(), String>(())
             };
@@ -706,7 +713,7 @@ pub mod online {
                 .any(|axis| (acked.position[axis] - me.position[axis]).abs() > TOLERANCE_UNITS)
                 || acked.motion != me.motion
                 || acked.hook != me.hook
-                || acked.energy != me.energy
+                || acked.energy != [me.energy, me.fuel]
                 || acked.held != me.held
                 || acked.repair != me.repair;
             if off {

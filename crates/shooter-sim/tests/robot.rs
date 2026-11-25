@@ -12,13 +12,13 @@ use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{
     ARMOR_PLATE, BATTERY, BEAM_LONG, BEAM_SHORT, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE,
-    ENERGY_RIFLE, GRAPPLE, HINGE, LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER, ROTOR, SENSOR, SHOTGUN,
-    TRACK, WHEEL,
+    ENERGY_RIFLE, FUEL_TANK, GENERATOR, GRAPPLE, HINGE, LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER,
+    ROTOR, SENSOR, SHOTGUN, TRACK, WHEEL,
 };
 use shooter_sim::robot::{
     ARMORY, AssemblyError, BETA, Candidate, Catalog, EFFICIENCY_COIL, Face, HEAVY, Kind, LOADOUTS,
     LONG_BARREL, MARKSMAN, MAX_PARTS, ModId, OVERCHARGER, Orientation, PYRO, PartId, PartType,
-    PartTypeId, RAPID_CYCLER, ROOT_CAPACITY, ROOT_REGEN, RawMount, RawPart, SKIRMISHER, STANDARD,
+    PartTypeId, RAPID_CYCLER, ROCKET_POD, ROOT_CAPACITY, RawMount, RawPart, SKIRMISHER, STANDARD,
     SocketId, Tuning, loadout,
 };
 
@@ -71,6 +71,13 @@ fn build(parts: Vec<RawPart>) -> Candidate {
 /// The standard loadout's raw parts, to tamper with.
 fn standard() -> Vec<RawPart> {
     STANDARD.candidate().parts
+}
+
+/// The standard loadout without its roof's fuel tank and generator (shooter#128).
+fn unpowered() -> shooter_sim::Assembly {
+    let mut parts = standard();
+    parts.retain(|part| part.id < 20);
+    BETA.validate(&build(parts)).unwrap()
 }
 
 /// The standard build with a long beam on each side of its chassis (parts 3 and 4): structure
@@ -426,8 +433,9 @@ fn larger_parts_reserve_their_footprint_and_turn_it_with_their_yaw() {
         Err(AssemblyError::Overlap(PartId(7), PartId(10)))
     );
     // Overhanging the face's edge is fine: the rail gun across the back of the top, beside the
-    // sensor, its second cell past the edge.
+    // sensor (where the power plant was), its second cell past the edge.
     let mut overhang = standard();
+    overhang.retain(|part| part.id < 20);
     *with(&mut overhang, 7) = on(7, &RAIL_GUN, 0, &CHASSIS_S, Face::PosZ, 0, 1);
     assert!(BETA.validate(&build(overhang)).is_ok());
 }
@@ -563,7 +571,7 @@ fn mods_and_weapons_follow_their_rules() {
 #[test]
 fn a_weapon_may_be_mounted_again_on_other_sockets_within_the_budget() {
     use shooter_sim::damage::Hitboxes;
-    use shooter_sim::robot::{ROCKET_POD, TWIN_RAIL};
+    use shooter_sim::robot::TWIN_RAIL;
     for (name, built, weapon, copies) in [
         ("twin-rail", TWIN_RAIL, Weapon::RailGun, 2),
         ("rocket-pod", ROCKET_POD, Weapon::RocketLauncher, 4),
@@ -626,14 +634,14 @@ fn a_weapon_may_be_mounted_again_on_other_sockets_within_the_budget() {
         BETA.validate(&build(crowded)),
         Err(AssemblyError::Overlap(PartId(7), PartId(11)))
     );
-    // ...and the build points: on a free face it costs 129 of the 110.
+    // ...and the build points: on a free face it costs 137 of the 118.
     let mut over = ROCKET_POD.candidate().parts;
     over.push(on(11, &ROCKET_LAUNCHER, 0, &CHASSIS_S, Face::NegX, 0, 0));
     assert_eq!(
         BETA.validate(&build(over)),
         Err(AssemblyError::OverBudget {
-            points: 129,
-            build_points: 110
+            points: 137,
+            build_points: 118
         })
     );
 }
@@ -674,14 +682,20 @@ fn every_mod_trades_something_away() {
 }
 
 #[test]
-fn the_root_chassis_and_batteries_make_the_energy_pool() {
-    // The root chassis alone: 100 stored, 24 a second, whatever its size; a battery adds 60
-    // stored and nothing else.
+fn the_root_chassis_batteries_tanks_and_generators_make_the_pools() {
+    // The root chassis alone stores 100 electricity, whatever its size, and recovers nothing
+    // (shooter#128); a battery adds 60 stored, a tank 1000 fuel, a generator burns 12 fuel a
+    // second.
+    assert_eq!(ROOT_CAPACITY, 100);
     let standard = BETA.budget(&STANDARD);
-    assert_eq!((standard.capacity, standard.regen), (100, 24));
+    assert_eq!(
+        (standard.capacity, standard.fuel, standard.burn),
+        (100, 1_000, 12)
+    );
     let heavy = BETA.budget(&HEAVY);
-    assert_eq!((heavy.capacity, heavy.regen), (160, 24));
-    assert_eq!((ROOT_CAPACITY, ROOT_REGEN), (100, 24));
+    assert_eq!((heavy.capacity, heavy.fuel, heavy.burn), (160, 1_000, 12));
+    let bare = BETA.budget(&unpowered());
+    assert_eq!((bare.capacity, bare.fuel, bare.burn), (100, 0, 0));
     // Another chassis section is ordinary structure: no baseline of its own.
     let stacked = BETA
         .validate(&build(vec![
@@ -690,28 +704,48 @@ fn the_root_chassis_and_batteries_make_the_energy_pool() {
         ]))
         .unwrap();
     let budget = BETA.budget(&stacked);
-    assert_eq!((budget.capacity, budget.regen), (100, 24));
+    assert_eq!((budget.capacity, budget.fuel, budget.burn), (100, 0, 0));
     assert_eq!(BATTERY.key, "robot.battery");
     assert_eq!(BATTERY.kind, Kind::Battery);
     assert_eq!(
-        (
-            BATTERY.capacity,
-            BATTERY.regen,
-            BATTERY.points,
-            BATTERY.mass
-        ),
-        (60, 0, 5, 20)
+        (BATTERY.capacity, BATTERY.points, BATTERY.mass),
+        (60, 5, 20)
     );
     assert_eq!(BATTERY.health, 60, "a battery is a damageable component");
     assert_eq!(BATTERY.cells, [1, 2, 1], "a two-cell footprint");
-    // Batteries stack; each one takes its footprint and build points.
-    let mut charged = MARKSMAN.candidate();
-    charged
-        .parts
-        .push(on(11, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0));
-    let charged = BETA.validate(&charged).unwrap();
+    assert_eq!(
+        (FUEL_TANK.key, FUEL_TANK.kind, FUEL_TANK.cells),
+        ("robot.fuel-tank", Kind::FuelTank, [1, 1, 1])
+    );
+    assert_eq!(
+        (
+            FUEL_TANK.fuel,
+            FUEL_TANK.points,
+            FUEL_TANK.mass,
+            FUEL_TANK.health
+        ),
+        (1_000, 3, 1, 60)
+    );
+    assert_eq!(
+        (GENERATOR.key, GENERATOR.kind, GENERATOR.cells),
+        ("robot.generator", Kind::Generator, [1, 1, 1])
+    );
+    assert_eq!(
+        (
+            GENERATOR.burn,
+            GENERATOR.points,
+            GENERATOR.mass,
+            GENERATOR.health
+        ),
+        (12, 5, 1, 50)
+    );
+    // Batteries stack on a bare chassis; each one takes its footprint and build points.
+    let bare = || vec![root(0, &CHASSIS_M)];
+    let mut charged = bare();
+    charged.push(on(11, &BATTERY, 0, &CHASSIS_M, Face::NegX, 3, 0));
+    let charged = BETA.validate(&build(charged)).unwrap();
     assert_eq!(BETA.budget(&charged).capacity, 160);
-    assert_eq!(BETA.budget(&charged).points, 104);
+    assert_eq!(BETA.budget(&charged).points, 25);
     let mut overlapping = charged.candidate();
     overlapping
         .parts
@@ -726,56 +760,75 @@ fn the_root_chassis_and_batteries_make_the_energy_pool() {
         .push(on(12, &BATTERY, 0, &CHASSIS_M, Face::NegX, 0, 0));
     let second = BETA.validate(&second).unwrap();
     assert_eq!(BETA.budget(&second).capacity, 220);
-    assert_eq!(BETA.budget(&second).points, 109);
+    assert_eq!(BETA.budget(&second).points, 30);
     let mut third = second.candidate();
     third
         .parts
         .push(on(13, &BATTERY, 0, &CHASSIS_M, Face::NegX, 1, 0));
-    assert_eq!(
-        BETA.validate(&third),
-        Err(AssemblyError::OverBudget {
-            points: 114,
-            build_points: 110
-        })
-    );
-    let roomy = Catalog {
-        build_points: 115,
+    let tight = Catalog {
+        build_points: 34,
         ..BETA
     };
-    let third = roomy.validate(&third).unwrap();
-    assert_eq!(roomy.budget(&third).capacity, 280);
-    // Every part type's own capacity and regeneration: none regenerates and only the battery
-    // stores (the root chassis' baseline is the root's, not its type's).
+    assert_eq!(
+        tight.validate(&third),
+        Err(AssemblyError::OverBudget {
+            points: 35,
+            build_points: 34
+        })
+    );
+    let third = BETA.validate(&third).unwrap();
+    assert_eq!(BETA.budget(&third).capacity, 280);
+    // Tanks and generators stack likewise.
+    let mut plant = bare();
+    plant.extend([
+        on(11, &FUEL_TANK, 0, &CHASSIS_M, Face::NegX, 0, 0),
+        on(12, &FUEL_TANK, 0, &CHASSIS_M, Face::NegX, 1, 0),
+        on(13, &GENERATOR, 0, &CHASSIS_M, Face::NegX, 2, 0),
+        on(14, &GENERATOR, 0, &CHASSIS_M, Face::NegX, 2, 1),
+    ]);
+    let plant = BETA.budget(&BETA.validate(&build(plant)).unwrap());
+    assert_eq!((plant.capacity, plant.fuel, plant.burn), (100, 2_000, 24));
+    // Every part type's own storage and generation: only the battery stores electricity, only
+    // the tank fuel and only the generator burns (the root chassis' baseline is the root's, not
+    // its type's).
     for part in BETA.parts {
-        match part.kind {
-            Kind::Battery => assert_eq!(part.regen, 0),
-            _ => assert_eq!((part.capacity, part.regen), (0, 0), "{}", part.key),
-        }
+        let expected = match part.kind {
+            Kind::Battery => (60, 0, 0),
+            Kind::FuelTank => (0, 1_000, 0),
+            Kind::Generator => (0, 0, 12),
+            _ => (0, 0, 0),
+        };
+        assert_eq!(
+            (part.capacity, part.fuel, part.burn),
+            expected,
+            "{}",
+            part.key
+        );
     }
 }
 
 #[test]
 fn budgets_hold_exactly_at_their_limits_and_fail_one_over() {
-    // Build points: the heavy build (with its battery) costs 99.
+    // Build points: the heavy build (with its battery, tank and generator) costs 107.
     let heavy = BETA.budget(&HEAVY);
-    assert_eq!(heavy.points, 99);
+    assert_eq!(heavy.points, 107);
     let exact = Catalog {
-        build_points: 99,
+        build_points: 107,
         ..BETA
     };
     assert_eq!(exact.validate(&HEAVY.candidate()), Ok(HEAVY));
     let short = Catalog {
-        build_points: 98,
+        build_points: 106,
         ..BETA
     };
     assert_eq!(
         short.validate(&HEAVY.candidate()),
         Err(AssemblyError::OverBudget {
-            points: 99,
-            build_points: 98
+            points: 107,
+            build_points: 106
         })
     );
-    // Two plates fit the beta's 110 on the heavy build, a third passes it.
+    // Two plates fit the beta's 118 on the heavy build, a third passes it.
     let mut plated = HEAVY.candidate();
     plated
         .parts
@@ -786,12 +839,12 @@ fn budgets_hold_exactly_at_their_limits_and_fail_one_over() {
     assert!(BETA.validate(&plated).is_ok());
     plated
         .parts
-        .push(on(14, &ARMOR_PLATE, 0, &CHASSIS_M, Face::NegY, 0, 0));
+        .push(on(14, &ARMOR_PLATE, 0, &CHASSIS_M, Face::PosY, 2, 0));
     assert_eq!(
         BETA.validate(&plated),
         Err(AssemblyError::OverBudget {
-            points: 111,
-            build_points: 110
+            points: 119,
+            build_points: 118
         })
     );
     // No power or heat budget is left (D2.i70.3, D2.i70.4): the builds those once rejected (the
@@ -813,7 +866,9 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         assert_eq!(BETA.validate(&build.candidate()), Ok(build), "{name}");
         assert_eq!(loadout(name), Some(build));
         let budget = BETA.budget(&build);
-        assert!(budget.capacity >= 100 && budget.regen == 24, "{name}");
+        // Each recharges from its own tank and generator (shooter#128).
+        assert!(budget.capacity >= 100, "{name}");
+        assert_eq!((budget.fuel, budget.burn), (1_000, 12), "{name}");
         assert!(budget.points <= budget.build_points);
         // Four weapons each.
         let weapons: Vec<Weapon> = BETA
@@ -824,15 +879,16 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
     }
     assert_eq!(loadout(" Marksman "), Some(MARKSMAN));
     assert_eq!(loadout("sniper"), None);
-    // A chassis, a sensor, two legs and four weapons (no arms since shooter#91).
-    assert_eq!(STANDARD.parts().len(), 8);
-    assert_eq!(BETA.budget(&STANDARD).points, 69);
-    assert_eq!(BETA.budget(&SKIRMISHER).points, 84);
-    assert_eq!(BETA.budget(&MARKSMAN).points, 99);
+    // A chassis, a sensor, two legs, four weapons (no arms since shooter#91) and on the roof a
+    // fuel tank with a generator on it.
+    assert_eq!(STANDARD.parts().len(), 10);
+    assert_eq!(BETA.budget(&STANDARD).points, 77);
+    assert_eq!(BETA.budget(&SKIRMISHER).points, 92);
+    assert_eq!(BETA.budget(&MARKSMAN).points, 107);
     // The pyro: the laser (long-barrelled), the flamethrower, the blade and the grapple on the
-    // small chassis, 180 kg and 79 points on the root chassis' 100 energy (shooter#96).
+    // small chassis, 182 kg and 87 points on the root chassis' 100 electricity (shooter#96).
     let pyro = BETA.budget(&PYRO);
-    assert_eq!((pyro.mass, pyro.capacity, pyro.points), (180, 100, 79));
+    assert_eq!((pyro.mass, pyro.capacity, pyro.points), (182, 100, 87));
     assert_eq!(loadout("PYRO"), Some(PYRO));
     assert_eq!(
         BETA.weapons(&PYRO)
@@ -863,7 +919,7 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         ),
         Some(EFFICIENCY_COIL)
     );
-    assert_eq!(HEAVY.parts().len(), 9, "the heavy build carries a battery");
+    assert_eq!(HEAVY.parts().len(), 11, "the heavy build carries a battery");
     assert_eq!(
         BETA.mod_at(
             &MARKSMAN,
@@ -1023,7 +1079,7 @@ fn builds_from_untrusted_bytes_are_validated() {
     let standard = build_bytes(&STANDARD);
     assert_eq!(forged(&standard).unwrap().build, Some(STANDARD));
     // Count, then per part: ID, type, flags, [parent, socket], [angles], [mod].
-    assert_eq!(&standard[..4], &[8, 0, CHASSIS_S.id.0, 0]);
+    assert_eq!(&standard[..4], &[10, 0, CHASSIS_S.id.0, 0]);
     let mut unknown = standard.clone();
     unknown[2] = 99;
     assert_eq!(
@@ -1290,8 +1346,8 @@ fn the_overcharged_rail_gun_kills_in_fewer_hits_and_fires_slower() {
     // Overcharged (106): 94 ticks apart, three hits a kill, as before (two for the chassis, then
     // one for the core). The marksman fires the moment it takes the rail gun up (no switch
     // delay since shooter#127), so like the heavy's its shot on tick 0 goes wide of B still
-    // settling; its fourth waits for the pool (45 a shot).
-    assert_eq!(rail_record(MARKSMAN, 300), (vec![0, 94, 188, 299], 1));
+    // settling; its fourth waits for the pool (45 a shot), which its generator refills.
+    assert_eq!(rail_record(MARKSMAN, 300), (vec![0, 94, 188, 282], 1));
 }
 
 #[test]
@@ -1441,12 +1497,12 @@ fn a_placement_s_footprint_is_the_one_validation_checks() {
                 let mut candidate = STANDARD.candidate();
                 candidate
                     .parts
-                    .push(on(20, &BATTERY, 0, &CHASSIS_S, Face::PosX, u, v));
+                    .push(on(30, &BATTERY, 0, &CHASSIS_S, Face::PosX, u, v));
                 let (yaw, pitch, roll) = orientation.raw();
                 let mount = candidate.parts.last_mut().unwrap().mount.as_mut().unwrap();
                 (mount.yaw, mount.pitch, mount.roll) = (yaw, pitch, roll);
                 match BETA.validate(&candidate) {
-                    Err(AssemblyError::Overlap(owner, PartId(20))) => {
+                    Err(AssemblyError::Overlap(owner, PartId(30))) => {
                         assert!(
                             claimed
                                 .iter()
@@ -1496,16 +1552,16 @@ fn a_placement_s_footprint_is_the_one_validation_checks() {
 fn a_preview_placement_is_where_the_placed_part_lands() {
     use shooter_sim::mechanics::{placement_of, placements};
     let mut candidate = STANDARD.candidate();
-    let mut part = on(20, &BATTERY, 0, &CHASSIS_S, Face::NegX, 1, 1);
+    let mut part = on(30, &BATTERY, 0, &CHASSIS_S, Face::NegX, 1, 1);
     let mount = part.mount.as_mut().unwrap();
     (mount.yaw, mount.pitch, mount.roll) = (QUARTER, 3_000, 7);
     candidate.parts.push(part);
     let build = BETA.validate(&candidate).unwrap();
-    let placed = *build.part(PartId(20)).unwrap();
+    let placed = *build.part(PartId(30)).unwrap();
     let preview = placement_of(&STANDARD, &placed).unwrap();
     let committed = placements(&build)
         .into_iter()
-        .find(|placement| placement.part == PartId(20))
+        .find(|placement| placement.part == PartId(30))
         .unwrap();
     assert_eq!(preview, committed);
     // The root has no mount, and a missing parent no place.

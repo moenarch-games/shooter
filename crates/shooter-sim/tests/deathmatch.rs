@@ -1287,8 +1287,10 @@ fn bots_keep_moving_and_scoring_on(map: MapId, roams: f32) {
             }
         }
         for (slot, fighter) in session.fighters.iter().enumerate() {
-            // The dead, and robots whose legs are shot off ([`PartDamage::mobile`]), stand.
-            if !fighter.alive() || !fighter.parts.mobile(&fighter.build) {
+            // The dead, robots whose legs are shot off ([`PartDamage::mobile`]) and robots
+            // stranded without the electricity to walk (their tank or generator shot off, or
+            // their fuel burned: shooter#128) stand.
+            if !fighter.alive() || !fighter.parts.mobile(&fighter.build) || fighter.flow.stalled {
                 anchor[slot] = None;
                 continue;
             }

@@ -291,9 +291,12 @@ fn the_rocket_pod_cycles_its_four_launchers_one_at_a_time() {
         }
     }
     // Held down with a switch to another launcher every tick: one rocket at a time, no faster
-    // than the family's salvo spacing, though faster than one launcher alone.
+    // than the family's salvo spacing, though faster than one launcher alone. (Kept charged, so
+    // only the spacing limits it, not its generator's pace: shooter#128.)
     let mut volleys = 0;
     for tick in 0..240 {
+        let fighter = &mut session.fighters[0];
+        fighter.energy = fighter.pool().capacity;
         let a = Intent {
             fire: true,
             select: Some(pods[tick % 4].into()),
