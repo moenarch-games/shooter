@@ -1,6 +1,6 @@
 //! The drawn HUD: the weapons and the chassis and energy, as the client's UI items
-//! ([`crate::ui`]: rounded rectangles and text in a real font, drawn over the frame by
-//! [`crate::gfx::ui`]), the same natively and in the browser.
+//! ([`crate::ui`]: rounded rectangles and text in a real font, drawn as the renderer's overlay),
+//! the same natively and in the browser.
 //!
 //! The HUD has no panels: text floats over the scene on a soft shadow, bars are pills on a dark
 //! track and the weapons are rounded chips. Pale grey for what matters, muted grey for the rest,

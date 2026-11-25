@@ -185,8 +185,8 @@ fn main() -> Result<(), String> {
         });
     let shots = shots.chain(close);
     for (name, (eye, target)) in shots {
-        let scene = shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new());
-        gpu.render(&scene, &[], 0)?;
+        let mut scene = shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new());
+        gpu.render(&mut scene, &[], 0)?;
         let (width, height, pixels) = gpu.read_frame()?;
         let path = out.join(format!("{name}.ppm"));
         shooter_client::write_ppm(&path, width, height, &pixels)?;

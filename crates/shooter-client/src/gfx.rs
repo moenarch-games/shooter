@@ -14,9 +14,8 @@
 //! so the same code builds content for either.
 
 pub mod lite;
-pub mod ui;
 
-use render_engine::glam::{Mat4, Vec3, Vec4};
+use render_engine::glam::{Mat4, Vec2, Vec3, Vec4};
 pub use render_engine::material::AlphaMode;
 use render_engine::material::TextureData;
 use render_engine::mesh::MeshData;
@@ -46,6 +45,27 @@ pub struct SkinId(u32);
 /// A retained instance in a [`World`], drawn every frame until removed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InstanceId(u32);
+
+/// A rectangle drawn over the frame (render-engine's `OverlayQuad` under the client's texture
+/// handle): pixels of the frame's layout size from its top-left corner, a linear colour with
+/// straight alpha, corners rounded to `corner_radius` pixels, and optionally a part of a texture
+/// tinted by the colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OverlayQuad {
+    pub position: Vec2,
+    pub size: Vec2,
+    pub color: Vec4,
+    pub corner_radius: f32,
+    pub image: Option<OverlayImage>,
+}
+
+/// The part of a texture an [`OverlayQuad`] shows, in normalised texture coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverlayImage {
+    pub texture: TextureId,
+    pub uv_min: Vec2,
+    pub uv_max: Vec2,
+}
 
 /// One drawn copy of a mesh (render-engine's `Instance`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -261,6 +281,52 @@ impl World {
             }
             Self::Lite(l) => l.add_texture(texture),
         })
+    }
+
+    /// Overwrites a `size` region of `texture`'s level 0 at `origin` with tightly packed
+    /// `pixels` in its format (a glyph added to the UI's atlas).
+    pub fn write_texture(
+        &mut self,
+        texture: TextureId,
+        origin: (u32, u32),
+        size: (u32, u32),
+        pixels: &[u8],
+    ) {
+        match self {
+            Self::Engine(e) => {
+                if let Some(id) = e.textures.get(texture.0).copied() {
+                    e.world.write_texture(id, origin, size, pixels);
+                }
+            }
+            Self::Lite(l) => l.write_texture(texture.0, origin, size, pixels),
+        }
+    }
+
+    /// The overlay as render-engine draws it: the client's quads with their textures as
+    /// render-engine's.
+    pub(crate) fn engine_overlay(
+        &self,
+        quads: &[OverlayQuad],
+    ) -> Vec<render_engine::scene::OverlayQuad> {
+        let Self::Engine(e) = self else {
+            return Vec::new();
+        };
+        quads
+            .iter()
+            .map(|q| render_engine::scene::OverlayQuad {
+                position: q.position,
+                size: q.size,
+                color: q.color,
+                corner_radius: q.corner_radius,
+                image: q.image.and_then(|image| {
+                    Some(render_engine::scene::OverlayImage {
+                        texture: e.textures.get(image.texture.0).copied()?,
+                        uv_min: image.uv_min,
+                        uv_max: image.uv_max,
+                    })
+                }),
+            })
+            .collect()
     }
 
     pub fn add_material(&mut self, material: &StandardMaterial) -> MaterialId {

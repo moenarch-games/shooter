@@ -245,11 +245,11 @@ low energy). Bottom left, the root chassis' health as a large reading over its b
 third) and the energy pool as a thin blue bar under it, with the share one shot of the held
 weapon takes marked in orange, and above them, in teal, the field repair panel (the quick repair
 menu while it is open, else the repair under way, else how many parts may be repaired).
-render-engine's screen overlay draws solid rectangles only, so the client draws its UI (the HUD,
-the builder and the death prompt) in a pass of its own over either renderer's frame (`ui`,
-`gfx::ui`: instanced rounded rectangles and glyphs, uniforms only, so WebGL 2 runs it too), the
-text in Barlow Semi Condensed SemiBold (SIL Open Font License,
-`crates/shooter-client/assets/fonts/OFL.txt`) rasterized into a glyph atlas at the size it is
+The client's UI (the HUD, the builder and the death prompt) is drawn as the renderer's screen
+overlay (`ui`): rounded rectangles, and text as quads showing glyphs of an atlas texture in the
+frame's world (render-engine's `OverlayQuad` corner radius and images, render-engine#163; the lite renderer
+draws the same on WebGL 2), the text in Barlow Semi Condensed SemiBold (SIL Open Font License,
+`crates/shooter-client/assets/fonts/OFL.txt`) rasterized into the atlas at the size it is
 drawn. The rest (the parts damaged and lost, frags and place, the round clock, the equipped mods,
 the carried module and its uses left, the kill and pickup feed, banners and the scoreboard) is
 still text: the page's overlay in the browser and the window title natively.
