@@ -5,7 +5,7 @@
 //! `?renderer=lite` in the browser and `SHOOTER_RENDERER=lite` natively force the lite one.
 
 use crate::gfx::World;
-use crate::gfx::lite::{LiteRenderer, LiteWorld};
+use crate::gfx::lite::{FrameSizes, LiteRenderer, LiteWorld, RenderScale};
 use render_engine::renderer::{Renderer, Viewport};
 use render_engine::scene::Scene;
 use render_engine::wgpu;
@@ -43,7 +43,62 @@ pub struct Gpu {
     backend: Backend,
     pub world: World,
     size: (u32, u32),
+    /// The share of `size` the lite renderer draws the 3D scene at (dynamic resolution); the
+    /// overlay is always drawn at full size.
+    scale: f32,
+    /// The surface's share of `size` ([`canvas_for`]): in the browser the canvas's backing
+    /// store, which the page stretches over the window.
+    canvas: f32,
+    /// The lite renderer's dynamic resolution in the browser and when the last frame was drawn;
+    /// `None` keeps `scale` fixed.
+    render_scale: Option<(RenderScale, Option<web_time::Instant>)>,
 }
+
+/// A fixed scene scale for the lite renderer: `?scale=0.5` in the browser,
+/// `SHOOTER_RENDER_SCALE=0.5` natively. Without one the browser's follows the frame rate and a
+/// native window's stays at 1.
+fn requested_scale() -> Option<f32> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let requested = std::env::var("SHOOTER_RENDER_SCALE").ok();
+    #[cfg(target_arch = "wasm32")]
+    let requested = crate::web::query("scale");
+    requested
+        .and_then(|scale| scale.parse::<f32>().ok())
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .map(|scale| scale.clamp(0.25, 1.0))
+}
+
+/// `size` at `scale`, at least a pixel each way.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn scaled(size: (u32, u32), scale: f32) -> (u32, u32) {
+    if scale >= 0.999 {
+        return size;
+    }
+    (
+        ((size.0 as f32 * scale).round() as u32).max(1),
+        ((size.1 as f32 * scale).round() as u32).max(1),
+    )
+}
+
+/// The browser canvas's share of the window for a scene drawn at `scale`: full size, until the
+/// scene is at half size or below; then half size, which the page stretches. Below that the
+/// scene is upscaled inside it, so in software WebGL the full-size upscale and present (each a
+/// pass over every pixel) stop costing a frame's budget, while the overlay, drawn at half size,
+/// stays readable. A native window always draws its full size.
+fn canvas_for(scale: f32) -> f32 {
+    // The controller's steps land just above a half (0.71 by √0.5 is 0.502).
+    if cfg!(target_arch = "wasm32") && scale <= CANVAS_HALF + 0.02 {
+        CANVAS_HALF
+    } else {
+        1.0
+    }
+}
+
+const CANVAS_HALF: f32 = 0.5;
 
 /// Whether the lite renderer is asked for: `SHOOTER_RENDERER=lite` natively, `?renderer=lite`
 /// in the browser.
@@ -247,6 +302,17 @@ impl Gpu {
             config.view_formats = vec![view_format];
         }
         config.present_mode = wgpu::PresentMode::AutoVsync;
+        let size = (config.width, config.height);
+        // Dynamic resolution is the lite renderer's: automatic in the browser, where software
+        // WebGL needs it, fixed when asked for.
+        let scale = if lite {
+            requested_scale().unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        let browser_lite = lite && cfg!(target_arch = "wasm32");
+        let canvas = canvas_for(scale);
+        (config.width, config.height) = scaled(size, canvas);
         surface.configure(&device, &config);
         let (backend, world) = if lite {
             self::lite(&device, &queue, view_format)
@@ -254,7 +320,11 @@ impl Gpu {
             engine(&device, &queue, view_format, config.width, config.height)
         };
         Ok(Self {
-            size: (config.width, config.height),
+            size,
+            scale,
+            canvas,
+            render_scale: (browser_lite && requested_scale().is_none())
+                .then(|| (RenderScale::default(), None)),
             target: Target::Surface { surface, config },
             view_format,
             device,
@@ -328,6 +398,13 @@ impl Gpu {
             backend,
             world,
             size: (width, height),
+            render_scale: None,
+            canvas: 1.0,
+            scale: if lite {
+                requested_scale().unwrap_or(1.0)
+            } else {
+                1.0
+            },
         })
     }
 
@@ -335,6 +412,16 @@ impl Gpu {
     #[must_use]
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// The target's own size: the surface's (the canvas's backing store in the browser), or the
+    /// offscreen texture's.
+    fn target_size(&self) -> (u32, u32) {
+        match &self.target {
+            Target::Surface { config, .. } => (config.width, config.height),
+            #[cfg(not(target_arch = "wasm32"))]
+            Target::Offscreen(texture) => (texture.width(), texture.height()),
+        }
     }
 
     /// An offscreen target keeps its size.
@@ -347,18 +434,46 @@ impl Gpu {
             return;
         }
         let limit = self.device.limits().max_texture_dimension_2d;
-        config.width = width.min(limit);
-        config.height = height.min(limit);
+        self.size = (width.min(limit), height.min(limit));
+        (config.width, config.height) = scaled(self.size, self.canvas);
         surface.configure(&self.device, config);
-        self.size = (config.width, config.height);
         if let Backend::Engine { renderer, viewport } = &mut self.backend {
             viewport.resize(renderer, config.width, config.height);
+        }
+    }
+
+    /// Steps the browser's dynamic resolution with the time since the last frame.
+    #[cfg_attr(target_arch = "wasm32", allow(irrefutable_let_patterns))]
+    fn follow_frame_rate(&mut self) {
+        let Some((controller, last)) = &mut self.render_scale else {
+            return;
+        };
+        let now = web_time::Instant::now();
+        let Some(last) = last.replace(now) else {
+            return;
+        };
+        let scale = controller.update((now - last).as_secs_f32() * 1_000.0);
+        if (scale - self.scale).abs() < 0.01 {
+            return;
+        }
+        self.scale = scale;
+        let canvas = canvas_for(scale);
+        crate::log(&format!("render scale {scale:.2}, canvas {canvas:.2}"));
+        if (canvas - self.canvas).abs() > 0.001 {
+            self.canvas = canvas;
+            if let Target::Surface { surface, config } = &mut self.target {
+                (config.width, config.height) = scaled(self.size, canvas);
+                surface.configure(&self.device, config);
+            }
         }
     }
 
     /// Draws `scene`, first stepping the particles `particle_steps` simulation ticks (they run
     /// at the simulation's fixed rate, so effects look the same at any frame rate).
     pub fn render(&mut self, scene: &Scene, particle_steps: u32) -> Result<(), String> {
+        self.follow_frame_rate();
+        let scene_size = scaled(self.size, self.scale);
+        let target_size = self.target_size();
         let view_of = |texture: &wgpu::Texture| {
             texture.create_view(&wgpu::TextureViewDescriptor {
                 format: Some(self.view_format),
@@ -402,7 +517,17 @@ impl Gpu {
                 for _ in 0..particle_steps {
                     world.step_particles(tick);
                 }
-                renderer.encode(world, scene, &mut encoder, &view, self.size);
+                renderer.encode(
+                    world,
+                    scene,
+                    &mut encoder,
+                    &view,
+                    FrameSizes {
+                        target: target_size,
+                        layout: self.size,
+                        scene: scene_size,
+                    },
+                );
             }
             _ => unreachable!("a world is made with its renderer"),
         }

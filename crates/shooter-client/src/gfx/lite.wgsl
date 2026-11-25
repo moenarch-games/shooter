@@ -6,7 +6,7 @@
 // there is no HDR target.
 
 const PI: f32 = 3.141592653589793;
-const MAX_LIGHTS: u32 = 16u;
+const MAX_LIGHTS: u32 = 8u;
 
 struct Frame {
     clip_from_world: mat4x4<f32>,
@@ -23,7 +23,7 @@ struct Frame {
     right: vec4<f32>,
     up: vec4<f32>,
     // Per light: position and 1 / range², then colour in candela and unused.
-    lights: array<vec4<f32>, 32>,
+    lights: array<vec4<f32>, 16>,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -224,7 +224,8 @@ fn shade(in: MeshOut, front: bool) -> vec4<f32> {
         let attenuation = window * window / max(distance_square, 0.0001);
         if (attenuation > 0.0) {
             let L = to_light * inverseSqrt(distance_square);
-            direct += brdf(N, V, L, NdotV, roughness, diffuse_color, F0) * color.rgb * attenuation;
+            // Diffuse only: the specular of a muzzle flash barely shows and costs most.
+            direct += diffuse_color * (saturate(dot(N, L)) * (1.0 / PI) * attenuation) * color.rgb;
         }
     }
     if (frame.sun_direction.w > 0.5) {

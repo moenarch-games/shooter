@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
 /// Point lights shaded per fragment (the nearest in view win).
-pub const MAX_LIGHTS: usize = 16;
+pub const MAX_LIGHTS: usize = 8;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -791,6 +791,88 @@ pub struct LiteRenderer {
     overlay: Growing,
     /// The target is not sRGB: the shaders encode.
     encode_srgb: bool,
+    format: wgpu::TextureFormat,
+    /// The overlay over the upscaled scene, in a pass without depth.
+    overlay_flat: wgpu::RenderPipeline,
+    blit_pipeline: wgpu::RenderPipeline,
+    blit_layout: wgpu::BindGroupLayout,
+    blit_sampler: wgpu::Sampler,
+    /// The scaled scene target at its size, and its bind group for the upscale.
+    scaled: Option<((u32, u32), wgpu::TextureView, wgpu::BindGroup)>,
+}
+
+/// The sizes of a lite frame, in pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameSizes {
+    /// The target's own size (in the browser the canvas's backing store).
+    pub target: (u32, u32),
+    /// The size the scene's camera and the overlay were laid out for (the window's).
+    pub layout: (u32, u32),
+    /// The size the 3D scene is drawn at, at most the target's.
+    pub scene: (u32, u32),
+}
+
+/// Dynamic resolution: the render scale that keeps frames within the display's refresh, from
+/// the time between frames. It drops quickly when frames run long and probes back up slowly, so
+/// WebGL 2 drawn in software (SwiftShader, no GPU) keeps close to 60 frames a second while a GPU
+/// stays at full resolution.
+#[derive(Clone, Debug)]
+pub struct RenderScale {
+    pub scale: f32,
+    /// Smoothed time between frames, in milliseconds.
+    average: f32,
+    /// Frames since the scale last changed.
+    settled: u32,
+    /// The scale that last ran too slow, not probed again for a while.
+    ceiling: f32,
+    /// Frames seen: the first [`WARM_UP_FRAMES`] (uploads, shader compiles) are not judged.
+    seen: u32,
+}
+
+impl Default for RenderScale {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            average: TARGET_MS,
+            settled: 0,
+            ceiling: 1.0,
+            seen: 0,
+        }
+    }
+}
+
+/// A 60 Hz frame, with a little slack for timer jitter.
+const TARGET_MS: f32 = 17.5;
+const MIN_SCALE: f32 = 0.3;
+const WARM_UP_FRAMES: u32 = 90;
+
+impl RenderScale {
+    /// Takes the time since the last frame (`ms`) and returns the scale for the next one.
+    pub fn update(&mut self, ms: f32) -> f32 {
+        // A hidden tab or a load stall says nothing about the drawing.
+        self.seen = self.seen.saturating_add(1);
+        if !(0.0..250.0).contains(&ms) || self.seen <= WARM_UP_FRAMES {
+            return self.scale;
+        }
+        self.average += (ms - self.average) * 0.1;
+        self.settled = self.settled.saturating_add(1);
+        if self.settled >= 20 && self.average > TARGET_MS + 2.5 {
+            // Pixels cost in proportion to area: aim the area at the frame budget.
+            let area = (TARGET_MS / self.average).clamp(0.5, 0.95);
+            self.ceiling = self.scale;
+            self.scale = (self.scale * area.sqrt()).max(MIN_SCALE);
+            self.settled = 0;
+            self.average = TARGET_MS;
+        } else if self.scale < 1.0 && self.settled >= 180 && self.average <= TARGET_MS {
+            // Probe up, but stay under the scale that last ran too slow for longer.
+            let next = (self.scale + 0.05).min(1.0);
+            if next < self.ceiling - 0.01 || self.settled >= 600 {
+                self.scale = next;
+                self.settled = 0;
+            }
+        }
+        self.scale
+    }
 }
 
 impl LiteRenderer {
@@ -985,36 +1067,104 @@ impl LiteRenderer {
             })
         };
         let overlay_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
-        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("lite overlay"),
-            layout: Some(&frame_only),
+        let overlay = |depth_stencil: Option<wgpu::DepthStencilState>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("lite overlay"),
+                layout: Some(&frame_only),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("overlay_vs"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<OverlayVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &overlay_attributes,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("overlay_fs"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: alpha,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let overlay_pipeline = overlay(Some(depth(false, wgpu::CompareFunction::Always)));
+        let overlay_flat = overlay(None);
+        let blit_shader = device.create_shader_module(wgpu::include_wgsl!("lite_blit.wgsl"));
+        let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("lite upscale"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("lite upscale"),
+            bind_group_layouts: &[Some(&blit_layout)],
+            immediate_size: 0,
+        });
+        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("lite upscale"),
+            layout: Some(&blit_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("overlay_vs"),
+                module: &blit_shader,
+                entry_point: Some("blit_vs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<OverlayVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &overlay_attributes,
-                })],
+                buffers: &[],
             },
             primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(depth(false, wgpu::CompareFunction::Always)),
+            depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("overlay_fs"),
+                module: &blit_shader,
+                entry_point: Some("blit_fs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: alpha,
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
             multiview_mask: None,
             cache: None,
         });
+        let blit_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("lite upscale"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         Self {
+            overlay_flat,
+            format,
+            blit_pipeline,
+            blit_layout,
+            blit_sampler,
+            scaled: None,
             frame_buffer,
             frame_group,
             mesh_pipelines,
@@ -1057,7 +1207,9 @@ impl LiteRenderer {
         view
     }
 
-    /// Draws `scene` and `world` into `target` (`size` pixels) with `encoder`.
+    /// Draws `scene` and `world` into `target` with `encoder`: the 3D scene at
+    /// [`FrameSizes::scene`] (dynamic resolution, [`RenderScale`]; smaller than the target, it
+    /// is upscaled), the overlay at the target's size.
     #[allow(clippy::too_many_lines)]
     pub fn encode(
         &mut self,
@@ -1065,8 +1217,13 @@ impl LiteRenderer {
         scene: &Scene,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
-        size: (u32, u32),
+        sizes: FrameSizes,
     ) {
+        let FrameSizes {
+            target: target_size,
+            layout: size,
+            scene: scene_size,
+        } = sizes;
         let device = world.device.clone();
         let queue = world.queue.clone();
         #[allow(clippy::cast_precision_loss)]
@@ -1306,7 +1463,15 @@ impl LiteRenderer {
         self.overlay
             .write(&device, &queue, bytemuck::cast_slice(&overlay));
 
-        let depth = self.depth_view(&device, size);
+        // Dynamic resolution: a scene smaller than the target goes into its own texture,
+        // upscaled before the overlay.
+        let scene_size = (
+            scene_size.0.clamp(1, target_size.0.max(1)),
+            scene_size.1.clamp(1, target_size.1.max(1)),
+        );
+        let scaled = (scene_size != target_size).then(|| self.scaled_target(&device, scene_size));
+        let scene_target = scaled.as_ref().map_or(target, |(view, _)| view);
+        let depth = self.depth_view(&device, scene_size);
         let clear = tonemap(scene.clear_color);
         let clear = if self.encode_srgb {
             clear.map(encode_srgb)
@@ -1316,7 +1481,7 @@ impl LiteRenderer {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("lite"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
+                view: scene_target,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -1385,11 +1550,89 @@ impl LiteRenderer {
             pass.set_vertex_buffer(0, self.particles.buffer.slice(u64::from(first) * stride..));
             pass.draw(0..6, 0..count);
         }
-        if !overlay.is_empty() {
-            pass.set_pipeline(&self.overlay_pipeline);
+        let overlay_vertices = u32::try_from(overlay.len()).unwrap_or(u32::MAX);
+        let Some((_, blit_group)) = scaled else {
+            if overlay_vertices > 0 {
+                pass.set_pipeline(&self.overlay_pipeline);
+                pass.set_vertex_buffer(0, self.overlay.buffer.slice(..));
+                pass.draw(0..overlay_vertices, 0..1);
+            }
+            return;
+        };
+        drop(pass);
+        // The scaled scene stretched over the target, then the overlay at full size.
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("lite upscale"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    // The upscale covers every pixel.
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.blit_pipeline);
+        pass.set_bind_group(0, &blit_group, &[]);
+        pass.draw(0..3, 0..1);
+        if overlay_vertices > 0 {
+            pass.set_pipeline(&self.overlay_flat);
+            pass.set_bind_group(0, &self.frame_group, &[]);
             pass.set_vertex_buffer(0, self.overlay.buffer.slice(..));
-            pass.draw(0..u32::try_from(overlay.len()).unwrap_or(u32::MAX), 0..1);
+            pass.draw(0..overlay_vertices, 0..1);
         }
+    }
+
+    /// The scaled scene target of `size` and its upscale bind group.
+    fn scaled_target(
+        &mut self,
+        device: &wgpu::Device,
+        size: (u32, u32),
+    ) -> (wgpu::TextureView, wgpu::BindGroup) {
+        if let Some((at, view, group)) = &self.scaled
+            && *at == size
+        {
+            return (view.clone(), group.clone());
+        }
+        let view = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("lite scaled scene"),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("lite upscale"),
+            layout: &self.blit_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                },
+            ],
+        });
+        self.scaled = Some((size, view.clone(), group.clone()));
+        (view, group)
     }
 }
 
@@ -1463,6 +1706,36 @@ mod tests {
             e.step(0.1);
         }
         assert!(e.particles.is_empty());
+    }
+
+    #[test]
+    fn the_render_scale_drops_on_slow_frames_and_recovers_on_fast_ones() {
+        let mut scale = RenderScale::default();
+        for _ in 0..200 {
+            scale.update(16.7);
+        }
+        assert!(
+            (scale.scale - 1.0).abs() < f32::EPSILON,
+            "a GPU at 60 Hz keeps full size"
+        );
+        for _ in 0..400 {
+            scale.update(70.0);
+        }
+        assert!(
+            scale.scale <= 0.5,
+            "70 ms frames cut the scale: {}",
+            scale.scale
+        );
+        assert!(scale.scale >= MIN_SCALE);
+        let low = scale.scale;
+        for _ in 0..2_000 {
+            scale.update(16.7);
+        }
+        assert!(scale.scale > low, "fast frames win the resolution back");
+        // Stalls (a hidden tab) are ignored.
+        let before = scale.scale;
+        scale.update(5_000.0);
+        assert!((scale.scale - before).abs() < f32::EPSILON);
     }
 
     #[test]
