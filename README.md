@@ -56,7 +56,11 @@ it, and otherwise with the client's lite renderer on WebGL 2 (`shooter_client::g
 render-engine has no WebGL 2 backend). The lite renderer draws the same arenas, robots, effects
 and HUD with the sun, ambient and point lights, but without shadows, normal maps or MSAA.
 `?renderer=lite` forces it in the browser, `SHOOTER_RENDERER=lite` natively (with
-`WGPU_BACKEND=gl` it runs on OpenGL under WebGL 2's limits, as in the browser).
+`WGPU_BACKEND=gl` it runs on OpenGL under WebGL 2's limits, as in the browser). In the browser
+it scales the 3D scene's resolution to the frame rate (down to 0.3 of the window; the HUD is
+drawn at full size, or at half size once the scene is at half or below), so WebGL 2 drawn in
+software without a GPU stays close to 60 frames a second; with a GPU it stays at full size.
+`?scale=0.5` fixes the scene's scale (`SHOOTER_RENDER_SCALE` natively).
 
 **Maps.** Every match is played on a map from one catalog in the simulation
 (`shooter_sim::maps`), which both clients and the host share: a stable ID, its arena
