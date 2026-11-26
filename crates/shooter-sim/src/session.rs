@@ -445,6 +445,15 @@ impl Fighter {
         aim::tube_muzzle(&self.build, &self.hitboxes(), copy, self.tube(copy))
     }
 
+    /// Where its grapple's rope is tied on the robot (units): the muzzle of its first grapple
+    /// module still connected, where the simulation carries it now (Atlas D2.i104.2,
+    /// shooter#104); `None` while dead or without a working module. [`crate::grapple::Hook`]
+    /// measures the rope from here, and the clients draw it from the module's muzzle.
+    #[must_use]
+    pub fn rope_tie(&self) -> Option<[f32; 3]> {
+        self.muzzle(Weapon::Grapple).map(|muzzle| muzzle.at)
+    }
+
     /// The tube the weapon copy `instance` fires its next shot from (0 the first): the rocket
     /// pod's alternate launch by launch (shooter#102), every other weapon has one.
     #[must_use]
@@ -1973,7 +1982,11 @@ impl Session {
             }
         }
         for slot in 0..self.fighters.len() {
-            let eye = self.fighters[slot].eye();
+            // The rope is tied at the grapple module (shooter#104): a hook is set only while the
+            // robot has one connected, so it has its muzzle.
+            let Some(tie) = self.fighters[slot].rope_tie() else {
+                continue;
+            };
             let Some(hook) = &mut self.fighters[slot].hook else {
                 continue;
             };
@@ -1984,7 +1997,7 @@ impl Session {
             ) else {
                 continue;
             };
-            let pulled = hook.pull(per_tick(moving), eye);
+            let pulled = hook.pull(per_tick(moving), tie);
             self.mechanics
                 .drive(id, per_second(pulled), root.angular_velocity)?;
         }
@@ -2807,7 +2820,7 @@ impl Session {
                 self.rockets.push(Rocket::launch(body, from, direction));
             }
             Delivery::Grapple => {
-                let (hook, trace) = Hook::fire(&self.world, from, eye, direction, body);
+                let (hook, trace) = Hook::fire(&self.world, from, direction, body);
                 self.fighters[slot].hook = hook;
                 self.events.push(Event::Beam {
                     weapon,

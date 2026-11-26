@@ -428,6 +428,19 @@ The D2.i89 entry records the owner's decision of 2026-11-14 on shooter#89.
   gameplay capture on either client yet.
   **Moved (shooter#132):** the right mouse button is precision aim's now (D2.i123.8); the
   grapple's key is F alone, rebindable like every action.
+  **Completed (shooter#104):** the rope is tied at the module, not the eye: the module's
+  muzzle where the simulation carries it (`Fighter::rope_tie`) measures the rope's length and
+  pull in host, prediction and replay alike, and the clients draw the cable from it. Snapshots
+  carry the ticks before the module may hook again (wire 29, replay format 22), so a predicting
+  client refuses and grants rapid hooks as the host does. Hosted-latency tests play a person
+  through delayed inputs and snapshots (hook, reel, release, swing, late inputs, rapid taps, the
+  module shot off mid-swing) with the online client's prediction, which agrees with the host
+  (the hook set or not and where, motion and energy exactly, the robot and rope to 2.5 mm: the
+  articulated world's restore is not bit for bit through contacts, so an anchor or rope can come
+  out a subunit apart and the client corrects by nothing visible), and replay the host's ticks
+  exactly. Native and browser (WebGPU) captures of a hooked pull up the assembly works' crane
+  tower (the profile run's `swing` scene) are in `docs/captures/104/`. The proving cell's and
+  the drydock's grapple routes aim a little higher for the module's rope (both backends land).
 
 - **D2.i45.1** (owner, 2026-11-16; shooter#45; answers Q3, option A):
   The **energy blade is the only quick-melee weapon for the first modular-robot

@@ -288,7 +288,7 @@ draws its flash, beam, pellets and rockets from that muzzle; the rocket pod's la
 between its two tubes, the simulation choosing which (wire 28). Online, your client shows your
 own shots at once, every ranged one (beams, rockets, shotgun blasts and flame) aimed again as the
 host aims it among the others as you see them (`Session::predicted_shots`). The grapple module's
-hook leaves its own muzzle toward the same point (#104; its rope is tied at the eye), the blade
+hook leaves its own muzzle toward the same point (#104; its rope is tied there too), the blade
 the feet. Native and browser captures of a shot stopping on arena cover short of the reticle (the
 profile run's `--scene cover` / `?scene=cover`): [docs/captures/102](docs/captures/102).
 
@@ -362,12 +362,21 @@ precision aim's since #132),
 whatever gun you hold, and the hook leaves the module's muzzle toward what the camera targets and
 sets on arena geometry within 30 m (not on fighters): it reels you toward the hook at up to 24 m/s
 and the rope never lets you further away than you have come, so running or falling across it
-swings you round the hook while it reels. Let go to drop off; the next hook is ready 0.75 s after
+swings you round the hook while it reels. The rope is tied at the module: its muzzle, where the
+robot carries it on the body the simulation has it on (`Fighter::rope_tie`), measures the rope's
+length and pull, so a module mounted high, low or to one side hangs and swings from there, and
+the cable is drawn from the same muzzle. Let go to drop off; the next hook is ready 0.75 s after
 the last one set. Each hook costs 10 energy from the shared pool (none spent, no hook, when the
 pool has less). Losing the module, or its connection to the root chassis, lets go of the rope at
 once and refuses the key until a respawn restores the build; dying lets go too. Every named
 loadout mounts one; bots never grapple. The 30 m reach, 0.75 s interval and 10 energy are
-provisional tuning. It is a deterministic stand-in in
+provisional tuning. Snapshots carry the time left before the module may hook again (wire 29,
+replay format 22), so a predicting client refuses and grants hooks as the host does; the hosted
+latency tests in `tests/grapple.rs` play a person through delayed inputs and snapshots (hook,
+reel, release, swing, late inputs, rapid taps, the module shot off mid-swing) with the online
+client's prediction and replay the host's ticks exactly. Native and browser captures of a hooked
+pull up the assembly works' crane tower (the profile run's `--scene swing` / `?scene=swing`):
+[docs/captures/104](docs/captures/104). It is a deterministic stand-in in
 `shooter-sim` until physics-engine can pull a character on a rope
 (moritzbrantner/physics-engine#557).
 

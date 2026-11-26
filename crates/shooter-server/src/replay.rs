@@ -25,6 +25,9 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
+/// 22: the logged commands are wire-29 inputs and the digests cover wire-29 snapshots (each
+/// fighter's ticks until its grapple module may hook again; the rope tied at the module,
+/// shooter#104).
 /// 21: the logged commands are wire-28 inputs and the digests cover wire-28 snapshots (the
 /// rocket pod's tubes alternate, each fighter's next tubes in the snapshots, shooter#102).
 /// 20: the logged commands are wire-27 inputs and the digests cover wire-27 snapshots (the
@@ -55,7 +58,7 @@ const MAGIC: &[u8; 4] = b"SHRP";
 /// robot's part healths, part hits and detachments); 7 carried wire 12 (shared energy charge,
 /// batteries, no heat), 6 wire 11 (robot builds as socket-grid component trees), 5 wire 10
 /// (module pickups), 4 wire 9 (robot builds with weapon mods).
-const FORMAT: u8 = 21;
+const FORMAT: u8 = 22;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 
@@ -427,6 +430,42 @@ mod tests {
             charges
         };
         assert_eq!(pools(), pools());
+    }
+
+    /// The scripted people's grapples replay (shooter#104): they play six ticks behind the host,
+    /// hold the grapple module's key now and then and hook the arena; every tick verifies, and
+    /// a replay sets, pulls and lets go of the same hooks on the same ticks, each rope tied at
+    /// its robot's module.
+    #[test]
+    fn a_replay_reproduces_every_grapple() {
+        let replay = record(Script::DEFAULT).unwrap();
+        assert_eq!(verify(&replay).unwrap().checkpoints_verified, 1_800);
+        let ropes = || {
+            let mut ropes = Vec::new();
+            replay
+                .play(u64::MAX, |session| {
+                    for fighter in &session.fighters {
+                        if let Some(hook) = fighter.hook {
+                            let tie = fighter.rope_tie().expect("hooked by its module");
+                            ropes.push((session.ticks(), fighter.slot, hook, tie));
+                        }
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            ropes
+        };
+        let first = ropes();
+        let hooks = first
+            .windows(2)
+            .filter(|pair| pair[0].1 != pair[1].1 || pair[0].2.anchor != pair[1].2.anchor)
+            .count();
+        assert!(
+            first.len() > 60 && hooks > 1,
+            "{} ticks hooked",
+            first.len()
+        );
+        assert_eq!(first, ropes());
     }
 
     /// Arena destruction replays (shooter#60): a minute on the proving cell breaks some of its

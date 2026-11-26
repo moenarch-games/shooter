@@ -8,7 +8,9 @@
 // Usage (after scripts/build-web.sh): node scripts/capture-web.mjs OUT MAP:FRAMES[:NAME[:SCENE]] ...
 // e.g. node scripts/capture-web.mjs docs/captures/53 proving-cell:120:browser-match
 // writes docs/captures/53/browser-match.png. SCENE stages the run (&scene=<name>: `cover`, the
-// standard build firing its rifle past the map's arena cover, shooter#102).
+// standard build firing its rifle past the map's arena cover, shooter#102; `swing`, the standard
+// build hooking the map's high geometry with its grapple module and reeled up on the rope,
+// shooter#104).
 //
 // WebGPU runs on the machine's GPU (Vulkan). SHOOTER_CAPTURE_SWIFTSHADER=1 uses the profile
 // lane's SwiftShader adapter (profiles/web-client.yaml) instead: it renders, but its frames

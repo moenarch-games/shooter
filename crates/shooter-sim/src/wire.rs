@@ -41,8 +41,9 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::{Instance, Select, Triggers, Weapon};
 use std::fmt;
 
-/// 28: snapshots carry the tube each fighter's rocket pods fire next from and a `Fired` event
-/// the tube it left (shooter#102). 27: builds may name the combustion chassis (codes 4 to 6)
+/// 29: snapshots carry each fighter's ticks until its grapple module may hook again
+/// (shooter#104). 28: snapshots carry the tube each fighter's rocket pods fire next from and a
+/// `Fired` event the tube it left (shooter#102). 27: builds may name the combustion chassis (codes 4 to 6)
 /// and the engine (36), and the flamethrower and a combustion drive burn fuel (shooter#130): the same bytes mean other
 /// rules, so older peers are refused. 26: snapshots carry each fighter's fuel beside its electricity, and a robot's state both
 /// (shooter#128); 25: an input's actuator command may tell a joint to track the camera's
@@ -56,7 +57,7 @@ use std::fmt;
 /// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
 /// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
 /// the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 28;
+pub const WIRE_VERSION: u8 = 29;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -117,6 +118,10 @@ pub struct FighterState {
     pub robot: Option<RobotState>,
     /// Its grapple hook while set (exact, for prediction and the cable).
     pub hook: Option<Hook>,
+    /// Ticks until its grapple module may hook again
+    /// ([`crate::weapons::Arsenal::grapple_cooldown`]): a predicting client resumes the host's
+    /// interval, so it refuses and grants hooks as the host does (shooter#104).
+    pub grapple_in: u32,
     /// Ticks until it respawns, while dead.
     pub respawn_in: u32,
     /// The last input sequence applied (people only).
@@ -262,6 +267,7 @@ fn state_of(session: &Session, robots: &[RobotState], fighter: &Fighter) -> Opti
         motion: fighter.motion,
         robot,
         hook: fighter.hook,
+        grapple_in: fighter.arsenal.grapple_cooldown(session.ticks()),
         respawn_in: fighter
             .respawn_at
             .map_or(0, |at| at.saturating_sub(session.ticks())),
@@ -1053,6 +1059,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
             }
             None => out.u8(0),
         }
+        out.u32(fighter.grapple_in);
         out.u32(fighter.respawn_in);
         out.u32(fighter.ack);
         out.build(&fighter.build);
@@ -1190,6 +1197,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                     }),
                     _ => return Err(WireError::Malformed("unknown hook state")),
                 },
+                grapple_in: input.u32()?,
                 respawn_in: input.u32()?,
                 ack: input.u32()?,
                 build: input.build()?,

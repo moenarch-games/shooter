@@ -108,25 +108,22 @@ pub fn practice_map(requested: Option<&str>) -> Result<MapId, String> {
     })
 }
 
-/// The profile run's staged scene (`--scene <name>`, `?scene=<name>`) on `map`: none, or
-/// `cover`, the standard build behind the map's arena cover firing its rifle past it, its shots
-/// stopping on the cover short of the reticle ([`shooter_sim::scenarios::CoverShot`],
-/// shooter#102's captures).
+/// The profile run's staged scene (`--scene <name>`, `?scene=<name>`) on `map`
+/// ([`shooter_sim::scenarios::Staged`]): none; `cover`, the standard build behind the map's
+/// arena cover firing its rifle past it, its shots stopping on the cover short of the reticle
+/// (shooter#102's captures); or `swing`, the standard build hooking high arena geometry with its
+/// grapple module and reeled up off the floor on the rope (shooter#104's captures).
 ///
 /// # Errors
 ///
-/// If `requested` names another scene, or `map` has no staged cover shot.
+/// If `requested` names another scene, or `map` has none of it.
 pub fn scene(
     requested: Option<&str>,
     map: MapId,
-) -> Result<Option<shooter_sim::scenarios::CoverShot>, String> {
-    match requested {
-        None => Ok(None),
-        Some("cover") => shooter_sim::scenarios::CoverShot::of(map)
-            .map(Some)
-            .ok_or_else(|| format!("no staged cover shot on {map}")),
-        Some(other) => Err(format!("unknown scene {other}")),
-    }
+) -> Result<Option<shooter_sim::scenarios::Staged>, String> {
+    requested
+        .map(|name| shooter_sim::scenarios::Staged::named(name, map))
+        .transpose()
 }
 
 /// The native command line.
@@ -211,7 +208,7 @@ pub fn offscreen(
     frames: u32,
     map: MapId,
     build: Option<shooter_sim::Assembly>,
-    stage: Option<shooter_sim::scenarios::CoverShot>,
+    stage: Option<shooter_sim::scenarios::Staged>,
     capture: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let (width, height) = OFFSCREEN_SIZE;

@@ -36,7 +36,7 @@ cargo test -p shooter-sim --test precision_aim --locked                    # pre
 cargo test -p shooter-sim --test locomotion --locked                       # wheels and tracks on their own actuators (legs still on the interim drive): rolling, differential turning, track clearance, Space only with thrusters, depletion, prediction, wheeled bots on every map
 scripts/cross-build-hashes.sh [MAP|all [TICKS]]                            # native vs wasm32 (wasm32-wasip1 under Node) per-tick state hashes of the scripted match, and of it with every fighter on wheels; first divergent tick
 cargo test -p shooter-sim --test mount_rails --locked                      # mount rails and adapters: hardpoints, validation, placement, lost supports, a match
-cargo test -p shooter-sim --test grapple --locked                          # the grapple module: no module no hook, muzzle, pull, swing, release, module lost, energy
+cargo test -p shooter-sim --test grapple --locked                          # the grapple module: no module no hook, muzzle, rope tied at the module, pull, swing, release, module lost, energy; hosted latency (hook, reel, release, swing, late inputs, rapid taps, module lost) predicted and replayed; the staged swing
 cargo test -p shooter-sim --test collisions --locked                       # collision damage and debris: rams, glancing, falls, resting contact, hung on a lip, plates, debris fall/retire/budget, wire
 cargo test -p shooter-sim --test repair --locked                           # field repair: legs and weapons repaired, pauses on direct hits, refusals, shared pool, respawn, wire, prediction, replay
 cargo test -p shooter-sim --test destruction --locked                      # arena destruction (`scenery`): stable IDs, hitscan and blast breaks, overlapping cover, opened lines and routes, round restore, wire, predictor, replays (arena_views -- MAP DIR broken draws it)
@@ -54,7 +54,7 @@ cargo run -p shooter-client --release                                      # nat
 scripts/dev.sh [clients|web]                                               # local host + native clients (or the browser build) online
 scripts/build-web.sh && python3 -m http.server -d web/dist                 # browser client (?connect=…&certHash=… joins a host)
 cargo run --release -p shooter-server --bin shooter-replay -- record -o dm.shrp  # scripted match replay (then verify / promote)
-cargo run -p shooter-client --release -- --frames 600 [--scene cover] [--capture DIR] # native client, scripted match drawn offscreen (profile run; --scene cover: the rifle blocked by a kit map's cover, --map assembly-works|proving-cell); --capture writes every 30th frame
+cargo run -p shooter-client --release -- --frames 600 [--scene cover|swing] [--capture DIR] # native client, scripted match drawn offscreen (profile run; --scene cover: the rifle blocked by a kit map's cover, --map assembly-works|proving-cell; --scene swing: a grapple up the works' crane tower, --map assembly-works); --capture writes every 30th frame
 node scripts/capture-web.mjs OUT MAP:FRAMES[:NAME[:SCENE]] ...             # browser (WebGPU, needs a GPU) screenshots of the scripted match's (or the staged scene's) last frame (after build-web.sh)
 scripts/profile.sh [OUT] [native|web|all]                                  # runtime-profiler bundles: bot match, offscreen native client, browser (?frames=120)
 ```
