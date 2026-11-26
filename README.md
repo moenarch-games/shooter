@@ -129,19 +129,26 @@ in, built from asset-tooling's arena kit; two interim greybox maps stay:
   inside 10 m walls, point-symmetric. Its ground is the central assembly floor, broken up by 2 m
   barriers, 1.2 m low cover, a parts container, 4 m pillars and generators, with a 2 m assembly
   cradle under the middle; behind a 4 m bay wall at either end lies a work bay, entered through a
-  doorway or round the wall's open end, with containers, a blast screen and crates. At 3 m a
+  doorway, a second doorway at its far end or round the wall's open end, with containers, blast
+  screens and crates. At 3 m a
   mezzanine runs along each bay wall (the wall stands 1 m over its deck as a parapet), joined
   across the middle by a gantry bridge with staggered low cover and the rail capacitor at its
-  centre, the contested high ground: a 4 m wide, 12 m ramp climbs each mezzanine, a jump pad
+  centre, the contested high ground: a 4 m wide, 12 m ramp climbs each mezzanine, a 12 m loading
+  ramp climbs from the floor onto each side of the bridge, a jump pad
   beside the bridge throws a fighter onto it, and the grapple reaches it from under it. At 5 m a
   crane tower stands in the corner of each bay with thrusters on top, reached by four 1 m work
   platforms (a double jump onto the 2 m one, another onto the 4 m one, a jump onto the tower),
   by a jump pad at its foot that throws 15 m/s up, or by the grapple on its 3 m mast. 4 m deep
   charging bays in the side walls, the bay walls, the tower and the floor's 4 m pillars break
-  the long lines; no spawn point is in sight of another, and none is a dead end. Its low cover,
-  barriers and crates are destruction candidates that break (shooter#60, below)
-  and four repair anchors (under the mezzanines and in the bays) are data for shooter#61. Plan,
-  views and frames: [docs/captures/52](docs/captures/52).
+  the long lines; no spawn point is in sight of another, none is a dead end, each faces its way
+  out and none holds a wheeled or tracked robot (shooter#152's playtests,
+  `crates/shooter-sim/tests/assembly_works.rs`). Tracks reach the bridge by either ramp; wheels
+  do not yet climb the kit's 1:4 ramps on any map (shooter#174) and keep to the floor and the
+  bays. Its low cover, barriers and crates are destruction candidates that break (shooter#60,
+  below) and four repair anchors (under the mezzanines and in the bays) are data for shooter#61.
+  The kit has no assembly machinery or crane props yet (asset-tooling#838). Plan, views and
+  frames: [docs/captures/52](docs/captures/52), polished layout
+  [docs/captures/152](docs/captures/152).
 - `proving-cell`, the small close-quarters arena (shooter#53; 2 to 6 players, 12 spawn points so
   the default 12 slots still fit): a purpose-built combat test cell (the owner's choice of
   setting), a 32 m square inside 10 m walls, point-symmetric, from the same kit as the works. In
