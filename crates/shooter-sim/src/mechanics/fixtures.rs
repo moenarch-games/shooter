@@ -10,7 +10,8 @@
 use super::{Command, Controls};
 use crate::physics::{BodyId, RigidBody, Vec3i};
 use crate::robot::parts::{
-    BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_S, ENERGY_RIFLE, HINGE, LEG, ROTOR, SENSOR, TRACK, WHEEL,
+    BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_S, ENERGY_RIFLE, FUEL_TANK, GENERATOR, HINGE, LEG,
+    ROTOR, SENSOR, TRACK, WHEEL,
 };
 use crate::robot::{
     Assembly, BETA, Candidate, Face, Orientation, PartId, PartType, RawMount, RawPart,
@@ -108,6 +109,19 @@ fn wheeled(sideways: bool) -> Vec<RawPart> {
 #[must_use]
 pub fn car() -> Assembly {
     valid(wheeled(false))
+}
+
+/// The car armed for a match (shooter#58): the energy rifle on its front, and a fuel tank with a
+/// generator on it on its roof beside the sensor, so it recharges as the named loadouts do.
+#[must_use]
+pub fn armed_car() -> Assembly {
+    let mut parts = wheeled(false);
+    parts.extend([
+        on(6, &ENERGY_RIFLE, 0, &CHASSIS_L, Face::PosX, 1, 2),
+        on(7, &FUEL_TANK, 0, &CHASSIS_L, Face::PosZ, 1, 0),
+        on(8, &GENERATOR, 7, &FUEL_TANK, Face::PosZ, 0, 0),
+    ]);
+    valid(parts)
 }
 
 /// The same four wheels on the chassis' front and back: the same commands drive it sideways.
@@ -249,6 +263,19 @@ pub fn tank() -> Assembly {
         on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
         yawed(on(2, &TRACK, 0, &CHASSIS_L, Face::PosY, 3, 0), QUARTER),
         on(3, &TRACK, 0, &CHASSIS_L, Face::NegY, 0, 0),
+    ])
+}
+
+/// A tank whose tracks lie along its sides (shooter#58): the large chassis with a track flat on
+/// each side, both reaching from its back to past its front, each road wheel on the ground, and a
+/// sensor on its roof. ([`tank`] stands its tracks on end.)
+#[must_use]
+pub fn flat_tank() -> Assembly {
+    valid(vec![
+        root(0, &CHASSIS_L),
+        on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+        on(2, &TRACK, 0, &CHASSIS_L, Face::PosY, 0, 0),
+        yawed(on(3, &TRACK, 0, &CHASSIS_L, Face::NegY, 0, 0), 3 * QUARTER),
     ])
 }
 

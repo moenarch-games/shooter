@@ -15,8 +15,8 @@
 use super::kit::{Anchor, KitData};
 use crate::scene::METRES_PER_UNIT;
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
-use shooter_sim::mechanics::placements;
-use shooter_sim::robot::{Assembly, BETA, CELL_MM, Kind, PartId};
+use shooter_sim::mechanics::{TRACK_CLEARANCE, placements};
+use shooter_sim::robot::{Assembly, BETA, CELL_MM, Kind, Locomotion, PartId};
 use shooter_sim::{Instance, TICK_HZ};
 
 /// glTF +X, +Y and +Z as the part's x, z and −y.
@@ -146,7 +146,14 @@ impl Model {
                     .iter()
                     .map(|centre| robot_from_local.transform_point3(*centre))
                     .collect(),
-                radius: rolling.radius,
+                // A track's road wheels reach past its cuboid by the simulation's ground clearance
+                // (shooter#58): it stands on them there.
+                radius: rolling.radius
+                    + if part_type.kind == Kind::Locomotion(Locomotion::Track) {
+                        TRACK_CLEARANCE * METRES_PER_UNIT
+                    } else {
+                        0.0
+                    },
             });
             // A wheel or track stands on its rolling discs (the wheel's tyre is inset from its
             // cuboid), anything else on its cuboid.

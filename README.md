@@ -639,16 +639,21 @@ host takes only commands the robot's connected actuators can take and rests ever
 actuator, and fires only guns the robot still has, so a tampered input moves or fires nothing
 a layout could not. Bots press their build's preset from their movement. The layout lives for
 the session (not saved yet).
-What it does not do yet: **the bindings do not carry a robot.** The movement drive below still
-moves robots by the fast-movement rules (WASD, Shift, C), but Space only jumps with connected legs,
-and the camera only turns the chassis of legged robots. The same keys stride
-its legs and roll its wheels through the preset, which with the drive is mostly seen, not felt;
-the joints (turrets) are moved by the layout alone. Driving robots by their actuators only
-waits on an owner decision (Atlas Q2.i74.1): measured on physics-engine without the drive, five
-of the six named loadouts fall over within two seconds standing on their own legs, every biped falls when it
-walks or turns at the match's 18 m/s², the robo-dog crawls at a few centimetres a second, the
-car rolls at 2 m/s and the tank fixture's tracks spin free under a hull resting on the floor
-(#58). `cargo test -p shooter-sim --test bindings` covers the layouts, the presets driving
+**The bindings carry a robot on wheels or tracks alone** (#58, Atlas D2.i74.1): W and S roll
+its wheels and tracks, A and D turn it differentially (a skid steer turns slowly on the spot),
+the camera turns nothing, Space does nothing unless it carries the thruster module, and the
+jump pads still throw it; its locomotion pays by its commands, so with its electricity (or, on a
+combustion chassis, its fuel) gone it stops. A car tops out at about 3.6 m/s and a tank at about
+3.5 m/s (provisional); a track's road wheels reach 4 cm past its cuboid, so a track level with
+its hull's bottom holds the hull off the ground (the kit's drawn road wheels are 4 cm smaller).
+Bots on wheels or tracks steer their chassis themselves and fire their chassis' guns once they
+face their target. What it does not do yet: **legs.** A robot with a connected leg is still
+moved by the interim movement drive below (WASD, Shift, C, Space with its legs, the camera
+turning it), the bounded fallback until legs balance on their own servos (Atlas D2.i74.1
+records the experiments: four-legged loadouts walk straight at about 1 m/s on a leg balance
+assist but still topple turning, backing, leaping and on kerbs; bipeds fall); its legs stride
+through the preset, which with the drive is mostly seen, not felt. The joints (turrets) are
+moved by the layout alone. `cargo test -p shooter-sim --test bindings` covers the layouts, the presets driving
 wheels, legs and turrets in the mechanics world (no drive), the codecs and the host's check.
 
 **Mechanics** (`shooter_sim::mechanics`, Atlas D2.i70.5, #73). The simulation
@@ -680,12 +685,10 @@ slot (its bodies' ids follow from the slot; an open slot has none): no capsule. 
 standing at its spawn point, a death or a slot changing hands removes it, and a part shot off
 leaves its bodies (it no longer weighs, touches or drives anything; what stays keeps its pose and
 motion); each change rebuilds the world from its exact state, so the host, a predicting client and
-a replay hold the same world. The fast-movement rules (sprint, slide, jumps for connected legs,
-jump pads, air control, the grapple's rope) give the velocity a movement drive sets on the whole robot's centre
-of mass. For a robot with working legs it also keeps it upright and turns it to face the aim
-(at most 16 rad/s); for wheels, tracks or a stationary chassis it preserves angular momentum
-instead of providing a free camera-driven turn. Differential wheel/track steering still awaits
-actuator-driven locomotion (Atlas Q2.i74.1). Its legs
+a replay hold the same world. A robot without a connected leg moves on its own actuators (above);
+for a robot with a connected leg the fast-movement rules (sprint, slide, jumps, jump pads, air
+control, the grapple's rope) give the velocity a movement drive sets on the whole robot's centre
+of mass, and the drive keeps it upright and turns it to face the aim (at most 16 rad/s). Its legs
 stride and its wheels and tracks roll as its control layout tells them (above, **Control layouts**; until #74 at the rate its speed gave them), and
 its motors pay first in the tick: its locomotion for the walk the drive carries it on, by speed
 and load (the standard robot's two legs: about 4.7 a second walking, 6.7 sprinting, nothing

@@ -139,8 +139,10 @@ fn track(
     sent
 }
 
-/// Above the turret, ahead and to its right, on the wall: within the hinge's reach.
-const REACHABLE: [f32; 3] = [-400.0, 1_500.0, 1_500.0];
+/// Above the turret, ahead and to its right, on the wall: within the hinge's reach. 12 m up, not
+/// 15 m, since its car's wheels grip (shooter#58): steeper, its 40 N·m hinge overshoots to its
+/// limit and cannot lift the barrel back from level.
+const REACHABLE: [f32; 3] = [-400.0, 1_200.0, 1_500.0];
 /// On the floor ahead: below the turret's horizon, past the hinge's quarter turn.
 const BELOW: [f32; 3] = [0.0, 0.0, 700.0];
 

@@ -318,11 +318,12 @@ fn motors_draw_by_their_work_first_come_first_served() {
     assert_eq!(robot.pool.burn, 0, "the car has no generator");
     let mass = load(&robot.build, |_| true);
     let wheel = &robot.layout.actuators[0];
-    // A wheel draws 2 a second at its top rate under 200 kg: at half its top rate under the
-    // car's 240 kg, 2 × ½ × 240 / 200 a second, 20 milli-units a tick.
+    // A wheel draws 2 a second at its top rate (20 rad/s since shooter#58) under 200 kg: at
+    // 6 rad/s, three tenths of its top rate, under the car's 240 kg, 2 × 0.3 × 240 / 200 a
+    // second, 12 milli-units a tick.
     assert_eq!(mass, 240);
     let half = draw(wheel, Command::Rate(RATE), mass);
-    assert_eq!(half, 20);
+    assert_eq!(half, 12);
     // Faster or heavier costs more; braked, idle or a stride (no leg) costs nothing.
     assert!(draw(wheel, Command::Rate(2 * RATE), mass) > half);
     assert!(draw(wheel, Command::Rate(RATE), 2 * mass) > half);

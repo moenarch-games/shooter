@@ -1,13 +1,15 @@
 //! Per-tick state hashes of the scripted practice match: the clients' profile run's simulation
 //! (practice rules on seed 1, the local fighter played by the replays' scripted person 0). One
 //! line per map and tick: the map, the tick, then hashes of the whole snapshot, its fighters,
-//! rockets, pellets, debris and scenery. Native and `wasm32` builds must print the same lines
+//! rockets, pellets, debris and scenery; then the same match with every fighter an armed car on
+//! its own wheels (`MAP+wheels`, shooter#58). Native and `wasm32` builds must print the same lines
 //! (`scripts/cross-build-hashes.sh`, shooter#120).
 //!
 //! `cargo run -p shooter-sim --example state_hashes -- [MAP|all] [TICKS] [DUMP_TICK]`: every
 //! catalogued map by default, 600 ticks each; with `DUMP_TICK`, that tick's whole snapshot is
 //! printed too (to see which values differ).
 
+use shooter_sim::mechanics::fixtures;
 use shooter_sim::{MapId, Rules, Session, scenarios::scripted_intent};
 
 /// The clients' practice seed (`shooter_client::game::PRACTICE_SEED`).
@@ -34,9 +36,24 @@ fn main() {
     let dump: Option<u32> = args
         .next()
         .map(|tick| tick.parse().expect("a tick to dump"));
-    for map in maps {
+    // Each map twice: the practice match as the clients play it, then with every fighter an
+    // armed car rolling on its own wheels (shooter#58), printed as `MAP+wheels`.
+    for (map, wheels) in maps.iter().flat_map(|map| [(*map, false), (*map, true)]) {
         let mut session =
             Session::on_map(map, Rules::practice(PRACTICE_SEED)).expect("the map builds");
+        if wheels {
+            for slot in 0..session.fighters.len() {
+                let slot = u8::try_from(slot).expect("a slot");
+                session
+                    .rebuild(slot, fixtures::armed_car())
+                    .expect("the car builds");
+            }
+        }
+        let label = if wheels {
+            format!("{map}+wheels")
+        } else {
+            map.to_string()
+        };
         for tick in 0..ticks {
             session
                 .tick(scripted_intent(0, tick))
@@ -46,7 +63,7 @@ fn main() {
                 println!("{snapshot:#?}");
             }
             println!(
-                "{map} {} {:016x} fighters {:016x} rockets {:016x} pellets {:016x} debris {:016x} scenery {:016x}",
+                "{label} {} {:016x} fighters {:016x} rockets {:016x} pellets {:016x} debris {:016x} scenery {:016x}",
                 snapshot.tick,
                 hash(&snapshot),
                 hash(&snapshot.fighters),

@@ -389,3 +389,50 @@ pub const fn eye_height(motion: Motion) -> i32 {
         EYE_HEIGHT_UNITS
     }
 }
+
+/// A pad's throw or a thruster jump: the velocity (subunits per tick) it sets on the whole
+/// robot, and what happened.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Launch {
+    pub velocity: Option<Vec3i>,
+    pub moves: Moves,
+}
+
+impl Motion {
+    /// One tick of the world's devices and a jump mechanism for a robot that moves only on its
+    /// own wheels and tracks (shooter#58, Atlas D2.i74.1): no drive walks, turns or slides it,
+    /// and wheels and tracks do not jump. A jump pad (a world device) under it while it stands
+    /// on them throws it with the pad's velocity; a jump press while it carries thrusters
+    /// (`thrust`, subunits per tick up: a dedicated jump mechanism, [`crate::pickups`]) leaves
+    /// upward at that speed, on the ground or not. Without thrusters a jump press does nothing.
+    /// On a grapple's rope (`hooked`) it stands on nothing: the rope carries it.
+    pub fn act(
+        &mut self,
+        arena: &Arena,
+        intent: Intent,
+        footing: Footing,
+        hooked: bool,
+        thrust: Option<i32>,
+    ) -> Launch {
+        let grounded = footing.grounded && !hooked;
+        self.airborne = !grounded;
+        self.sliding = false;
+        self.air_jumps = 0;
+        let pressed = intent.jump && !self.jump_held;
+        self.jump_held = intent.jump;
+        let current = footing.velocity;
+        let mut launch = Launch::default();
+        if let Some(pad) = arena
+            .pad_under(footing.feet)
+            .filter(|_| grounded && current.y <= 0)
+        {
+            launch.velocity = Some(pad.launch_velocity());
+            launch.moves.launched = true;
+        } else if let Some(thrust) = thrust.filter(|_| pressed) {
+            launch.velocity = Some(Vec3i::new(current.x, current.y.max(thrust), current.z));
+            launch.moves.jumped = true;
+            launch.moves.air_jumped = !grounded;
+        }
+        launch
+    }
+}
