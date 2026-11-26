@@ -535,9 +535,7 @@ impl Client {
         predictor.fighters[0].repair = me.repair;
         predictor.fighters[0].arsenal.tubes = me.tubes;
         let tick = predictor.ticks();
-        predictor.fighters[0]
-            .arsenal
-            .resume_grapple(tick, me.grapple_in);
+        predictor.fighters[0].arsenal.resume(tick, &me.cooldowns);
     }
 
     fn predict(&mut self, intent: Intent) {
