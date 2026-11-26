@@ -20,10 +20,12 @@ pub mod bit {
     pub const REPAIR: u32 = 1 << 8;
     pub const BOARD: u32 = 1 << 9;
     pub const EDIT: u32 = 1 << 10;
+    /// Self-destruct (shooter#131): tapped, it arms the countdown; tapped again, it cancels.
+    pub const DESTRUCT: u32 = 1 << 11;
 }
 
 /// The keys the buttons hold, by bit.
-const KEYS: [(u32, KeyCode); 8] = [
+const KEYS: [(u32, KeyCode); 9] = [
     (bit::JUMP, KeyCode::Space),
     (bit::SPRINT, KeyCode::ShiftLeft),
     (bit::CROUCH, KeyCode::KeyC),
@@ -32,6 +34,7 @@ const KEYS: [(u32, KeyCode); 8] = [
     (bit::NEXT, KeyCode::KeyE),
     (bit::PREVIOUS, KeyCode::KeyQ),
     (bit::REPAIR, KeyCode::KeyR),
+    (bit::DESTRUCT, KeyCode::Backspace),
 ];
 
 /// How far the move stick leans (of its radius) before it holds a direction's key.

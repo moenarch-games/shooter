@@ -32,6 +32,10 @@ pub const PREVIOUS: &str = "weapon.previous";
 /// Field repair (shooter#61): R opens the quick repair menu and, pressed again, repairs the
 /// part chosen there (the wheel and Q/E move through it while it is open).
 pub const REPAIR: &str = "robot.repair";
+/// Self-destruct (shooter#131, Atlas D2.i123.10): Backspace (out of the way of the movement keys,
+/// so it is pressed on purpose) arms the robot's self-destruct countdown and,
+/// pressed again during it, cancels it.
+pub const SELF_DESTRUCT: &str = "robot.selfDestruct";
 /// The grapple module (shooter#104, Atlas D2.i104.2): its own key, not a weapon in the cycle.
 /// Held, the robot's mounted grapple hooks and reels; let go, the rope goes.
 pub const GRAPPLE: &str = "robot.grapple";
@@ -116,7 +120,7 @@ fn mouse_button(button: u16) -> InputStroke {
 pub fn action_registry() -> ActionRegistry {
     use AxisDirection::{Negative, Positive};
     use standard::{LEFT_X, LEFT_Y, SOUTH};
-    let actions: [(&str, &str, Vec<InputStroke>); 20] = [
+    let actions: [(&str, &str, Vec<InputStroke>); 21] = [
         (
             MOVE_FORWARD,
             "Move forward",
@@ -174,6 +178,11 @@ pub fn action_registry() -> ActionRegistry {
             REPAIR,
             "Repair menu / repair the chosen part",
             vec![key("KeyR")],
+        ),
+        (
+            SELF_DESTRUCT,
+            "Self-destruct (press again to cancel)",
+            vec![key("Backspace")],
         ),
     ];
     ActionRegistry {
@@ -265,6 +274,8 @@ pub struct Controls {
     steps: i32,
     /// Repair presses since the last tick took them.
     repairs: u32,
+    /// Self-destruct presses since the last tick took them.
+    destructs: u32,
     wheel: Notches,
     /// The mouse buttons held (bit per W3C index), for the control layout.
     buttons: u8,
@@ -311,6 +322,7 @@ impl Controls {
             keys: BTreeMap::new(),
             steps: 0,
             repairs: 0,
+            destructs: 0,
             wheel: Notches::default(),
             buttons: 0,
         }
@@ -325,6 +337,7 @@ impl Controls {
                     NEXT => self.steps += 1,
                     PREVIOUS => self.steps -= 1,
                     REPAIR => self.repairs += 1,
+                    SELF_DESTRUCT => self.destructs += 1,
                     _ => {}
                 }
             }
@@ -352,6 +365,11 @@ impl Controls {
     /// The repair presses since the last call.
     pub fn take_repairs(&mut self) -> u32 {
         std::mem::take(&mut self.repairs)
+    }
+
+    /// The self-destruct presses since the last call.
+    pub fn take_destructs(&mut self) -> u32 {
+        std::mem::take(&mut self.destructs)
     }
 
     /// winit's `KeyCode` names are the W3C physical key codes.
@@ -397,6 +415,7 @@ impl Controls {
         self.keys.clear();
         self.steps = 0;
         self.repairs = 0;
+        self.destructs = 0;
         self.wheel = Notches::default();
         self.buttons = 0;
         for (_, down) in &mut self.pad_strokes {

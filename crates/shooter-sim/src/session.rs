@@ -6,7 +6,8 @@
 //! A deathmatch: every fighter is its robot build with per-part health ([`crate::damage`]);
 //! strikes land on the parts they meet, destroyed parts fall away with what hung from them, and
 //! destroying the root chassis is the kill. A kill scores a frag for the killer and a death for the
-//! victim (a suicide, by a fall, one's own rocket or one's own battery's blast, costs a frag),
+//! victim (a suicide, by a fall, one's own rocket, one's own battery's blast or a self-destruct,
+//! costs a frag),
 //! the dead come back as their configured build, whole, at the spawn point farthest from
 //! everyone else after [`Rules::respawn_ticks`], and a round ends at the frag limit or the time
 //! limit, followed by an intermission and a fresh round. A dead fighter whose person holds Edit
@@ -78,12 +79,18 @@
 //! match goes on ([`crate::repair`]): the host checks the order, the repair draws electricity
 //! after the tick's shots and hits, a blow on the part or the module
 //! pauses it, and death and respawn end it.
+//!
+//! Any robot may self-destruct ([`crate::destruct`], shooter#131): a press arms a warning
+//! countdown (another cancels it; death and the round's end do too), and when it ends the robot
+//! dies by its own kill and its volatile contents blast every other robot's parts in reach that
+//! the arena does not shelter, after the tick's shots and before the repairs.
 
 use crate::aim;
 use crate::arena::{Arena, FIRST_DUMMY_BODY, FIRST_PLAYER_BODY, Spawn};
 use crate::bindings::{BindingState, Bindings, Pressed};
 use crate::bots::{Bot, Sight};
 use crate::damage::{BATTERY_BLAST_DAMAGE, BATTERY_BLAST_RADIUS_UNITS, Blow, Hitboxes, PartDamage};
+use crate::destruct;
 use crate::dummies::Dummy;
 use crate::energy::{self, Flow, Pool};
 use crate::grapple::Hook;
@@ -261,6 +268,8 @@ pub struct Fighter {
     pub parts: PartDamage,
     /// The field repair under way this life, if any ([`crate::repair`]).
     pub repair: Option<Repair>,
+    /// While its self-destruct counts down: the tick it goes off ([`crate::destruct`]).
+    pub destruct: Option<u32>,
     /// While dead: the tick it comes back.
     pub respawn_at: Option<u32>,
     pub frags: i32,
@@ -297,6 +306,7 @@ impl Fighter {
             flow: Flow::default(),
             parts: PartDamage::default(),
             repair: None,
+            destruct: None,
             respawn_at: None,
             frags: 0,
             deaths: 0,
@@ -333,6 +343,8 @@ impl Fighter {
             if let Some(next) = self.inputs.front_mut() {
                 next.intent.select = next.intent.select.or(dropped.intent.select);
                 next.intent.repair = next.intent.repair.or(dropped.intent.repair);
+                // Presses toggle: two dropped together cancel out.
+                next.intent.destruct ^= dropped.intent.destruct;
             }
         }
         self.backlog = usize::MAX;
@@ -997,7 +1009,19 @@ pub enum Event {
         part: PartId,
         destroyed: bool,
     },
-    /// A fighter died: `killer` scored (`None` or the victim itself: a suicide).
+    /// `slot` armed its self-destruct (`armed`), or cancelled its countdown, standing at `at`
+    /// (units, its centre; [`crate::destruct`]).
+    Destruct { slot: u8, armed: bool, at: [f32; 3] },
+    /// `slot`'s self-destruct went off at `at` (units, its centre): `damage` there, falling off
+    /// to nothing `radius` units away (both 0: it carried nothing volatile and only died).
+    Detonated {
+        slot: u8,
+        at: [f32; 3],
+        damage: i32,
+        radius: i32,
+    },
+    /// A fighter died: `killer` scored (`None` or the victim itself: a suicide; `weapon` `None`
+    /// with a killer other than the victim: that killer's self-destruct).
     Killed {
         victim: u8,
         killer: Option<u8>,
@@ -1338,6 +1362,7 @@ impl Session {
         fighter.build = fighter.configured;
         fighter.hook = None;
         fighter.carried = None;
+        fighter.destruct = None;
         // Respawn restores the configured build whole (D2.i70.8), with no repair under way.
         fighter.parts = PartDamage::fresh(&fighter.build);
         fighter.repair = None;
@@ -1645,6 +1670,8 @@ impl Session {
                 self.spawn(slot, point)?;
             }
         }
+        // Self-destruct presses arm or cancel a countdown ([`crate::destruct`]).
+        self.arm_destructs(playing);
 
         // How each robot moved after the last step, before this tick's drives: what collision
         // damage measures against ([`crate::impact`]).
@@ -2025,6 +2052,8 @@ impl Session {
             }
         }
         self.fly_pellets();
+        // Every shot of the tick is in: the self-destructs whose countdown ends go off.
+        self.detonate();
         // Every hit of the tick is in: the repairs take their orders and work.
         self.run_repairs(playing);
 
@@ -2165,10 +2194,12 @@ impl Session {
                         fighter.starved = 0;
                     } else {
                         // No input this tick (a late packet): hold the last one, but
-                        // never repeat a weapon switch or repair order; after a while (a
-                        // lost connection), stand still looking the same way.
+                        // never repeat a weapon switch, repair order or self-destruct
+                        // press; after a while (a lost connection), stand still looking
+                        // the same way.
                         fighter.intent.select = None;
                         fighter.intent.repair = None;
+                        fighter.intent.destruct = false;
                         fighter.starved = fighter.starved.saturating_add(1);
                         if fighter.starved >= HOLD_INPUT_TICKS {
                             fighter.intent = Intent {
@@ -2259,6 +2290,10 @@ impl Session {
         };
         // The round's drops end with it.
         self.drops.clear();
+        // And every self-destruct still counting down.
+        for fighter in &mut self.fighters {
+            fighter.destruct = None;
+        }
         self.events.push(Event::RoundOver { winner });
     }
 
@@ -2579,6 +2614,117 @@ impl Session {
         }
     }
 
+    /// Each living fighter's self-destruct press, in slot order ([`crate::destruct`]): it arms
+    /// a countdown of [`destruct::COUNTDOWN_TICKS`], or cancels the one under way. Only while
+    /// the round is played; nothing else is asked of the robot (stranded, empty or airborne, it
+    /// may still arm).
+    fn arm_destructs(&mut self, playing: bool) {
+        if !playing {
+            return;
+        }
+        for fighter in &mut self.fighters {
+            if !fighter.alive() || !fighter.intent.destruct {
+                continue;
+            }
+            fighter.destruct = match fighter.destruct {
+                Some(_) => None,
+                None => Some(self.tick + destruct::COUNTDOWN_TICKS),
+            };
+            self.events.push(Event::Destruct {
+                slot: fighter.slot,
+                armed: fighter.destruct.is_some(),
+                at: fighter.center(),
+            });
+        }
+    }
+
+    /// The self-destructs whose countdown ends this tick ([`crate::destruct`]): every one of
+    /// them dies first (each its own kill), so simultaneous blasts all go off and none is
+    /// cancelled by another's; then each blast, in slot order, from the robot's centre with the
+    /// volatile contents it held ([`destruct::Charge`]). A blast strikes every other living
+    /// robot's connected parts within reach that the arena's geometry does not shelter from it
+    /// (by the falloff to each part's nearest point), the damageable placeables in reach and the
+    /// dummies in sight; batteries it destroys blast in turn.
+    #[allow(clippy::cast_possible_truncation)]
+    fn detonate(&mut self) {
+        let tick = self.tick;
+        let going: Vec<(usize, [f32; 3], destruct::Charge)> = self
+            .fighters
+            .iter()
+            .enumerate()
+            .filter(|(_, fighter)| fighter.alive() && fighter.destruct.is_some_and(|at| tick >= at))
+            .map(|(slot, fighter)| {
+                (
+                    slot,
+                    fighter.center(),
+                    destruct::Charge::of(
+                        &fighter.build,
+                        &fighter.parts,
+                        fighter.energy,
+                        fighter.fuel,
+                    ),
+                )
+            })
+            .collect();
+        for &(slot, _, _) in &going {
+            self.kill(slot, Some(slot), None);
+        }
+        let sheltered = |world: &World, from: [f32; 3], to: [f32; 3]| {
+            let along = [0, 1, 2].map(|axis| to[axis] - from[axis]);
+            world
+                .cast_ray(from, along, |hit| hit.0 < FIRST_PLAYER_BODY)
+                .is_some()
+        };
+        for (slot, at, charge) in going {
+            let (damage, radius) = (charge.damage(), charge.radius_units());
+            self.events.push(Event::Detonated {
+                slot: slot as u8,
+                at,
+                damage,
+                radius,
+            });
+            if damage <= 0 {
+                continue;
+            }
+            for index in 0..self.scenery.placeables().len() {
+                if !self.scenery.placeables()[index].damageable() {
+                    continue;
+                }
+                let Some(point) = self.scenery.nearest(&self.arena, index, at) else {
+                    continue;
+                };
+                if let Some(dealt) = weapons::falloff(at, point, radius, damage) {
+                    self.scenery.hurt(index, dealt);
+                }
+            }
+            for index in 0..self.dummies.len() {
+                let Some(center) = self.dummies[index].center(&self.world) else {
+                    continue;
+                };
+                if sheltered(&self.world, at, center) {
+                    continue;
+                }
+                if let Some(dealt) = weapons::falloff(at, center, radius, damage) {
+                    self.hurt_dummy(index, slot, dealt, center);
+                }
+            }
+            for (victim, parts) in self.hitboxes_now().into_iter().enumerate() {
+                let Some(parts) = parts else {
+                    continue;
+                };
+                let blows: Vec<Blow> = parts
+                    .blast(at, radius, damage)
+                    .into_iter()
+                    .filter(|blow| !sheltered(&self.world, at, blow.at))
+                    .collect();
+                for blow in blows {
+                    self.hurt_part(victim, Some(slot), blow, None);
+                }
+                self.settle_blasts();
+            }
+        }
+    }
+
     /// `victim` dies; `killer` scores unless it is the victim (or nobody): then the victim
     /// loses a frag.
     #[allow(clippy::cast_possible_truncation)]
@@ -2587,6 +2733,8 @@ impl Session {
         let fighter = &mut self.fighters[victim];
         fighter.hook = None;
         fighter.repair = None;
+        // Death cancels a self-destruct countdown.
+        fighter.destruct = None;
         // A carried module's effect ends with its carrier, and the module (its uses left) lies
         // where its feet were, while a round is played and unless it fell out of the arena.
         #[allow(clippy::cast_precision_loss)]

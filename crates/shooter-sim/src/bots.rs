@@ -337,6 +337,8 @@ impl Bot {
             select: Some(Select::Weapon(weapon)),
             edit: false,
             repair: None,
+            // Bots never self-destruct (shooter#131, [`crate::destruct`]).
+            destruct: false,
             // The session resolves its build's preset from its movement ([`crate::bindings`]).
             motors: crate::bindings::Motors::REST,
         }

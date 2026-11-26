@@ -742,6 +742,8 @@ impl App {
     fn tick(&mut self, now: Instant) -> bool {
         let (forward, strafe) = self.controls.movement();
         let repairs = self.controls.take_repairs();
+        // Presses toggle the self-destruct (shooter#131): two in one tick cancel out.
+        let destruct = self.controls.take_destructs() % 2 == 1;
         let intent = if let Some(tick) = self.scripted {
             self.scripted = Some(tick + 1);
             let intent = match self.stage {
@@ -839,6 +841,8 @@ impl App {
                 select,
                 edit: false,
                 repair,
+                // Armed or cancelled by its own key; the host decides.
+                destruct,
             }
         };
         let tick = match self.game.tick(intent) {
@@ -1061,6 +1065,16 @@ impl App {
         let me = local.and_then(|slot| snapshot.and_then(|snapshot| snapshot.slot(slot)));
         // Dead: the countdown, and Edit Robot (B) to suspend it.
         let respawn_in = me.filter(|me| !me.alive).map(|me| me.respawn_in);
+        // Its self-destruct counting down (shooter#131): the ticks left and the blast it would
+        // set off now.
+        let destruct = me.filter(|me| me.alive).and_then(|me| {
+            let charge =
+                shooter_sim::destruct::Charge::of(&me.build, &me.parts, me.energy, me.fuel);
+            Some((me.destruct_in?, charge.damage()))
+        });
+        // Every robot whose self-destruct counts down, and the ticks left: a warning light
+        // pulses on it for everyone.
+        let mut warnings: Vec<(Vec3, u32)> = Vec::new();
         let alive = me.filter(|me| me.alive && self.game.local_center().is_some());
         // The robots' poses: each fighter shown alive, and the dead where they fell.
         let mut robot_views: Vec<RobotView> = Vec::new();
@@ -1088,6 +1102,9 @@ impl App {
             .collect();
         if let (Some(me), Some(view)) = (alive, fighters.first()) {
             let at = center * METRES_PER_UNIT;
+            if let Some(ticks) = me.destruct_in {
+                warnings.push((at, ticks));
+            }
             self.tracker.seen(me.slot, at, forward, me.build, me.held);
             let frame = robots::track::rest_frame(&me.build, at, forward);
             self.tracker.parts(me.slot, &me.build, &me.parts, frame);
@@ -1147,6 +1164,9 @@ impl App {
                 grapple_from: None,
             };
             if let Some(center) = drawn.filter(|_| fighter.alive) {
+                if let Some(ticks) = fighter.destruct_in {
+                    warnings.push((Vec3::from(center) * METRES_PER_UNIT, ticks));
+                }
                 seen.push((
                     slot,
                     Hitboxes::place(&fighter.build, &fighter.parts, center, fighter.yaw),
@@ -1326,7 +1346,7 @@ impl App {
         let point_lights = self
             .effects
             .as_mut()
-            .map(|effects| effects.lights(seconds, &rockets))
+            .map(|effects| effects.lights(seconds, &rockets, &warnings))
             .unwrap_or_default();
         let mut scene = scene::frame(camera, forward, point_lights);
         scene.camera.fov_y = self.precision.fov_y();
@@ -1354,6 +1374,11 @@ impl App {
                 f32::from(u16::try_from(ticks).unwrap_or(u16::MAX)) / f32::from(TICK_HZ),
                 width,
                 height,
+            ));
+        }
+        if let Some((ticks, damage)) = destruct {
+            ui.extend(crate::overlay::destruct_warning(
+                ticks, damage, width, height,
             ));
         }
         if let Some(actors) = &mut self.actors {

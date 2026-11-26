@@ -25,7 +25,8 @@ const MANIFEST: &str = r#"{
     { "id": "beam", "source": { "tone": { "frequency_hz": 1250, "duration_ms": 130, "waveform": "sine", "amplitude": 0.2 } } },
     { "id": "ignite", "source": { "tone": { "frequency_hz": 600, "duration_ms": 220, "waveform": "saw", "amplitude": 0.2 } } },
     { "id": "flame", "source": { "tone": { "frequency_hz": 70, "duration_ms": 140, "waveform": "noise", "amplitude": 0.3 } } },
-    { "id": "hurt", "source": { "tone": { "frequency_hz": 110, "duration_ms": 120, "waveform": "square", "amplitude": 0.4 } } }
+    { "id": "hurt", "source": { "tone": { "frequency_hz": 110, "duration_ms": 120, "waveform": "square", "amplitude": 0.4 } } },
+    { "id": "warn", "source": { "tone": { "frequency_hz": 1650, "duration_ms": 160, "waveform": "square", "amplitude": 0.35 } } }
   ],
   "cues": [
     { "kind": "player.step", "clips": ["step"], "max_voices": 2, "gain_db": -8, "pitch_jitter": 0.12 },
@@ -43,7 +44,9 @@ const MANIFEST: &str = r#"{
     { "kind": "grapple.latch", "clips": ["latch"], "max_voices": 2, "gain_db": -6, "spatial": true },
     { "kind": "rocket.explode", "clips": ["boom"], "priority": 70, "max_voices": 4, "pitch_jitter": 0.08, "spatial": true },
     { "kind": "target.hit", "clips": ["hit"], "max_voices": 2, "gain_db": -6, "cooldown_ms": 30 },
-    { "kind": "player.hurt", "clips": ["hurt"], "max_voices": 1, "gain_db": -6, "cooldown_ms": 80 }
+    { "kind": "player.hurt", "clips": ["hurt"], "max_voices": 1, "gain_db": -6, "cooldown_ms": 80 },
+    { "kind": "destruct.armed", "clips": ["warn"], "priority": 80, "max_voices": 2, "gain_db": -2, "spatial": true },
+    { "kind": "destruct.cancelled", "clips": ["warn"], "max_voices": 1, "gain_db": -10 }
   ]
 }"#;
 
@@ -164,6 +167,17 @@ impl Sounds {
                     self.cue(fire_cue(weapon), Some(metres(from)), now_ms);
                 }
                 Event::Exploded { at } => self.cue("rocket.explode", Some(metres(at)), now_ms),
+                // A self-destruct (shooter#131): a sharp warning tone where it was armed, a quiet
+                // one to its owner when cancelled, and the boom when it goes off with a blast.
+                Event::Destruct {
+                    armed: true, at, ..
+                } => self.cue("destruct.armed", Some(metres(at)), now_ms),
+                Event::Destruct {
+                    armed: false, slot, ..
+                } if Some(slot) == local => self.cue("destruct.cancelled", None, now_ms),
+                Event::Detonated { at, damage, .. } if damage > 0 => {
+                    self.cue("rocket.explode", Some(metres(at)), now_ms);
+                }
                 Event::Damaged { .. } => self.cue("target.hit", None, now_ms),
                 Event::Hit {
                     victim, attacker, ..
@@ -186,6 +200,8 @@ impl Sounds {
                     ..
                 } => self.cue("blade.strike", Some(metres(end)), now_ms),
                 Event::Beam { .. }
+                | Event::Destruct { .. }
+                | Event::Detonated { .. }
                 | Event::Pellet { .. }
                 | Event::Killed { .. }
                 | Event::Spawned { .. }

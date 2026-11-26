@@ -767,6 +767,70 @@ pub fn scope(width: u32, height: u32, zoom: f32) -> Vec<Item> {
     painter.quads
 }
 
+/// The owner's self-destruct warning (shooter#131) for a frame `width` × `height` pixels while
+/// its countdown runs, `ticks` before the blast: a red banner above the reticle with the seconds
+/// left, the blast's strength from what the robot carries now (`damage` at its centre,
+/// [`shooter_sim::destruct::Charge`]; "empty" when it would only die) and how to cancel, over a
+/// bar that drains to the blast. It blinks faster in the last second.
+#[must_use]
+pub fn destruct_warning(ticks: u32, damage: i32, width: u32, height: u32) -> Vec<Item> {
+    #[allow(clippy::cast_precision_loss)]
+    let (width, height) = (width as f32, height as f32);
+    let scale = height / 720.0;
+    let mut painter = Painter {
+        quads: Vec::with_capacity(96),
+        scale,
+    };
+    let centre = width / scale / 2.0;
+    let (panel_width, top) = (360.0, 150.0);
+    let x = centre - panel_width / 2.0;
+    let period = if ticks < u32::from(TICK_HZ) { 10 } else { 30 };
+    let lit = ticks % period < period / 2;
+    painter.round_rect(
+        x,
+        top,
+        panel_width,
+        74.0,
+        10.0,
+        srgb(RED, if lit { 0.78 } else { 0.5 }),
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let seconds = ticks as f32 / f32::from(TICK_HZ);
+    let line = format!("SELF-DESTRUCT {seconds:.1} S");
+    let cell = painter.snap_cell(NAME);
+    painter.text(
+        centre - text_width(&line, cell) / 2.0,
+        top + 8.0,
+        NAME,
+        &line,
+        srgb(PALE, 1.0),
+    );
+    let strength = if damage > 0 {
+        format!("blast {damage}   [Backspace] cancel")
+    } else {
+        "empty: no blast   [Backspace] cancel".to_owned()
+    };
+    let cell = painter.snap_cell(SMALL);
+    painter.text(
+        centre - text_width(&strength, cell) / 2.0,
+        top + 36.0,
+        SMALL,
+        &strength,
+        srgb(PALE, 0.9),
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let share = ticks as f32 / shooter_sim::destruct::COUNTDOWN_TICKS as f32;
+    painter.pill(
+        x + 14.0,
+        top + 60.0,
+        panel_width - 28.0,
+        6.0,
+        share,
+        (srgb(SHADOW, 0.6), srgb(PALE, 0.95)),
+    );
+    painter.quads
+}
+
 /// The field repair panel (shooter#61) for a frame `height` pixels high, bottom left above the
 /// chassis and energy: the open quick repair menu (only the parts the robot may repair now, the
 /// cursor's line in the accent), else the repair under way (its part's health, paused by a hit

@@ -238,7 +238,8 @@ the host's reconnect grace. A public host is described in [docs/hosting.md](docs
 
 Click to capture the mouse. WASD moves, the mouse aims, Space jumps if the robot has a working leg
 (press again in the air to double jump under the interim drive), Shift sprints, C while sprinting slides, Tab shows the scores, Esc releases the
-mouse. Steer in the air with WASD. R opens the quick repair menu (below, **Field repair**). The
+mouse. Steer in the air with WASD. R opens the quick repair menu (below, **Field repair**);
+Backspace arms the self-destruct and, pressed again, cancels it (below, **Self-destruct**). The
 same keys and the mouse drive the robot's actuators through its control layout (below,
 **Control layouts**), edited in the builder's controls panel (K).
 
@@ -530,7 +531,7 @@ walk, then its joints), a thruster jump, the grapple module's hook, the blade sw
 then a repair; the generators run after them (provisional, Atlas Q2.i70.4). Depletion stops only
 what needs the empty resource: out of fuel, the stored electricity still walks and fires; out of
 electricity, the generator still burns fuel and restarts them; with neither the robot stands and
-lives (no limp mode, no death; self-destruct is #131). There is no heat or cooling. The host owns
+lives (no limp mode, no death; it may self-destruct, below). There is no heat or cooling. The host owns
 the pools; snapshots carry each robot's electricity and fuel, the client predicts its own,
 replays reproduce them, and the HUD shows them. Values are provisional (Atlas Q2.i70.1). A lost
 battery or tank (destroyed, or carried off with a part it hung from) takes its storage and its
@@ -584,6 +585,23 @@ one of two legs).
 Snapshots carry every part's health (the lost parts follow from it), with a hit's part and each
 detachment as events; the client's prediction takes the host's part state, replays reproduce it
 and bots aim at their target's root chassis and switch off a lost gun.
+
+**Self-destruct** (`shooter_sim::destruct`, #131, Atlas D2.i123.10). Any robot can blow itself
+up: Backspace (the touch bar's Destruct button; rebindable as `robot.selfDestruct`) arms a 3 s
+countdown on the host and, pressed again during it, cancels it. It needs nothing: a robot
+stranded without electricity, fuel or legs, or in the air, arms it all the same. Dying during the
+countdown, or the round ending, cancels it; a dead robot cannot arm. When it ends the robot dies
+(a suicide: a frag lost) and blows up at its centre with what it still carries: 1 damage for
+every 10 fuel in its connected tanks and 1 for every unit of charge in its connected batteries
+(a full tank 100, a full battery 60; at most 300), falling off to nothing at 1.5 m plus 1 cm a
+point (a full standard build 100 within 2.5 m, a full heavy 160 within 3.1 m). A tank or battery
+lost before took its contents, a battery destroyed before has already blasted, and an empty
+robot only dies. The blast strikes every other robot's parts in reach through the part damage
+above, except where arena geometry stands between (cover shelters), and damages placeables and
+dummies; each robot it kills is a frag for the self-destructing one (one opponent taken along
+nets nothing). Everyone sees a red light pulsing on the counting robot and hears its warning
+tone; its owner's HUD shows the seconds left, the blast it would make and how to cancel. Bots
+never self-destruct. Values are provisional (Atlas Q2.i123.2).
 
 **Collisions and debris** (`shooter_sim::impact`, `shooter_sim::mechanics`, Atlas D2.i70.10,
 #75). A hard impact damages the part actually hit, under the same rules: after each step the

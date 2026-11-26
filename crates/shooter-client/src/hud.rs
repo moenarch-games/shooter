@@ -158,7 +158,7 @@ impl Hud {
                         "{} ⟶ {} ({})",
                         name(snapshot, killer, local),
                         name(snapshot, victim, local),
-                        weapon.map_or("?", weapon_name)
+                        weapon.map_or("self-destruct", weapon_name)
                     ),
                     None => format!("{} self-destructed", name(snapshot, victim, local)),
                 },
