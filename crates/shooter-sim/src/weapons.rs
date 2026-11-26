@@ -645,6 +645,12 @@ impl Arsenal {
         self.grapple_ready_at.saturating_sub(tick)
     }
 
+    /// The grapple module may hook again `cooldown` ticks from `tick`: a predicting client
+    /// resuming the host's interval ([`crate::wire::FighterState::grapple_in`], shooter#104).
+    pub const fn resume_grapple(&mut self, tick: u32, cooldown: u32) {
+        self.grapple_ready_at = tick.saturating_add(cooldown);
+    }
+
     /// Ticks from `tick` until the blade may swing again: 0 when it is ready.
     #[must_use]
     pub const fn blade_cooldown(&self, tick: u32) -> u32 {

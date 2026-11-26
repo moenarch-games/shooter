@@ -19,7 +19,7 @@ use shooter_sim::damage::{Hitboxes, PartDamage};
 use shooter_sim::physics::Vec3i;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
 use shooter_sim::robot::PartId;
-use shooter_sim::scenarios::{CoverShot, scripted_intent};
+use shooter_sim::scenarios::{Staged, scripted_intent};
 use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, Select, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
@@ -93,8 +93,8 @@ pub struct App {
     /// [`scripted_intent`]`(0, tick)` instead of the controls.
     scripted: Option<u32>,
     /// The profile run's staged scene, if any: the local fighter stands where it says and plays
-    /// its intent instead of [`scripted_intent`] (the `cover` scene, shooter#102).
-    stage: Option<CoverShot>,
+    /// its intent instead of [`scripted_intent`] (the `cover` scene, shooter#102; `swing`, #104).
+    stage: Option<Staged>,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
     game: Game,
@@ -494,7 +494,7 @@ impl App {
 
     /// The profile run plays `stage` (a staged scene) instead of the scripted person.
     #[must_use]
-    pub const fn staged(mut self, stage: Option<CoverShot>) -> Self {
+    pub const fn staged(mut self, stage: Option<Staged>) -> Self {
         self.stage = stage;
         self
     }
@@ -741,7 +741,7 @@ impl App {
                 // Staged once the local fighter is in the match, then held there.
                 Some(stage) => {
                     if tick == 1
-                        && let Err(error) = self.game.stage(stage.feet, stage.yaw)
+                        && let Err(error) = self.game.stage(stage.feet(), stage.yaw())
                     {
                         crate::log(&format!("the staged scene: {error}"));
                     }

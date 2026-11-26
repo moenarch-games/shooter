@@ -658,8 +658,11 @@ pub const CELL_PAD: Scenario = Scenario {
 };
 
 /// Pitch steps from the stage grapple's eye (-100, 365, -250) up to the north wall 7 m up behind
-/// the gallery, (-100, 700, -1600): atan(335 / 1350) ≈ 13.9°.
-const GALLERY_PITCH: i16 = 2_537;
+/// the gallery, (-100, 700, -1600): atan(335 / 1350) ≈ 13.9°, raised about 2.2° since the rope
+/// is tied at the grapple module (shooter#104): the hook sets higher on the wall, and the robot,
+/// hanging from its module, is reeled over the gallery's lip rather than into its face hard
+/// enough to knock the module off (on both physics backends).
+const GALLERY_PITCH: i16 = 2_937;
 
 /// The proving cell from its stage's north edge: hook the north wall over the gallery, get reeled
 /// up and over the gallery's edge, let go and step onto its deck.
@@ -749,8 +752,10 @@ pub const DOCK_PAD: Scenario = Scenario {
 
 /// Pitch steps from the outer lane's eye (-3300, 165, -2200) up to the bow mast's top on the
 /// foredeck, (-2200, 670, -2200): atan(505 / 1100) ≈ 24.7°, raised about 1.6° so the line from
-/// the grapple module's muzzle (below the eye) still meets the mast's top.
-const BOW_MAST_PITCH: i16 = 4_797;
+/// the grapple module's muzzle (below the eye) still meets the mast's top, and about 0.5° more
+/// since the rope is tied at the module (shooter#104), so the robot's swing toward the mast
+/// leaves it over the foredeck when it lets go (on both physics backends).
+const BOW_MAST_PITCH: i16 = 4_897;
 
 /// The drydock's west outer lane: hook the bow mast over the hull, get reeled up over the
 /// shoulder and flung toward the mast, let go and step back to land on the foredeck short of
@@ -944,6 +949,106 @@ impl CoverShot {
             select: Some(Select::Weapon(Weapon::EnergyRifle)),
             fire: tick >= COVER_FIRE_TICK,
             ..Intent::IDLE
+        }
+    }
+}
+
+/// A staged hooked swing on a kit-built map (shooter#104's captures, the profile run's `swing`
+/// scene): the standard build standing at `feet` (units) below high arena geometry, aimed at
+/// `yaw` and `pitch` at it; from [`SWING_HOOK_TICK`] it holds the grapple module's key, so the
+/// hook leaves the module's muzzle, sets on the arena and the rope, tied at the module, reels
+/// the robot up off the floor and swings it toward the anchor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HookedSwing {
+    pub map: crate::maps::MapId,
+    pub feet: [f32; 3],
+    pub yaw: u16,
+    pub pitch: i16,
+}
+
+/// The staged hooked swings, one per map that has one: the assembly works' crane mast from the
+/// floor south of its tower ([`WORKS_GRAPPLE`]'s hook, held on).
+pub const HOOKED_SWINGS: [HookedSwing; 1] = [HookedSwing {
+    map: crate::maps::MapId::AssemblyWorks,
+    feet: [2_330.0, 1.0, -1_450.0],
+    yaw: NORTH,
+    pitch: MAST_PITCH,
+}];
+
+/// When the staged fighter hooks (ticks): settled on the floor first.
+pub const SWING_HOOK_TICK: u32 = 50;
+
+impl HookedSwing {
+    /// The staged swing on `map`, if it has one.
+    #[must_use]
+    pub fn of(map: crate::maps::MapId) -> Option<Self> {
+        HOOKED_SWINGS.into_iter().find(|swing| swing.map == map)
+    }
+
+    /// Its intent at `tick`: aimed at the anchor, standing still, holding the grapple module's
+    /// key from [`SWING_HOOK_TICK`] on.
+    #[must_use]
+    pub fn intent(self, tick: u32) -> Intent {
+        Intent {
+            yaw: self.yaw,
+            pitch: self.pitch,
+            grapple: tick >= SWING_HOOK_TICK,
+            ..Intent::IDLE
+        }
+    }
+}
+
+/// A staged scene of the profile run (`--scene <name>`, `?scene=<name>`), played by the local
+/// fighter instead of the scripted person: `cover` ([`CoverShot`]) or `swing`
+/// ([`HookedSwing`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Staged {
+    Cover(CoverShot),
+    Swing(HookedSwing),
+}
+
+impl Staged {
+    /// The scene `name` on `map`.
+    ///
+    /// # Errors
+    ///
+    /// If `name` is no staged scene, or `map` has none of it.
+    pub fn named(name: &str, map: crate::maps::MapId) -> Result<Self, String> {
+        match name {
+            "cover" => CoverShot::of(map)
+                .map(Self::Cover)
+                .ok_or_else(|| format!("no staged cover shot on {map}")),
+            "swing" => HookedSwing::of(map)
+                .map(Self::Swing)
+                .ok_or_else(|| format!("no staged hooked swing on {map}")),
+            other => Err(format!("unknown scene {other}")),
+        }
+    }
+
+    /// Where the local fighter stands (units).
+    #[must_use]
+    pub const fn feet(self) -> [f32; 3] {
+        match self {
+            Self::Cover(shot) => shot.feet,
+            Self::Swing(swing) => swing.feet,
+        }
+    }
+
+    /// The way it faces (binary yaw).
+    #[must_use]
+    pub const fn yaw(self) -> u16 {
+        match self {
+            Self::Cover(shot) => shot.yaw,
+            Self::Swing(swing) => swing.yaw,
+        }
+    }
+
+    /// Its intent at `tick`.
+    #[must_use]
+    pub fn intent(self, tick: u32) -> Intent {
+        match self {
+            Self::Cover(shot) => shot.intent(tick),
+            Self::Swing(swing) => swing.intent(tick),
         }
     }
 }

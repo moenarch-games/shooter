@@ -19,7 +19,7 @@
 //! between the muzzle and the target stops it though the camera sees past: peeking with the
 //! camera never shoots through cover. A muzzle pushed into a wall fires from the wall's near
 //! face. The grapple module's hook leaves its own muzzle toward a target ahead of it the same way
-//! (shooter#104; its rope is still tied at the eye, [`crate::grapple`]), turning freely; the
+//! (shooter#104; its rope is tied there too, [`crate::grapple`]), turning freely; the
 //! blade keeps leaving the eye along the aim (its own contract).
 //!
 //! **Mount-bound** (Atlas D2.i123.8, shooter#132). A gun keeps its mount's direction: its shot

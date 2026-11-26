@@ -51,7 +51,7 @@ impl Game {
     }
 
     /// An empty practice match on `map`, no bots: a staged scene's ([`Game::stage`], the
-    /// profile run's `cover` scene, shooter#102).
+    /// profile run's `cover` and `swing` scenes, shooter#102, #104).
     ///
     /// # Panics
     ///
@@ -124,8 +124,8 @@ impl Game {
     }
 
     /// Practice only: stands the local fighter's robot at `feet` (units) facing `yaw`, as a
-    /// staged scene places it (the profile run's `cover` scene, shooter#102). Online it is the
-    /// host's to place: nothing happens.
+    /// staged scene places it (the profile run's `cover` and `swing` scenes, shooter#102, #104).
+    /// Online it is the host's to place: nothing happens.
     ///
     /// # Errors
     ///
@@ -603,6 +603,11 @@ pub mod online {
                 predictor.fighters[0].fuel = me.fuel;
                 predictor.fighters[0].repair = me.repair;
                 predictor.fighters[0].arsenal.tubes = me.tubes;
+                // The host's interval before the grapple module may hook again (shooter#104).
+                let tick = predictor.ticks();
+                predictor.fighters[0]
+                    .arsenal
+                    .resume_grapple(tick, me.grapple_in);
                 Ok::<(), String>(())
             };
             if !self.predicting {

@@ -9,11 +9,16 @@
 //! hook, and a set hook lets go the tick it loses the module, its key is released or it dies.
 //! Fighters are never hooked. Reach and interval are provisional tuning, not approved values.
 //!
+//! The rope is tied at the module: its muzzle where the robot carries it, on the body the
+//! simulation has the module on ([`crate::Fighter::rope_tie`]), measures the rope's length and
+//! span, so a module mounted high, low or to one side hangs and swings from there.
+//!
 //! A deterministic stand-in for a rope joint: each tick before the world steps, [`Hook::pull`]
 //! adds the reel's acceleration toward the anchor to the robot's velocity and removes any that
-//! would stretch the rope; the movement drive sets the result on the mechanical robot
-//! ([`crate::mechanics::Mechanics::drive`]) and the articulated world resolves every collision.
-//! [`Hook::pull`] is the whole seam: a rope joint on the robot's root body could replace it.
+//! would stretch the rope between the module and the anchor; the movement drive sets the result
+//! on the mechanical robot ([`crate::mechanics::Mechanics::drive`]) and the articulated world
+//! resolves every collision. [`Hook::pull`] is the whole seam: a rope joint on the robot's root
+//! body could replace it.
 //!
 //! Everything is integer: positions and velocities in subunits, lengths integer square roots.
 
@@ -63,19 +68,18 @@ impl Hook {
     /// Fires a hook from the module's muzzle `from` (units) along the Q16 `direction`, ignoring
     /// `owner`: set where it first meets arena geometry within [`RANGE_UNITS`], or `None` with
     /// where the shot ended (a miss, or a fighter or dummy in the way). The rope is tied at the
-    /// robot's `eye` ([`Hook::pull`]): its length is the eye's distance to the anchor.
+    /// module ([`Hook::pull`]): its length is the muzzle's distance to the anchor.
     #[must_use]
     pub fn fire(
         world: &World,
         from: [f32; 3],
-        eye: [f32; 3],
         direction: [i32; 3],
         owner: BodyId,
     ) -> (Option<Self>, weapons::Trace) {
         let trace = weapons::trace(world, from, direction, RANGE_UNITS, owner, |_| true);
         let hook = trace.hit.filter(|hit| holds_on(hit.body)).map(|_| {
             let anchor = subunits(trace.end);
-            let from = subunits(eye);
+            let from = subunits(from);
             let offset = [0, 1, 2].map(|axis| i64::from(anchor[axis] - from[axis]));
             Self {
                 anchor,
@@ -93,13 +97,14 @@ impl Hook {
             .map(|axis| axis as f32 / SUBUNITS_PER_UNIT as f32)
     }
 
-    /// One tick of rope on a body moving at `velocity` (subunits per tick) whose eye is `eye`
-    /// (units): reels the rope in, and returns the velocity pulled toward the anchor without
-    /// any part that would stretch the rope past its length. Call after the body's own
-    /// movement and before the world steps.
+    /// One tick of rope on a body moving at `velocity` (subunits per tick) whose grapple module
+    /// ties the rope at `tie` (units: the module's muzzle where the robot carries it now,
+    /// [`crate::Fighter::rope_tie`]): reels the rope in, and returns the velocity pulled toward
+    /// the anchor without any part that would stretch the rope past its length. Call after the
+    /// body's own movement and before the world steps.
     #[must_use]
-    pub fn pull(&mut self, velocity: Vec3i, eye: [f32; 3]) -> Vec3i {
-        let from = subunits(eye);
+    pub fn pull(&mut self, velocity: Vec3i, tie: [f32; 3]) -> Vec3i {
+        let from = subunits(tie);
         let offset = [0, 1, 2].map(|axis| i64::from(self.anchor[axis] - from[axis]));
         let span = distance(offset);
         if span == 0 {
