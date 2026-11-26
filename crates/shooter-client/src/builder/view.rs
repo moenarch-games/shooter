@@ -1496,7 +1496,12 @@ impl Builder {
         self.inspector(&mut painter, &layout);
         self.status(&mut painter, &layout, kit_missing.as_deref());
 
-        let mut scene = scene::frame(self.eye, (target - self.eye).normalize(), Vec::new());
+        let mut scene = scene::frame(
+            self.eye,
+            (target - self.eye).normalize(),
+            Vec::new(),
+            &scene::Lighting::GREYBOX,
+        );
         scene.clear_color = Vec3::new(0.05, 0.09, 0.16);
         (scene, painter.quads)
     }
