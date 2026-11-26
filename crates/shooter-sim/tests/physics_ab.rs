@@ -742,6 +742,42 @@ mod mechanics {
         }
     }
 
+    /// The steer-car (shooter#170) from rest with W and D under the match's gravity for 0.75 s:
+    /// on both backends its rear servos turn its wheels out of the turn by about the preset's
+    /// angle and it rolls into a right turn upright, the two ending within half a metre and 0.2
+    /// rad of each other (about 10 cm and 0.14 rad). Their tyres part after that: by 1.5 s
+    /// physics-engine has turned it 1.67 rad, Rapier 1.05.
+    #[test]
+    fn steering_matches_the_rapier_oracle() {
+        use shooter_sim::bindings::{BindingState, Bindings, Pressed};
+        use shooter_sim::mechanics::Layout;
+        use shooter_sim::robot::STEER_CAR;
+
+        let layout = Layout::of(&STEER_CAR);
+        let right = Bindings::preset(&layout)
+            .resolve(&layout, &mut BindingState::default(), Pressed::wasd(1, 1))
+            .controls(&layout);
+        let (engine, rapier) = both_under(match_gravity(), &floor(), STEER_CAR, 45, |_| right);
+        let heading = |outcome: &Outcome| {
+            let [x, y, z, w] = outcome.root.orientation;
+            libm::atan2f(2.0 * (x * z - y * w), 1.0 - 2.0 * (y * y + z * z))
+        };
+        for outcome in [&engine, &rapier] {
+            let servos = [PartId(3), PartId(5)].map(|part| angle(outcome, part).0);
+            println!(
+                "servos {servos:?} heading {} at {:?} up {:?}",
+                heading(outcome),
+                outcome.root.position,
+                up(outcome.root)
+            );
+            assert!(servos.iter().all(|angle| *angle > 0.1), "{servos:?}");
+            assert!(heading(outcome) > 0.3, "{}", heading(outcome));
+            assert!(up(outcome.root)[1] > 0.95);
+        }
+        assert!(gap(engine.root.position, rapier.root.position) < 50.0);
+        assert!((heading(&engine) - heading(&rapier)).abs() < 0.2);
+    }
+
     #[test]
     fn the_stall_matches_the_rapier_oracle() {
         let (engine, rapier) =

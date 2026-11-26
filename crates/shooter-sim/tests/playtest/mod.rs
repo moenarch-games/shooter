@@ -23,7 +23,10 @@ pub const HZ: u32 = 60;
 pub enum Drive {
     /// The named loadouts the bots pick (legs, on the interim drive).
     Legs,
+    /// The armed car (the rover), steering differentially.
     Wheels,
+    /// The steer-car, steering its rear wheels on servos (shooter#170).
+    Steered,
     Tracks,
     /// Representative mixed builds: slot by slot, the named loadouts, the armed car and the
     /// armed tank in turn.
@@ -36,6 +39,7 @@ impl Drive {
         match self {
             Self::Legs => None,
             Self::Wheels => Some(fixtures::armed_car()),
+            Self::Steered => Some(shooter_sim::robot::STEER_CAR),
             Self::Tracks => Some(fixtures::armed_tank()),
             Self::Mixed => match slot % 3 {
                 0 => None,
@@ -405,6 +409,16 @@ pub fn drive_route(
         }
         let toward = shooter_sim::trig::yaw_from_vector(dx as i32, dz as i32).unwrap_or(0);
         let (forward, strafe) = steer(session.local().heading(), toward, 1);
+        // As the bots do on steering servos (shooter#170).
+        let (forward, strafe) = if session
+            .mechanics
+            .robot(0)
+            .is_some_and(|robot| !robot.layout.steering_joints().is_empty())
+        {
+            shooter_sim::bots::steered(forward, strafe)
+        } else {
+            (forward, strafe)
+        };
         let intent = session.with_preset(
             0,
             Intent {

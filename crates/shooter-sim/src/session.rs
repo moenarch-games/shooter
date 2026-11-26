@@ -2260,17 +2260,14 @@ impl Session {
                             fighter.parts.instances(&fighter.build).collect();
                         fighter.intent =
                             bot.think(slot, &sights, &self.world, &self.arena, &copies, tick);
-                        // A steered axle needs rolling wheels to change the chassis heading.
-                        if fighter.intent.strafe != 0
-                            && self.mechanics.robot(fighter.slot).is_some_and(|robot| {
-                                robot.layout.steering_joints().next().is_some()
-                            })
+                        // Steering servos turn the chassis only while it rolls (shooter#170).
+                        if self
+                            .mechanics
+                            .robot(fighter.slot)
+                            .is_some_and(|robot| !robot.layout.steering_joints().is_empty())
                         {
-                            if fighter.intent.forward == 0 {
-                                fighter.intent.forward = 1;
-                            } else if fighter.intent.forward < 0 {
-                                fighter.intent.strafe = -fighter.intent.strafe;
-                            }
+                            (fighter.intent.forward, fighter.intent.strafe) =
+                                crate::bots::steered(fighter.intent.forward, fighter.intent.strafe);
                         }
                         // Its robot's actuators through its build's preset layout, from the
                         // keys its movement would press: the same commands a person's layout

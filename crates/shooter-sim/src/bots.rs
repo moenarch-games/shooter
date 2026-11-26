@@ -438,3 +438,17 @@ pub const fn steer(heading: u16, toward: u16, forward: i8) -> (i8, i8) {
     let roll = if off.abs() < ROLL_CONE { forward } else { 0 };
     (roll, side)
 }
+
+/// [`steer`]'s keys for a chassis that steers on servos ([`crate::mechanics::Layout::
+/// steering_joints`], shooter#170) instead of turning its wheels differentially: steered wheels
+/// turn it only while they roll, so a turn on the spot rolls ahead as it turns, and backing up
+/// it holds its servos the other way (a car's nose swings the other way in reverse).
+#[must_use]
+pub const fn steered(forward: i8, turn: i8) -> (i8, i8) {
+    match (forward, turn) {
+        (_, 0) => (forward, 0),
+        (0, _) => (1, turn),
+        (..0, _) => (forward, -turn),
+        _ => (forward, turn),
+    }
+}

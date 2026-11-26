@@ -80,8 +80,8 @@ fn game(
 
 /// The loadout to play as: natively `--loadout <name>`, in the browser `?loadout=<name>`, one of
 /// [`shooter_sim::robot::LOADOUTS`] (`standard`, `heavy`, `skirmisher`, `marksman`, `pyro`,
-/// `mechanic`, `stoker`, `robo-dog`, `rover`, `mini-tank`); none asks for nothing (the standard
-/// build).
+/// `mechanic`, `stoker`, `robo-dog`, `rover`, `mini-tank`, `steer-car`); none asks for nothing (the
+/// standard build).
 ///
 /// # Errors
 ///

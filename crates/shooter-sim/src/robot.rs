@@ -621,9 +621,10 @@ pub mod parts {
     pub const ADAPTER: PartType = tough(part(14, "robot.adapter", Kind::Adapter, [1, 1, 1], Faces::EXPOSED, [2, 0, 0, 1]), 40);
     // Motorised parts end with their drive: torque (N·m), top rate (tenths of a radian a
     // second) and the energy drawn a second while commanded.
-    /// A hinge servo: one socket, on its moving side.
+    /// A hinge servo: one socket, on its moving side. 150 N·m (shooter#170: at 40 a steered
+    /// wheel's tyre under the match's gravity turned it off its angle). Provisional (Q2.i70.1).
     #[rustfmt::skip]
-    pub const HINGE: PartType = tough(driven(part(20, "robot.joint.hinge", Kind::Joint(Joint::Hinge), [1, 1, 1], Faces::TOP, [8, 0, 0, 5]), [40, 30, 1]), 40);
+    pub const HINGE: PartType = tough(driven(part(20, "robot.joint.hinge", Kind::Joint(Joint::Hinge), [1, 1, 1], Faces::TOP, [8, 0, 0, 5]), [150, 30, 1]), 40);
     /// A continuous rotor (a turret's base): one socket, on its moving side.
     #[rustfmt::skip]
     pub const ROTOR: PartType = tough(driven(part(21, "robot.joint.rotor", Kind::Joint(Joint::Rotor), [1, 1, 1], Faces::TOP, [10, 0, 0, 6]), [60, 40, 2]), 40);
@@ -1296,19 +1297,22 @@ pub const ROVER: Assembly = authored(&[
     Part::on(8, &GENERATOR, 7, &FUEL_TANK, Face::PosZ, 0, 0),
 ]);
 
-/// The rover with two hinge servos on its front wheels, steering around vertical axes.
+/// The rover with its rear wheels on two hinge servos turning about the vertical (shooter#170):
+/// A and D turn the servos, W and S roll all four wheels. The rear wheels steer because on this
+/// chassis they trail their kingpins (10 cm behind, as a caster's): front wheels on the same
+/// servos would lead theirs and fold sideways in a turn, or, moved back, rub the rear wheels.
 pub const STEER_CAR: Assembly = authored(&[
     Part::root(0, &CHASSIS_L),
     Part::on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
-    Part::on(2, &WHEEL, 0, &CHASSIS_L, Face::PosY, 0, 0).yawed(2 * Orientation::QUARTER),
-    Part::on(3, &HINGE, 0, &CHASSIS_L, Face::PosY, 0, 1),
-    Part::on(4, &WHEEL, 0, &CHASSIS_L, Face::NegY, 0, 0).yawed(2 * Orientation::QUARTER),
-    Part::on(5, &HINGE, 0, &CHASSIS_L, Face::NegY, 1, 0).yawed(Orientation::QUARTER),
+    Part::on(2, &WHEEL, 0, &CHASSIS_L, Face::PosY, 0, 1).yawed(Orientation::QUARTER),
+    Part::on(3, &HINGE, 0, &CHASSIS_L, Face::PosY, 0, 0),
+    Part::on(4, &WHEEL, 0, &CHASSIS_L, Face::NegY, 1, 0).yawed(3 * Orientation::QUARTER),
+    Part::on(5, &HINGE, 0, &CHASSIS_L, Face::NegY, 0, 0).yawed(Orientation::QUARTER),
     forward(6, &ENERGY_RIFLE, &CHASSIS_L, 1, 2),
     Part::on(7, &FUEL_TANK, 0, &CHASSIS_L, Face::PosZ, 1, 0),
     Part::on(8, &GENERATOR, 7, &FUEL_TANK, Face::PosZ, 0, 0),
-    Part::on(9, &WHEEL, 3, &HINGE, Face::PosZ, 0, 0).yawed(Orientation::QUARTER),
-    Part::on(10, &WHEEL, 5, &HINGE, Face::PosZ, 0, 0).yawed(2 * Orientation::QUARTER),
+    Part::on(9, &WHEEL, 3, &HINGE, Face::PosZ, 0, 0).yawed(2 * Orientation::QUARTER),
+    Part::on(10, &WHEEL, 5, &HINGE, Face::PosZ, 0, 0).yawed(Orientation::QUARTER),
 ]);
 
 /// A four-legged robot with forelegs under two beams, a forward shotgun and a roof power

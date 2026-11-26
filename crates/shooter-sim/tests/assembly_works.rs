@@ -19,7 +19,13 @@ use shooter_sim::maps::MapId;
 use shooter_sim::mechanics::fixtures;
 use shooter_sim::physics::Vec3i;
 
-const ALL: [Drive; 4] = [Drive::Legs, Drive::Wheels, Drive::Tracks, Drive::Mixed];
+const ALL: [Drive; 5] = [
+    Drive::Legs,
+    Drive::Wheels,
+    Drive::Steered,
+    Drive::Tracks,
+    Drive::Mixed,
+];
 
 /// `fighters` bots on `drive` for `seconds` on the works, seeded `seed`.
 fn playtest(fighters: u8, drive: Drive, seed: u64, seconds: u32) -> Playtest {
@@ -166,9 +172,10 @@ fn the_high_ground_sees_and_is_seen_from_the_floor() {
 /// and along its deck, and (shooter#152) up the loading ramp from the floor east of the bridge
 /// straight onto its edge; no contested high place needs legs, a jump or the grapple. Wheels
 /// climb the kit's 1:4 ramps too since shooter#174 (before it the car got about half a metre up
-/// and rolled back): the armed car drives up the loading ramp onto the bridge as the tank does.
-/// (By the mezzanine it climbs onto the deck but does not yet make the deck's turn onto the
-/// bridge: a skid-steered chassis turns slowly, shooter#170.)
+/// and rolled back): the armed car drives up the loading ramp onto the bridge as the tank does,
+/// and so does the steer-car on its steering servos (shooter#170). (By the mezzanine both climb
+/// onto the deck but neither makes the deck's turn onto the bridge: the car's skid steer turns
+/// slowly, and the steer-car, steering, ends about 0.4 m below the deck by the turn.)
 #[test]
 fn wheels_and_tracks_drive_onto_the_bridge() {
     use shooter_sim::assembly_works::DECK_TOP;
@@ -179,7 +186,11 @@ fn wheels_and_tracks_drive_onto_the_bridge() {
         Vec3i::new(0, DECK_TOP, -1_600),
         Vec3i::new(0, DECK_TOP, -800),
     ];
-    for build in [fixtures::armed_tank(), fixtures::armed_car()] {
+    for build in [
+        fixtures::armed_tank(),
+        fixtures::armed_car(),
+        shooter_sim::robot::STEER_CAR,
+    ] {
         let (at, _) = drive_route(
             Arena::assembly_works(),
             build,

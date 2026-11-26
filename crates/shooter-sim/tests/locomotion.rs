@@ -205,6 +205,17 @@ fn without_electricity_the_wheels_stop() {
 /// and backing up.
 #[test]
 fn a_client_predicts_a_wheeled_robot_exactly() {
+    predicts_exactly(fixtures::car());
+}
+
+/// [`a_client_predicts_a_wheeled_robot_exactly`] for the steer-car (shooter#170): its servos
+/// steering as well.
+#[test]
+fn a_client_predicts_a_steered_car_exactly() {
+    predicts_exactly(shooter_sim::robot::STEER_CAR);
+}
+
+fn predicts_exactly(build: Assembly) {
     let mut host = Session::with_rules(
         floor(),
         Rules {
@@ -220,9 +231,9 @@ fn a_client_predicts_a_wheeled_robot_exactly() {
     )
     .unwrap();
     host.join(7).unwrap();
-    assert!(host.configure(7, fixtures::car()));
+    assert!(host.configure(7, build));
     let mut predictor = Session::new(floor()).unwrap();
-    assert!(predictor.configure(LOCAL_PLAYER, fixtures::car()));
+    assert!(predictor.configure(LOCAL_PLAYER, build));
     let keys = [(0, 0), (1, 0), (1, 1), (0, -1), (-1, 0), (1, -1)];
     for tick in 0..360u32 {
         let sequence = tick + 1;
@@ -407,4 +418,154 @@ fn steering_turns_toward_and_rolls_only_when_roughly_facing() {
     assert_eq!(steer(0, 0u16.wrapping_sub(5_461), 1), (1, 1));
     // Backing off still turns toward the target.
     assert_eq!(steer(0, 3_000, -1), (-1, -1));
+    // On steering servos (shooter#170) a turn rolls ahead, and backing up turns the other way.
+    assert_eq!(shooter_sim::bots::steered(0, -1), (1, -1));
+    assert_eq!(shooter_sim::bots::steered(1, 1), (1, 1));
+    assert_eq!(shooter_sim::bots::steered(-1, -1), (-1, 1));
+    assert_eq!(shooter_sim::bots::steered(-1, 0), (-1, 0));
+}
+
+/// The steer-car's two steering servos (shooter#170).
+const STEERING: [shooter_sim::robot::PartId; 2] =
+    [shooter_sim::robot::PartId(3), shooter_sim::robot::PartId(5)];
+
+fn steer_car() -> Session {
+    let mut session = solo(shooter_sim::robot::STEER_CAR);
+    settle(&mut session);
+    session
+}
+
+/// Each steering servo's angle (radians) now.
+fn servos(session: &Session) -> [f32; 2] {
+    STEERING.map(|part| session.mechanics.joint(0, part).unwrap().0)
+}
+
+/// `ticks` of `intent`: how far the robot turned (binary yaw, unwrapped) and moved.
+fn hold(session: &mut Session, intent: Intent, ticks: usize) -> (i32, f32) {
+    let start = session.local().feet();
+    let mut heading = session.local().heading();
+    let mut turned = 0;
+    for _ in 0..ticks {
+        drive(session, intent);
+        let now = session.local().heading();
+        turned += turn(heading, now);
+        heading = now;
+    }
+    (turned, across(start, session.local().feet()))
+}
+
+fn keys(forward: i8, strafe: i8) -> Intent {
+    Intent {
+        forward,
+        strafe,
+        ..Intent::IDLE
+    }
+}
+
+/// The steer-car rolls on all four wheels and turns on its steering servos alone (shooter#170):
+/// W with the camera sweeping round rolls it straight with its servos centred; W with D turns
+/// its rear wheels out of the turn and the rolling car right, with A left; let go of D and the
+/// servos come back to straight ahead and it rolls straight again. Its preset never turns a
+/// wheel faster on one side than the other ([`bindings`](shooter_sim::bindings) tests that).
+#[test]
+fn a_steered_car_turns_on_its_steering_servos() {
+    let mut session = steer_car();
+    let start = session.local().heading();
+    let (mut turned, mut heading) = (0, start);
+    for tick in 0..90u16 {
+        drive(
+            &mut session,
+            Intent {
+                forward: 1,
+                yaw: tick.wrapping_mul(700),
+                ..Intent::IDLE
+            },
+        );
+        let now = session.local().heading();
+        turned += turn(heading, now);
+        heading = now;
+    }
+    assert!(turned.abs() < 1_000, "the camera steered it: {turned}");
+    assert!(
+        servos(&session).iter().all(|angle| angle.abs() < 0.1),
+        "{:?}",
+        servos(&session)
+    );
+    let (right, moved) = hold(&mut session, keys(1, 1), 60);
+    assert!(right < -3_000 && moved > 150.0, "{right} {moved}");
+    let [left_servo, right_servo] = servos(&session);
+    assert!(
+        left_servo > 0.1 && right_servo > 0.1,
+        "{left_servo} {right_servo}"
+    );
+    // Let go: centred again, rolling (almost) straight.
+    hold(&mut session, keys(1, 0), 45);
+    assert!(
+        servos(&session).iter().all(|angle| angle.abs() < 0.1),
+        "{:?}",
+        servos(&session)
+    );
+    let (straight, _) = hold(&mut session, keys(1, 0), 30);
+    assert!(straight.abs() < 600, "{straight}");
+    let (left, _) = hold(&mut session, keys(1, -1), 60);
+    assert!(left > 3_000, "{left}");
+    assert!(
+        servos(&session).iter().all(|angle| *angle < -0.1),
+        "{:?}",
+        servos(&session)
+    );
+}
+
+/// Backing up the steer-car rolls straight with its servos centred. Starting back with D, it
+/// holds its servos as for a right turn, so the car's nose swings left as a car's does in
+/// reverse. (Backing up at full speed its rear wheels lead their kingpins, and their tyres turn
+/// one servo back toward straight: it hardly turns then, shooter#170.) Standing, D turns its
+/// servos and not the car (no chassis yaw, no free torque).
+#[test]
+fn a_steered_car_backs_up_and_stands_as_a_car() {
+    let mut session = steer_car();
+    let (turned, moved) = hold(&mut session, keys(-1, 0), 90);
+    assert!(moved > 300.0 && turned.abs() < 1_000, "{turned} {moved}");
+    assert!(
+        servos(&session).iter().all(|angle| angle.abs() < 0.15),
+        "{:?}",
+        servos(&session)
+    );
+    let mut session = steer_car();
+    let (turned, moved) = hold(&mut session, keys(-1, 1), 60);
+    assert!(turned > 2_000 && moved > 150.0, "{turned} {moved}");
+
+    let mut session = steer_car();
+    let (turned, moved) = hold(&mut session, keys(0, 1), 60);
+    assert!(moved < 20.0 && turned.abs() < 1_000, "{turned} {moved}");
+    assert!(
+        servos(&session).iter().all(|angle| *angle > 0.15),
+        "{:?}",
+        servos(&session)
+    );
+}
+
+/// Without electricity (and no fuel for its generator) the steer-car's servos and wheels stop:
+/// D turns nothing, W rolls nothing.
+#[test]
+fn without_electricity_a_steered_car_neither_steers_nor_rolls() {
+    let mut session = steer_car();
+    // Its generator has no fuel to make more.
+    session.fighters[0].energy = 0;
+    session.fighters[0].fuel = 0;
+    let (turned, moved) = hold(&mut session, keys(1, 1), 90);
+    assert!(session.fighters[0].flow.stalled);
+    assert!(moved < 10.0 && turned.abs() < 500, "{turned} {moved}");
+    assert!(
+        servos(&session).iter().all(|angle| angle.abs() < 0.1),
+        "{:?}",
+        servos(&session)
+    );
+}
+
+/// Bots drive the steer-car (rolling to turn, its reverse turning the other way) as they drive
+/// the rover: they cover ground and shoot, and the match replays exactly.
+#[test]
+fn bots_play_the_steer_car_on_the_yard() {
+    bots_play_as(MapId::GreyboxYard, shooter_sim::robot::STEER_CAR, 30);
 }
