@@ -397,10 +397,15 @@ pub fn run() {
     let (game, build) = game(args, requested.is_some().then_some(map));
     // A direct start (a hosted match, or practice on a requested map) opens the builder before
     // the match (shooter#57) on the requested loadout; otherwise the main menu (shooter#154),
-    // whose matches play it.
+    // whose matches play the requested loadout for this run, else the active build kept from
+    // before (shooter#155).
     let direct = game.is_some();
+    let app = app::App::new(event_loop.create_proxy(), game);
+    let app = match build {
+        Some(build) => app.with_active(build),
+        None => app,
+    };
     let build = build.unwrap_or_default();
-    let app = app::App::new(event_loop.create_proxy(), game).with_active(build);
     #[cfg(target_arch = "wasm32")]
     let app = match profile {
         Some(frames) => app.profiled(frames).staged(stage),

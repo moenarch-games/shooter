@@ -66,8 +66,13 @@ a tap is a click on a touch screen). Nothing connects anywhere from it unless yo
   assembly works (4 to 12) and the drydock (8 to 12), each starting at its most (6, 12, 12).
   Pick one and the count (you included; never beyond the map's spawn points) and Start. The
   greybox maps are test fixtures, not on the menu: `--map` / `?map=` still plays them.
-- **Robot Workshop** opens the robot builder (below) with no match: Done keeps the build (and
-  its control layout) for the menu's next match, Back (or Escape) leaves it as it was.
+- **Robot Workshop** opens the robot builder (below) with no match and no connection: build and
+  edit, and save, load and delete named builds in its builds panel (B). Done (Enter) makes the
+  valid build on the bench, with its control layout, your active build: the menu's matches play
+  it, the menu names it ("Your robot: SCOUT", after the save holding exactly it), and it is kept
+  across restarts (#155). Back (or Escape) returns to the menu leaving the active build as it
+  was; an invalid build cannot be Done, so it never replaces it (save it under a name to keep
+  working on it).
 - **Private Match** is shown, not available yet.
 - **Settings**: the name you play under online and the look sensitivity (mouse and the touch
   look pad), kept natively in the config directory's `shooter/` and in the browser's
@@ -75,9 +80,12 @@ a tap is a click on a touch screen). Nothing connects anywhere from it unless yo
   development host's certificate (natively its PEM file, in the browser its SHA-256), typed in
   place natively and into the page's prompts in the browser, then Connect.
 
-A match started from the menu plays the robot you last readied (else `--loadout` /
-`?loadout=`, else the standard build; a build the beta catalog refuses falls back to the
-standard one). While the pointer is free (Escape, or ❚❚ on a touch screen) a Leave match button
+A match started from the menu plays your active build: the robot you last readied (the
+Workshop's Done or a match's Ready), kept across restarts with your settings (natively the config
+directory's `shooter/active`, in the browser `localStorage`'s `shooter.active`, as a saved-build
+envelope). `--loadout` / `?loadout=` plays that loadout instead for the run without replacing it;
+with neither, the standard build. An active build the beta catalog now refuses plays the
+standard build, the menu saying why, and stays kept until the next Done or Ready. While the pointer is free (Escape, or ❚❚ on a touch screen) a Leave match button
 at the top returns to the menu, which keeps your build, saved builds and settings. The commands
 and queries that start something directly skip the menu as before: `--connect` / `?connect=`
 (a hosted match) and `--map` / `?map=` (practice on that map) open the builder before the match,
@@ -464,7 +472,8 @@ carries the laser and the flamethrower (#96); the tests' over-budget `ARMORY` bu
 weapon. You build your robot in the builder (below, **Robot builder**).
 
 **Robot builder** (`shooter_client::builder`, Atlas D2.i70.11, #57). A blueprint workbench: the
-main menu's Robot Workshop opens it with no match (Done and Back return to the menu, #154), and a
+main menu's Robot Workshop opens it with no match (Done makes the build active and Back drops the
+edit, both returning to the menu; #154, #155; its help says Enter: Done there), and a
 directly started match (`--connect` / `--map`, `?connect=` / `?map=`) opens on it: nothing plays
 (and online nothing connects) until you press Ready. The robot stands in the middle, drawn from the kits as in the match, with its sockets
 marked; the part catalogue (every part and weapon with its build points, each chassis size once
@@ -514,8 +523,8 @@ is no rebuilding. In the browser the page hides its own overlays while the build
 in the builder yet: typed exact angles
 and a testing chamber (post-beta).
 
-**Saved builds** (`shooter_client::builder::saved`, #140). In the builder, before the match and
-between lives, B (or Builds) opens the builds panel in the inspector's place: type a name
+**Saved builds** (`shooter_client::builder::saved`, #140). In the builder, before the match,
+between lives and in the Workshop, B (or Builds) opens the builds panel in the inspector's place: type a name
 (letters, digits, `-`, Space for `_`, up to 16; Backspace erases) and press Enter or Save to save
 the build on the bench with its control layout (the build's preset if you kept it). A name
 already saved asks first: Save again (Overwrite?) to write over it. Click a listed save and Load
@@ -531,7 +540,11 @@ file per build, `<NAME>.build`, in `shooter/builds` under the user's data direct
 (`$XDG_DATA_HOME` or `~/.local/share` on Linux, `~/Library/Application Support` on macOS,
 `%APPDATA%` on Windows); the browser keeps them in the page's `localStorage` as
 `shooter.build.<NAME>`, and a blocked or full storage shows its error instead of saving.
-[Capture](docs/captures/140/builds.png).
+[Capture](docs/captures/140/builds.png). The active build (#155, above under the main menu) is
+the same envelope, its name the save that held exactly the readied build and layout (empty if
+none), kept with the preferences rather than among the saves, so deleting or overwriting a save
+never changes what plays; reading it back also applies the beta catalog's full verdict (the
+build points too). [Captures](docs/captures/155/).
 `cargo run -p shooter-client --release --example builder_views -- <dir>` renders the bench
 (before the match, a part being placed, snapping on a crowded face, a part turned about each
 axis, a refused placement, a turned parent, a part selected again, a selected weapon, the

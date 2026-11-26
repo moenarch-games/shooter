@@ -683,6 +683,29 @@ pub fn room_for_a_part(build: &Assembly) -> bool {
     build.parts().len() < MAX_PARTS
 }
 
+/// A build that lays out but costs more build points than the beta catalog allows: the
+/// standard build with a rail gun, a rocket launcher and a battery more on the chassis' back.
+#[cfg(test)]
+pub(crate) fn over_budget() -> Assembly {
+    use shooter_sim::robot::parts::{BATTERY, CHASSIS_S, RAIL_GUN, ROCKET_LAUNCHER};
+    use shooter_sim::robot::{Face, STANDARD};
+    let mut bench = Workbench::new(STANDARD);
+    let back = |u, v| CHASSIS_S.socket(Face::NegX, u, v).unwrap();
+    for (kind, socket) in [
+        (RAIL_GUN.id, back(0, 0)),
+        (ROCKET_LAUNCHER.id, back(2, 0)),
+        (BATTERY.id, back(3, 0)),
+    ] {
+        bench.hand = Some(kind);
+        bench.place(PartId(0), socket).unwrap();
+    }
+    assert!(matches!(
+        bench.check(),
+        Err(AssemblyError::OverBudget { .. })
+    ));
+    *bench.draft()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

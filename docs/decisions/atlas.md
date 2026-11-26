@@ -755,8 +755,8 @@ whether resupply locks movement or firing (Q2.i123.3).
   arenas with the arena kit, checked in as PNGs (`--example arena_views -- <map> <dir>
   thumbnail`); the robot a menu match plays is the last one readied (the Workshop's Done or a
   Ready) else `--loadout` / `?loadout=` else the standard build, one the beta catalog refuses
-  falling back to the standard build, kept for the session (persisting an active build is
-  shooter#155's); Settings hold the name played under online and the look sensitivity (files in
+  falling back to the standard build, kept for the session (since shooter#155 kept across
+  restarts, `--loadout` only for its run, D2.i155.1); Settings hold the name played under online and the look sensitivity (files in
   the config directory natively, `localStorage` in the browser, the name under the keys `--name`
   and the page always used), and under Advanced a match URL and a development host's certificate
   (natively its PEM file, in the browser its SHA-256; typed in place natively, into the page's
@@ -765,6 +765,32 @@ whether resupply locks movement or firing (Q2.i123.3).
   (an online match's connection ends). `--connect` / `?connect=` and `--map` / `?map=` start
   directly on the builder before the match as before, and the profile runs (`--frames`,
   `?frames=`) stay scripted and menu-free.
+- **D2.i155.1** (owner, 2026-11-25; shooter#155; tracks shooter#45 and #154; refines D2.i154.1):
+  The main menu's Robot Workshop is the real interactive workbench on its own, with no match and
+  no connection: build, edit, name, save, load and delete builds with the existing saved builds
+  and validation, and choose the active valid build that later Play Online and Practice matches
+  play, kept across restarts. An invalid edit never blocks the way back to the menu and never
+  replaces the last valid active build without an explicit save. The same builder (schema,
+  renderer, component and controls editing, kit geometry, large preview) serves before the match,
+  between lives and the Workshop, each with its own exits and help.
+  Ships since shooter#155 (`shooter_client::builder::saved::{read_active, write_active}`), with
+  the simplest options for what was open, the owner's to revisit: *selecting* is readying: the
+  Workshop's Done (Enter) makes the valid build on the bench and its control layout active, as
+  does a match's Ready (the menu's matches already played the last one readied); Done takes only
+  a valid build, and Back (or Escape) drops the edit, so an invalid build never becomes active
+  (saving it under a name keeps it to finish). *Where it is kept*: as a whole copy, not a
+  reference to a save, in the saved-build envelope (format 1, unchanged; no format was extended)
+  under the preference key `active`, with the other preferences (natively the config directory's
+  `shooter/active`, in the browser `localStorage`'s `shooter.active`), so deleting or
+  overwriting a save never changes what plays. Its name is the save holding exactly the readied
+  build and layout (the builds panel's typed or selected name first), empty if none; the menu's
+  robot line shows it ("Your robot: SCOUT, 10 parts"), else the loadout's name or a custom
+  build. Read back, it passes the beta catalog's full verdict (the build points too, unlike a
+  save loaded onto the bench); one refused plays the standard build with a menu notice and stays
+  kept until the next Done or Ready replaces it. `--loadout` / `?loadout=` plays its loadout for
+  the run without replacing the active build; direct starts (`--connect`, `--map`) still open
+  the builder on the requested loadout or the standard build. In the Workshop the help reads
+  "ESC: CANCEL, DROP, BACK" and "ENTER: DONE" and the status "DONE MAKES THIS BUILD ACTIVE".
 
 ## 3. Platforms
 

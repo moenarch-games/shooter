@@ -3,6 +3,7 @@
 
 use crate::arena_art::ArenaArt;
 use crate::audio::Sounds;
+use crate::builder::saved::{self, SavedBuild, SavedBuilds};
 use crate::builder::view::{Action, Builder, Stage, death_prompt};
 use crate::camera::{self, Follow};
 use crate::controls::{Controls, Look, PRIMARY_BUTTON, PadState, Selection, WheelDelta, standard};
@@ -12,6 +13,7 @@ use crate::gpu::Gpu;
 use crate::hud::{Hud, HudText};
 use crate::menu::{Choice, Menu, Previews};
 use crate::overlay::{Overlay, Vitals, repair_panel};
+use crate::prefs::PrefStore;
 use crate::repair_menu::RepairMenu;
 use crate::robots::{self, RobotState, RobotView, Robots, track::Tracker};
 use crate::scene::{
@@ -24,6 +26,7 @@ use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGH
 use shooter_sim::robot::PartId;
 use shooter_sim::scenarios::{Staged, scripted_intent};
 use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, Select, TICK_HZ, Weapon};
+use std::rc::Rc;
 use std::sync::Arc;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -124,9 +127,14 @@ pub struct App {
     menu: Menu,
     /// The maps' previews in the GPU's world, once it is up.
     previews: Option<Previews>,
-    /// The robot the next match from the menu plays (the Workshop's Done, the last Ready), and
-    /// its control layout is the driver's.
+    /// The robot the next match from the menu plays (the Workshop's Done, the last Ready; kept
+    /// across restarts, shooter#155), the save it was readied as (empty: none), and its control
+    /// layout is the driver's.
     active: shooter_sim::Assembly,
+    active_name: String,
+    /// Where the preferences and the active build are kept, and the saved builds.
+    prefs: Rc<dyn PrefStore>,
+    builds: Rc<dyn SavedBuilds>,
     /// Seconds the menu's live view has run (its camera's slow turn).
     menu_seconds: f32,
     /// What the match started from the menu is (Play Online's bot match says it is offline),
@@ -335,7 +343,8 @@ impl Backdrop {
 }
 
 impl App {
-    /// The app on `game`, or (none) on the main menu.
+    /// The app on `game`, or (none) on the main menu, its matches playing the active build kept
+    /// from before ([`saved::read_active`]).
     #[must_use]
     pub fn new(proxy: EventLoopProxy<GpuReady>, game: Option<Game>) -> Self {
         let now = Instant::now();
@@ -347,7 +356,8 @@ impl App {
             .as_ref()
             .and_then(Game::map)
             .map_or(0, |map| map.arena().spawn_yaw);
-        Self {
+        let prefs = crate::prefs::platform();
+        let mut app = Self {
             proxy: Some(proxy),
             scripted: None,
             stage: None,
@@ -355,9 +365,12 @@ impl App {
             gpu: None,
             look: Look::new(radians(yaw)),
             game,
-            menu: Menu::with_robot(crate::prefs::platform(), &shooter_sim::Assembly::default()),
+            menu: Menu::new(prefs.clone()),
             previews: None,
             active: shooter_sim::Assembly::default(),
+            active_name: String::new(),
+            prefs,
+            builds: saved::platform(),
             menu_seconds: 0.0,
             match_label: None,
             match_seconds: 0.0,
@@ -414,25 +427,68 @@ impl App {
             driver: Driver::default(),
             #[cfg(target_arch = "wasm32")]
             profile: None,
-        }
+        };
+        app.restore_active();
+        app
     }
 
     /// Opens the builder before the match on `build` (shooter#57): nothing plays, and online
     /// nothing connects, until Ready.
     #[must_use]
     pub fn with_builder(mut self, build: shooter_sim::Assembly) -> Self {
-        self.builder =
-            Some(Builder::new(build, Stage::Setup).with_controls(self.driver.layout.as_ref()));
+        self.builder = Some(self.builder_on(build, Stage::Setup));
         self
     }
 
-    /// The main menu's matches play `build` (`--loadout` / `?loadout`), until the Workshop or a
-    /// Ready changes it; a build the beta catalog refuses falls back to the standard one.
+    /// The main menu's matches play `build` (`--loadout` / `?loadout`) with its preset controls
+    /// for this run, until the Workshop or a Ready changes it, the active build kept from before
+    /// left as it is; a build the beta catalog refuses falls back to the standard one.
     #[must_use]
     pub fn with_active(mut self, build: shooter_sim::Assembly) -> Self {
         self.active = valid_or_standard(build);
-        self.menu.set_robot(crate::menu::robot_line(&self.active));
+        self.active_name.clear();
+        self.driver = Driver::default();
+        self.show_active();
         self
+    }
+
+    /// The active build kept from before (shooter#155), with its control layout: none kept is
+    /// the standard build, and one that no longer plays is too, the menu saying why (it stays
+    /// kept until the next Done or Ready replaces it).
+    fn restore_active(&mut self) {
+        match saved::read_active(self.prefs.as_ref()) {
+            None => {}
+            Some(Ok(active)) => {
+                self.active = active.build;
+                self.active_name = active.name;
+                match active.layout {
+                    Some(layout) => self.driver.adopt(layout),
+                    None => self.driver = Driver::default(),
+                }
+            }
+            Some(Err(error)) => {
+                let notice = format!(
+                    "Your active robot no longer plays ({error}): the standard build plays"
+                );
+                crate::log(&notice);
+                self.menu.notice = Some(notice);
+            }
+        }
+        self.show_active();
+    }
+
+    /// The menu's robot line for the active build.
+    fn show_active(&mut self) {
+        let name = (!self.active_name.is_empty()).then_some(self.active_name.as_str());
+        self.menu
+            .set_robot(crate::menu::robot_line(&self.active, name));
+    }
+
+    /// The builder on `build` for `stage`, with the person's control layout and saved builds.
+    fn builder_on(&self, build: shooter_sim::Assembly, stage: Stage) -> Builder {
+        Builder::new(build, stage)
+            .with_store(self.builds.clone())
+            .with_controls(self.driver.layout.as_ref())
     }
 
     /// Opens the builder between lives on the build the robot comes back as: its respawn waits
@@ -446,9 +502,7 @@ impl App {
             .as_ref()
             .and_then(Game::configured)
             .unwrap_or_default();
-        self.builder = Some(
-            Builder::new(build, Stage::BetweenLives).with_controls(self.driver.layout.as_ref()),
-        );
+        self.builder = Some(self.builder_on(build, Stage::BetweenLives));
         self.capture(false);
         self.controls.release_all();
     }
@@ -469,7 +523,8 @@ impl App {
     /// What the builder asked: Ready sends the build and takes the control layout (none: the
     /// build's preset). Before the match the match starts; between lives the builder waits
     /// until the match shows the build configured. In the Workshop, Done keeps the build for the
-    /// menu's next match and Back drops the edit; either returns to the menu.
+    /// menu's next match and Back drops the edit; either returns to the menu. Whatever was
+    /// readied is the active build from then on, kept across restarts ([`Self::keep_active`]).
     fn builder_action(&mut self, action: Option<Action>) {
         let Some(action) = action else {
             return;
@@ -487,14 +542,9 @@ impl App {
             }
             Action::Ready(build, layout) => (build, layout),
         };
-        match layout {
-            Some(layout) => self.driver.adopt(layout),
-            None => self.driver = Driver::default(),
-        }
-        self.active = build;
-        self.menu.set_robot(crate::menu::robot_line(&build));
+        let unkept = self.keep_active(build, layout);
         if workshop {
-            self.back_to_menu(None);
+            self.back_to_menu(unkept);
             return;
         }
         if let Some(game) = &mut self.game {
@@ -508,6 +558,40 @@ impl App {
             self.builder = None;
             self.last_frame = Instant::now();
         }
+    }
+
+    /// Makes `build` with `layout` (none: its preset) the active build: the driver takes the
+    /// layout and the build is kept across restarts, named after the save holding exactly it
+    /// (the builds panel's typed or selected one first), if any. Why it could not be kept, if
+    /// it could not: it still plays this run.
+    fn keep_active(
+        &mut self,
+        build: shooter_sim::Assembly,
+        layout: Option<shooter_sim::bindings::Bindings>,
+    ) -> Option<String> {
+        self.active_name = self
+            .builder
+            .as_ref()
+            .and_then(|builder| builder.shelf.saved_as(&build, layout.as_ref()))
+            .unwrap_or_default();
+        self.active = build;
+        let kept = saved::write_active(
+            self.prefs.as_ref(),
+            &SavedBuild {
+                name: self.active_name.clone(),
+                build,
+                layout: layout.clone(),
+            },
+        );
+        match layout {
+            Some(layout) => self.driver.adopt(layout),
+            None => self.driver = Driver::default(),
+        }
+        self.show_active();
+        let error = kept.err()?;
+        let notice = format!("Your robot plays, but could not be kept for next time: {error}");
+        crate::log(&notice);
+        Some(notice)
     }
 
     /// Between lives, the builder closes once the host shows the readied build configured (the
@@ -549,10 +633,7 @@ impl App {
                 self.start_match(Game::bot_match(map, fighters), label);
             }
             Some(Choice::Workshop) => {
-                self.builder = Some(
-                    Builder::new(self.active, Stage::Workshop)
-                        .with_controls(self.driver.layout.as_ref()),
-                );
+                self.builder = Some(self.builder_on(self.active, Stage::Workshop));
             }
             Some(Choice::Connect { url, certificate }) => {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -600,7 +681,7 @@ impl App {
         self.capture(false);
         self.menu.reopen();
         self.menu.notice = notice;
-        self.menu.set_robot(crate::menu::robot_line(&self.active));
+        self.show_active();
         if let Some(gpu) = &mut self.gpu {
             if let Some(actors) = &mut self.actors {
                 actors.update(&mut gpu.world, &[], &[], &[], None);
@@ -753,6 +834,25 @@ impl App {
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn offscreen(game: Option<Game>, gpu: Gpu) -> Self {
+        Self::offscreen_with(
+            game,
+            gpu,
+            Rc::new(crate::prefs::MemoryPrefs::default()),
+            Rc::new(saved::MemoryBuilds::default()),
+        )
+    }
+
+    /// [`Self::offscreen`] keeping its preferences and active build in `prefs` and its saved
+    /// builds in `builds` (in memory for [`Self::offscreen`]: a capture never touches the
+    /// person's): an app made again on the same stores is the client restarted.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn offscreen_with(
+        game: Option<Game>,
+        gpu: Gpu,
+        prefs: Rc<dyn PrefStore>,
+        builds: Rc<dyn SavedBuilds>,
+    ) -> Self {
         let now = Instant::now();
         let center = game
             .as_ref()
@@ -770,12 +870,12 @@ impl App {
             gpu: None,
             look: Look::new(radians(yaw)),
             game,
-            menu: Menu::with_robot(
-                std::rc::Rc::new(crate::prefs::MemoryPrefs::default()),
-                &shooter_sim::Assembly::default(),
-            ),
+            menu: Menu::new(prefs.clone()),
             previews: None,
             active: shooter_sim::Assembly::default(),
+            active_name: String::new(),
+            prefs,
+            builds,
             menu_seconds: 0.0,
             match_label: None,
             match_seconds: 0.0,
@@ -819,6 +919,7 @@ impl App {
             captured: false,
             driver: Driver::default(),
         };
+        app.restore_active();
         app.attach(gpu);
         app
     }
@@ -939,6 +1040,27 @@ impl App {
     #[must_use]
     pub fn playing(&self) -> Option<(Option<MapId>, Option<usize>)> {
         self.game.as_ref().map(|game| (game.map(), game.slots()))
+    }
+
+    /// The build the local robot of the match playing is configured as, and whether the match
+    /// runs in this process (no host, nothing connecting).
+    #[must_use]
+    pub fn played(&self) -> Option<(Option<shooter_sim::Assembly>, bool)> {
+        self.game
+            .as_ref()
+            .map(|game| (game.configured(), game.in_process()))
+    }
+
+    /// The active build the menu's matches play and the save it was readied as (empty: none).
+    #[must_use]
+    pub fn active(&self) -> (shooter_sim::Assembly, &str) {
+        (self.active, &self.active_name)
+    }
+
+    /// The open builder's readout ([`Builder::readout`]), as the page's `window.shooterBuilder`.
+    #[must_use]
+    pub fn workbench_readout(&self) -> Option<String> {
+        self.builder.as_ref().map(Builder::readout)
     }
 
     /// The GPU is up: the effects and actors go into its world (and the arena, once known).

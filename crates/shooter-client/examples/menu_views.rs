@@ -1,8 +1,11 @@
 //! The main menu (shooter#154) driven through the client's own app offscreen, with the kits, as a
 //! person clicks it: the main page, Practice on each of its three arenas, Settings with the
 //! developer connection, the Robot Workshop and back, Play Online's bot match and Leave back to
-//! the menu, and a practice match with a chosen count. Every step checks what the app then plays
-//! (map and fighters) and writes the frame:
+//! the menu, a practice match with a chosen count, and the Workshop's active build (shooter#155):
+//! a loadout put on the bench, saved under a name and made active with Done, an edit dropped with
+//! Back, the client restarted on the same stores still playing it, a practice match with it and
+//! nothing connecting. Every step checks what the app then plays (map, fighters and build) and
+//! writes the frame:
 //!
 //! ```text
 //! scripts/fetch-robot-kit.sh
@@ -13,8 +16,12 @@
 //! `target/menu-views`). It exits non-zero on the first step that does not do what it should.
 
 use shooter_client::app::App;
+use shooter_client::builder::saved::{self, MemoryBuilds, SavedBuilds};
 use shooter_client::gpu::Gpu;
+use shooter_client::prefs::{MemoryPrefs, PrefStore};
 use shooter_sim::MapId;
+use shooter_sim::robot::{HEAVY, MARKSMAN};
+use std::rc::Rc;
 use winit::keyboard::KeyCode;
 
 /// The frame's size.
@@ -68,6 +75,40 @@ impl Run {
         self.frames(2)
     }
 
+    /// The open builder's readout.
+    fn bench(&self) -> Result<serde_json::Value, String> {
+        let readout = self
+            .app
+            .workbench_readout()
+            .ok_or("the builder is not open")?;
+        serde_json::from_str(&readout).map_err(|error| error.to_string())
+    }
+
+    /// Clicks the builder's item called `name`.
+    fn click_bench(&mut self, name: &str) -> Result<(), String> {
+        let bench = self.bench()?;
+        let at = bench["targets"]
+            .as_array()
+            .and_then(|targets| targets.iter().find(|target| target["name"] == name))
+            .map(|target| &target["at"])
+            .ok_or_else(|| format!("no {name} on the builder"))?;
+        #[allow(clippy::cast_possible_truncation)]
+        let (x, y) = (
+            at[0].as_f64().unwrap_or_default() as f32,
+            at[1].as_f64().unwrap_or_default() as f32,
+        );
+        self.app.click(x, y);
+        self.frames(2)
+    }
+
+    /// Presses each key in turn.
+    fn keys(&mut self, codes: &[KeyCode]) -> Result<(), String> {
+        for code in codes {
+            self.app.press(*code);
+        }
+        self.frames(2)
+    }
+
     fn check(&self, condition: bool, what: &str) -> Result<(), String> {
         if condition {
             println!("ok: {what}");
@@ -85,9 +126,13 @@ fn main() -> Result<(), String> {
             .unwrap_or_else(|| "target/menu-views".into()),
     );
     std::fs::create_dir_all(&out).map_err(|error| error.to_string())?;
+    // The person's stores, in memory: the active build and saved builds outlive the app made
+    // again on them (a restart), and nothing touches the machine's own.
+    let prefs: Rc<dyn PrefStore> = Rc::new(MemoryPrefs::default());
+    let builds: Rc<dyn SavedBuilds> = Rc::new(MemoryBuilds::default());
     let gpu = Gpu::offscreen(SIZE.0, SIZE.1)?;
     let mut run = Run {
-        app: App::offscreen(None, gpu),
+        app: App::offscreen_with(None, gpu, prefs.clone(), builds.clone()),
         out,
         shots: 0,
     };
@@ -169,6 +214,90 @@ fn main() -> Result<(), String> {
     )?;
     run.shoot("practice-match")?;
 
+    // The Workshop's active build (shooter#155): the marksman loadout on the bench, saved as
+    // SCOUT and made active with Done, all without a match or a connection.
+    let leave = run.app.leave_at().ok_or("no Leave button")?;
+    run.app.click(leave.x, leave.y);
+    run.frames(2)?;
+    run.click("Workshop")?;
+    run.frames(30)?;
+    run.check(
+        run.app.played().is_none() && run.app.hosted().is_none(),
+        "the Workshop opens with no match and nothing connecting",
+    )?;
+    run.click_bench("Loadout(3)")?;
+    run.keys(&[KeyCode::KeyB])?;
+    run.keys(&[
+        KeyCode::KeyS,
+        KeyCode::KeyC,
+        KeyCode::KeyO,
+        KeyCode::KeyU,
+        KeyCode::KeyT,
+        KeyCode::Enter,
+    ])?;
+    let bench = run.bench()?;
+    run.check(
+        bench["notice"] == "saved SCOUT" && bench["valid"] == true,
+        "the marksman build is saved as SCOUT",
+    )?;
+    run.frames(20)?;
+    run.shoot("workshop-saved")?;
+    run.keys(&[KeyCode::Escape])?;
+    run.click_bench("Ready")?;
+    run.check(
+        run.app.menu_readout().is_some() && run.app.active() == (MARKSMAN, "SCOUT"),
+        "Done makes SCOUT the active build and returns to the menu",
+    )?;
+    run.check(
+        run.menu()?["robot"]
+            .as_str()
+            .is_some_and(|line| line.starts_with("Your robot: SCOUT")),
+        "the menu names the active build",
+    )?;
+    run.check(
+        saved::read_active(prefs.as_ref()).is_some_and(|active| {
+            active.is_ok_and(|active| active.name == "SCOUT" && active.build == MARKSMAN)
+        }),
+        "the active build is kept in the preferences",
+    )?;
+
+    // An edit left with Back is dropped: the active build stays SCOUT.
+    run.click("Workshop")?;
+    run.click_bench("Loadout(1)")?;
+    run.check(
+        run.bench()?["build"] == hex(&HEAVY),
+        "the heavy loadout is on the bench",
+    )?;
+    run.click_bench("Back")?;
+    run.check(
+        run.app.active() == (MARKSMAN, "SCOUT"),
+        "Back drops the edit and keeps the active build",
+    )?;
+
+    // The client restarted on the same stores: the menu still plays SCOUT, and a practice
+    // match plays it, in this process.
+    drop(run.app);
+    let gpu = Gpu::offscreen(SIZE.0, SIZE.1)?;
+    run.app = App::offscreen_with(None, gpu, prefs.clone(), builds.clone());
+    run.frames(90)?;
+    run.check(
+        run.app.active() == (MARKSMAN, "SCOUT")
+            && run.menu()?["robot"]
+                .as_str()
+                .is_some_and(|line| line.starts_with("Your robot: SCOUT")),
+        "after a restart the active build is still SCOUT",
+    )?;
+    run.shoot("menu-active-build")?;
+    run.click("Practice")?;
+    run.click("Map:proving-cell")?;
+    run.click("Start")?;
+    run.frames(240)?;
+    run.check(
+        run.app.played() == Some((Some(MARKSMAN), true)) && run.app.hosted().is_none(),
+        "Practice plays SCOUT in this process, nothing connecting",
+    )?;
+    run.shoot("practice-active-build")?;
+
     // With `SHOOTER_MENU_CONNECT=<match url>` and `SHOOTER_MENU_CERT=<pem>` (a host running as
     // `scripts/dev.sh` starts it): Settings' developer connection joins it.
     if let Ok(url) = std::env::var("SHOOTER_MENU_CONNECT") {
@@ -205,4 +334,12 @@ fn main() -> Result<(), String> {
         run.shoot("hosted-match")?;
     }
     Ok(())
+}
+
+/// `build`'s wire bytes in hex, as the builder's readout shows its build.
+fn hex(build: &shooter_sim::Assembly) -> String {
+    shooter_sim::wire::encode_build(build)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }

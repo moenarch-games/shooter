@@ -422,14 +422,6 @@ impl Menu {
         }
     }
 
-    /// [`Self::new`] showing that the next match plays `build`.
-    #[must_use]
-    pub fn with_robot(store: Rc<dyn PrefStore>, build: &shooter_sim::Assembly) -> Self {
-        let mut menu = Self::new(store);
-        menu.set_robot(robot_line(build));
-        menu
-    }
-
     /// The arena the live view behind the menu shows: Practice's chosen map, else Play Online's.
     #[must_use]
     pub fn backdrop(&self) -> MapId {
@@ -877,6 +869,7 @@ impl Menu {
             "sensitivity": self.prefs.sensitivity,
             "advanced": self.advanced,
             "notice": self.notice,
+            "robot": self.robot,
             "targets": targets,
         })
         .to_string()
@@ -1359,10 +1352,14 @@ fn image(painter: &mut Painter, rect: Rect, texture: TextureId) {
     });
 }
 
-/// The main page's robot line for `build`: the named loadout it is, else a custom build.
+/// The main page's robot line for the active `build`: the save it was readied as (`saved`,
+/// shooter#155), else the named loadout it is, else a custom build.
 #[must_use]
-pub fn robot_line(build: &shooter_sim::Assembly) -> String {
+pub fn robot_line(build: &shooter_sim::Assembly, saved: Option<&str>) -> String {
     let parts = build.parts().len();
+    if let Some(name) = saved {
+        return format!("Your robot: {name}, {parts} parts");
+    }
     shooter_sim::robot::LOADOUTS
         .iter()
         .find(|(_, loadout)| loadout == build)
@@ -1577,7 +1574,11 @@ mod tests {
     #[test]
     fn the_robot_line_names_a_loadout_or_a_custom_build() {
         use shooter_sim::robot::{HEAVY, STANDARD};
-        assert!(robot_line(&STANDARD).contains("standard loadout"));
-        assert!(robot_line(&HEAVY).contains("heavy loadout"));
+        assert!(robot_line(&STANDARD, None).contains("standard loadout"));
+        assert!(robot_line(&HEAVY, None).contains("heavy loadout"));
+        assert_eq!(
+            robot_line(&HEAVY, Some("SCOUT")),
+            format!("Your robot: SCOUT, {} parts", HEAVY.parts().len())
+        );
     }
 }
