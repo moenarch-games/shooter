@@ -300,6 +300,63 @@ fn the_drydock_routes_reach_the_hulls() {
     assert!(on_foredeck(hung) && !hung.hooked, "{hung:?}");
 }
 
+/// The drydock's routes added by shooter#153, each a way onto a hull top that needs neither
+/// legs' jumps nor the grapple, or a pad's: the freighter's second outer-lane pad throws onto its
+/// 6 m stern deck; the cutter's prow step meets its gantry's bow ramp at 2 m and its own ramp
+/// climbs from it onto the foredeck; the cutter's bridge is climbed by its fore ramp and left by
+/// its after ramp; the cutter's outer-lane pad throws onto its foredeck before the bridge.
+#[test]
+fn the_drydock_shipyard_routes_reach_both_ships() {
+    use shooter_sim::drydock::{BRIDGE_Z, FOREDECK_TOP, PROW_TOP, SHIP_X, STERN_DECK_Z, STERN_TOP};
+    let level = |sample: &Sample, top: i32| {
+        sample.grounded && (sample.center[1] - (top as f32 + HALF)).abs() < STAND
+    };
+    let on_ship = |sample: &Sample, ship: i32| (sample.center[0] - ship as f32).abs() < 400.0;
+    let samples = run(scenarios::DOCK_STERN_PAD);
+    assert_eq!(samples.iter().filter(|s| s.launched).count(), 1);
+    let landed = end_of(&samples, "on the stern deck").unwrap();
+    assert!(
+        level(landed, STERN_TOP)
+            && on_ship(landed, SHIP_X)
+            && landed.center[2] > STERN_DECK_Z as f32,
+        "{landed:?}"
+    );
+
+    let samples = run(scenarios::DOCK_PROW);
+    let prow = end_of(&samples, "on the prow").unwrap();
+    assert!(
+        level(prow, PROW_TOP) && prow.center[0] > 1_600.0,
+        "{prow:?}"
+    );
+    let deck = end_of(&samples, "on the foredeck").unwrap();
+    assert!(
+        level(deck, FOREDECK_TOP) && on_ship(deck, -SHIP_X),
+        "{deck:?}"
+    );
+
+    let samples = run(scenarios::DOCK_BRIDGE);
+    let bridge = end_of(&samples, "on the bridge").unwrap();
+    assert!(
+        level(bridge, STERN_TOP)
+            && on_ship(bridge, -SHIP_X)
+            && (-(BRIDGE_Z[1] as f32)..=-(BRIDGE_Z[0] as f32)).contains(&bridge.center[2]),
+        "{bridge:?}"
+    );
+    let after = end_of(&samples, "on the after deck").unwrap();
+    assert!(
+        level(after, FOREDECK_TOP) && after.center[2] < -(BRIDGE_Z[1] as f32),
+        "{after:?}"
+    );
+
+    let samples = run(scenarios::DOCK_CUTTER_PAD);
+    assert_eq!(samples.iter().filter(|s| s.launched).count(), 1);
+    let landed = end_of(&samples, "on the foredeck").unwrap();
+    assert!(
+        level(landed, FOREDECK_TOP) && on_ship(landed, -SHIP_X),
+        "{landed:?}"
+    );
+}
+
 #[test]
 fn a_slide_climbs_the_ramp_and_runs_down_it() {
     let samples = run(scenarios::RAMP_SLIDE);
