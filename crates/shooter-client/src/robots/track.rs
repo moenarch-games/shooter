@@ -1,7 +1,7 @@
 //! What the robots' poses need beyond a snapshot, followed per fighter slot from the match's
-//! events: seconds since each fighter's last shot, with which weapon and how many it has fired
-//! (the rocket pod's tubes alternate), where each one died (a dead fighter has no
-//! position in a snapshot), so it can topple there until it respawns, and where each part it has
+//! events: seconds since each fighter's last shot, with which weapon and the tube it left (the
+//! rocket pod's alternate, as the simulation fired them), where each one died (a dead fighter
+//! has no position in a snapshot), so it can topple there until it respawns, and where each part it has
 //! lost this life came off, so the part falls from there to the floor and lies there until the
 //! fighter respawns (presentation only: the host decides what is lost, [`shooter_sim::damage`]).
 //! A large part the host keeps as physical debris (shooter#75, [`shooter_sim::mechanics::DebrisState`])
@@ -84,7 +84,8 @@ pub struct Remains {
 #[derive(Clone, Debug)]
 pub struct Tracker {
     since_fired: Vec<f32>,
-    fired: Vec<(Instance, u32)>,
+    /// Each slot's last shot: the copy and the tube it left (shooter#102).
+    fired: Vec<(Instance, u8)>,
     /// Seconds since each copy fired lately, by slot (shooter#127).
     recent: Vec<Recent>,
     alive: Vec<Option<Remains>>,
@@ -126,16 +127,33 @@ impl Tracker {
         }
         if let Some(slot) = local {
             for &weapon in fired {
-                self.shot(slot, weapon);
+                // The tube it left, as its own `Fired` says (the host's, or the prediction's).
+                let tube = events
+                    .iter()
+                    .find_map(|event| match *event {
+                        Event::Fired {
+                            slot: shooter,
+                            part,
+                            tube,
+                            ..
+                        } if shooter == slot && part == weapon.part => Some(tube),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                self.shot(slot, weapon, tube);
             }
         }
         for event in events {
             match *event {
                 // The local fighter's own shots count once, as predicted (`fired`).
                 Event::Fired {
-                    slot, weapon, part, ..
+                    slot,
+                    weapon,
+                    part,
+                    tube,
+                    ..
                 } if Some(slot) != local => {
-                    self.shot(slot, Instance { part, weapon });
+                    self.shot(slot, Instance { part, weapon }, tube);
                 }
                 Event::Killed { victim, .. } => {
                     let slot = usize::from(victim);
@@ -234,12 +252,11 @@ impl Tracker {
             .collect()
     }
 
-    fn shot(&mut self, slot: u8, instance: Instance) {
+    fn shot(&mut self, slot: u8, instance: Instance, tube: u8) {
         let slot = usize::from(slot);
         self.since_fired[slot] = 0.0;
         self.recent[slot].fired(instance.part);
-        let (_, shots) = self.fired[slot];
-        self.fired[slot] = (instance, shots.wrapping_add(1));
+        self.fired[slot] = (instance, tube);
     }
 
     #[must_use]
@@ -253,9 +270,10 @@ impl Tracker {
         self.recent[usize::from(slot)]
     }
 
-    /// The weapon copy of `slot`'s last shot and how many shots it has fired.
+    /// The weapon copy of `slot`'s last shot and the tube it left (0 the first: the rocket
+    /// pod's alternate, as the simulation fired them).
     #[must_use]
-    pub fn fired(&self, slot: u8) -> (Instance, u32) {
+    pub fn fired(&self, slot: u8) -> (Instance, u8) {
         self.fired[usize::from(slot)]
     }
 
@@ -388,12 +406,13 @@ mod tests {
         tracker.tick(&[], Some(1), &[], 0.1);
         assert!((tracker.since_fired(1) - 0.1).abs() < 1e-6);
         assert!(tracker.since_fired(2).is_infinite());
-        assert_eq!(tracker.fired(1), (laser, 1));
+        assert_eq!(tracker.fired(1), (laser, 0));
         tracker.tick(
             &[Event::Fired {
                 slot: 2,
                 weapon: Weapon::RocketLauncher,
                 part: shooter_sim::robot::PartId(9),
+                tube: 1,
                 from: [0.0; 3],
                 direction: [0.0, 0.0, 1.0],
             }],
@@ -406,5 +425,25 @@ mod tests {
             (Instance::new(9, Weapon::RocketLauncher), 1)
         );
         assert!(tracker.since_fired(2) < 1e-6);
+    }
+
+    /// The local fighter's launcher shows the tube its own (predicted) `Fired` says it left,
+    /// not one the client counts for itself (shooter#102).
+    #[test]
+    fn the_local_launcher_shows_the_simulations_tube() {
+        let mut tracker = Tracker::default();
+        let pod = Instance::new(7, Weapon::RocketLauncher);
+        let fired = |tube| Event::Fired {
+            slot: 1,
+            weapon: Weapon::RocketLauncher,
+            part: pod.part,
+            tube,
+            from: [0.0; 3],
+            direction: [0.0, 0.0, 1.0],
+        };
+        for tube in [1, 1, 0] {
+            tracker.tick(&[fired(tube)], Some(1), &[pod], 0.1);
+            assert_eq!(tracker.fired(1), (pod, tube));
+        }
     }
 }

@@ -1327,7 +1327,7 @@ impl Builder {
                     hook: None,
                     since_fired: f32::INFINITY,
                     fired: shooter_sim::Instance::default(),
-                    shots: 0,
+                    tube: 0,
                     recent: crate::robots::pose::Recent::NONE,
                     held: BETA.weapons(&shown).next().unwrap_or_default(),
                     energy: 1.0,

@@ -437,11 +437,26 @@ impl Fighter {
     }
 
     /// Where the weapon copy `which` names ([`Fighter::copy`]) shoots from now
-    /// ([`aim::muzzle`]): `None` while dead, or when that copy is no longer connected or the
-    /// weapon has no muzzle (the blade).
+    /// ([`aim::tube_muzzle`]; the rocket pod's next tube, [`Fighter::tube`]): `None` while dead,
+    /// or when that copy is no longer connected or the weapon has no muzzle (the blade).
     #[must_use]
     pub fn muzzle(&self, which: impl Into<Select>) -> Option<aim::Muzzle> {
-        aim::muzzle(&self.build, &self.hitboxes(), self.copy(which)?)
+        let copy = self.copy(which)?;
+        aim::tube_muzzle(&self.build, &self.hitboxes(), copy, self.tube(copy))
+    }
+
+    /// The tube the weapon copy `instance` fires its next shot from (0 the first): the rocket
+    /// pod's alternate launch by launch (shooter#102), every other weapon has one.
+    #[must_use]
+    pub fn tube(&self, instance: Instance) -> u8 {
+        if instance.weapon.tubes() < 2 {
+            return 0;
+        }
+        self.build
+            .parts()
+            .iter()
+            .position(|part| part.id == instance.part)
+            .map_or(0, |index| self.arsenal.tube(index))
     }
 
     /// Its feet (units): its robot's frame origin less the reach of its build standing whole
@@ -922,11 +937,13 @@ pub struct StepReport {
 pub enum Event {
     /// A shot (or the grapple module's hook) left `from` (units: its muzzle, the eye for the blade,
     /// [`aim`]) along `direction` (unit vector). `part` is the weapon copy that fired
-    /// (shooter#125).
+    /// (shooter#125), `tube` the tube it left (0 the first: the rocket pod's alternate,
+    /// shooter#102, [`aim::tube_muzzle`]).
     Fired {
         slot: u8,
         weapon: Weapon,
         part: PartId,
+        tube: u8,
         from: [f32; 3],
         direction: [f32; 3],
     },
@@ -2589,6 +2606,124 @@ impl Session {
         });
     }
 
+    /// This session's last tick's own shots as a client predicting its local fighter (slot
+    /// `slot` on the host) shows them at once (shooter#102): each ranged shot aimed again as
+    /// the host aims it ([`aim::aimed`]), the camera picking its target among `others` (the
+    /// other fighters' connected parts where the client draws them) as well as the arena, from
+    /// the predicted muzzle (the tube the prediction fired). A rocket's and a shotgun blast's
+    /// `Fired` turn toward that target (their projectiles fly on the host, drawn from its
+    /// snapshots); a hitscan beam is traced again among `others`, a burning flame's again along
+    /// the new aim. The host's hits decide the damage. Blade swings are left to the host's
+    /// events; the grapple's hook keeps the prediction's own (its state is reconciled).
+    #[must_use]
+    pub fn predicted_shots(&self, slot: u8, others: &[Hitboxes]) -> Vec<Event> {
+        let me = self.local();
+        let owner = body_of(slot);
+        let scenery = |body: BodyId| slot_of(body).is_none();
+        let fighters = || others.iter().enumerate();
+        // The beam or flame of the shot just aimed again, traced again.
+        let mut again: Option<Event> = None;
+        let mut shots = Vec::new();
+        for event in &self.events {
+            match *event {
+                Event::Fired { weapon, .. } | Event::Beam { weapon, .. }
+                    if weapon == Weapon::EnergyBlade => {}
+                Event::Fired {
+                    weapon,
+                    part,
+                    tube,
+                    from,
+                    mut direction,
+                    ..
+                } => {
+                    let instance = Instance { part, weapon };
+                    let delivery = me.tuning(instance).delivery(weapon);
+                    again = None;
+                    if !matches!(delivery, Delivery::Grapple | Delivery::Melee) {
+                        // From where it left (a muzzle pushed into a wall already fires from
+                        // the wall's face), its barrel as the predicted robot carries it: it
+                        // converges only within its cone (shooter#132).
+                        let muzzle = aim::Muzzle {
+                            mount: from,
+                            at: from,
+                            axis: me.muzzle(instance).and_then(|muzzle| muzzle.axis),
+                        };
+                        let shot = aim::aimed(
+                            &self.world,
+                            me.eye(),
+                            Some(muzzle),
+                            me.intent.yaw,
+                            me.intent.pitch,
+                            owner,
+                            scenery,
+                            fighters(),
+                        );
+                        let aimed = shot.direction();
+                        direction = aim::unit(aimed);
+                        again = match delivery {
+                            Delivery::Hitscan { range_units, .. } => {
+                                let sight = aim::sight(
+                                    &self.world,
+                                    from,
+                                    aimed,
+                                    range_units,
+                                    owner,
+                                    scenery,
+                                    fighters(),
+                                );
+                                Some(Event::Beam {
+                                    weapon,
+                                    from,
+                                    end: sight.end,
+                                    normal: match sight.fighter {
+                                        Some(_) => direction.map(|axis| -axis),
+                                        None => {
+                                            sight.scenery.hit.map_or([0.0; 3], |hit| hit.normal)
+                                        }
+                                    },
+                                    struck: sight.met(),
+                                })
+                            }
+                            Delivery::Flame { .. } => {
+                                let flame = weapons::trace(
+                                    &self.world,
+                                    from,
+                                    aimed,
+                                    weapons::FLAME_REACH_UNITS,
+                                    owner,
+                                    |body| self.dummy_of(body).is_none(),
+                                );
+                                Some(Event::Beam {
+                                    weapon,
+                                    from,
+                                    end: flame.end,
+                                    normal: flame.hit.map_or([0.0; 3], |hit| hit.normal),
+                                    struck: flame.hit.is_some(),
+                                })
+                            }
+                            _ => None,
+                        };
+                    }
+                    shots.push(Event::Fired {
+                        slot,
+                        weapon,
+                        part,
+                        tube,
+                        from,
+                        direction,
+                    });
+                }
+                Event::Beam { weapon, .. } if matches!(again, Some(Event::Beam { weapon: fired, .. }) if fired == weapon) =>
+                {
+                    shots.extend(again.take());
+                }
+                Event::Beam { .. } => shots.push(*event),
+                _ => {}
+            }
+        }
+        shots
+    }
+
     /// Where `slot`'s camera's centre ray meets the arena or another fighter's part as its person
     /// saw them ([`aim::target`]): its intended target, what its tracking joints aim at
     /// (shooter#132).
@@ -2645,14 +2780,26 @@ impl Session {
             seen.iter().map(|(other, _, parts)| (*other, parts)),
         );
         let (from, direction) = (shot.from, shot.direction());
+        let tube = shooter.tube(instance);
         #[allow(clippy::cast_possible_truncation)]
         self.events.push(Event::Fired {
             slot: slot as u8,
             weapon,
             part: instance.part,
+            tube,
             from,
             direction: aim::unit(direction),
         });
+        // A launcher's next shot leaves its other tube.
+        if weapon.tubes() > 1
+            && let Some(index) = shooter
+                .build
+                .parts()
+                .iter()
+                .position(|part| part.id == instance.part)
+        {
+            self.fighters[slot].arsenal.launched(index);
+        }
         // The weapon's mod in the shooter's build, if any, and the module it carries decide its
         // damage and range.
         match delivery {

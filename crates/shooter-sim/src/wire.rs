@@ -41,8 +41,9 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::{Instance, Select, Triggers, Weapon};
 use std::fmt;
 
-/// 27: builds may name the combustion chassis (codes 4 to 6) and the engine (36), and the
-/// flamethrower and a combustion drive burn fuel (shooter#130): the same bytes mean other
+/// 28: snapshots carry the tube each fighter's rocket pods fire next from and a `Fired` event
+/// the tube it left (shooter#102). 27: builds may name the combustion chassis (codes 4 to 6)
+/// and the engine (36), and the flamethrower and a combustion drive burn fuel (shooter#130): the same bytes mean other
 /// rules, so older peers are refused. 26: snapshots carry each fighter's fuel beside its electricity, and a robot's state both
 /// (shooter#128); 25: an input's actuator command may tell a joint to track the camera's
 /// target, for the host to resolve (shooter#132, [`MechCommand::Track`]), and a layout's
@@ -55,7 +56,7 @@ use std::fmt;
 /// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
 /// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
 /// the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 27;
+pub const WIRE_VERSION: u8 = 28;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -99,6 +100,9 @@ pub struct FighterState {
     pub frags: i32,
     pub deaths: i32,
     pub held: Instance,
+    /// The tube each of its launchers fires next from ([`crate::weapons::Arsenal::tubes`]):
+    /// a predicting client and the drawn robot use the host's (shooter#102).
+    pub tubes: u32,
     pub yaw: u16,
     pub pitch: i16,
     /// Its centre ([`Fighter::center`]), units (zero while dead).
@@ -246,6 +250,7 @@ fn state_of(session: &Session, robots: &[RobotState], fighter: &Fighter) -> Opti
         frags: fighter.frags,
         deaths: fighter.deaths,
         held: fighter.arsenal.held,
+        tubes: fighter.arsenal.tubes,
         yaw: fighter.intent.yaw,
         pitch: fighter.intent.pitch,
         position: if fighter.alive() {
@@ -786,6 +791,7 @@ fn encode_event(out: &mut Out, event: &Event) {
         Event::Fired {
             slot,
             weapon,
+            tube,
             part,
             from,
             direction,
@@ -794,6 +800,7 @@ fn encode_event(out: &mut Out, event: &Event) {
             out.u8(slot);
             out.weapon(weapon);
             out.u8(part.0);
+            out.u8(tube);
             out.vec3(from);
             out.vec3(direction);
         }
@@ -917,6 +924,7 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
             slot: input.u8()?,
             weapon: input.weapon()?,
             part: PartId(input.u8()?),
+            tube: input.u8()?,
             from: input.vec3()?,
             direction: input.vec3()?,
         },
@@ -1031,6 +1039,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
         out.i32(fighter.frags);
         out.i32(fighter.deaths);
         out.instance(fighter.held);
+        out.u32(fighter.tubes);
         out.u16(fighter.yaw);
         out.0.extend_from_slice(&fighter.pitch.to_le_bytes());
         out.vec3(fighter.position);
@@ -1167,6 +1176,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 frags: input.i32()?,
                 deaths: input.i32()?,
                 held: input.instance()?,
+                tubes: input.u32()?,
                 yaw: input.u16()?,
                 pitch: i16::from_le_bytes(input.take()?),
                 position: input.vec3()?,

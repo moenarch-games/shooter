@@ -13,7 +13,9 @@
 //! the shotgun, the laser and the flamethrower) leaves its muzzle ([`muzzle`]): the weapon part's
 //! box where the robot's bodies carry it now, and on it the muzzle anchor of the pinned weapons
 //! kit ([`muzzle_anchor_mm`], a checked-in table the client's robot tests hold against the kit),
-//! the long barrel's when it has one. It flies toward the intended target ([`aimed`]), so cover
+//! the long barrel's when it has one; the rocket pod's launches alternate between its two tubes,
+//! the simulation's state saying which is next ([`tube_muzzle`]). It flies toward the intended
+//! target ([`aimed`]), so cover
 //! between the muzzle and the target stops it though the camera sees past: peeking with the
 //! camera never shoots through cover. A muzzle pushed into a wall fires from the wall's near
 //! face. The grapple module's hook leaves its own muzzle toward a target ahead of it the same way
@@ -77,6 +79,11 @@ pub const MUZZLE_ANCHORS_MM: [(Weapon, Option<ModId>, [i32; 3]); 10] = [
     (Weapon::Laser, Some(LONG_BARREL), [0, 385, 0]),
     (Weapon::Flamethrower, None, [-12, 366, 0]),
 ];
+
+/// The rocket pod's second tube's muzzle (millimetres, glTF part frame; the kit's `muzzle-b`):
+/// its launches alternate between [`MUZZLE_ANCHORS_MM`]'s first tube and this one
+/// ([`Weapon::tubes`], [`crate::weapons::Arsenal::tube`]).
+pub const SECOND_TUBE_MM: [i32; 3] = [8, 353, -200];
 
 /// The muzzle (millimetres, glTF part frame) of `weapon` carrying `modification`: the mod's
 /// when it has one, else the weapon's own.
@@ -308,9 +315,21 @@ pub struct Muzzle {
 /// The muzzle of the weapon copy `instance` of `build` in `parts` (its connected parts where
 /// they are, [`crate::Fighter::hitboxes`]), with its mod's muzzle when it has one; `None` when
 /// that copy is no longer connected, or the weapon has no muzzle (the blade). Every copy fires
-/// from its own muzzle (shooter#125).
+/// from its own muzzle (shooter#125). The rocket pod's first tube ([`tube_muzzle`]).
 #[must_use]
 pub fn muzzle(build: &Assembly, parts: &Hitboxes, instance: Instance) -> Option<Muzzle> {
+    tube_muzzle(build, parts, instance, 0)
+}
+
+/// [`muzzle`] of its `tube` (0 the first): the rocket pod fires from its two in turn
+/// ([`SECOND_TUBE_MM`]); every other weapon has the one.
+#[must_use]
+pub fn tube_muzzle(
+    build: &Assembly,
+    parts: &Hitboxes,
+    instance: Instance,
+    tube: u8,
+) -> Option<Muzzle> {
     #[allow(clippy::cast_precision_loss)]
     let cell_mm = crate::robot::CELL_MM as f32;
     let weapon = instance.weapon;
@@ -320,7 +339,11 @@ pub fn muzzle(build: &Assembly, parts: &Hitboxes, instance: Instance) -> Option<
         if built.id != instance.part || kind != Kind::Weapon(weapon) {
             return None;
         }
-        let [x, y, z] = muzzle_anchor_mm(weapon, built.modification)?;
+        let [x, y, z] = if weapon == Weapon::RocketLauncher && tube % weapon.tubes() == 1 {
+            SECOND_TUBE_MM
+        } else {
+            muzzle_anchor_mm(weapon, built.modification)?
+        };
         // glTF +X, +Y, +Z are the part's x, z and -y; the mount anchor is half a cell in from
         // the cuboid's minimum corner on x and y (the kit's `frame` rule); units are cm.
         #[allow(clippy::cast_precision_loss)]

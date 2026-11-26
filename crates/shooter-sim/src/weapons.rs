@@ -217,6 +217,16 @@ impl Weapon {
         }
     }
 
+    /// How many tubes (muzzles) it fires from in turn: the rocket pod's two, one for the rest
+    /// (shooter#102, [`Arsenal::tube`]).
+    #[must_use]
+    pub const fn tubes(self) -> u8 {
+        match self {
+            Self::RocketLauncher => 2,
+            _ => 1,
+        }
+    }
+
     /// Whether it may be bound to fire directly, alone or in a group (shooter#127): the guns.
     /// The blade and the grapple module act on their own keys.
     #[must_use]
@@ -468,6 +478,11 @@ pub struct Arsenal {
     grapple_ready_at: u32,
     /// Ticks in a row a flamethrower has fired.
     flaming: u32,
+    /// The tube each multi-tube launcher fires its next shot from, by its part's index in the
+    /// build (bit set: its second tube): the rocket pod's tubes alternate launch by launch
+    /// (shooter#102, [`Arsenal::tube`]). In the snapshots, so a predicting client and the
+    /// drawn robot use the tube the host does.
+    pub tubes: u32,
 }
 
 /// The blade [`Arsenal::trigger`] swings: one on part 8, as the named loadouts mount it.
@@ -603,6 +618,24 @@ impl Arsenal {
             true
         } else {
             false
+        }
+    }
+
+    /// The tube (0 its first, 1 its second) the launcher at build part index `index` fires its
+    /// next shot from.
+    #[must_use]
+    pub const fn tube(&self, index: usize) -> u8 {
+        if index < u32::BITS as usize && self.tubes & (1 << index) != 0 {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// The launcher at build part index `index` has fired: its next shot leaves its other tube.
+    pub const fn launched(&mut self, index: usize) {
+        if index < u32::BITS as usize {
+            self.tubes ^= 1 << index;
         }
     }
 

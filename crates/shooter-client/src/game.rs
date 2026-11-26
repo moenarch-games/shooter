@@ -50,6 +50,27 @@ impl Game {
         }
     }
 
+    /// An empty practice match on `map`, no bots: a staged scene's ([`Game::stage`], the
+    /// profile run's `cover` scene, shooter#102).
+    ///
+    /// # Panics
+    ///
+    /// If the map's arena does not build.
+    #[must_use]
+    pub fn staged(map: MapId) -> Self {
+        let rules = Rules {
+            bots: false,
+            ..Rules::practice(PRACTICE_SEED)
+        };
+        let session = Session::on_map(map, rules).expect("a catalogued map builds");
+        let snapshot = session.snapshot();
+        Self::Practice {
+            session: Box::new(session),
+            snapshot: Box::new(snapshot),
+            others: Interpolation::new(1.0),
+        }
+    }
+
     /// Plays as `build` (a named loadout, `shooter_sim::robot::LOADOUTS`) from the start, called
     /// before the first tick ([`Game::configure`] before the robot has played).
     #[must_use]
@@ -100,6 +121,25 @@ impl Game {
             }
             Self::Online(online) => online.tick(intent),
         }
+    }
+
+    /// Practice only: stands the local fighter's robot at `feet` (units) facing `yaw`, as a
+    /// staged scene places it (the profile run's `cover` scene, shooter#102). Online it is the
+    /// host's to place: nothing happens.
+    ///
+    /// # Errors
+    ///
+    /// If the physics world refuses the robot there.
+    pub fn stage(&mut self, feet: [f32; 3], yaw: u16) -> Result<(), String> {
+        if let Self::Practice {
+            session, snapshot, ..
+        } = self
+        {
+            session.fighters[0].intent.yaw = yaw;
+            session.stand(0, feet).map_err(|error| error.to_string())?;
+            **snapshot = session.snapshot();
+        }
+        Ok(())
     }
 
     /// The map the match is played on, once it is known (online: from the first snapshot).
@@ -237,15 +277,13 @@ pub mod online {
     use super::Tick;
     use crate::interpolation::{Interpolation, ONLINE_DELAY_TICKS};
     use crate::net::{Connection, NetEvent, Trust};
-    use shooter_sim::aim;
     use shooter_sim::damage::{Hitboxes, PartDamage};
     use shooter_sim::grapple::Hook;
     use shooter_sim::names;
     use shooter_sim::player::Motion;
     use shooter_sim::repair::Repair;
     use shooter_sim::scenery::PlaceableState;
-    use shooter_sim::session::{body_of, slot_of};
-    use shooter_sim::weapons::{Delivery, Instance};
+    use shooter_sim::weapons::Instance;
     use shooter_sim::wire::encode_input;
     use shooter_sim::{
         Assembly, Event, Intent, MapId, Rules, Session, Snapshot, StepReport, Weapon,
@@ -267,6 +305,8 @@ pub mod online {
         energy: [u32; 2],
         /// The weapon it holds (the host may refuse a switch the prediction made).
         held: Instance,
+        /// The tube each of its launchers fires next from (shooter#102).
+        tubes: u32,
         /// Its field repair (the host may refuse an order, or pause it for a hit the
         /// prediction cannot see).
         repair: Option<Repair>,
@@ -411,11 +451,16 @@ pub mod online {
             Some(self.latest.as_ref()?.of_player(id)?.slot)
         }
 
-        /// The predicted tick's own shots, shown and heard at once: the muzzle flash as fired,
-        /// a beam stopped by the first other fighter where they are drawn (the host's hit
-        /// decides the damage). Blade swings are left to the host's events.
+        /// The predicted tick's own shots, shown and heard at once, aimed again as the host
+        /// aims them among the others where they are drawn ([`Session::predicted_shots`]): the
+        /// muzzle flash from the tube that fired toward the target, a beam or flame stopped
+        /// where the host's would be (the host's hit decides the damage). Blade swings are left
+        /// to the host's events.
         fn predicted_shots(&self) -> Vec<Event> {
             let Some(local) = self.local_slot() else {
+                return Vec::new();
+            };
+            let Some(predictor) = self.live() else {
                 return Vec::new();
             };
             let others: Vec<Hitboxes> = self
@@ -433,144 +478,7 @@ pub mod online {
                     ))
                 })
                 .collect();
-            let mut shots = Vec::new();
-            let Some(predictor) = self.live() else {
-                return shots;
-            };
-            let me = predictor.local();
-            let owner = body_of(local);
-            // A hitscan shot aimed again as the host aims it ([`aim::aimed`]): the camera picks
-            // its target among the others as drawn too, the beam leaves the predicted muzzle.
-            let mut aimed: Option<(Weapon, aim::Sight)> = None;
-            for event in &predictor.events {
-                match *event {
-                    Event::Fired { weapon, .. } | Event::Beam { weapon, .. }
-                        if weapon == Weapon::EnergyBlade => {}
-                    Event::Fired {
-                        weapon,
-                        part,
-                        from,
-                        mut direction,
-                        ..
-                    } => {
-                        if let Delivery::Hitscan { range_units, .. } =
-                            me.tuning(Instance { part, weapon }).delivery(weapon)
-                        {
-                            // Its barrel as the predicted robot carries it: it converges only
-                            // within its cone (shooter#132).
-                            let muzzle = aim::Muzzle {
-                                mount: from,
-                                at: from,
-                                axis: me
-                                    .muzzle(Instance { part, weapon })
-                                    .and_then(|muzzle| muzzle.axis),
-                            };
-                            let shot = aim::aimed(
-                                &predictor.world,
-                                me.eye(),
-                                Some(muzzle),
-                                me.intent.yaw,
-                                me.intent.pitch,
-                                owner,
-                                |body| slot_of(body).is_none(),
-                                others.iter().enumerate(),
-                            );
-                            let sight = aim::sight(
-                                &predictor.world,
-                                from,
-                                shot.direction(),
-                                range_units,
-                                owner,
-                                |body| slot_of(body).is_none(),
-                                others.iter().enumerate(),
-                            );
-                            direction = aim::unit(shot.direction());
-                            aimed = Some((weapon, sight));
-                        }
-                        shots.push(Event::Fired {
-                            slot: local,
-                            weapon,
-                            part,
-                            from,
-                            direction,
-                        });
-                    }
-                    Event::Beam {
-                        weapon,
-                        from,
-                        end: _,
-                        normal: _,
-                        struck: _,
-                    } if aimed.is_some_and(|(fired, _)| fired == weapon) => {
-                        let Some((_, sight)) = aimed.take() else {
-                            continue;
-                        };
-                        let normal = sight.scenery.hit.map_or([0.0; 3], |hit| hit.normal);
-                        shots.push(Event::Beam {
-                            weapon,
-                            from,
-                            end: sight.end,
-                            normal: if sight.fighter.is_some() {
-                                let along = [0, 1, 2].map(|axis| sight.end[axis] - from[axis]);
-                                let length = along
-                                    .iter()
-                                    .map(|axis| axis * axis)
-                                    .sum::<f32>()
-                                    .sqrt()
-                                    .max(f32::EPSILON);
-                                along.map(|axis| -axis / length)
-                            } else {
-                                normal
-                            },
-                            struck: sight.met(),
-                        });
-                    }
-                    Event::Beam {
-                        weapon,
-                        from,
-                        end,
-                        normal,
-                        struck,
-                    } => {
-                        let translation = [0, 1, 2].map(|axis| end[axis] - from[axis]);
-                        let hit = matches!(weapon.delivery(), Delivery::Hitscan { .. })
-                            .then(|| {
-                                others
-                                    .iter()
-                                    .filter_map(|parts| parts.first(from, translation))
-                                    .reduce(f32::min)
-                            })
-                            .flatten();
-                        shots.push(match hit {
-                            Some(fraction) => Event::Beam {
-                                weapon,
-                                from,
-                                end: [0, 1, 2]
-                                    .map(|axis| from[axis] + translation[axis] * fraction),
-                                normal: {
-                                    let length = translation
-                                        .iter()
-                                        .map(|axis| axis * axis)
-                                        .sum::<f32>()
-                                        .sqrt()
-                                        .max(f32::EPSILON);
-                                    translation.map(|axis| -axis / length)
-                                },
-                                struck: true,
-                            },
-                            None => Event::Beam {
-                                weapon,
-                                from,
-                                end,
-                                normal,
-                                struck,
-                            },
-                        });
-                    }
-                    _ => {}
-                }
-            }
-            shots
+            predictor.predicted_shots(local, &others)
         }
 
         /// Lost sessions resumed so far.
@@ -612,7 +520,9 @@ pub mod online {
             predictor.tick(intent).map_err(|error| error.to_string())
         }
 
-        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, [u32; 2], Instance) {
+        /// The predicted state: its centre, motion, hook, energy and fuel, the copy it holds and
+        /// its launchers' next tubes.
+        fn state(&self) -> ([f32; 3], Motion, Option<Hook>, [u32; 2], Instance, u32) {
             self.live().map_or(
                 (
                     [0.0; 3],
@@ -620,6 +530,7 @@ pub mod online {
                     None,
                     [0, 0],
                     Instance::default(),
+                    0,
                 ),
                 |predictor| {
                     let local = predictor.local();
@@ -629,6 +540,7 @@ pub mod online {
                         local.hook,
                         [local.energy, local.fuel],
                         local.arsenal.held,
+                        local.arsenal.tubes,
                     )
                 },
             )
@@ -690,6 +602,7 @@ pub mod online {
                 predictor.fighters[0].energy = me.energy;
                 predictor.fighters[0].fuel = me.fuel;
                 predictor.fighters[0].repair = me.repair;
+                predictor.fighters[0].arsenal.tubes = me.tubes;
                 Ok::<(), String>(())
             };
             if !self.predicting {
@@ -720,6 +633,7 @@ pub mod online {
                 || acked.hook != me.hook
                 || acked.energy != [me.energy, me.fuel]
                 || acked.held != me.held
+                || acked.tubes != me.tubes
                 || acked.repair != me.repair;
             if off {
                 place(self.predictor_mut()?)?;
@@ -732,6 +646,7 @@ pub mod online {
                         pending.hook,
                         pending.energy,
                         pending.held,
+                        pending.tubes,
                     ) = self.state();
                     pending.repair = self.repair();
                     self.pending.push_back(pending);
@@ -818,7 +733,7 @@ pub mod online {
                     report = self.predict(intent)?;
                     let shots = self.predicted_shots();
                     self.events.extend(shots);
-                    let (position, motion, hook, energy, held) = self.state();
+                    let (position, motion, hook, energy, held, tubes) = self.state();
                     self.pending.push_back(Pending {
                         sequence: self.sequence,
                         intent,
@@ -827,6 +742,7 @@ pub mod online {
                         hook,
                         energy,
                         held,
+                        tubes,
                         repair: self.repair(),
                     });
                     while self.pending.len() > 120 {

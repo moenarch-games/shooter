@@ -25,6 +25,8 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
+/// 21: the logged commands are wire-28 inputs and the digests cover wire-28 snapshots (the
+/// rocket pod's tubes alternate, each fighter's next tubes in the snapshots, shooter#102).
 /// 20: the logged commands are wire-27 inputs and the digests cover wire-27 snapshots (the
 /// combustion chassis and engine, the flamethrower and a combustion drive on fuel, shooter#130).
 /// 19: the logged commands are wire-26 inputs and the digests cover wire-26 snapshots (each
@@ -53,7 +55,7 @@ const MAGIC: &[u8; 4] = b"SHRP";
 /// robot's part healths, part hits and detachments); 7 carried wire 12 (shared energy charge,
 /// batteries, no heat), 6 wire 11 (robot builds as socket-grid component trees), 5 wire 10
 /// (module pickups), 4 wire 9 (robot builds with weapon mods).
-const FORMAT: u8 = 20;
+const FORMAT: u8 = 21;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 
