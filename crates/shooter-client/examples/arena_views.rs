@@ -93,6 +93,10 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
             (Vec3::new(-8.0, 2.0, -12.0), Vec3::new(-8.5, 1.5, -24.0)),
             // A charging bay in the east wall, from the floor.
             (Vec3::new(18.0, 2.0, -6.0), Vec3::new(27.0, 1.5, -11.0)),
+            // The loading ramp up onto the bridge's east edge, from the floor east of it.
+            (Vec3::new(19.0, 2.0, -3.0), Vec3::new(0.0, 3.5, -7.0)),
+            // The bay's west doorway, from the floor west of the mezzanine ramp.
+            (Vec3::new(-20.0, 2.0, -9.0), Vec3::new(-26.0, 1.5, -20.0)),
         ],
         MapId::ProvingCell => vec![
             // The test floor from the south-east: the stage, its north ramp and the north

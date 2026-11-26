@@ -964,6 +964,47 @@ whether resupply locks movement or firing (Q2.i123.3).
   other (a skid-steered chassis turns in place slowly, shooter#170); resupply stations wait on
   shooter#129; the proposed clean white and amber lighting waits on per-map lighting, which the
   client does not have (one sun and ambient for every map). Captures in `docs/captures/151/`.
+  Since shooter#152 the assembly works, the menu's flagship (D2.i154.1), is tuned the same way
+  (`crates/shooter-sim/tests/assembly_works.rs`, on the harness the proving cell's playtests
+  now share, `tests/playtest`: 4 and 12 fighters on the named legged loadouts, the armed car,
+  the armed tank and a mix of the three; its ignored report sums five seeds of two minutes).
+  Map ID, size, topology, kit and capacity (4 to 12, 14 spawn points) are unchanged. Changes:
+  a 12 m loading ramp climbs from the floor onto each side of the gantry bridge (the bridge's
+  own non-grapple way up, beside the mezzanine ramp, the pad and the grapple); each bay wall has
+  a second doorway at its far end, so the bay's half behind the first doorway is no dead end;
+  that half's blast screen moved to leave 3.9 m and 3.5 m round it and to cover the line from
+  the new doorway to the bay's spawn point; the middle bay spawn point moved 4 m west between a
+  container and a new blast screen against the bay's back aisle (its old place was hit along
+  that aisle); the container by the work platforms now stands against them (it left a 1 m slot
+  bots drove chassis into); the spawn point beside the mezzanine ramp moved 4 m off the new
+  doorway's mouth; every bay spawn point faces its way out (a chassis turns in place slowly,
+  shooter#170: one faced the back wall, one a container 3 m off); bot points were added for
+  the new ramp, doorway and aisle, one moved off the ramp. Measured before → after (five seeds,
+  4 / 12 fighters): robots stranded at a spawn point 0 → 0 on legs and tracks, 4 / 5 → 0 / 0 on
+  wheels, 0 → 0 mixed; respawns killed within 3 s 0 → 0 everywhere; four wheeled robots fight
+  (2 → 13 kills, first contact median 35 → 10 s; bays 73% → 58% of their time) and twelve fight
+  twice as much (63 → 133 kills); the two middle bay spawn points' respawns first hit within 2 s
+  12 of 36 → 2 of 18 at twelve on legs, while all respawns first hit within 2 s stay about the
+  same share (on legs 7.3% → 7.8%; wheels and tracks 3% → 6% and 4% → 5%, now that they reach
+  each other); first contact median 4.5 → 5.3 s for four and 1.8 → 1.5 s for twelve on legs;
+  kills are close and mid range (0–10 m about 70%, 10–20 m 25–30%, beyond 20 m 1–2%, on legs
+  both before and after); the open floor makes about 55% of the kills, the bays about 15% (legs)
+  to 25%, no other position more than a fifth (the top of crates, cover and containers, and
+  jumps, together). Bots seldom climb (bridge, mezzanines and towers 1–2% of their time before
+  and after, as on the other maps), so the high ground is judged by sightlines too: from the
+  bridge's middle (the rail capacitor) a fighter sees 43% → 42% of the floor within 30 m, the
+  bridge's ends 41% → 40%, the mezzanines 25–34%, the tower tops 27% → 26% (sight is mutual:
+  as much of the floor can shoot back; the test holds every high place between a sixth and a
+  half). Tracks drive up both ramps onto the bridge; wheels do not climb the kit's 1:4 ramps on
+  any map (shooter#174) and keep to the floor and bays, whose fights the changes opened to them.
+  Performance is unchanged: the simulation 0.56 → 0.59 ms a tick with 12 bots on legs
+  (different matches), the native client 2.33 → 2.36 ms a frame (RTX 3060 Ti). Open: the kit
+  has no assembly machinery or crane props to make the works read as an assembly line
+  (asset-tooling#838: a cradle, an arm, a conveyor, a crane head on the mast, a walkway
+  railing; a ceiling-panel jib was rejected: at 8 m it sits in the tower pad's arc and the
+  grapple's reel path); resupply stations wait on shooter#129; the cool lighting waits on
+  per-map lighting; the owner's own playtest and visual review. Captures in
+  `docs/captures/152/`.
   Since shooter#55 the large arena
   is in: `drydock`, an 80 m repurposed spaceship shipyard (D2.i55.1) built from the same arena
   kit (8 to 12 players recommended, 14 spawn points, all on the ground), point-symmetric: two
