@@ -728,10 +728,15 @@ impl Builder {
     }
 
     /// Puts the pointer at `at` (layout units).
-    #[allow(clippy::cast_precision_loss)]
     fn put_pointer(&mut self, at: Vec2) {
+        self.cursor = self.window_pixels(at);
+    }
+
+    /// Where `at` (layout units) is in the window's pixels (the pointer's space).
+    #[allow(clippy::cast_precision_loss)]
+    fn window_pixels(&self, at: Vec2) -> Vec2 {
         let pixels = at * self.scale();
-        self.cursor = match self.window {
+        match self.window {
             Some((width, height)) => {
                 pixels
                     * Vec2::new(
@@ -740,7 +745,7 @@ impl Builder {
                     )
             }
             None => pixels,
-        };
+        }
     }
 
     /// The window is `width` × `height` pixels: the space the pointer arrives in (in the browser,
@@ -828,6 +833,88 @@ impl Builder {
     #[must_use]
     pub const fn proposal(&self) -> Option<&Proposal> {
         self.proposal.as_ref()
+    }
+
+    /// What the builder shows after the last frame, as JSON, for scripted checks of a real
+    /// client (the browser page sets it on `window.shooterBuilder`; `scripts/builder-web.mjs`,
+    /// shooter#124): the build on the bench (its wire bytes in hex, so an undo's build compares
+    /// exactly), whether it is valid and why not, the part in hand and its turn, the selected
+    /// part and its turn, the step in degrees, the history, the notice, the placement under the
+    /// pointer and its verdict, whether Ready was sent, and where the sockets the camera sees
+    /// and the panels' items are, in the window's pixels (the pointer's space).
+    #[must_use]
+    pub fn readout(&self) -> String {
+        let draft = self.bench.draft();
+        let key = |kind: PartTypeId| BENCH.part_type(kind).map(|kind| kind.key);
+        let turn = |orientation: Orientation| {
+            let (yaw, pitch, roll) = orientation.raw();
+            [yaw, pitch, roll]
+        };
+        let at = |layout: Vec2| {
+            let pixels = self.window_pixels(layout);
+            serde_json::json!([pixels.x.round(), pixels.y.round()])
+        };
+        let (undo, redo) = self.bench.history();
+        let selected = self.bench.selected.and_then(|id| draft.part(id));
+        let proposal = self.proposal.as_ref().map(|proposal| {
+            serde_json::json!({
+                "parent": proposal.parent().0,
+                "socket": proposal.socket().0,
+                "turn": proposal.part.mount.map(|mount| turn(mount.orientation)),
+                "footprint": proposal.footprint.iter().map(|socket| socket.0).collect::<Vec<_>>(),
+                "refused": proposal.verdict.as_ref().err().map(|error| {
+                    describe(draft, *error, Some(proposal.part.id))
+                }),
+            })
+        });
+        let sockets: Vec<_> = self
+            .spots
+            .iter()
+            .zip(self.fits.iter().chain(std::iter::repeat(&false)))
+            .filter(|(spot, _)| spot.visible)
+            .map(|(spot, fits)| {
+                serde_json::json!({
+                    "part": spot.part.0,
+                    "socket": spot.socket.0,
+                    "at": at(spot.at),
+                    "fits": fits,
+                })
+            })
+            .collect();
+        let targets: Vec<_> = self
+            .layout()
+            .targets(self.side())
+            .into_iter()
+            .map(|(rect, target)| {
+                let name = match target {
+                    Target::Catalogue(kind) => key(kind).unwrap_or("?").to_owned(),
+                    other => format!("{other:?}"),
+                };
+                serde_json::json!({
+                    "name": name,
+                    "at": at(Vec2::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "build": draft_hex(draft),
+            "parts": draft.parts().len(),
+            "valid": self.bench.check().is_ok(),
+            "error": self.bench.check().err().map(|error| describe(draft, error, None)),
+            "hand": self.bench.hand.and_then(key),
+            "turn": turn(self.bench.turn),
+            "selected": selected.map(|part| part.id.0),
+            "selectedTurn": selected.and_then(|part| part.mount).map(|mount| turn(mount.orientation)),
+            "step": degrees(self.step.angle()),
+            "undo": undo,
+            "redo": redo,
+            "notice": self.notice,
+            "proposal": proposal,
+            "ready": self.ready.is_some(),
+            "sockets": sockets,
+            "targets": targets,
+        })
+        .to_string()
     }
 
     /// The wheel turned `lines` (positive away from the person: closer).
@@ -2083,6 +2170,17 @@ fn panel_back(painter: &mut Painter, rect: Rect) {
     );
 }
 
+/// `build`'s wire bytes ([`shooter_sim::wire::encode_build`]) in lowercase hex.
+fn draft_hex(build: &Assembly) -> String {
+    use std::fmt::Write;
+    shooter_sim::wire::encode_build(build)
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+}
+
 /// A button: `strong` filled orange (Ready while it may be pressed).
 fn button(painter: &mut Painter, rect: Rect, label: &str, hovered: bool, strong: bool) {
     let fill = match (strong, hovered) {
@@ -3002,5 +3100,47 @@ mod snapping {
         // Not capturing, the same keys are shortcuts again.
         builder.key(KeyCode::KeyZ);
         assert_eq!(*builder.bench.draft(), STANDARD);
+    }
+
+    /// The readout a page publishes for scripted checks says what the builder shows: the build's
+    /// exact bytes, the part in hand and the placement under the pointer, and where a socket is
+    /// in the window's pixels (moving the pointer there picks it).
+    #[test]
+    fn the_readout_says_what_the_builder_shows_and_where() {
+        let (mut builder, back) = over_the_back();
+        builder.resize(2560, 1440);
+        let readout: serde_json::Value = serde_json::from_str(&builder.readout()).unwrap();
+        assert_eq!(readout["build"], draft_hex(&STANDARD));
+        assert_eq!(readout["hand"], BATTERY.key);
+        assert_eq!(readout["valid"], true);
+        assert_eq!(readout["proposal"]["parent"], 0);
+        assert_eq!(readout["proposal"]["socket"], back.0);
+        assert!(readout["proposal"]["refused"].is_null());
+        let spot = readout["sockets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spot| spot["part"] == 0 && spot["socket"] == back.0)
+            .expect("the back's socket is seen");
+        assert_eq!(spot["fits"], true);
+        #[allow(clippy::cast_possible_truncation)]
+        let [x, y] = [0, 1].map(|axis| spot["at"][axis].as_f64().unwrap() as f32);
+        builder.cursor_moved(x, y);
+        assert_eq!(picked(&builder), Some((PartId(0), back)));
+        assert!(
+            readout["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|target| target["name"] == "Ready")
+        );
+        // Placed there: one more part, and the history has the edit.
+        draw(&mut builder);
+        builder.mouse(false, true);
+        draw(&mut builder);
+        let readout: serde_json::Value = serde_json::from_str(&builder.readout()).unwrap();
+        assert_eq!(readout["build"], draft_hex(builder.bench.draft()));
+        assert_eq!(readout["parts"], STANDARD.parts().len() + 1);
+        assert_eq!(readout["undo"], true);
     }
 }

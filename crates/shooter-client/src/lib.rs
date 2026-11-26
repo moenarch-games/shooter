@@ -515,6 +515,14 @@ pub(crate) mod web {
         };
     }
 
+    /// `window.shooterBuilder = <json>`: what the open builder shows
+    /// ([`crate::builder::view::Builder::readout`]), for scripted checks of the page (shooter#124).
+    pub fn publish_builder(json: &str) {
+        if let (Some(window), Ok(value)) = (web_sys::window(), js_sys::JSON::parse(json)) {
+            let _ = js_sys::Reflect::set(&window, &"shooterBuilder".into(), &value);
+        }
+    }
+
     /// A parameter of the page's query string, if it is set and not empty.
     pub fn query(name: &str) -> Option<String> {
         let search = web_sys::window()?.location().search().ok()?;

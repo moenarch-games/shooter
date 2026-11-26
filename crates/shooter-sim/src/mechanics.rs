@@ -403,8 +403,14 @@ fn frames(build: &Assembly) -> Vec<(PartId, Frame)> {
             Some(mount) => {
                 let parent_at = index(mount.parent).expect("validated parents exist");
                 let parent = resolve(parent_at, parts, frames, index);
-                mounted(parent, &parts[parent_at], mount.socket, mount.orientation)
-                    .expect("validated sockets exist")
+                mounted(
+                    parent,
+                    &parts[parent_at],
+                    mount.socket,
+                    mount.orientation,
+                    cells_of(part),
+                )
+                .expect("validated sockets exist")
             }
         };
         frames[at] = Some(frame);
@@ -425,17 +431,49 @@ pub struct Placement {
     pub half_extents: [f32; 3],
 }
 
-/// The frame of a part mounted on `socket` of `parent` (whose frame is `at`), turned
-/// `orientation`, if `parent` has that socket.
-fn mounted(at: Frame, parent: &Part, socket: SocketId, orientation: Orientation) -> Option<Frame> {
+/// The frame of a part of `cells` mounted on `socket` of `parent` (whose frame is `at`), turned
+/// `orientation`, if `parent` has that socket: turned about the centre of its first cell (the
+/// cube standing on the socket cell), then lifted along the face's normal until its lowest
+/// corner rests on the face (shooter#124). A part turned only about the normal stands on the
+/// face as before; a pitched or rolled one stays seated on the face instead of sinking into its
+/// parent, and at quarter turns its first cell still covers the socket cell.
+fn mounted(
+    at: Frame,
+    parent: &Part,
+    socket: SocketId,
+    orientation: Orientation,
+    cells: [u8; 3],
+) -> Option<Frame> {
     let site = part_type(parent).site(socket)?;
     let socket = socket_frame(site.face, site.u, site.v, cells_of(parent));
-    let rotation = socket.rotation.then(turn(orientation));
-    let pivot = [CELL / 2.0, CELL / 2.0, 0.0];
+    let turned = turn(orientation);
+    let pivot = [CELL / 2.0; 3];
+    let lowest = corners(size(cells))
+        .into_iter()
+        .map(|corner| turned.apply(sub(corner, pivot))[2])
+        .fold(f32::INFINITY, f32::min);
+    let rotation = socket.rotation.then(turned);
     Some(at.then(Frame {
         rotation,
-        origin: sub(socket.origin, rotation.apply(pivot)),
+        origin: add(
+            sub(socket.origin, rotation.apply(pivot)),
+            scale(socket.direction([0.0, 0.0, 1.0]), -lowest),
+        ),
     }))
+}
+
+/// The eight corners of a cuboid of `size` from the origin.
+const fn corners([x, y, z]: V3) -> [V3; 8] {
+    [
+        [0.0, 0.0, 0.0],
+        [x, 0.0, 0.0],
+        [0.0, y, 0.0],
+        [x, y, 0.0],
+        [0.0, 0.0, z],
+        [x, 0.0, z],
+        [0.0, y, z],
+        [x, y, z],
+    ]
 }
 
 /// `part`'s placement in the frame `frame`.
@@ -472,7 +510,7 @@ pub fn placement_of(build: &Assembly, part: &Part) -> Option<Placement> {
         .into_iter()
         .find(|(id, _)| *id == mount.parent)?;
     let parent = build.part(mount.parent)?;
-    let frame = mounted(at, parent, mount.socket, mount.orientation)?;
+    let frame = mounted(at, parent, mount.socket, mount.orientation, cells_of(part))?;
     Some(placed(part, frame))
 }
 

@@ -851,15 +851,22 @@ mod tests {
     #[test]
     fn parts_turn_exactly_and_a_turn_into_another_part_is_refused() {
         let mut bench = Workbench::new(STANDARD);
-        // The sensor alone on the top: it turns freely, in snaps and fine steps.
-        bench.selected = Some(PartId(2));
+        // The generator alone on the fuel tank's top: it turns freely, in snaps and fine steps.
+        bench.selected = Some(PartId(21));
         bench.rotate(Axis::Yaw, i32::from(SNAP)).unwrap();
         bench.rotate(Axis::Pitch, -i32::from(FINE)).unwrap();
-        let mount = bench.draft().part(PartId(2)).unwrap().mount.unwrap();
+        let mount = bench.draft().part(PartId(21)).unwrap().mount.unwrap();
         assert_eq!(mount.orientation.yaw, SNAP);
         assert_eq!(mount.orientation.pitch, -i16::try_from(FINE).unwrap());
         assert_eq!(degrees(mount.orientation.yaw), 45);
         assert!(bench.check().is_ok());
+        // The sensor beside the tank on the roof: an eighth's turn swings its corners over the
+        // tank's cell (its shadow, shooter#124), so the rules refuse it.
+        bench.selected = Some(PartId(2));
+        assert!(matches!(
+            bench.rotate(Axis::Yaw, i32::from(SNAP)),
+            Err(Refusal::Rule(AssemblyError::Overlap(PartId(2), PartId(20))))
+        ));
         // A long-barrel rifle (a 1 x 2 footprint) low on the left of the front, the shotgun
         // beside it: a quarter turn back swings the footprint onto the shotgun's cell.
         let mut bench = front_pair();

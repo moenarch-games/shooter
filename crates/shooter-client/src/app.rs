@@ -161,6 +161,9 @@ pub struct App {
     /// Whether the page shows the builder (the browser hides its own overlays then).
     #[cfg(target_arch = "wasm32")]
     builder_shown: bool,
+    /// What the page last published of the open builder (`window.shooterBuilder`).
+    #[cfg(target_arch = "wasm32")]
+    builder_readout: String,
     /// The page's touch controls held as keys and buttons (phones and tablets).
     #[cfg(target_arch = "wasm32")]
     touch: crate::touch::Touch,
@@ -295,6 +298,8 @@ impl App {
             builder: None,
             #[cfg(target_arch = "wasm32")]
             builder_shown: false,
+            #[cfg(target_arch = "wasm32")]
+            builder_readout: String::new(),
             #[cfg(target_arch = "wasm32")]
             touch: crate::touch::Touch::default(),
             captured: false,
@@ -470,6 +475,8 @@ impl App {
             builder: None,
             #[cfg(target_arch = "wasm32")]
             builder_shown: false,
+            #[cfg(target_arch = "wasm32")]
+            builder_readout: String::new(),
             captured: false,
             driver: Driver::default(),
         };
@@ -988,6 +995,14 @@ impl App {
             let (mut scene, ui) = builder.frame(robots, width, height, seconds);
             if let Err(error) = gpu.render(&mut scene, &ui, ticks) {
                 crate::log(&error);
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let readout = builder.readout();
+                if readout != self.builder_readout {
+                    crate::web::publish_builder(&readout);
+                    self.builder_readout = readout;
+                }
             }
             return true;
         }

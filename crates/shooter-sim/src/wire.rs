@@ -41,6 +41,9 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::{Instance, Select, Triggers, Weapon};
 use std::fmt;
 
+/// 30: a build's pitched or rolled (or finely turned) parts are seated on their socket's face
+/// and reserve the cells they lie over (shooter#124): the same bytes mean other rules, so older
+/// peers are refused.
 /// 29: snapshots carry each fighter's ticks until its grapple module may hook again
 /// (shooter#104). 28: snapshots carry the tube each fighter's rocket pods fire next from and a
 /// `Fired` event the tube it left (shooter#102). 27: builds may name the combustion chassis (codes 4 to 6)
@@ -57,7 +60,7 @@ use std::fmt;
 /// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
 /// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
 /// the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 29;
+pub const WIRE_VERSION: u8 = 30;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
