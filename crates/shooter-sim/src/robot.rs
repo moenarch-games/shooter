@@ -60,12 +60,13 @@
 //! part; its destruction is the only kill. There is no separate control core: the part code it had
 //! (30, `robot.core`) is retired, so an old build naming it is an unknown part.
 //!
-//! **Energy** (D2.i70.3 as D2.i89.1 amends it, D2.i70.4): the root chassis holds the baseline
-//! energy capacity and regenerates it ([`ROOT_CAPACITY`], [`ROOT_REGEN`]; other chassis sections
-//! hold none); each optional battery ([`Kind::Battery`]) adds stored capacity only (no
-//! regeneration). Every part draws from that one shared pool ([`crate::energy`]): no wiring, no
-//! circuits, and no heat or cooling. A build's capacity and regeneration are in its
-//! [`Catalog::budget`].
+//! **Resources** (D2.i70.3 as D2.i89.1 and D2.i123.1–4 amend it, D2.i70.4): the root chassis
+//! holds the baseline electricity storage ([`ROOT_CAPACITY`]; other chassis sections hold none)
+//! and recovers nothing by itself (shooter#128); each optional battery ([`Kind::Battery`]) adds
+//! electricity storage, each fuel tank ([`Kind::FuelTank`]) fuel storage, and each generator
+//! ([`Kind::Generator`]) turns fuel into electricity at a bounded rate. Every part draws from
+//! the robot's one set of pools ([`crate::energy`]): no wiring, no circuits, and no heat or
+//! cooling. A build's storage and generation are in its [`Catalog::budget`].
 //!
 //! **Provisional data.** The cell size, chassis sizes, part values, build points and part ceiling
 //! are tunable placeholders (Atlas Q2.i70.1, Q2.i70.2), not owner-approved balance. The part keys
@@ -92,8 +93,8 @@
 use crate::weapons::{Delivery, Instance, Weapon};
 use parts::{
     ADAPTER, BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, FLAMETHROWER,
-    GRAPPLE, HINGE, LASER, LEG, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, RAIL_GUN, REPAIR_MODULE,
-    ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    FUEL_TANK, GENERATOR, GRAPPLE, HINGE, LASER, LEG, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, RAIL_GUN,
+    REPAIR_MODULE, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
 
@@ -102,12 +103,10 @@ pub const CELL_MM: u32 = 200;
 /// The technical part-count ceiling: the most parts one build may have (provisional, Atlas
 /// Q2.i70.1), separate from the build points.
 pub const MAX_PARTS: usize = 32;
-/// The baseline energy capacity the root chassis holds (whole units, [`crate::energy`]): the
-/// retired control core's (D2.i89.1; provisional, Atlas Q2.i70.1).
+/// The baseline electricity the root chassis stores (whole units, [`crate::energy`]): the
+/// retired control core's (D2.i89.1; provisional, Atlas Q2.i70.1). It no longer regenerates
+/// (D2.i123.1, shooter#128): installed generators refill it.
 pub const ROOT_CAPACITY: u16 = 100;
-/// The energy the root chassis regenerates a second (whole units): the retired control core's
-/// (D2.i89.1; provisional, Atlas Q2.i70.1).
-pub const ROOT_REGEN: u16 = 24;
 
 /// A face of a part's cuboid, in the part's own frame. `NegZ` is its mount face.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
@@ -188,8 +187,13 @@ pub enum Kind {
     /// A movable joint: its base is rigid with its parent, its top face and what is mounted
     /// there turn about one axis ([`crate::mechanics`]).
     Joint(Joint),
-    /// A battery: stored energy capacity only (D2.i70.3).
+    /// A battery: stored electricity only (D2.i70.3).
     Battery,
+    /// A fuel tank: stored fuel only (D2.i123.3, shooter#128).
+    FuelTank,
+    /// A generator (D2.i123.1, shooter#128): burns fuel from the tanks and makes electricity,
+    /// at most its [`PartType::burn`] a second and only while there is room to store it.
+    Generator,
     Sensor,
     /// A repair module (D2.i70.9): when the player activates it, it restores a damaged part
     /// still connected within its radius of where it is mounted ([`crate::repair`]).
@@ -224,8 +228,9 @@ pub enum Locomotion {
 }
 
 /// What a motorised part can do (zero for the rest): the most torque each of its motors gives
-/// (N·m), the fastest it turns (tenths of a radian a second) and the energy it draws a second
-/// while commanded ([`crate::energy`]). Provisional (Q2.i70.1).
+/// (N·m), the fastest it turns (tenths of a radian a second) and the electricity it draws a
+/// second at full work ([`crate::energy`]; less for lighter work and nothing at rest,
+/// [`crate::mechanics::draw`], shooter#128). Provisional (Q2.i70.1).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub struct Drive {
     pub torque: u16,
@@ -274,10 +279,13 @@ pub struct PartType {
     /// The faces with sockets.
     pub sockets: Faces,
     pub mass: u16,
-    /// Energy it stores (batteries; the root chassis' baseline is [`ROOT_CAPACITY`]).
+    /// Electricity it stores (batteries; the root chassis' baseline is [`ROOT_CAPACITY`]).
     pub capacity: u16,
-    /// Energy it regenerates a second (none; the root chassis' is [`ROOT_REGEN`]).
-    pub regen: u16,
+    /// Fuel it stores (fuel tanks).
+    pub fuel: u16,
+    /// Fuel it burns a second at most, making [`crate::energy::ELECTRICITY_PER_FUEL`] times as
+    /// much electricity (generators).
+    pub burn: u16,
     /// Its component health ([`crate::damage`]): it works fully until this reaches zero, then
     /// it is destroyed.
     pub health: u16,
@@ -458,7 +466,7 @@ pub mod parts {
         kind: Kind,
         cells: [u8; 3],
         sockets: Faces,
-        [mass, capacity, regen, points]: [u16; 4],
+        [mass, capacity, fuel, points]: [u16; 4],
     ) -> PartType {
         PartType {
             id: PartTypeId(id),
@@ -468,7 +476,8 @@ pub mod parts {
             sockets,
             mass,
             capacity,
-            regen,
+            fuel,
+            burn: 0,
             health: 0,
             points,
             drive: Drive::NONE,
@@ -482,6 +491,11 @@ pub mod parts {
             drive: Drive { torque, rate, draw },
             ..part
         }
+    }
+
+    /// `part` burning at most `burn` fuel a second into electricity.
+    const fn generating(part: PartType, burn: u16) -> PartType {
+        PartType { burn, ..part }
     }
 
     /// `part` with `health` component health ([`crate::damage`]).
@@ -515,8 +529,8 @@ pub mod parts {
         )
     }
 
-    // The rows of the table: code, key, kind, cells, socket faces, then mass, energy capacity,
-    // energy regenerated a second, and points (weapons: mass and points; what an activation
+    // The rows of the table: code, key, kind, cells, socket faces, then mass, electricity
+    // stored, fuel stored, and points (weapons: mass and points; what an activation
     // costs is the weapon's, `Weapon::energy`), and last the component health
     // ([`crate::damage`]).
     // A chassis' health is what a root chassis needs as the robot's vital part (D2.i89.1): within
@@ -564,6 +578,17 @@ pub mod parts {
     /// component health for per-part damage (shooter#56).
     #[rustfmt::skip]
     pub const BATTERY: PartType = tough(part(32, "robot.battery", Kind::Battery, [1, 2, 1], Faces::NONE, [20, 60, 0, 5]), 60);
+    /// A 20 × 20 × 20 cm fuel tank (shooter#128): 1000 fuel and nothing else, with 60 component
+    /// health like a battery and a socket on top (the named loadouts' generator sits there).
+    /// Light (1 kg) until mass and load are tuned (Q2.i123.2), so it leaves the shipped movement
+    /// as it was. Provisional (Q2.i70.1).
+    #[rustfmt::skip]
+    pub const FUEL_TANK: PartType = tough(part(34, "robot.fuel-tank", Kind::FuelTank, [1, 1, 1], Faces::TOP, [1, 0, 1000, 3]), 60);
+    /// A 20 × 20 × 20 cm generator (shooter#128): burns at most 12 fuel a second from the tanks
+    /// into 24 electricity a second (the root chassis' former regeneration), only while there is
+    /// room for it, with 50 component health. Light (1 kg) like the tank. Provisional (Q2.i70.1).
+    #[rustfmt::skip]
+    pub const GENERATOR: PartType = tough(generating(part(35, "robot.generator", Kind::Generator, [1, 1, 1], Faces::NONE, [1, 0, 0, 5]), 12), 50);
     /// A 20 × 20 × 20 cm field repair module (D2.i70.9, shooter#61): it restores a chosen
     /// damaged part within its radius ([`crate::repair`]), with 40 component health like a
     /// light weapon.
@@ -656,8 +681,8 @@ pub const LONG_BARREL: ModId = ModId(3);
 // old build naming it is an unknown mod.
 pub const EFFICIENCY_COIL: ModId = ModId(5);
 
-/// The beta's catalog: three chassis sizes, two beams, two mount rails and an adapter, two joints, a battery, a sensor, a
-/// repair module, legs, wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
+/// The beta's catalog: three chassis sizes, two beams, two mount rails and an adapter, two joints, a battery, a fuel
+/// tank, a generator, a sensor, a repair module, legs, wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
 /// Provisional values (Q2.i70.1, Q2.i70.2).
 #[rustfmt::skip]
 pub const BETA: Catalog = Catalog {
@@ -666,7 +691,7 @@ pub const BETA: Catalog = Catalog {
         parts::BEAM_SHORT, parts::BEAM_LONG,
         parts::MOUNT_RAIL_SHORT, parts::MOUNT_RAIL_LONG, parts::ADAPTER,
         parts::HINGE, parts::ROTOR,
-        parts::BATTERY, parts::SENSOR, parts::REPAIR_MODULE,
+        parts::BATTERY, parts::FUEL_TANK, parts::GENERATOR, parts::SENSOR, parts::REPAIR_MODULE,
         parts::LEG, parts::WHEEL, parts::TRACK,
         parts::ARMOR_PLATE,
         parts::ENERGY_RIFLE, parts::RAIL_GUN, parts::ROCKET_LAUNCHER, parts::GRAPPLE,
@@ -684,9 +709,10 @@ pub const BETA: Catalog = Catalog {
         // Shots cost 60 % of the energy but charge a quarter slower: sustained fire on less.
         modification(5, "mod.efficiency-coil",  SHOTS,       false, [6,  5],  [100, 125, 100, 60]),
     ],
-    // 110: the 120 every build had less the 10 its mandatory control core took (shooter#89), so
-    // a build's headroom stays what it was.
-    build_points: 110,
+    // 118: the 120 every build had less the 10 its mandatory control core took (shooter#89),
+    // plus the 8 the named loadouts' fuel tank and generator take (shooter#128), so a build's
+    // headroom stays what it was.
+    build_points: 118,
 };
 
 /// A part's orientation on its socket: binary angles (65 536 a turn), yaw about the socket's
@@ -903,14 +929,42 @@ const fn frame(torso: &PartType) -> [Part; 4] {
     ]
 }
 
-/// The four weapons IDs 7 to 10 on `frame`, then `extra` (at most one more part).
-const fn with_weapons(frame: [Part; 4], weapons: [Part; 4], extra: Option<Part>) -> Assembly {
-    let [a, b, c, d] = frame;
-    let [e, f, g, h] = weapons;
-    match extra {
-        Some(i) => authored(&[a, b, c, d, e, f, g, h, i]),
-        None => authored(&[a, b, c, d, e, f, g, h]),
+/// The power plant the named loadouts carry on the roof of chassis `torso` beside the sensor
+/// (shooter#128), clear of what the robot's feet, sides and back meet: a fuel tank (ID 20) and
+/// on it a generator (ID 21) that recharge its electricity; losing the tank takes the generator
+/// with it. Their IDs follow every other part's, so those keep their IDs and places.
+const fn plant(torso: &PartType) -> [Part; 2] {
+    [
+        Part::on(20, &FUEL_TANK, 0, torso, Face::PosZ, 0, 1),
+        Part::on(21, &GENERATOR, 20, &FUEL_TANK, Face::PosZ, 0, 0),
+    ]
+}
+
+/// A named loadout on `torso`: the [`frame`], the four weapons IDs 7 to 10, then `extra` (at
+/// most one more part) and the [`plant`].
+const fn with_weapons(torso: &PartType, weapons: [Part; 4], extra: Option<Part>) -> Assembly {
+    let mut parts = [Part::EMPTY; MAX_PARTS];
+    let mut len = 0;
+    let frame = frame(torso);
+    while len < frame.len() {
+        parts[len] = frame[len];
+        len += 1;
     }
+    let mut index = 0;
+    while index < weapons.len() {
+        parts[len] = weapons[index];
+        len += 1;
+        index += 1;
+    }
+    if let Some(extra) = extra {
+        parts[len] = extra;
+        len += 1;
+    }
+    let plant = plant(torso);
+    parts[len] = plant[0];
+    parts[len + 1] = plant[1];
+    len += 2;
+    authored(parts.split_at(len).0)
 }
 
 /// `weapon` on the front (+X, the aim) of chassis `torso` at cell `(u, v)`, unturned: its mount
@@ -926,7 +980,7 @@ const fn forward(id: u8, weapon: &PartType, torso: &PartType, u: u8, v: u8) -> P
 /// left, the blade low on the right, the shotgun high on the left and the grapple high on the
 /// right. Valid in [`BETA`].
 pub const STANDARD: Assembly = with_weapons(
-    frame(&CHASSIS_S),
+    &CHASSIS_S,
     [
         forward(7, &ENERGY_RIFLE, &CHASSIS_S, 1, 2),
         forward(8, &ENERGY_BLADE, &CHASSIS_S, 0, 2),
@@ -939,9 +993,9 @@ pub const STANDARD: Assembly = with_weapons(
 /// A heavy build: the medium chassis with, on its front facing the aim, the rail gun high on the
 /// left, the rocket launcher high on the right, the grapple below the rail gun and the blade
 /// below the rockets and, for the energy its rail shots and rockets take, a battery on its back
-/// (160 energy, not 100). Valid in [`BETA`].
+/// (160 electricity, not 100). Valid in [`BETA`].
 pub const HEAVY: Assembly = with_weapons(
-    frame(&CHASSIS_M),
+    &CHASSIS_M,
     [
         forward(7, &RAIL_GUN, &CHASSIS_M, 1, 2),
         forward(8, &ENERGY_BLADE, &CHASSIS_M, 0, 1),
@@ -955,7 +1009,7 @@ pub const HEAVY: Assembly = with_weapons(
 /// the pool half again as fast as the shipped rifle), the blade, the grapple, and the shotgun
 /// with an efficiency coil (cheaper blasts, so the pool lasts). Valid in [`BETA`].
 pub const SKIRMISHER: Assembly = with_weapons(
-    frame(&CHASSIS_S),
+    &CHASSIS_S,
     [
         forward(7, &ENERGY_RIFLE, &CHASSIS_S, 1, 2).with(RAPID_CYCLER),
         forward(8, &ENERGY_BLADE, &CHASSIS_S, 0, 2),
@@ -968,10 +1022,10 @@ pub const SKIRMISHER: Assembly = with_weapons(
 /// A heavy, long-range loadout: the medium chassis with, on its front facing the aim, the
 /// long-barrel rifle (a two-cell module) high on the left, an overcharged rail gun (106 a hit
 /// instead of 85, for half again the energy a shot) high on the right, the grapple below the
-/// rifle and the blade below the rail gun; no battery, so it lives on the root chassis' 100.
+/// rifle and the blade below the rail gun; no battery, so it stores only the root chassis' 100.
 /// Valid in [`BETA`].
 pub const MARKSMAN: Assembly = with_weapons(
-    frame(&CHASSIS_M),
+    &CHASSIS_M,
     [
         forward(7, &ENERGY_RIFLE, &CHASSIS_M, 1, 2).with(LONG_BARREL),
         forward(8, &ENERGY_BLADE, &CHASSIS_M, 0, 1),
@@ -984,10 +1038,10 @@ pub const MARKSMAN: Assembly = with_weapons(
 /// A close- and mid-range loadout on the standard frame: on the small chassis' front facing the
 /// aim, the laser with a long barrel (a two-cell module: half again the beam's reach) high on
 /// the left, the flamethrower high on the right, the blade below it and the grapple below the
-/// laser; no battery, so it lives on the root chassis' 100. The one named loadout carrying the
+/// laser; no battery, so it stores only the root chassis' 100. The one named loadout carrying the
 /// laser and the flamethrower (shooter#96). Valid in [`BETA`].
 pub const PYRO: Assembly = with_weapons(
-    frame(&CHASSIS_S),
+    &CHASSIS_S,
     [
         forward(7, &LASER, &CHASSIS_S, 1, 2).with(LONG_BARREL),
         forward(8, &ENERGY_BLADE, &CHASSIS_S, 0, 2),
@@ -998,10 +1052,10 @@ pub const PYRO: Assembly = with_weapons(
 );
 
 /// A field-repair loadout (shooter#61): the standard build with a repair module (ID 11) on the
-/// small chassis' back, its second cell up, whose radius reaches every other part
-/// ([`crate::repair::RADIUS_UNITS`]). Valid in [`BETA`].
+/// small chassis' back, its third cell up, whose radius reaches every other part, the roof's
+/// power plant too ([`crate::repair::RADIUS_UNITS`]). Valid in [`BETA`].
 pub const MECHANIC: Assembly = with_weapons(
-    frame(&CHASSIS_S),
+    &CHASSIS_S,
     [
         forward(7, &ENERGY_RIFLE, &CHASSIS_S, 1, 2),
         forward(8, &ENERGY_BLADE, &CHASSIS_S, 0, 2),
@@ -1014,7 +1068,7 @@ pub const MECHANIC: Assembly = with_weapons(
         0,
         &CHASSIS_S,
         Face::NegX,
-        1,
+        2,
         0,
     )),
 );
@@ -1024,7 +1078,7 @@ pub const MECHANIC: Assembly = with_weapons(
 /// below the right one and a battery on its back for the shots. Each copy is its own weapon: its
 /// own mount, mod, health and refire. Valid in [`BETA`].
 pub const TWIN_RAIL: Assembly = with_weapons(
-    frame(&CHASSIS_M),
+    &CHASSIS_M,
     [
         forward(7, &RAIL_GUN, &CHASSIS_M, 1, 2),
         forward(8, &ENERGY_BLADE, &CHASSIS_M, 1, 1),
@@ -1035,10 +1089,11 @@ pub const TWIN_RAIL: Assembly = with_weapons(
 );
 
 /// A fixture with four rocket launchers (shooter#125) filling the small chassis' front, two low
-/// and two high (IDs 7 to 10), and nothing else: 109 of the 110 build points. Its launchers
-/// share the rockets' salvo limit: never two rockets in one tick (shooter#127). Valid in [`BETA`].
+/// and two high (IDs 7 to 10), with the [`plant`] on its roof: 117 of the 118 build points. Its
+/// launchers share the rockets' salvo limit: never two rockets in one tick (shooter#127). Valid
+/// in [`BETA`].
 pub const ROCKET_POD: Assembly = with_weapons(
-    frame(&CHASSIS_S),
+    &CHASSIS_S,
     [
         forward(7, &ROCKET_LAUNCHER, &CHASSIS_S, 1, 0),
         forward(8, &ROCKET_LAUNCHER, &CHASSIS_S, 0, 0),
@@ -1050,9 +1105,9 @@ pub const ROCKET_POD: Assembly = with_weapons(
 
 /// The test ranges' build: every weapon, unmodded, on the front of the large chassis (the
 /// light ones in the bottom two rows, the rail gun and the rocket launcher above), on the shared
-/// frame. A fighter fires only what its build carries (shooter#92), so the scripted weapon
-/// scenarios and the weapon tests use it. It costs more build points than [`BETA`] allows, so
-/// it is never a player's: the host refuses it like any invalid build.
+/// frame with the [`plant`]. A fighter fires only what its build carries (shooter#92), so the
+/// scripted weapon scenarios and the weapon tests use it. It costs more build points than
+/// [`BETA`] allows, so it is never a player's: the host refuses it like any invalid build.
 pub const ARMORY: Assembly = authored(&[
     Part::root(0, &CHASSIS_L),
     Part::on(2, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
@@ -1066,6 +1121,8 @@ pub const ARMORY: Assembly = authored(&[
     forward(12, &FLAMETHROWER, &CHASSIS_L, 2, 1),
     forward(13, &RAIL_GUN, &CHASSIS_L, 0, 2),
     forward(14, &ROCKET_LAUNCHER, &CHASSIS_L, 1, 2),
+    plant(&CHASSIS_L)[0],
+    plant(&CHASSIS_L)[1],
 ]);
 
 /// The rocket jump's build (shooter#132): the medium chassis on the shared frame with a hinge
@@ -1087,7 +1144,7 @@ pub const ROCKET_JUMPER: Assembly = authored(&[
 /// rail (ID 3) standing up the right column of its front and a short one (ID 8) at the foot of
 /// its left column. The long rail's four hardpoints carry, bottom to top and facing the aim, the
 /// energy rifle, the shotgun, the blade and the grapple (IDs 4 to 7); the short rail's two the
-/// laser and the flamethrower (IDs 9, 10): six weapons on two supports, 107 of the 110 build
+/// laser and the flamethrower (IDs 9, 10): six weapons on two supports, 107 of the 118 build
 /// points. Its IDs are in the order a bench places its parts. Valid in [`BETA`].
 pub const RAIL_RACK: Assembly = authored(&[
     Part::root(0, &CHASSIS_M),
@@ -1216,10 +1273,12 @@ pub struct Budget {
     pub parts: u32,
     /// Total mass (no limit: nothing carries it yet, shooter#73).
     pub mass: u32,
-    /// The shared energy pool's capacity (whole units): the root chassis' and every battery's.
+    /// The electricity storage (whole units): the root chassis' and every battery's.
     pub capacity: u32,
-    /// Energy regenerated a second (whole units): the root chassis'.
-    pub regen: u32,
+    /// The fuel storage (whole units): every fuel tank's.
+    pub fuel: u32,
+    /// The fuel the generators burn a second at most (whole units).
+    pub burn: u32,
     pub points: u32,
     pub build_points: u32,
 }
@@ -1305,14 +1364,14 @@ impl fmt::Display for AssemblyError {
 
 impl std::error::Error for AssemblyError {}
 
-/// The energy capacity and regeneration a second (whole units) `part`, of type `kind`, gives the
-/// shared pool: its type's, and the baseline too if it is the root chassis (D2.i89.1).
+/// The electricity storage (whole units) `part`, of type `kind`, gives its robot's pool: its
+/// type's, and the baseline too if it is the root chassis (D2.i89.1).
 #[must_use]
-pub fn energy(part: &Part, kind: &PartType) -> (u16, u16) {
+pub fn capacity(part: &Part, kind: &PartType) -> u16 {
     if part.mount.is_none() && kind.kind == Kind::Chassis {
-        (kind.capacity + ROOT_CAPACITY, kind.regen + ROOT_REGEN)
+        kind.capacity + ROOT_CAPACITY
     } else {
-        (kind.capacity, kind.regen)
+        kind.capacity
     }
 }
 
@@ -1659,10 +1718,10 @@ impl Catalog {
         };
         for part in assembly.parts() {
             if let Some(kind) = self.part_type(part.kind) {
-                let (capacity, regen) = energy(part, kind);
                 budget.mass += u32::from(kind.mass);
-                budget.capacity += u32::from(capacity);
-                budget.regen += u32::from(regen);
+                budget.capacity += u32::from(capacity(part, kind));
+                budget.fuel += u32::from(kind.fuel);
+                budget.burn += u32::from(kind.burn);
                 budget.points += u32::from(kind.points);
             }
             if let Some(modification) = part.modification.and_then(|id| self.modification(id)) {

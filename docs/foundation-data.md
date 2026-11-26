@@ -18,9 +18,10 @@ real players.
    another catalogued one). The replay file is the bot seed, the slot count and the map ID
    followed by game-server's own replay log: admissions, commands, removals and a digest of
    every tick's snapshot (with the module pickups: who takes the map's pads and when they
-   are spent, and every robot's energy charge). Files of an earlier format (format 2, before the
+   are spent, and every robot's electricity and fuel). Files of an earlier format (format 2, before the
    slot count, format 3, before weapon mods, format 4, before module pickups, format 5, before
-   socket-grid robot builds, or format 6, before shared energy and the removal of heat) are
+   socket-grid robot builds, format 6, before shared energy and the removal of heat, or any later
+   one up to format 17, before fuel and generators) are
    refused.
 2. **Verify** it: `shooter-replay verify` replays the log into a fresh match on the recorded map
    (a file naming a map this build does not know is rejected) through

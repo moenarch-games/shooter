@@ -138,7 +138,7 @@ impl Weapon {
 
     /// The energy one activation costs from the robot's shared pool, in milli-units
     /// ([`crate::energy`]): a shot, a swing, a hook, or one tick of a continuous weapon.
-    /// Provisional (Atlas Q2.i70.1). With the root chassis regenerating 24 a second the rifle (20
+    /// Provisional (Atlas Q2.i70.1). With a generator making 24 a second the rifle (20
     /// a second), rockets (25), rail gun (25) and shotgun (13) can almost or fully keep firing;
     /// the laser (36) and flamethrower (30) drain the pool.
     #[must_use]

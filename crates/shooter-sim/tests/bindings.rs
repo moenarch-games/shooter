@@ -290,6 +290,11 @@ fn drive(
     let start = world.root(0).unwrap().position;
     let mut lowest_up = 1.0f32;
     for _ in 0..ticks {
+        // The fixtures carry no generator (shooter#128): kept charged, so only the locomotion
+        // is on trial.
+        if let Some(robot) = world.robot_mut(0) {
+            robot.charge = robot.pool.capacity;
+        }
         let motors = preset.resolve(&robot, &mut state, pressed);
         world.step(&[motors.controls(&robot)]).unwrap();
         let [x, _, z, _] = world.root(0).unwrap().orientation;

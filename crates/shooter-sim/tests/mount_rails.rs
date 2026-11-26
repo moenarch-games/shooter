@@ -263,19 +263,20 @@ fn the_validator_refuses_overlaps_cycles_disconnected_children_and_overspending_
         BETA.validate(&unsupported),
         Err(AssemblyError::UnknownParent(PartId(5)))
     );
-    // The rails cost build points: the rack with one more gun on an adapter is over the budget.
+    // The rails cost build points: the rack with one more shotgun on an adapter is over the
+    // budget.
     let rich = plus(
         &RAIL_RACK,
         [
             on(11, &ADAPTER, 0, &CHASSIS_M, (Face::PosZ, 0, 0), 0),
-            on(12, &ENERGY_RIFLE, 11, &ADAPTER, (Face::PosZ, 0, 0), 0),
+            on(12, &SHOTGUN, 11, &ADAPTER, (Face::PosZ, 0, 0), 0),
         ],
     );
     assert_eq!(
         BETA.validate(&rich),
         Err(AssemblyError::OverBudget {
-            points: 118,
-            build_points: 110
+            points: 123,
+            build_points: 118
         })
     );
 }

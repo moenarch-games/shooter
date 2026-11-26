@@ -310,31 +310,43 @@ fn badly_configured_legs_stay_physically_constrained() {
 }
 
 #[test]
-fn motors_draw_from_the_shared_pool_first_come_first_served() {
+fn motors_draw_by_their_work_first_come_first_served() {
+    use shooter_sim::mechanics::{draw, load};
     let car = world(&floor(), &[fixtures::car()]);
-    let capacity = car.robots()[0].pool.capacity;
-    let regen = car.robots()[0].pool.regen;
-    // A wheel draws 2 energy a second: 33 milli-units a tick.
-    let draw = 2 * MILLI / 60;
+    let robot = &car.robots()[0];
+    let capacity = robot.pool.capacity;
+    assert_eq!(robot.pool.burn, 0, "the car has no generator");
+    let mass = load(&robot.build, |_| true);
+    let wheel = &robot.layout.actuators[0];
+    // A wheel draws 2 a second at its top rate under 200 kg: at half its top rate under the
+    // car's 240 kg, 2 × ½ × 240 / 200 a second, 20 milli-units a tick.
+    assert_eq!(mass, 240);
+    let half = draw(wheel, Command::Rate(RATE), mass);
+    assert_eq!(half, 20);
+    // Faster or heavier costs more; braked, idle or a stride (no leg) costs nothing.
+    assert!(draw(wheel, Command::Rate(2 * RATE), mass) > half);
+    assert!(draw(wheel, Command::Rate(RATE), 2 * mass) > half);
+    for rest in [Command::Rate(0), Command::Idle, Command::Stride(100)] {
+        assert_eq!(draw(wheel, rest, mass), 0, "{rest:?}");
+    }
     let with_charge = |charge: u32| {
         let mut state = car.state();
         state.robots[0].charge = charge;
         Mechanics::restore(&floor(), &state).unwrap()
     };
-    // Idle motors draw nothing; driven ones draw, and regeneration follows.
-    let mut idle = with_charge(capacity - 1_000);
-    idle.step(&[Controls::IDLE]).unwrap();
-    assert_eq!(idle.robots()[0].charge, capacity - 1_000 + regen);
-    let mut driven = with_charge(capacity - 1_000);
+    // Idle motors draw nothing, and nothing recharges a robot without a generator.
+    let mut idle = with_charge(capacity - MILLI);
+    for _ in 0..60 {
+        idle.step(&[Controls::IDLE]).unwrap();
+    }
+    assert_eq!(idle.robots()[0].charge, capacity - MILLI);
+    let mut driven = with_charge(capacity - MILLI);
     driven.step(&[wheels(RATE, -RATE)]).unwrap();
-    assert_eq!(
-        driven.robots()[0].charge,
-        capacity - 1_000 - 4 * draw + regen
-    );
+    assert_eq!(driven.robots()[0].charge, capacity - MILLI - 4 * half);
 
     // With enough for one wheel, the first in part-ID order is powered and the rest are off
     // that tick.
-    let mut short = with_charge(draw + 5);
+    let mut short = with_charge(half + 5);
     short.step(&[wheels(RATE, -RATE)]).unwrap();
     let powered: Vec<bool> = short.robots()[0]
         .actuators
@@ -342,13 +354,16 @@ fn motors_draw_from_the_shared_pool_first_come_first_served() {
         .map(|actuator| actuator.powered)
         .collect();
     assert_eq!(powered, [true, false, false, false]);
-    assert_eq!(short.robots()[0].charge, 5 + regen);
-    // An empty pool powers nothing until regeneration refills it.
+    assert_eq!(short.robots()[0].charge, 5);
+    // An empty pool powers nothing, and with no generator it stays empty; braking still holds.
     let mut drained = with_charge(0);
-    drained.step(&[wheels(RATE, -RATE)]).unwrap();
-    assert!(drained.robots()[0].actuators.iter().all(|a| !a.powered));
-    drained.step(&[wheels(RATE, -RATE)]).unwrap();
+    for _ in 0..2 {
+        drained.step(&[wheels(RATE, -RATE)]).unwrap();
+        assert!(drained.robots()[0].actuators.iter().all(|a| !a.powered));
+    }
+    drained.step(&[wheels(0, 0)]).unwrap();
     assert!(drained.robots()[0].actuators.iter().all(|a| a.powered));
+    assert_eq!(drained.robots()[0].charge, 0);
 }
 
 #[test]
@@ -509,12 +524,16 @@ fn mechanics_on_the_wire_are_validated() {
 #[test]
 fn sockets_sit_on_their_faces_in_the_robot_frame() {
     use shooter_sim::mechanics::sockets;
-    use shooter_sim::robot::parts::{BEAM_SHORT, CHASSIS_S};
+    use shooter_sim::robot::parts::{BEAM_SHORT, CHASSIS_S, FUEL_TANK};
     use shooter_sim::robot::{BETA, Candidate, Face, RawMount, RawPart, STANDARD};
-    // The standard build: only its small chassis has sockets (28), its front's 8 face +X, a
-    // cell's half (10 units) ahead of its centre.
+    // The standard build: only its small chassis (28) and its fuel tank (the one on top, where
+    // the generator sits) have sockets, the chassis' front's 8 face +X, a cell's half (10 units)
+    // ahead of its centre.
     let spots = sockets(&STANDARD);
-    assert_eq!(spots.len(), usize::from(CHASSIS_S.socket_count()));
+    assert_eq!(
+        spots.len(),
+        usize::from(CHASSIS_S.socket_count() + FUEL_TANK.socket_count())
+    );
     let front: Vec<_> = spots.iter().filter(|spot| spot.normal[0] > 0.99).collect();
     assert_eq!(front.len(), 8);
     assert!(

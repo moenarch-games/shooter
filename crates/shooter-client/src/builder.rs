@@ -604,6 +604,8 @@ pub fn part_name(kind: &PartType) -> String {
         Kind::Joint(Joint::Hinge) => "Hinge".to_owned(),
         Kind::Joint(Joint::Rotor) => "Rotor".to_owned(),
         Kind::Battery => "Battery".to_owned(),
+        Kind::FuelTank => "Fuel tank".to_owned(),
+        Kind::Generator => "Generator".to_owned(),
         Kind::Sensor => "Sensor".to_owned(),
         Kind::Repair => "Repair module".to_owned(),
         Kind::Locomotion(Locomotion::Leg) => "Leg".to_owned(),
@@ -762,7 +764,7 @@ mod tests {
         bench.place(PartId(0), back(0, 0)).unwrap();
         bench.hand = Some(ROCKET_LAUNCHER.id);
         bench.place(PartId(0), back(2, 0)).unwrap();
-        assert!(bench.check().is_ok(), "109 of 110 points");
+        assert!(bench.check().is_ok(), "117 of 118 points");
         bench.hand = Some(BATTERY.id);
         bench.place(PartId(0), back(3, 0)).unwrap();
         let budget = bench.budget();

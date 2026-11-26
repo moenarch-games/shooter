@@ -314,19 +314,22 @@ fn a_turret_refuses_an_angle_past_its_limits() {
 
 #[test]
 fn a_turret_without_energy_or_with_its_hinge_shot_off_aims_nothing() {
-    // No energy: its servos are off, the joints turn freely and the barrel never comes onto the
-    // target.
+    // No energy (no electricity, and no fuel for its generator to make more, shooter#128): its
+    // servos are off, the joints turn freely and the barrel never comes onto the target.
     let mut host = host(fixtures::paired_turret());
     let mut closest = f32::MAX;
     track(&mut host, REACHABLE, 90, |host, _| {
         host.fighters[0].energy = 0;
+        host.fighters[0].fuel = 0;
         closest = closest.min(off_target(host, BARREL, REACHABLE));
     });
     assert!(closest > 0.3, "{closest}");
+    // The turret's servos (standing legs draw nothing, shooter#128, so they may hold).
     assert!(
         host.mechanics.robots()[0]
             .actuators
             .iter()
+            .filter(|actuator| actuator.part == ROTOR_PART || actuator.part == HINGE_PART)
             .all(|actuator| !actuator.powered)
     );
 

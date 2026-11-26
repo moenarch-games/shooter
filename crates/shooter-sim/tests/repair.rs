@@ -301,7 +301,7 @@ fn a_paused_repair_heals_nothing_spends_nothing_keeps_its_work_and_resumes() {
     for _ in 0..20 {
         step(&mut session, Intent::IDLE, facing(TOWARD));
     }
-    // Low on energy (but enough to work), so a spend shows against the regeneration alone.
+    // Low on energy (but enough to work), so a spend would show.
     session.fighters[1].energy = 10_000;
     assert_eq!(shoot(&mut session, TOWARD, LEG), [LEG]);
     let hit = session.fighters[1].repair.unwrap();
@@ -311,9 +311,7 @@ fn a_paused_repair_heals_nothing_spends_nothing_keeps_its_work_and_resumes() {
         "the hit's tick is the pause's first"
     );
     let leg = health(&session, 1, LEG);
-    let regen = session.fighters[1].pool().regen;
     for tick in 1..PAUSE_TICKS {
-        let charge = session.fighters[1].energy;
         step(&mut session, Intent::IDLE, facing(TOWARD));
         let repair = session.fighters[1].repair.unwrap();
         assert_eq!(repair.paused, PAUSE_TICKS - 1 - tick);
@@ -323,8 +321,8 @@ fn a_paused_repair_heals_nothing_spends_nothing_keeps_its_work_and_resumes() {
             "work kept"
         );
         assert_eq!(health(&session, 1, LEG), leg, "no health while paused");
-        // Only regeneration (less the legs' motors standing still) moves the charge.
-        let drawn = charge + regen - session.fighters[1].energy;
+        // Nothing draws while paused: the legs standing still are free (shooter#128).
+        let drawn = session.fighters[1].flow.used;
         assert!(
             drawn < ENERGY_PER_TICK,
             "no repair energy while paused ({drawn})"
@@ -332,14 +330,13 @@ fn a_paused_repair_heals_nothing_spends_nothing_keeps_its_work_and_resumes() {
     }
     assert_eq!(session.fighters[1].repair.unwrap().paused, 0);
     // It resumes by itself.
-    let charge = session.fighters[1].energy;
     step(&mut session, Intent::IDLE, facing(TOWARD));
     let repair = session.fighters[1].repair.unwrap();
     assert_eq!(
         u32::from(repair.healed) * u32::from(TICKS_PER_HEALTH) + u32::from(repair.progress),
         u32::from(hit.healed) * u32::from(TICKS_PER_HEALTH) + u32::from(hit.progress) + 1
     );
-    assert!(charge + regen - session.fighters[1].energy >= ENERGY_PER_TICK);
+    assert!(session.fighters[1].flow.used >= ENERGY_PER_TICK);
     for _ in 0..600 {
         step(&mut session, Intent::IDLE, facing(TOWARD));
     }
@@ -383,9 +380,11 @@ fn repeated_hits_start_the_pause_over() {
 }
 
 /// The standard build with a repair module on top of a long beam on the chassis' top, beside
-/// the sensor (parts 3 and 11): it reaches the beam it sits on and nothing else.
+/// the sensor (parts 3 and 11, in place of its power plant): it reaches the beam it sits on and
+/// nothing else.
 fn mast() -> Assembly {
     let mut candidate = STANDARD.candidate();
+    candidate.parts.retain(|part| part.id < 20);
     candidate.parts.push(RawPart {
         id: 3,
         kind: BEAM_LONG.id.0,
