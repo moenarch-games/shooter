@@ -39,9 +39,12 @@ use crate::robot::{
 };
 use crate::scenery::PlaceableState;
 use crate::session::{Event, Fighter, Phase, Pilot, Session};
-use crate::weapons::{Instance, Select, Triggers, Weapon};
+use crate::weapons::{Cooldowns, Instance, Select, Triggers, Weapon};
 use std::fmt;
 
+/// 32: snapshots carry what is left of each fighter's intervals (every gun copy's refire, the
+/// rocket launchers' salvo spacing, a swing's lockout, the blade's and the grapple module's
+/// refire, the flame's ignition) in place of the grapple module's alone (shooter#163).
 /// 31: an input may carry a self-destruct press and snapshots each fighter's self-destruct
 /// countdown and the `Destruct` and `Detonated` events (shooter#131).
 /// 30: a build's pitched or rolled (or finely turned) parts are seated on their socket's face
@@ -63,7 +66,7 @@ use std::fmt;
 /// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
 /// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
 /// the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 31;
+pub const WIRE_VERSION: u8 = 32;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -124,10 +127,12 @@ pub struct FighterState {
     pub robot: Option<RobotState>,
     /// Its grapple hook while set (exact, for prediction and the cable).
     pub hook: Option<Hook>,
-    /// Ticks until its grapple module may hook again
-    /// ([`crate::weapons::Arsenal::grapple_cooldown`]): a predicting client resumes the host's
-    /// interval, so it refuses and grants hooks as the host does (shooter#104).
-    pub grapple_in: u32,
+    /// What is left of its intervals ([`crate::weapons::Arsenal::cooldowns`]): each gun copy's
+    /// refire, the rocket launchers' salvo spacing, a swing's lockout, the blade's and the
+    /// grapple module's refire and the flame's ignition. A predicting client resumes the
+    /// host's, so it refuses and grants shots, swings and hooks as the host does (shooter#104,
+    /// shooter#163).
+    pub cooldowns: Cooldowns,
     /// Ticks until it respawns, while dead.
     pub respawn_in: u32,
     /// The last input sequence applied (people only).
@@ -276,7 +281,7 @@ fn state_of(session: &Session, robots: &[RobotState], fighter: &Fighter) -> Opti
         motion: fighter.motion,
         robot,
         hook: fighter.hook,
-        grapple_in: fighter.arsenal.grapple_cooldown(session.ticks()),
+        cooldowns: fighter.arsenal.cooldowns(session.ticks()),
         respawn_in: fighter
             .respawn_at
             .map_or(0, |at| at.saturating_sub(session.ticks())),
@@ -394,6 +399,28 @@ impl Out {
                 self.u8(1);
                 self.u8(part.0);
             }
+        }
+    }
+    /// A fighter's intervals left (shooter#163): the guns' lockout, the blade's and the
+    /// grapple module's refire (u16 each), each salvo-limited family's spacing (u16, in
+    /// [`Weapon::ALL`] order), the flame's ignition (u8), then a count of the gun copies still
+    /// refiring and per copy its part ID and ticks left (u16), in ascending part order.
+    fn cooldowns(&mut self, cooldowns: &Cooldowns) {
+        self.u16(cooldowns.guns);
+        self.u16(cooldowns.blade);
+        self.u16(cooldowns.grapple);
+        for weapon in Weapon::ALL
+            .into_iter()
+            .filter(|weapon| weapon.salvo().is_some())
+        {
+            self.u16(cooldowns.families[usize::from(weapon.index())]);
+        }
+        self.u8(cooldowns.flaming);
+        let refiring = cooldowns.refiring();
+        self.u8(u8::try_from(refiring.len()).unwrap_or(u8::MAX));
+        for (part, left) in refiring {
+            self.u8(part.0);
+            self.u16(*left);
         }
     }
     fn module(&mut self, module: ArenaModule) {
@@ -536,6 +563,28 @@ impl In<'_> {
             1 => Some(Select::Part(PartId(self.u8()?))),
             _ => return Err(WireError::Malformed("unknown weapon switch")),
         })
+    }
+    /// Inverse of `Out::cooldowns`: the copies refiring in ascending part order, each with
+    /// ticks left, at most [`MAX_PARTS`].
+    fn cooldowns(&mut self) -> Result<Cooldowns, WireError> {
+        let mut cooldowns = Cooldowns::default();
+        cooldowns.guns = self.u16()?;
+        cooldowns.blade = self.u16()?;
+        cooldowns.grapple = self.u16()?;
+        for weapon in Weapon::ALL
+            .into_iter()
+            .filter(|weapon| weapon.salvo().is_some())
+        {
+            cooldowns.families[usize::from(weapon.index())] = self.u16()?;
+        }
+        cooldowns.flaming = self.u8()?;
+        for _ in 0..self.u8()? {
+            let part = PartId(self.u8()?);
+            if !cooldowns.push_refire(part, self.u16()?) {
+                return Err(WireError::Malformed("a gun's refire out of order"));
+            }
+        }
+        Ok(cooldowns)
     }
     fn module(&mut self) -> Result<ArenaModule, WireError> {
         ArenaModule::from_tag(self.u8()?).ok_or(WireError::Malformed("unknown module"))
@@ -1103,7 +1152,7 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
             }
             None => out.u8(0),
         }
-        out.u32(fighter.grapple_in);
+        out.cooldowns(&fighter.cooldowns);
         out.u32(fighter.respawn_in);
         out.u32(fighter.ack);
         out.build(&fighter.build);
@@ -1247,7 +1296,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                     }),
                     _ => return Err(WireError::Malformed("unknown hook state")),
                 },
-                grapple_in: input.u32()?,
+                cooldowns: input.cooldowns()?,
                 respawn_in: input.u32()?,
                 ack: input.u32()?,
                 build: input.build()?,

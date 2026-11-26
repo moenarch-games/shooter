@@ -110,7 +110,8 @@ new. In the builder a finger is the left mouse button (tap Ready to start).
 **Without WebGPU.** The browser build draws with render-engine on WebGPU where the browser has
 it, and otherwise with the client's lite renderer on WebGL 2 (`shooter_client::gfx::lite`;
 render-engine has no WebGL 2 backend). The lite renderer draws the same arenas, robots, effects
-and HUD with the sun, ambient and point lights, but without shadows, normal maps or MSAA.
+and HUD with the sun, ambient, point lights and the maps' haze, but without shadows, normal maps or
+MSAA.
 `?renderer=lite` forces it in the browser, `SHOOTER_RENDERER=lite` natively (with
 `WGPU_BACKEND=gl` it runs on OpenGL under WebGL 2's limits, as in the browser). In the browser
 it scales the 3D scene's resolution to the frame rate (down to 0.3 of the window; the HUD is
@@ -129,56 +130,86 @@ in, built from asset-tooling's arena kit; two interim greybox maps stay:
   inside 10 m walls, point-symmetric. Its ground is the central assembly floor, broken up by 2 m
   barriers, 1.2 m low cover, a parts container, 4 m pillars and generators, with a 2 m assembly
   cradle under the middle; behind a 4 m bay wall at either end lies a work bay, entered through a
-  doorway or round the wall's open end, with containers, a blast screen and crates. At 3 m a
+  doorway, a second doorway at its far end or round the wall's open end, with containers, blast
+  screens and crates. At 3 m a
   mezzanine runs along each bay wall (the wall stands 1 m over its deck as a parapet), joined
   across the middle by a gantry bridge with staggered low cover and the rail capacitor at its
-  centre, the contested high ground: a 4 m wide, 12 m ramp climbs each mezzanine, a jump pad
+  centre, the contested high ground: a 4 m wide, 12 m ramp climbs each mezzanine, a 12 m loading
+  ramp climbs from the floor onto each side of the bridge, a jump pad
   beside the bridge throws a fighter onto it, and the grapple reaches it from under it. At 5 m a
   crane tower stands in the corner of each bay with thrusters on top, reached by four 1 m work
   platforms (a double jump onto the 2 m one, another onto the 4 m one, a jump onto the tower),
   by a jump pad at its foot that throws 15 m/s up, or by the grapple on its 3 m mast. 4 m deep
   charging bays in the side walls, the bay walls, the tower and the floor's 4 m pillars break
-  the long lines; no spawn point is in sight of another, and none is a dead end. Its low cover,
-  barriers and crates are destruction candidates that break (shooter#60, below)
-  and four repair anchors (under the mezzanines and in the bays) are data for shooter#61. Plan,
-  views and frames: [docs/captures/52](docs/captures/52).
+  the long lines; no spawn point is in sight of another, none is a dead end, each faces its way
+  out and none holds a wheeled or tracked robot (shooter#152's playtests,
+  `crates/shooter-sim/tests/assembly_works.rs`). Tracks reach the bridge by either ramp, and
+  wheels (since shooter#174) by the loading ramp; by the mezzanine a car climbs onto the deck
+  but does not yet make its turn onto the bridge (a skid steer turns slowly, shooter#170). Its
+  low cover, barriers and crates are destruction candidates that break (shooter#60,
+  below) and four repair anchors (under the mezzanines and in the bays) are data for shooter#61.
+  The kit has no assembly machinery or crane props yet (asset-tooling#838). Plan, views and
+  frames: [docs/captures/52](docs/captures/52), polished layout
+  [docs/captures/152](docs/captures/152).
 - `proving-cell`, the small close-quarters arena (shooter#53; 2 to 6 players, 12 spawn points so
   the default 12 slots still fit): a purpose-built combat test cell (the owner's choice of
   setting), a 32 m square inside 10 m walls, point-symmetric, from the same kit as the works. In
   the middle stands the 2 m test stage, a 6 m dais with the rail capacitor at its centre and
-  staggered low cover, climbed by an 8 m ramp from the north and from the south (or a double
+  staggered low cover under the test rig (a pillar at each corner carrying a lit canopy at 6 m,
+  the cell's landmark), climbed by an 8 m ramp from the north and from the south (or a double
   jump; a 2 m container west of it meets its corner). Along the north and the south wall runs a
   3 m observation gallery, 4 m deep, with low cover at its edge and thrusters on it, reached by
   a 12 m ramp along the side wall, a jump pad in front of it (12 m/s up, 6 m/s toward it) or the
   grapple (hooked on the wall above it, from the stage); under it a 2.6 m high passage runs from
   behind its ramp to a control booth, a 7 m room in the corner with a doorway onto the floor and
-  one into the passage, each behind a 2 m blast screen. A 4 m deep test bay in each side wall,
-  a barrier and crates break up the floor. Nothing is far and fights are close; the booths have two
+  one into the passage, each screened by a 2 m blast screen with a way out at least 2.4 m wide.
+  A 4 m deep test bay in each side wall (behind a screen of its own, open north and south), a
+  barrier and crates break up the floor. Nothing is far and fights are close; the booths have two
   doorways and the passages open along their length, so no fight is forced down a one-way
-  corridor; no spawn point is in sight of another. Its low cover, open-floor
+  corridor; no spawn point is in sight of another, and none holds a wheeled or tracked robot
+  (shooter#151's playtests, `crates/shooter-sim/tests/proving_cell.rs`). Tracks and (since
+  shooter#174) wheels climb both ramps. Its low cover, open-floor
   barriers and crates are destruction candidates for shooter#60 (the blast screens stay, the
-  booths' spawn points rely on them) and a repair anchor in each booth is data for shooter#61.
-  Views and frames: [docs/captures/53](docs/captures/53).
-- `drydock`, the large long-sightline arena (shooter#55; 8 to 12 players, 14 spawn points): a
-  repurposed spaceship shipyard (the owner's choice, Atlas D2.i55.1), an 80 m square inside 10 m
-  walls, point-symmetric, from the same kit. Two docked spacecraft lie head to tail either side
-  of a 32 m central industrial corridor; there are no ship interiors. Each hull, 12 m wide and
-  56 m long, is built from the kit's hull modules: 2 m sides, a 45° shoulder up to a walkable
-  4 m foredeck, 8 m wide, with staggered 80 cm hull ribs as low cover and a sensor mast at the
-  bow, and a raised 6 m stern deck, 16 m long, with a rib, a mast and the thrusters, climbed from
-  the foredeck by an 8 m ramp. Along each hull's corridor side runs a 4 m dock gantry with a
-  16 m ramp down from either end and two gangways over the shoulder onto the foredeck; behind
-  each hull a 12 m outer lane along the perimeter has containers, a barrier and a jump pad that
-  throws a fighter over the shoulder onto the foredeck (15 m/s up, 9 m/s toward it), and a lane
+  spawn points behind them rely on them) and a repair anchor in each booth is data for
+  shooter#61. Views and frames: [docs/captures/53](docs/captures/53), polished layout
+  [docs/captures/151](docs/captures/151).
+- `drydock`, the large long-sightline arena (shooter#55, #153; 8 to 12 players, 14 spawn
+  points): a repurposed spaceship shipyard (the owner's choice, Atlas D2.i55.1), an 80 m square
+  inside 10 m walls, from the same kit, with hybrid symmetry (D2.i55.2): the dock floor, its
+  lanes, spawn points, pickups and repair anchors are point-symmetric, while the two docked
+  spacecraft, head to tail either side of a 32 m central industrial corridor on the same 12 m by
+  56 m footprint, differ in silhouette, details, gantry cover and the routes onto them. There
+  are no ship interiors. Both hulls are built from the kit's hull modules (2 m sides, a 45°
+  shoulder up to a walkable 4 m foredeck, 8 m wide). The west ship, the freighter, is long and
+  low with staggered 80 cm hull ribs as low cover, a sensor mast at the bow and a high blunt
+  stern castle: a 6 m stern deck, 16 m long, with a rib, a mast and the thrusters, climbed from
+  the foredeck by an 8 m ramp or thrown onto from its outer lane by a jump pad (18 m/s up). The
+  east ship, the cutter, is stepped: a 2 m prow step, 16 m long, across its bow with an 8 m ramp
+  up onto the foredeck, which meets its gantry's bow ramp at 2 m (a way onto the hull from the
+  corridor besides the gantry's top); a narrow 6 m bridge midships, 8 m long, with an 8 m ramp
+  up from the foredeck at either end, the thrusters and a mast, and a 2 m bulkhead along its
+  outer side (it looks over the corridor, not into the outer lane); a rib, a generator and a
+  mast on its after deck. Along each hull's corridor side runs a 4 m dock gantry with a 16 m
+  ramp down from either end and two gangways over the shoulder onto the foredeck (the
+  freighter's by its ribs with low cover along its edge, the cutter's before and beside the
+  bridge with stacked crates and two barriers); behind each hull a 12 m outer lane along the
+  perimeter, screened from the corridor by the hull (the covered flank past the corridor's long
+  lines), has containers, a barrier and a jump pad onto the foredeck (15 m/s up), and a lane
   round each bow and stern joins it to the corridor. The corridor's floor has containers,
   barriers, low cover, crates and an 8 m crane pylon in the middle, with the rail capacitor at
-  its foot. Every hull top has several routes up (the gantry's two ramps for wheels and tracks,
-  the gangways, the pad, the grapple on a mast); each stern deck is in sight of the other ship's
-  hull and of the gantries, and the pylon cuts the line between the two stern decks, so no hull
-  top is an unanswered perch. All spawn points are on the ground and none is in sight of another.
-  Its low cover, floor barriers and crates are destruction candidates for shooter#60 and four
+  its foot. Every hull top has several routes up besides the grapple on its masts (the gantry's
+  two ramps and gangways for wheels and tracks, the pads, and the cutter's prow); each 6 m deck
+  is in sight of the other ship's hull and of the gantries, the two answer each other across
+  the corridor, and each sees about as much of the floor as the other (18% within 40 m), so no
+  hull top is an unanswered perch. All spawn points are on the ground, none is in sight of
+  another, and those in the corridor face their ways out (shooter#153's playtests,
+  `crates/shooter-sim/tests/drydock.rs`). Tracks climb onto both ships and the cutter's bridge;
+  wheels (since shooter#174) climb the gantries' ramps and the bridge's, but do not yet steer
+  across onto the cutter's prow step (a skid steer turns slowly, shooter#170). Its low cover, floor
+  barriers, the gantries' cover and crates are destruction candidates for shooter#60 and four
   repair anchors (under the gantries and in the outer lanes) are data for shooter#61. Views and
-  frames: [docs/captures/55](docs/captures/55).
+  frames: [docs/captures/55](docs/captures/55), polished layout
+  [docs/captures/153](docs/captures/153).
 - `greybox-yard`, the default for hosted matches and practice (6 to 12 players, 14 spawn points):
   a 76 m square with 5 m walls, point-symmetric (the north half turned half a turn is the south
   half). A raised walkway crosses the middle, a 3 m deck on two pillars that you can walk under,
@@ -387,7 +418,11 @@ always out: a switch delays nothing (the 0.2 s draw is gone). Rocket launchers s
 limit per robot: at most one rocket a tick and 0.1 s (6 ticks) between launches, so four
 launchers stagger over 0.3 s rather than launching four rockets at once (provisional numbers,
 Atlas Q2.i123.2); no other family has one. Bots fire every copy of the gun they pick through the
-same per-copy requests.
+same per-copy requests. Snapshots carry what is left of each robot's intervals (every gun copy's
+refire, the salvo spacing, a swing's lockout of the guns, the blade's and the grapple module's
+refire and the flame's ignition; wire 32, replay format 25, #163), and a predicting client resumes
+them when it corrects, so rapid fire and swings are refused and granted as the host does at
+latency; `tests/hosted_cooldowns.rs` plays them through delayed inputs and snapshots.
 
 | Key | Weapon | Shot |
 | --- | --- | --- |
@@ -744,7 +779,9 @@ its wheels and tracks, A and D turn it differentially (a skid steer turns slowly
 the camera turns nothing, Space does nothing unless it carries the thruster module, and the
 jump pads still throw it; its locomotion pays by its commands, so with its electricity (or, on a
 combustion chassis, its fuel) gone it stops. A car tops out at about 3.6 m/s and a tank at about
-3.5 m/s (provisional); a track's road wheels reach 4 cm past its cuboid, so a track level with
+3.5 m/s (provisional). Both climb the arena kit's 1:4 ramps (#174): a wheel's motor gives 60 N·m,
+a track's, and its tyre grips the arena at 1.0 (provisional), tuned to the match's 18 m/s²
+gravity, under which a front wheel unloaded on a climb or a launch still grips; a track's road wheels reach 4 cm past its cuboid, so a track level with
 its hull's bottom holds the hull off the ground (the kit's drawn road wheels are 4 cm smaller).
 Bots on wheels or tracks steer their chassis themselves and fire their chassis' guns once they
 face their target. What it does not do yet: **legs.** A robot with a connected leg is still
@@ -936,11 +973,16 @@ moves (sprint, slide, double jump, a thruster-module jump, jump pad, ramp slides
 step, a rocket jump, a grapple onto a ledge), each replaying exactly on both backends
 (`tests/tour.rs`, `tests/moves.rs`, `tests/maps.rs`). The Rapier A/B
 (`cargo test -p shooter-sim --features physics-ab --test physics_ab`) compares the match's robots
-sprinting, sliding and stopping on flat ground, whole and on one leg, the shooting range and the
+sprinting, sliding and stopping on flat ground, whole and on one leg, the standard robot's routes
+up a step and a ramp (within 12 cm) and over a gantry, a thin wall, a grapple onto a ledge and
+every arena's pad (within 36 cm, thrown within a tick of each other), the shooting range and the
 close range for the shotgun, laser and flamethrower, and the mechanics fixtures (rolling,
-strafing, the stall, both turrets, tipping, per-part hits, the robo-dog walking); over ledges,
-steps and pads the robots' legs catching a lip, and Rapier's servo spring under the heavier
-builds, part the two backends' paths. A match's twelve robots step in about 0.45 ms a session
+strafing, the stall, both turrets, tipping, per-part hits, the robo-dog walking). The paths still
+part where the solvers do (a foot on a cover's base lip, a landing from a jump onto a ledge, a
+slide up a ramp's foot, a rope dragging a robot over an edge): those routes replay exactly on each
+backend and the proving cell's and drydock's compare where the robot comes to rest. The robots'
+world holds the standing target dummies as boxes, so a robot walking or rolling into one stops
+against it (`tests/match_robots.rs`). A match's twelve robots step in about 0.45 ms a session
 tick natively (`--release -- --ignored twelve`). `cargo test -p shooter-sim --test mechanics` checks those fixtures, the
 biped and quadruped presets, badly mounted legs, motor energy draw, and that a restored world
 and a replay continue bit for bit.

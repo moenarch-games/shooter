@@ -7,12 +7,13 @@
 //!
 //! - **Ground:** the central assembly floor, broken up by assembly cells (2 m barriers, 1.2 m
 //!   cover, a parts container, 4 m pillars and generators), and behind each mezzanine a work bay
-//!   reached through a doorway or round the mezzanine's open end.
+//!   reached through a doorway, a second doorway at its far end or round the mezzanine's open
+//!   end.
 //! - **3 m:** a mezzanine along each bay's 4 m wall (the wall stands 1 m above its deck as a
 //!   parapet), and the gantry bridge between them across the middle, with staggered low cover
 //!   on it and the rail capacitor at its centre: the contested high ground. A 12 m ramp climbs
-//!   each mezzanine; a jump pad beside the bridge throws onto it; the grapple reaches it from
-//!   anywhere under it.
+//!   each mezzanine and a 12 m loading ramp each side of the bridge (shooter#152); a jump pad
+//!   beside the bridge throws onto it; the grapple reaches it from anywhere under it.
 //! - **5 m:** a crane tower in the corner of each bay with thrusters on top, reached by a
 //!   stack of 1 m work platforms (a jump each), by a jump pad at its foot or by the grapple.
 //!
@@ -20,7 +21,8 @@
 //! walls and the floor's 4 m pillars cut every sightline under about 35 m, and each high place
 //! is reached by at least two routes and seen from the other levels.
 //!
-//! Fourteen spawn points, none in sight of another; bot waypoints at the ramps, the doorways,
+//! Fourteen spawn points, none in sight of another, each facing its way out (shooter#152: a
+//! wheeled or tracked robot turns in place slowly); bot waypoints at the ramps, the doorways,
 //! the decks and the bays. Repair anchors (shooter#61) lie under the mezzanines and in the
 //! bays; the low cover, the barriers and the crates are destruction candidates (shooter#60).
 
@@ -123,10 +125,16 @@ fn north() -> Vec<Placement> {
     out.push(place(Module::Support, 0, 0, -800, Turn::None));
     // Low cover on the bridge, across its west half.
     out.push(place(Module::CoverLow, -100, DECK_TOP, -500, Turn::None).destructible());
+    // A 12 m loading ramp from the floor east of the bridge, rising west onto its east edge
+    // (shooter#152): the bridge's own way up, so the mezzanine ramp is not the only walk (or
+    // drive) onto the high ground.
+    out.push(place(Module::RampTall, 800, 0, -700, Turn::Quarter));
 
     // The bay wall behind the mezzanine: 4 m, standing 1 m over the deck, from the west wall to
-    // x 6 m, with a doorway into the bay at x -8 m and a post at its open east end.
-    for i in 0..9 {
+    // x 6 m, with a doorway into the bay at x -8 m, another at its west end (shooter#152: the
+    // bay's west half is no dead end) and a post at its open east end.
+    out.push(place(Module::Doorway, -2_600, 0, -1_830, Turn::None));
+    for i in 2..9 {
         out.push(place(Module::Wall, -2_700 + 200 * i, 0, -1_830, Turn::None));
     }
     out.push(place(Module::Doorway, -800, 0, -1_830, Turn::None));
@@ -163,13 +171,18 @@ fn north() -> Vec<Placement> {
 
     // The bay: a parts container, crates and generators along its wall, pipes on the perimeter.
     out.push(place(Module::Container, -1_300, 0, -2_650, Turn::None));
-    out.push(place(Module::Container, 900, 0, -2_650, Turn::None));
+    // The east container stands against the work platforms (shooter#152): no 1 m slot between
+    // them for a chassis to wedge in on its way out of the crane tower's corner.
+    out.push(place(Module::Container, 900, 0, -2_550, Turn::None));
     out.push(place(Module::Crate, 1_000, 0, -1_950, Turn::None).destructible());
     out.push(place(Module::Crate, 1_080, 0, -1_950, Turn::None).destructible());
     out.push(place(Module::Crate, 1_040, 80, -1_950, Turn::None).destructible());
     out.push(place(Module::Generator, -2_650, 0, -2_400, Turn::Quarter));
-    out.push(place(Module::Barrier, -2_200, 0, -2_100, Turn::Quarter).destructible());
-    out.push(place(Module::Barrier, -300, 0, -2_300, Turn::Quarter).destructible());
+    // Blast screens: one between the west doorway and the bay's west spawn point (3.9 m from
+    // the wall and 3.5 m from the back wall, so a chassis turns past it), one east of the middle
+    // spawn point against the bay's back aisle.
+    out.push(place(Module::Barrier, -2_200, 0, -2_350, Turn::Quarter).destructible());
+    out.push(place(Module::Barrier, 100, 0, -2_450, Turn::Quarter).destructible());
     for x in [-1_900, -1_700, 700, 900] {
         out.push(place(Module::Pipes, x, 0, -2_775, Turn::None));
     }
@@ -249,10 +262,10 @@ impl Arena {
             }))
             .collect();
         let north_spawns = [
-            spawn_at([-2_000, 0, -2_650], 16_384),
-            spawn_at([-100, 0, -2_650], 49_152),
-            spawn_at([2_600, 0, -2_650], 49_152),
-            spawn_at([-2_600, 0, -1_650], 16_384),
+            spawn_at([-2_000, 0, -2_650], 8_192),
+            spawn_at([-500, 0, -2_650], 0),
+            spawn_at([2_600, 0, -2_650], 0),
+            spawn_at([-2_300, 0, -1_500], 0),
             spawn_at([2_650, 0, -1_100], 49_152),
             spawn_at([-2_650, 0, -1_100], 16_384),
             spawn_at([-1_200, 0, -1_600], 0),
@@ -273,6 +286,11 @@ impl Arena {
             Vec3i::new(-600, DECK_TOP, -1_600),
             Vec3i::new(0, DECK_TOP, -1_000),
             Vec3i::new(0, DECK_TOP, -200),
+            // The loading ramp's foot and top.
+            Vec3i::new(1_600, 0, -700),
+            Vec3i::new(0, DECK_TOP, -700),
+            // Through the west doorway.
+            Vec3i::new(-2_600, 0, -1_550),
             // Through the doorway into the bay and round the wall's open end.
             Vec3i::new(-800, 0, -1_500),
             Vec3i::new(-800, 0, -2_000),
@@ -281,9 +299,11 @@ impl Arena {
             Vec3i::new(900, 0, -2_050),
             // The bay and the floor.
             Vec3i::new(-2_000, 0, -2_550),
+            Vec3i::new(-1_500, 0, -2_300),
+            Vec3i::new(-500, 0, -2_350),
             Vec3i::new(1_000, 0, -2_350),
             Vec3i::new(-1_400, 0, -300),
-            Vec3i::new(300, 0, -800),
+            Vec3i::new(400, 0, -1_100),
             Vec3i::new(1_600, 0, -600),
             Vec3i::new(2_500, 0, -300),
             Vec3i::new(-2_550, 0, -2_000),

@@ -43,7 +43,9 @@ fn write_thumbnail(
 ) -> Result<(), String> {
     let eye = Vec3::new(0.62 * half, 0.78 * half, 0.92 * half);
     let target = Vec3::new(-0.08 * half, 0.0, -0.22 * half);
-    let mut scene = shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new());
+    let lighting = shooter_client::scene::Lighting::of(map);
+    let mut scene =
+        shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new(), &lighting);
     gpu.render(&mut scene, &[], 0)?;
     let (width, height, pixels) = gpu.read_frame()?;
     let (out_width, out_height) = (width / 2, height / 2);
@@ -93,6 +95,10 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
             (Vec3::new(-8.0, 2.0, -12.0), Vec3::new(-8.5, 1.5, -24.0)),
             // A charging bay in the east wall, from the floor.
             (Vec3::new(18.0, 2.0, -6.0), Vec3::new(27.0, 1.5, -11.0)),
+            // The loading ramp up onto the bridge's east edge, from the floor east of it.
+            (Vec3::new(19.0, 2.0, -3.0), Vec3::new(0.0, 3.5, -7.0)),
+            // The bay's west doorway, from the floor west of the mezzanine ramp.
+            (Vec3::new(-20.0, 2.0, -9.0), Vec3::new(-26.0, 1.5, -20.0)),
         ],
         MapId::ProvingCell => vec![
             // The test floor from the south-east: the stage, its north ramp and the north
@@ -104,7 +110,7 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
             (Vec3::new(-9.0, 5.0, -14.0), Vec3::new(12.0, 2.0, -9.0)),
             // Through the booth's south doorway to its blast screen.
             (Vec3::new(12.5, 1.8, -6.2), Vec3::new(13.0, 1.5, -12.0)),
-            // The passage under the north gallery, west toward its closed end.
+            // The passage under the north gallery, west toward its screened end.
             (Vec3::new(5.0, 1.8, -13.5), Vec3::new(-14.0, 1.5, -15.0)),
             // The floor west of the stage: the container, the jump pad and the gallery's ramp.
             (Vec3::new(-5.5, 2.2, 1.5), Vec3::new(-10.0, 2.0, -9.0)),
@@ -115,8 +121,8 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
             // The corridor from its north end: the gantries along both hulls and the crane
             // pylon in the middle.
             (Vec3::new(2.0, 3.0, -36.0), Vec3::new(0.0, 2.5, 0.0)),
-            // From the west gantry across the corridor to the east ship's raised stern deck.
-            (Vec3::new(-14.0, 6.0, 8.0), Vec3::new(20.0, 6.0, -20.0)),
+            // From the freighter's (west) gantry across the corridor to the cutter's bridge.
+            (Vec3::new(-14.0, 6.0, 8.0), Vec3::new(20.0, 6.5, -8.0)),
             // A gangway from the west gantry over the shoulder onto the foredeck.
             (Vec3::new(-11.0, 6.0, -4.0), Vec3::new(-22.0, 4.0, -10.0)),
             // On the west foredeck, south up its ramp to the stern deck and its mast.
@@ -127,6 +133,17 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
             (Vec3::new(-34.0, 2.2, -30.0), Vec3::new(-30.0, 2.0, 0.0)),
             // The bow lane, east past the bow's container toward the corridor.
             (Vec3::new(-37.0, 2.2, -36.0), Vec3::new(0.0, 2.0, -31.0)),
+            // (shooter#153) The cutter's prow step from the foot of its gantry's bow ramp: the
+            // step, its ramp up onto the foredeck and the bridge beyond.
+            (Vec3::new(8.0, 2.5, 34.0), Vec3::new(22.0, 2.5, 14.0)),
+            // On the cutter's bridge, west across the corridor to the freighter's stern deck.
+            (Vec3::new(22.5, 8.0, -4.0), Vec3::new(-22.0, 6.0, 20.0)),
+            // The cutter's profile from the east outer lane: prow step, foredeck, bridge and its
+            // bulkhead, after deck.
+            (Vec3::new(37.0, 3.0, 36.0), Vec3::new(22.0, 4.0, -10.0)),
+            // The freighter's profile from the west outer lane: its foredeck and the high stern
+            // castle, the pad onto it by the container.
+            (Vec3::new(-37.0, 3.0, -36.0), Vec3::new(-22.0, 4.0, 10.0)),
         ],
         _ => vec![(Vec3::new(0.0, 2.0, 10.0), Vec3::new(0.0, 2.0, 0.0))],
     }
@@ -249,7 +266,9 @@ fn main() -> Result<(), String> {
         });
     let shots = shots.chain(close);
     for (name, (eye, target)) in shots {
-        let mut scene = shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new());
+        let lighting = shooter_client::scene::Lighting::of(map);
+        let mut scene =
+            shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new(), &lighting);
         gpu.render(&mut scene, &[], 0)?;
         let (width, height, pixels) = gpu.read_frame()?;
         let path = out.join(format!("{name}.ppm"));

@@ -211,6 +211,10 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   roll and the joints' turn included; shooter#54), not from the kit's leg clips.
   Since shooter#58 (D2.i74.1) the drive carries only robots with a connected leg: a robot on
   wheels or tracks alone moves on its own actuators, with its own friction.
+  Since shooter#73's dummies and A/B pass the robots' world holds every standing target dummy as a
+  fixed box where its body stands (rebuilt exactly when one goes down, comes back or walks), so
+  robots stop against dummies instead of passing through; and a jump pad throws a grounded robot
+  rising slower than 0.6 m/s (a walking robot's gait bob), not only one not rising at all.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
   humanoids and other bipeds, four-leg robo-dogs on built-in quadruped walking presets, wheels and
   tracks, stationary platforms and grappling-only machines, all from the same part types and rules.
@@ -718,7 +722,10 @@ whether resupply locks movement or firing (Q2.i123.3).
   mounted level with its hull's bottom holds the hull off flat ground and drives it (the
   clients stand a tracked robot on them; the kit's drawn road wheels are 4 cm smaller). *Drive
   retune*, provisional (Q2.i123.2): a wheel's top rate 20 rad/s (about 3.6 m/s), a track's
-  25 rad/s (about 3.5 m/s) and 60 N·m; legs unchanged. **Not yet**: legs. A robot with a
+  25 rad/s (about 3.5 m/s) and 60 N·m; legs unchanged. *Ramps* (shooter#174): a wheel's motor
+  gives 60 N·m too and its tyre grips the arena at 1.0 (Q2.i70.1), so wheels as well as tracks
+  climb the arena kit's 1:4 ramps on every kit-built map, on physics-engine and on the Rapier
+  oracle (`tests/physics_ab.rs`); no ramp or chassis force does it. **Not yet**: legs. A robot with a
   connected leg stays on the interim movement drive (D2.i70.5, unchanged: walk, sprint, slide,
   its jump and air jump, step-up, facing the aim): the bounded fallback until legs balance and
   walk on their own servos in the match. Measured on physics-engine at the match's 18 m/s²
@@ -929,7 +936,80 @@ whether resupply locks movement or firing (Q2.i123.3).
   observation galleries along two walls carrying thrusters, a control booth with two doorways in
   two corners and a test bay in two side walls; its name, size, layout, spawn count, pickup and
   repair anchors (in the booths) and destruction candidates (its low cover, open-floor barriers
-  and crates) are provisional choices, to be tuned in playtests. Since shooter#55 the large arena
+  and crates) are provisional choices, to be tuned in playtests. Since shooter#151 its layout is
+  tuned from deterministic bot playtests (`crates/shooter-sim/tests/proving_cell.rs`: 2 and 6
+  fighters on the named legged loadouts, an armed car and an armed tank; its ignored report sums
+  five seeds of two minutes): the stage carries a test rig, a 4 m pillar at each corner under a
+  lit canopy of ceiling panels at 6 m (the cell's landmark), with the stage's low cover between
+  the pillars, and the galleries instrument pipes against the wall; each booth's two blast
+  screens moved to cover the lines from its doorways into its back corner while leaving ways
+  out at least 2.4 m wide, its generator (the rig's console) in that corner, its spawn point
+  between the screens facing the way out and its repair anchor in the open corner between the
+  doorways; the passage end's screen moved to leave a 2.5 m way in along the wall (its pipes went
+  up to the gallery); each test bay gained a blast screen of its own, the bay open north and
+  south along it; the spawn point between a gallery and a booth moved 2.3 m toward the booth;
+  bot points were added on the stage, at the bay mouths and in the middle of the passage's lane;
+  and bots on wheels or tracks back out when stuck instead of hopping (`shooter_sim::bots`).
+  Measured before → after (five seeds): robots stranded at a spawn point (alive 20 s without
+  getting 3 m from it) 0 → 0 on legs, 11 → 0 on wheels and 16 → 0 on tracks (the booths and the
+  passage end held them); respawns killed within 3 s 0 → 0 everywhere; respawns first hit within
+  2 s, 6 on legs, 12 → 11 (the east test bay 3 of 7 → 0); first contact median 6.4 → 3.6 s for
+  two on legs and 1.7 → 1.9 s for six; two tracked robots never met before and fight now (0 → 5
+  kills, median contact 24.5 s), while six wheeled ones fight less (55 → 26 kills, median
+  contact 3.0 → 6.8 s: they back out and turn rather than sit stranded); in the six-fighter
+  matches no position other than the open
+  floor makes more than a third of the kills (the ramps and the container 34% → 22% on legs; the
+  stage and galleries about 1%).
+  Performance is unchanged: the simulation 0.30 → 0.31 ms a tick with 6 bots and 0.66 → 0.68 with
+  12 (different matches), the native client 2.33 ms a frame on an RTX 3060 Ti either way.
+  Capacity is unchanged (2 to 6 recommended, 12 spawn points). Open: wheels do not climb the
+  kit's 1:4 ramps on any map (shooter#174; since it they climb both), and two wheeled or tracked bots rarely find each
+  other (a skid-steered chassis turns in place slowly, shooter#170); resupply stations wait on
+  shooter#129. Its white and amber light came with per-map lighting (see below). Captures in
+  `docs/captures/151/`.
+  Since shooter#152 the assembly works, the menu's flagship (D2.i154.1), is tuned the same way
+  (`crates/shooter-sim/tests/assembly_works.rs`, on the harness the proving cell's playtests
+  now share, `tests/playtest`: 4 and 12 fighters on the named legged loadouts, the armed car,
+  the armed tank and a mix of the three; its ignored report sums five seeds of two minutes).
+  Map ID, size, topology, kit and capacity (4 to 12, 14 spawn points) are unchanged. Changes:
+  a 12 m loading ramp climbs from the floor onto each side of the gantry bridge (the bridge's
+  own non-grapple way up, beside the mezzanine ramp, the pad and the grapple); each bay wall has
+  a second doorway at its far end, so the bay's half behind the first doorway is no dead end;
+  that half's blast screen moved to leave 3.9 m and 3.5 m round it and to cover the line from
+  the new doorway to the bay's spawn point; the middle bay spawn point moved 4 m west between a
+  container and a new blast screen against the bay's back aisle (its old place was hit along
+  that aisle); the container by the work platforms now stands against them (it left a 1 m slot
+  bots drove chassis into); the spawn point beside the mezzanine ramp moved 4 m off the new
+  doorway's mouth; every bay spawn point faces its way out (a chassis turns in place slowly,
+  shooter#170: one faced the back wall, one a container 3 m off); bot points were added for
+  the new ramp, doorway and aisle, one moved off the ramp. Measured before → after (five seeds,
+  4 / 12 fighters): robots stranded at a spawn point 0 → 0 on legs and tracks, 4 / 5 → 0 / 0 on
+  wheels, 0 → 0 mixed; respawns killed within 3 s 0 → 0 everywhere; four wheeled robots fight
+  (2 → 13 kills, first contact median 35 → 10 s; bays 73% → 58% of their time) and twelve fight
+  twice as much (63 → 133 kills); the two middle bay spawn points' respawns first hit within 2 s
+  12 of 36 → 2 of 18 at twelve on legs, while all respawns first hit within 2 s stay about the
+  same share (on legs 7.3% → 7.8%; wheels and tracks 3% → 6% and 4% → 5%, now that they reach
+  each other); first contact median 4.5 → 5.3 s for four and 1.8 → 1.5 s for twelve on legs;
+  kills are close and mid range (0–10 m about 70%, 10–20 m 25–30%, beyond 20 m 1–2%, on legs
+  both before and after); the open floor makes about 55% of the kills, the bays about 15% (legs)
+  to 25%, no other position more than a fifth (the top of crates, cover and containers, and
+  jumps, together). Bots seldom climb (bridge, mezzanines and towers 1–2% of their time before
+  and after, as on the other maps), so the high ground is judged by sightlines too: from the
+  bridge's middle (the rail capacitor) a fighter sees 43% → 42% of the floor within 30 m, the
+  bridge's ends 41% → 40%, the mezzanines 25–34%, the tower tops 27% → 26% (sight is mutual:
+  as much of the floor can shoot back; the test holds every high place between a sixth and a
+  half). Tracks drive up both ramps onto the bridge; wheels do not climb the kit's 1:4 ramps on
+  any map (shooter#174) and keep to the floor and bays, whose fights the changes opened to them
+  (since shooter#174 they climb onto the bridge by the loading ramp).
+  Performance is unchanged: the simulation 0.56 → 0.59 ms a tick with 12 bots on legs
+  (different matches), the native client 2.33 → 2.36 ms a frame (RTX 3060 Ti). Open: the kit
+  has no assembly machinery or crane props to make the works read as an assembly line
+  (asset-tooling#838: a cradle, an arm, a conveyor, a crane head on the mast, a walkway
+  railing; a ceiling-panel jib was rejected: at 8 m it sits in the tower pad's arc and the
+  grapple's reel path); resupply stations wait on shooter#129; the cool lighting came with
+  per-map lighting (see below); the owner's own playtest and visual review. Captures in
+  `docs/captures/152/`.
+  Since shooter#55 the large arena
   is in: `drydock`, an 80 m repurposed spaceship shipyard (D2.i55.1) built from the same arena
   kit (8 to 12 players recommended, 14 spawn points, all on the ground), point-symmetric: two
   identical docked ships head to tail either side of a 32 m central corridor, each hull 12 m
@@ -940,6 +1020,70 @@ whether resupply locks movement or firing (Q2.i123.3).
   with the rail capacitor at its foot. Its name, size, hull heights, layout, spawn count, pickup
   and repair anchors (under the gantries and in the outer lanes) and destruction candidates (its
   low cover, floor barriers and crates) are provisional choices, to be tuned in playtests.
+  Since shooter#153 the drydock follows D2.i55.2's hybrid symmetry and is tuned the same way as
+  the other two (`crates/shooter-sim/tests/drydock.rs` on the shared harness: 8 and 12 fighters
+  on the named legged loadouts, the armed car, the armed tank and a mix of the three; its
+  ignored report sums five seeds of two minutes). Map ID, size, kit, footprint, lanes and
+  capacity (8 to 12, 14 spawn points) are unchanged; the dock floor, spawn points, pickups and
+  repair anchors stay point-symmetric, the ships do not. The west ship (the freighter) keeps the
+  shipped hull (every existing route fixture is on it): a long flat foredeck and a high blunt
+  6 m stern castle, now also thrown onto by a second jump pad in its outer lane (18 m/s up;
+  by the wall, off the line bots walk down the lane, which first threw them up by chance), its
+  stern deck's non-grapple way besides its ramp. The east ship (the cutter) is new on the
+  same 12 m by 56 m footprint: a 2 m prow step, 16 m long, across its bow, an 8 m ramp up from
+  it onto the foredeck, and the step meets its gantry's bow ramp at 2 m (a way onto the hull
+  from the corridor besides the gantry's top, which tracks drive); a narrow 6 m bridge
+  midships, 8 m long and 4 m wide, an 8 m ramp up onto it at either end, with the thrusters, a
+  mast and a 2 m bulkhead along its outer side; a rib, a generator and a mast on its after deck;
+  its gangways land before and beside the bridge, and its gantry's cover is stacked crates and
+  two barriers (the freighter's: two low covers); its outer lane's pad throws onto the foredeck
+  before the bridge. Without the bulkhead the bridge saw 29% of the dock floor within 40 m
+  against the stern deck's 18% (it looked down the whole outer lane, the covered flank past
+  the corridor's long lines); with it both 6 m decks see 18%, the foredecks 19% and 24%, the
+  gantries 23% and 19%, the prow step 21% (the test holds each between a tenth and a half and
+  each ship's place within 10 points of its twin's). The crane pylon no longer cuts the line
+  between the two 6 m decks: the cutter's bridge lies midships, past its line, and the two
+  answer each other across the corridor, about 45 m, the dock's long precision duel (the test
+  holds that instead). Spawn points: the corridor one north of its container faces the open
+  corridor (it faced the container 2 m off), the one behind the barrier faces south along it,
+  the one in the pylon's lee faces north-west past the pylon, the outer lane ones face north-east
+  and south-east past their containers, and the stern lane one stands 1.7 m clear of its
+  container (a chassis turning in place caught on it; a skid-steered chassis turns in place
+  slowly, shooter#170). Measured before → after (five seeds, 8 / 12 fighters): robots stranded
+  at a spawn point 0 → 0 on legs, tracks and mixed builds, 4 / 4 → 1 / 1 on wheels (the stern
+  lane's spawn pair, #170); respawns killed within 3 s 0 → 0 everywhere; respawns first hit
+  within 2 s on legs 9 of 191 → 6 of 194 and 23 of 336 → 14 of 328; wheeled robots fight more
+  (eight 78 → 100 kills, twelve 118 → 194); first contact median on legs 3.7 →
+  3.2 s and 1.8 → 2.5 s; kills are close and mid range (0–10 m 60–70%, 10–20 m 30–40%, beyond
+  20 m 1–3%, before and after); the corridor and the end lanes make about a third of the kills
+  each, the outer lanes 5–13%, fights on cover, crates and containers or in the air 12–29%.
+  Bots seldom climb (hull
+  tops and gantries 0–2% of their time before and after, as on the other maps), so the high
+  ground is judged by sightlines and the route fixtures (`tests/moves.rs`, the physics A/B
+  routes): the freighter's stern pad, the cutter's prow, bridge and pad. Tracks drive up the
+  cutter's prow onto its foredeck and up its bridge; wheels do not climb the kit's 1:4 ramps on
+  any map (shooter#174; since it they climb the gantries' and the bridge's). Performance is unchanged: the simulation 0.53 → 0.55 ms a tick with 12
+  bots on legs (different matches), the native client 2.45 → 2.38 ms a frame on an RTX 3060 Ti
+  (the profile run, a median of repeated runs: within their noise). Open: the kit has
+  no spacecraft props (engine nozzles, a bridge canopy, a docking clamp, hull markings) to tell
+  the ships apart beyond their silhouettes and to read as spacecraft (asset-tooling#839);
+  resupply stations wait on shooter#129; the expansive shipyard light came with per-map
+  lighting (see below); the owner's own
+  playtest and visual review. Captures in `docs/captures/153/`.
+  Per-map lighting (shooter#151, #152, #153; presentation only, nothing in the simulation):
+  each kit-built map has its own light (`shooter_client::scene::Lighting`, by map ID) in the
+  match, the menu's live view and the `arena_views` captures, on render-engine and the lite
+  renderer alike; the greybox maps keep the old one. The proving cell is a white key almost
+  straight down, a warm-white fill and an amber sky over the open roof; the assembly works a
+  blue-white sun, a steel-teal fill and sky and a thin cool haze past 20 m; the drydock a
+  strong warm sun at 43°, a high bright blue sky and an atmospheric haze past 40 m (a quarter
+  at most, about 6% at 80 m). Every sun comes from the north or the south, so the east and
+  west halves (the drydock's two ships) are lit alike, and the robots stay as readable as
+  before. The simplest options, the owner's to revisit: no fixed arena lamps (they would share
+  the lite renderer's 8 point lights with the weapons' flashes; the amber is the sky and the
+  fill), and render-engine's linear fog as the haze, which the lite renderer now draws too
+  (its other falloffs and sun glow it leaves out). Frame times unchanged (native 2.3-2.4 ms
+  on an RTX 3060 Ti). Captures in `docs/captures/lighting/`.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration
@@ -979,6 +1123,13 @@ whether resupply locks movement or firing (Q2.i123.3).
   in the match the locomotion pays for the drive's walk at a walk's or sprint's share of a
   sprint (the standard robot's two legs: about 4.7 a second walking, 6.7 sprinting), nothing
   standing or airborne.
+  Since shooter#174 a wheel's motor gives at most 60 N·m (was 30, a track road wheel's 60) and
+  a wheel's tyre has friction 1.5 (1.0 against the arena's 0.5, averaged; tracks and feet keep
+  1.0), tuned to the match's 18 m/s² gravity: four such wheels push the armed car (254 kg) up the
+  arena kit's 1:4 ramps (it needs about 1100 N; 30 N·m gave about 670 and it stalled half a metre
+  up), short of lifting its front wheels on a launch (its 80 cm tall chassis stands on a 40 cm
+  wheelbase), and the tyre keeps those unloaded front wheels gripping rather than spinning. The
+  draw is unchanged (by work and load, not by the motor's torque).
 - **Q2.i70.2**: The predetermined chassis sizes and their costs, and whether the 20 cm socket cell
   is final (D2.i70.1).
   Defaults in use until decided (shooter#71): a 20 cm cell; chassis sections of 20 × 40 × 80,

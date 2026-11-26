@@ -1,6 +1,6 @@
 //! The arena as render-engine content: a kit-built map's modules (`crate::arena_art`), or a
 //! greybox map's one mesh per piece at its true size (so normals stay
-//! exact), a checkered floor for a sense of speed, glowing jump pads, the module pickups' pads, and the hall's lighting;
+//! exact), a checkered floor for a sense of speed, glowing jump pads, the module pickups' pads, and the hall's lighting per map ([`Lighting`]);
 //! and the [`Actors`] that move over it.
 
 use crate::arena_art::{ArenaArt, Placed};
@@ -11,12 +11,13 @@ use crate::gfx::{Instance, InstanceId, MaterialId, MeshId, World};
 use render_engine::glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use render_engine::mesh::{MeshData, Shape};
 use render_engine::scene::{
-    Ambient, Camera, PointLight, Scene, ShadowFilter, ShadowMapSizes, Sun, SunShadows, Tonemapping,
+    Ambient, Camera, Fog, FogFalloff, PointLight, Scene, ShadowFilter, ShadowMapSizes, Sun,
+    SunShadows, Tonemapping,
 };
 use shooter_sim::physics::RampRise;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::pickups::REACH_UNITS;
-use shooter_sim::{Arena, ArenaModule, Piece, Weapon};
+use shooter_sim::{Arena, ArenaModule, MapId, Piece, Weapon};
 
 /// Simulation units (cm) to render metres.
 pub const METRES_PER_UNIT: f32 = 0.01;
@@ -733,10 +734,118 @@ impl Actors {
     }
 }
 
-/// The frame's camera ([`camera`]) and the hall's light: a high sun through an open roof and
-/// soft ambient, plus the weapons' flashes.
+/// Distance haze ([`Lighting::haze`]): linear from `start` to `end` metres from the camera, where
+/// it hides `density` of what is behind it in `color` (exposed, like the clear colour).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Haze {
+    pub color: Vec3,
+    pub start: f32,
+    pub end: f32,
+    pub density: f32,
+}
+
+/// How a map's hall is lit: the sky's clear colour, a sun through the open roof, the ambient
+/// light and an optional distance haze. Presentation only: each kit-built map has its own
+/// profile (shooter#151, #152, #153), its sun high (43° and more) and from the north or the
+/// south, so the east and west halves sit in the same light, and its robots stay as readable
+/// as in the greybox's. The lite renderer draws the haze too (`gfx::lite`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lighting {
+    pub clear_color: Vec3,
+    /// The direction the sunlight travels (normalised when drawn).
+    pub sun_direction: Vec3,
+    pub sun_color: Vec3,
+    /// Lux.
+    pub sun_illuminance: f32,
+    pub ambient_color: Vec3,
+    /// cd/m².
+    pub ambient_brightness: f32,
+    pub haze: Option<Haze>,
+}
+
+impl Lighting {
+    /// The greybox maps' light (and the builder's and the examples' benches): a high sun and
+    /// a pale blue sky.
+    pub const GREYBOX: Self = Self {
+        clear_color: Vec3::new(0.35, 0.45, 0.6),
+        sun_direction: Vec3::new(-0.35, -1.0, -0.55),
+        sun_color: Vec3::new(1.0, 0.96, 0.9),
+        sun_illuminance: 20_000.0,
+        ambient_color: Vec3::new(0.85, 0.9, 1.0),
+        ambient_brightness: 2_500.0,
+        haze: None,
+    };
+
+    /// The proving cell (shooter#151): a clean test cell under a white overhead key, almost
+    /// straight down so the 32 m cell keeps few shadows, a warm-white fill and an amber glow
+    /// over the open roof; no haze at its short ranges.
+    pub const PROVING_CELL: Self = Self {
+        clear_color: Vec3::new(0.9, 0.62, 0.3),
+        sun_direction: Vec3::new(0.0, -1.0, -0.22),
+        sun_color: Vec3::new(1.0, 1.0, 0.98),
+        sun_illuminance: 26_000.0,
+        ambient_color: Vec3::new(1.0, 0.92, 0.8),
+        ambient_brightness: 3_400.0,
+        haze: None,
+    };
+
+    /// The assembly works (shooter#152): cool, clean industrial light, a blue-white sun along
+    /// the works' north-south axis, a steel-teal fill and sky, and a thin cool haze over the
+    /// far bays.
+    pub const ASSEMBLY_WORKS: Self = Self {
+        clear_color: Vec3::new(0.16, 0.25, 0.33),
+        sun_direction: Vec3::new(0.0, -1.0, 0.42),
+        sun_color: Vec3::new(0.84, 0.93, 1.0),
+        sun_illuminance: 21_000.0,
+        ambient_color: Vec3::new(0.62, 0.84, 1.0),
+        ambient_brightness: 2_900.0,
+        haze: Some(Haze {
+            color: Vec3::new(0.16, 0.25, 0.33),
+            start: 20.0,
+            end: 110.0,
+            density: 0.22,
+        }),
+    };
+
+    /// The drydock (shooter#153): an expansive open yard, a strong warm sun from the
+    /// south along the axis between the two ships (both hulls lit alike, long shadows on the
+    /// dock floor), a high bright sky and an atmospheric haze that gives the 80 m yard depth.
+    pub const DRYDOCK: Self = Self {
+        clear_color: Vec3::new(0.42, 0.6, 0.9),
+        sun_direction: Vec3::new(0.0, -1.0, -1.05),
+        sun_color: Vec3::new(1.0, 0.87, 0.68),
+        sun_illuminance: 26_000.0,
+        ambient_color: Vec3::new(0.68, 0.8, 1.0),
+        ambient_brightness: 3_000.0,
+        haze: Some(Haze {
+            color: Vec3::new(0.5, 0.64, 0.86),
+            start: 40.0,
+            end: 200.0,
+            density: 0.25,
+        }),
+    };
+
+    /// `map`'s light: its own for a kit-built map, [`Lighting::GREYBOX`] for the greybox ones.
+    #[must_use]
+    pub const fn of(map: MapId) -> Self {
+        match map {
+            MapId::Greybox | MapId::GreyboxYard => Self::GREYBOX,
+            MapId::ProvingCell => Self::PROVING_CELL,
+            MapId::AssemblyWorks => Self::ASSEMBLY_WORKS,
+            MapId::Drydock => Self::DRYDOCK,
+        }
+    }
+}
+
+/// The frame's camera ([`camera`]) and the hall's light ([`Lighting`]), plus the weapons'
+/// flashes.
 #[must_use]
-pub fn frame(camera: Vec3, forward: Vec3, point_lights: Vec<PointLight>) -> Scene {
+pub fn frame(
+    camera: Vec3,
+    forward: Vec3,
+    point_lights: Vec<PointLight>,
+    lighting: &Lighting,
+) -> Scene {
     Scene {
         camera: Camera {
             eye: camera,
@@ -747,13 +856,14 @@ pub fn frame(camera: Vec3, forward: Vec3, point_lights: Vec<PointLight>) -> Scen
             shadow_filter: ShadowFilter::Gaussian,
             tonemapping: Tonemapping::TonyMcMapface,
         },
-        clear_color: Vec3::new(0.35, 0.45, 0.6),
+        clear_color: lighting.clear_color,
         sun: Some(Sun {
-            direction: Vec3::new(-0.35, -1.0, -0.55).normalize(),
-            color: Vec3::new(1.0, 0.96, 0.9),
-            illuminance: 20_000.0,
+            direction: lighting.sun_direction.normalize(),
+            color: lighting.sun_color,
+            illuminance: lighting.sun_illuminance,
             shadows: Some(SunShadows {
-                // Far enough to cover the greybox yard's 76 m from corner to corner.
+                // Far enough to cover the greybox yard's 76 m from corner to corner, and most
+                // of the drydock's 80 m from a camera on its floor.
                 max_distance: 110.0,
                 ..SunShadows::default()
             }),
@@ -764,11 +874,50 @@ pub fn frame(camera: Vec3, forward: Vec3, point_lights: Vec<PointLight>) -> Scen
         spot_lights: Vec::new(),
         shadow_maps: ShadowMapSizes::default(),
         ambient: Ambient {
-            color: Vec3::new(0.85, 0.9, 1.0),
-            brightness: 2_500.0,
+            color: lighting.ambient_color,
+            brightness: lighting.ambient_brightness,
         },
         environment: None,
-        fog: None,
+        fog: lighting.haze.map(|haze| Fog {
+            color: haze.color.extend(haze.density),
+            falloff: FogFalloff::Linear {
+                start: haze.start,
+                end: haze.end,
+            },
+            ..Fog::default()
+        }),
         overlay: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Lighting, frame};
+    use render_engine::glam::Vec3;
+    use shooter_sim::MapId;
+
+    #[test]
+    fn each_kit_map_has_its_own_light_and_the_greyboxes_keep_theirs() {
+        assert_eq!(Lighting::of(MapId::Greybox), Lighting::GREYBOX);
+        assert_eq!(Lighting::of(MapId::GreyboxYard), Lighting::GREYBOX);
+        let kit = [MapId::ProvingCell, MapId::AssemblyWorks, MapId::Drydock].map(Lighting::of);
+        for (index, lighting) in kit.iter().enumerate() {
+            assert_ne!(*lighting, Lighting::GREYBOX);
+            assert!(kit[index + 1..].iter().all(|other| other != lighting));
+            // East and west alike, and a high sun.
+            let sun = lighting.sun_direction.normalize();
+            assert!(sun.x.abs() < 1e-6, "{sun}");
+            assert!(-sun.y > 0.68, "{sun}");
+        }
+    }
+
+    #[test]
+    fn the_frame_carries_the_light() {
+        let lighting = Lighting::DRYDOCK;
+        let scene = frame(Vec3::ZERO, Vec3::NEG_Z, Vec::new(), &lighting);
+        assert_eq!(scene.clear_color, lighting.clear_color);
+        assert!(scene.fog.is_some());
+        let scene = frame(Vec3::ZERO, Vec3::NEG_Z, Vec::new(), &Lighting::GREYBOX);
+        assert!(scene.fog.is_none());
     }
 }

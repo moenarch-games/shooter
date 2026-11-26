@@ -270,6 +270,21 @@ pub fn flat_tank() -> Assembly {
     valid(parts)
 }
 
+/// The flat tank armed for a match (shooter#151) as [`armed_car`] is: the energy rifle on its
+/// front, and a fuel tank with a generator on it on its roof beside the sensor.
+#[must_use]
+pub fn armed_tank() -> Assembly {
+    valid(vec![
+        root(0, &CHASSIS_L),
+        on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+        on(2, &TRACK, 0, &CHASSIS_L, Face::PosY, 0, 0),
+        yawed(on(3, &TRACK, 0, &CHASSIS_L, Face::NegY, 0, 0), 3 * QUARTER),
+        on(6, &ENERGY_RIFLE, 0, &CHASSIS_L, Face::PosX, 1, 2),
+        on(7, &FUEL_TANK, 0, &CHASSIS_L, Face::PosZ, 1, 0),
+        on(8, &GENERATOR, 7, &FUEL_TANK, Face::PosZ, 0, 0),
+    ])
+}
+
 /// The floor and a ramp rising toward +X from `start` units ahead of the origin, `length`
 /// long and `height` high (body 2): a slope to drive up.
 #[must_use]

@@ -1280,7 +1280,14 @@ impl App {
         let ui = self
             .menu
             .frame(width, height, self.previews.as_ref(), loading);
-        let mut scene = scene::frame(eye, (target - eye).normalize_or(Vec3::NEG_Z), Vec::new());
+        let mut scene = scene::frame(
+            eye,
+            (target - eye).normalize_or(Vec3::NEG_Z),
+            Vec::new(),
+            &self
+                .drawn
+                .map_or(scene::Lighting::GREYBOX, scene::Lighting::of),
+        );
         if !drawn {
             scene.clear_color = Vec3::new(0.05, 0.07, 0.1);
         }
@@ -2090,7 +2097,14 @@ impl App {
             .as_mut()
             .map(|effects| effects.lights(seconds, &rockets, &warnings))
             .unwrap_or_default();
-        let mut scene = scene::frame(camera, forward, point_lights);
+        let mut scene = scene::frame(
+            camera,
+            forward,
+            point_lights,
+            &self
+                .drawn
+                .map_or(scene::Lighting::GREYBOX, scene::Lighting::of),
+        );
         scene.camera.fov_y = self.precision.fov_y();
         // The drawn HUD: the held weapon (as predicted), the carried ones, chassis and energy.
         let vitals = game.local_fighter().map(|(me, tick)| Vitals::of(me, tick));

@@ -392,6 +392,16 @@ fn the_proving_cell_is_the_kit_built_small_map() {
             .all(|p| p.module.broken_proxies().is_some())
     );
     assert!(!cell.repair_anchors.is_empty());
+    // Its landmark (shooter#151): the test rig over the stage, a pillar at each corner carrying
+    // a canopy over the whole stage.
+    let over_stage = |module| {
+        cell.placements
+            .iter()
+            .filter(|p| p.module == module && p.at.x.abs() <= 300 && p.at.z.abs() <= 300)
+            .count()
+    };
+    assert_eq!(over_stage(arena_kit::Module::Pillar), 4);
+    assert_eq!(over_stage(arena_kit::Module::Ceiling), 9);
     // Its own layout, not a copy of the works.
     assert_ne!(cell.placements, works.placements);
 }
@@ -520,11 +530,14 @@ fn drydock_spawns_are_out_of_sight_and_linked_by_walks() {
     assert_walks_link_up(&arena);
 }
 
-/// The drydock's hull tops: each ship's foredeck and stern deck are bot points a walk reaches
-/// (up the gantry's ramps, over its gangways, up the stern ramp), a jump pad in each outer lane
-/// throws onto a foredeck and each stern deck carries thrusters. No hull top is an unanswered
-/// perch: from every stern deck point some point on the other ship's hull and some point on a
-/// gantry is in plain sight, and the crane pylon cuts the line between the two stern decks.
+/// The drydock's hull tops: each ship's foredeck and 6 m deck (the freighter's stern deck, the
+/// cutter's bridge) are bot points a walk reaches (up the gantry's ramps, over its gangways, up
+/// the deck's ramps), a jump pad in each outer lane throws onto a foredeck and each 6 m deck
+/// carries thrusters. No hull top is an unanswered perch: from every 6 m deck point some point
+/// on the other ship's hull and some point on a gantry is in plain sight, and the two 6 m decks
+/// answer each other across the corridor. (Before shooter#153 the ships were twins and the crane
+/// pylon cut the line between their stern decks; the cutter's bridge lies midships, past the
+/// pylon's line, and the long duel between the two is the dock's precision sightline.)
 #[test]
 fn drydock_hulls_are_reached_and_answered() {
     use shooter_sim::drydock::{FOREDECK_TOP, GANTRY_TOP, SHIP_X, STERN_TOP};
@@ -600,6 +613,10 @@ fn drydock_hulls_are_reached_and_answered() {
             );
         }
     }
-    let (west_stern, east_stern) = (on(true, STERN_TOP), on(false, STERN_TOP));
-    assert!(!sees(west_stern[0], east_stern[0]));
+    let (west_stern, east_bridge) = (on(true, STERN_TOP), on(false, STERN_TOP));
+    assert!(
+        west_stern
+            .iter()
+            .any(|&a| east_bridge.iter().any(|&b| sees(a, b)))
+    );
 }

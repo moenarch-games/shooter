@@ -4,7 +4,8 @@
 //! (sprint, slide, double jump, a thruster-module jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
 //! a shooting range, a close range for the shotgun, laser and flamethrower) on physics-engine and on the Rapier oracle
 //! (`shooter_sim::physics::using_backend`), and the mechanics fixtures (shooter#73: rolling,
-//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog), broken cover
+//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog), the armed car up the
+//! proving cell's 1:4 ramps (shooter#174), broken cover
 //! (shooter#60: rays across it, a robot on its remains) and a fall's collision damage and debris
 //! (shooter#75) on both.
 //! Both must follow the same path within a few centimetres, agree on support at the end of every
@@ -12,6 +13,8 @@
 //! pellet sweeps are the backends' `cast_ray`, the flame their `overlap_box`).
 //!
 //! `cargo test -p shooter-sim --features physics-ab --test physics_ab`
+
+mod playtest;
 
 use shooter_sim::physics::{Backend, using_backend};
 use shooter_sim::robot::{ARMORY, MARKSMAN, SKIRMISHER};
@@ -21,6 +24,11 @@ use shooter_sim::{Arena, Assembly, Session, Weapon};
 
 /// Largest per-axis distance (units) between the two backends' paths at any tick.
 const PATH_TOLERANCE_UNITS: f32 = 6.0;
+/// The same for the standard robot's walk up a step or a ramp: its feet meet the riser on both.
+const STEP_TOLERANCE_UNITS: f32 = 2.0 * PATH_TOLERANCE_UNITS;
+/// The same over a ledge or a throw: a pad's or a rocket's launch of 6 m and more, a landing
+/// (a robot's legs land a little apart on the two backends) or a rope's pull.
+const LEDGE_TOLERANCE_UNITS: f32 = 6.0 * PATH_TOLERANCE_UNITS;
 
 fn run_on(backend: Backend, arena: fn() -> Arena, legs: &[Leg]) -> Vec<Sample> {
     run_as(backend, arena, legs, ARMORY)
@@ -131,10 +139,8 @@ fn the_close_range_matches_the_rapier_oracle() {
 
 /// The match's mechanical robots (shooter#73) on flat ground: the standard robot sprints,
 /// slides and stops along the same path on both backends, whole and on one leg (the other shot
-/// off: it no longer weighs or holds anything up, and the robot goes at half speed). The
-/// scripted routes over ledges, steps and pads are checked on physics-engine (`tests/moves.rs`)
-/// and replay exactly on each backend: robots' legs catching a lip, and Rapier's servo spring
-/// under the heavier builds, part the two backends' paths there.
+/// off: it no longer weighs or holds anything up, and the robot goes at half speed). Steps,
+/// ledges and pads: [`steps_ledges_and_pads_match_the_rapier_oracle`].
 #[test]
 fn flat_ground_moves_match_the_rapier_oracle() {
     let scenario = scenarios::SPRINT_AND_SLIDE;
@@ -188,6 +194,112 @@ fn flat_ground_moves_match_the_rapier_oracle() {
             );
         }
     }
+}
+
+/// The standard robot's scripted routes over steps, ledges and pads (shooter#73) on both
+/// backends: the same path within [`STEP_TOLERANCE_UNITS`] up a step and the stern ramp and
+/// within [`LEDGE_TOLERANCE_UNITS`] up a gantry and over a gangway, into a thin wall, a grapple
+/// onto a ledge and over every arena's pad (a throw of 6 m and more), thrown and hooked within a
+/// tick.
+///
+/// Two shooter-side differences used to part them by metres: the oracle counted the contacts
+/// Rapier finds before it moves the bodies as support after the step (a robot a pad threw that
+/// tick still stood, so the drive walked it on instead of letting it fly), and a pad threw only
+/// a robot not rising at all (a walking robot's gait bobs it up by centimetres a second, so on
+/// physics-engine it was thrown only once it stopped, on Rapier wherever the bob went down).
+///
+/// Not compared path for path, where the backends' solvers still part (each still replays
+/// exactly, [`each_backend_replays_exactly`], and `tests/moves.rs` checks them on
+/// physics-engine): a robot's foot meeting the lip of a cover's base (Rapier's catches on it for
+/// a few ticks where physics-engine's rides up it: the works' cover), landing from a jump onto a
+/// ledge (the legs land a little apart and the drive's footing, feet or not, splits from there:
+/// the double and thruster jumps, the works' steps onto the crane tower), sliding up a ramp's
+/// foot, and a rope dragging a robot over an edge (Rapier lifts it: the grapples onto the works'
+/// tower, the cell's gallery and the dock's foredeck). The proving cell's and the drydock's
+/// routes compare the level the robot stands at after them instead.
+#[test]
+fn steps_ledges_and_pads_match_the_rapier_oracle() {
+    use shooter_sim::robot::STANDARD;
+    let steps = [scenarios::STEP, scenarios::DOCK_STERN];
+    let ledges = [
+        scenarios::JUMP_PAD,
+        scenarios::YARD_JUMP_PAD,
+        scenarios::WORKS_TOWER_PAD,
+        scenarios::CELL_PAD,
+        scenarios::DOCK_PAD,
+        scenarios::THIN_WALL,
+        scenarios::GRAPPLE,
+        scenarios::DOCK_GANTRY,
+    ];
+    let routes = steps
+        .iter()
+        .map(|scenario| (scenario, STEP_TOLERANCE_UNITS))
+        .chain(
+            ledges
+                .iter()
+                .map(|scenario| (scenario, LEDGE_TOLERANCE_UNITS)),
+        );
+    let mut parted = Vec::new();
+    for (scenario, tolerance) in routes {
+        // The standard robot as it spawns (as on flat ground above).
+        let run = |backend| {
+            using_backend(backend, || {
+                let mut session = Session::new((scenario.arena)()).expect("arena builds");
+                assert_eq!(session.fighters[0].build, STANDARD);
+                tour::run_legs(&mut session, scenario.legs).expect("script runs")
+            })
+        };
+        let (engine, rapier) = (run(Backend::Engine), run(Backend::Rapier));
+        let mut worst = (0.0f32, 0);
+        for (at, (a, b)) in engine.iter().zip(&rapier).enumerate() {
+            for axis in 0..3 {
+                let gap = (a.center[axis] - b.center[axis]).abs();
+                if gap > worst.0 {
+                    worst = (gap, at);
+                }
+            }
+        }
+        println!("{}: worst path gap {:.3} units", scenario.name, worst.0);
+        if worst.0 > tolerance {
+            parted.push(format!(
+                "{}: paths part by {:.3} units: engine {:?} rapier {:?}",
+                scenario.name, worst.0, engine[worst.1], rapier[worst.1],
+            ));
+        }
+        // The same throws, each within a tick (the robot's feet reach the pad a tick apart), and
+        // the hook set and let go within a tick.
+        let ticks = |samples: &[Sample], what: fn(&Sample) -> bool| {
+            samples
+                .iter()
+                .filter(|s| what(s))
+                .map(|s| s.tick)
+                .collect::<Vec<_>>()
+        };
+        let hooked = |samples: &[Sample]| {
+            let first = samples.iter().position(|s| s.hooked);
+            let last = samples.iter().rposition(|s| s.hooked);
+            (first, last)
+        };
+        let (throws_a, throws_b) = (
+            ticks(&engine, |s| s.launched),
+            ticks(&rapier, |s| s.launched),
+        );
+        assert_eq!(throws_a.len(), throws_b.len(), "{}: throws", scenario.name);
+        let near = |a: Option<usize>, b: Option<usize>| match (a, b) {
+            (Some(a), Some(b)) => a.abs_diff(b) <= 1,
+            (a, b) => a == b,
+        };
+        for (a, b) in throws_a.iter().zip(&throws_b) {
+            assert!(a.abs_diff(*b) <= 1, "{}: thrown {a} {b}", scenario.name);
+        }
+        let (hook_a, hook_b) = (hooked(&engine), hooked(&rapier));
+        assert!(
+            near(hook_a.0, hook_b.0) && near(hook_a.1, hook_b.1),
+            "{}: hook {hook_a:?} {hook_b:?}",
+            scenario.name
+        );
+    }
+    assert!(parted.is_empty(), "{parted:#?}");
 }
 
 /// The match's twelve slots, every one a bot's mechanical robot, on the default map: the mean
@@ -358,8 +470,57 @@ fn the_proving_cell_routes_land_alike_on_the_rapier_oracle() {
     }
 }
 
-/// The drydock (shooter#55): up the gantry's ramp and over a gangway onto the foredeck, up the
-/// stern ramp, the outer lane's pad and a grapple on the bow mast onto the foredeck. As on the
+/// Wheels climb the arena kit's 1:4 ramps (shooter#174): on each backend the armed car, steered
+/// as the bots steer, drives up the proving cell's stage ramp onto its 2 m stage and up the
+/// gallery's ramp onto its 3 m deck (before shooter#174 it got about half a metre up and
+/// rolled back), ending within half a metre of where the other backend's ends.
+#[test]
+fn wheels_climb_the_proving_cell_ramps_on_both_backends() {
+    use shooter_sim::mechanics::fixtures;
+    use shooter_sim::physics::Vec3i;
+    use shooter_sim::proving_cell::{DECK_TOP, STAGE_TOP};
+    let routes = [
+        (
+            Vec3i::new(0, 0, -1_300),
+            vec![Vec3i::new(0, 0, -1_000), Vec3i::new(0, STAGE_TOP, -100)],
+            STAGE_TOP,
+            20,
+        ),
+        (
+            Vec3i::new(-1_400, 0, 150),
+            vec![
+                Vec3i::new(-1_400, 0, 0),
+                Vec3i::new(-1_400, DECK_TOP, -1_400),
+            ],
+            DECK_TOP,
+            30,
+        ),
+    ];
+    for (from, route, top, seconds) in routes {
+        let [engine, rapier] = [Backend::Engine, Backend::Rapier].map(|backend| {
+            using_backend(backend, || {
+                playtest::drive_route(
+                    Arena::proving_cell(),
+                    fixtures::armed_car(),
+                    from,
+                    &route,
+                    seconds,
+                )
+                .0
+            })
+        });
+        println!("up to {top}: engine {engine:?} rapier {rapier:?}");
+        for at in [engine, rapier] {
+            assert!(at[1] > (top - 30) as f32, "onto the {top} top: {at:?}");
+        }
+        let gap = libm::hypotf(engine[0] - rapier[0], engine[2] - rapier[2]);
+        assert!(gap < 50.0, "{engine:?} {rapier:?}");
+    }
+}
+
+/// The drydock (shooter#55, #153): up the gantry's ramp and over a gangway onto the foredeck, up
+/// the stern ramp, the outer lane's pads and a grapple on the bow mast onto the freighter's decks,
+/// and onto the cutter across its prow step, up its bridge's ramps and by its pad. As on the
 /// proving cell, the standard robot's frame stands on the same level on both backends after
 /// every route's resting legs, and the pad and the hook act alike. The frame is the standard
 /// build without its roof's tank and generator (shooter#128): on the stern ramp's landing the
@@ -377,6 +538,10 @@ fn the_drydock_routes_land_alike_on_the_rapier_oracle() {
         scenarios::DOCK_STERN,
         scenarios::DOCK_PAD,
         scenarios::DOCK_GRAPPLE,
+        scenarios::DOCK_STERN_PAD,
+        scenarios::DOCK_PROW,
+        scenarios::DOCK_BRIDGE,
+        scenarios::DOCK_CUTTER_PAD,
     ] {
         let engine = run_as(Backend::Engine, scenario.arena, scenario.legs, frame);
         let rapier = run_as(Backend::Rapier, scenario.arena, scenario.legs, frame);
@@ -470,9 +635,10 @@ mod mechanics {
         self, BARREL, HINGE_PART, ROTOR_PART, binary, floor, walled, wheels,
     };
     use shooter_sim::mechanics::{Command, Controls, Mechanics};
-    use shooter_sim::physics::articulated::{Motion, Pose};
+    use shooter_sim::physics::articulated::{EARTH_GRAVITY, Motion, Pose};
     use shooter_sim::physics::{Backend, RigidBody, using_backend};
     use shooter_sim::robot::{Assembly, PartId};
+    use shooter_sim::session::match_gravity;
 
     struct Outcome {
         root: Pose,
@@ -484,13 +650,14 @@ mod mechanics {
 
     fn run(
         backend: Backend,
+        gravity: [f32; 3],
         statics: &[RigidBody],
         build: Assembly,
         ticks: u32,
         controls: impl Fn(&Mechanics) -> Controls,
     ) -> Outcome {
         using_backend(backend, || {
-            let mut mechanics = Mechanics::new(statics).unwrap();
+            let mut mechanics = Mechanics::with_gravity(statics, gravity).unwrap();
             assert_eq!(mechanics.world().backend(), backend);
             mechanics.spawn(build, [0.0; 3], 0).unwrap();
             for _ in 0..ticks {
@@ -516,9 +683,21 @@ mod mechanics {
         ticks: u32,
         controls: impl Fn(&Mechanics) -> Controls + Copy,
     ) -> (Outcome, Outcome) {
+        both_under(EARTH_GRAVITY, statics, build, ticks, controls)
+    }
+
+    /// [`both`] under `gravity`: the match's for a wheeled drive at full torque, which the
+    /// wheels' motors are tuned for (shooter#174; under Earth's the car's front wheels lift).
+    fn both_under(
+        gravity: [f32; 3],
+        statics: &[RigidBody],
+        build: Assembly,
+        ticks: u32,
+        controls: impl Fn(&Mechanics) -> Controls + Copy,
+    ) -> (Outcome, Outcome) {
         (
-            run(Backend::Engine, statics, build, ticks, controls),
-            run(Backend::Rapier, statics, build, ticks, controls),
+            run(Backend::Engine, gravity, statics, build, ticks, controls),
+            run(Backend::Rapier, gravity, statics, build, ticks, controls),
         )
     }
 
@@ -565,7 +744,10 @@ mod mechanics {
 
     #[test]
     fn the_stall_matches_the_rapier_oracle() {
-        let (engine, rapier) = both(&walled(80), fixtures::car(), 180, |_| wheels(6_000, -6_000));
+        let (engine, rapier) =
+            both_under(match_gravity(), &walled(80), fixtures::car(), 180, |_| {
+                wheels(6_000, -6_000)
+            });
         for outcome in [&engine, &rapier] {
             let speed = gap(outcome.motion.velocity, [0.0; 3]);
             assert!(speed < 5.0, "{speed}");
