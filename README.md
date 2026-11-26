@@ -933,11 +933,16 @@ moves (sprint, slide, double jump, a thruster-module jump, jump pad, ramp slides
 step, a rocket jump, a grapple onto a ledge), each replaying exactly on both backends
 (`tests/tour.rs`, `tests/moves.rs`, `tests/maps.rs`). The Rapier A/B
 (`cargo test -p shooter-sim --features physics-ab --test physics_ab`) compares the match's robots
-sprinting, sliding and stopping on flat ground, whole and on one leg, the shooting range and the
+sprinting, sliding and stopping on flat ground, whole and on one leg, the standard robot's routes
+up a step and a ramp (within 12 cm) and over a gantry, a thin wall, a grapple onto a ledge and
+every arena's pad (within 36 cm, thrown within a tick of each other), the shooting range and the
 close range for the shotgun, laser and flamethrower, and the mechanics fixtures (rolling,
-strafing, the stall, both turrets, tipping, per-part hits, the robo-dog walking); over ledges,
-steps and pads the robots' legs catching a lip, and Rapier's servo spring under the heavier
-builds, part the two backends' paths. A match's twelve robots step in about 0.45 ms a session
+strafing, the stall, both turrets, tipping, per-part hits, the robo-dog walking). The paths still
+part where the solvers do (a foot on a cover's base lip, a landing from a jump onto a ledge, a
+slide up a ramp's foot, a rope dragging a robot over an edge): those routes replay exactly on each
+backend and the proving cell's and drydock's compare where the robot comes to rest. The robots'
+world holds the standing target dummies as boxes, so a robot walking or rolling into one stops
+against it (`tests/match_robots.rs`). A match's twelve robots step in about 0.45 ms a session
 tick natively (`--release -- --ignored twelve`). `cargo test -p shooter-sim --test mechanics` checks those fixtures, the
 biped and quadruped presets, badly mounted legs, motor energy draw, and that a restored world
 and a replay continue bit for bit.

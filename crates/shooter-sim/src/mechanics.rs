@@ -1865,6 +1865,12 @@ impl Mechanics {
         self.gravity
     }
 
+    /// The static bodies the robots stand among ([`Mechanics::reshape`] sets them).
+    #[must_use]
+    pub fn statics(&self) -> &[RigidBody] {
+        &self.statics
+    }
+
     #[must_use]
     pub const fn world(&self) -> &Articulated {
         &self.world

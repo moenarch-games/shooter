@@ -21,6 +21,11 @@ use shooter_sim::{Arena, Assembly, Session, Weapon};
 
 /// Largest per-axis distance (units) between the two backends' paths at any tick.
 const PATH_TOLERANCE_UNITS: f32 = 6.0;
+/// The same for the standard robot's walk up a step or a ramp: its feet meet the riser on both.
+const STEP_TOLERANCE_UNITS: f32 = 2.0 * PATH_TOLERANCE_UNITS;
+/// The same over a ledge or a throw: a pad's or a rocket's launch of 6 m and more, a landing
+/// (a robot's legs land a little apart on the two backends) or a rope's pull.
+const LEDGE_TOLERANCE_UNITS: f32 = 6.0 * PATH_TOLERANCE_UNITS;
 
 fn run_on(backend: Backend, arena: fn() -> Arena, legs: &[Leg]) -> Vec<Sample> {
     run_as(backend, arena, legs, ARMORY)
@@ -131,10 +136,8 @@ fn the_close_range_matches_the_rapier_oracle() {
 
 /// The match's mechanical robots (shooter#73) on flat ground: the standard robot sprints,
 /// slides and stops along the same path on both backends, whole and on one leg (the other shot
-/// off: it no longer weighs or holds anything up, and the robot goes at half speed). The
-/// scripted routes over ledges, steps and pads are checked on physics-engine (`tests/moves.rs`)
-/// and replay exactly on each backend: robots' legs catching a lip, and Rapier's servo spring
-/// under the heavier builds, part the two backends' paths there.
+/// off: it no longer weighs or holds anything up, and the robot goes at half speed). Steps,
+/// ledges and pads: [`steps_ledges_and_pads_match_the_rapier_oracle`].
 #[test]
 fn flat_ground_moves_match_the_rapier_oracle() {
     let scenario = scenarios::SPRINT_AND_SLIDE;
@@ -188,6 +191,112 @@ fn flat_ground_moves_match_the_rapier_oracle() {
             );
         }
     }
+}
+
+/// The standard robot's scripted routes over steps, ledges and pads (shooter#73) on both
+/// backends: the same path within [`STEP_TOLERANCE_UNITS`] up a step and the stern ramp and
+/// within [`LEDGE_TOLERANCE_UNITS`] up a gantry and over a gangway, into a thin wall, a grapple
+/// onto a ledge and over every arena's pad (a throw of 6 m and more), thrown and hooked within a
+/// tick.
+///
+/// Two shooter-side differences used to part them by metres: the oracle counted the contacts
+/// Rapier finds before it moves the bodies as support after the step (a robot a pad threw that
+/// tick still stood, so the drive walked it on instead of letting it fly), and a pad threw only
+/// a robot not rising at all (a walking robot's gait bobs it up by centimetres a second, so on
+/// physics-engine it was thrown only once it stopped, on Rapier wherever the bob went down).
+///
+/// Not compared path for path, where the backends' solvers still part (each still replays
+/// exactly, [`each_backend_replays_exactly`], and `tests/moves.rs` checks them on
+/// physics-engine): a robot's foot meeting the lip of a cover's base (Rapier's catches on it for
+/// a few ticks where physics-engine's rides up it: the works' cover), landing from a jump onto a
+/// ledge (the legs land a little apart and the drive's footing, feet or not, splits from there:
+/// the double and thruster jumps, the works' steps onto the crane tower), sliding up a ramp's
+/// foot, and a rope dragging a robot over an edge (Rapier lifts it: the grapples onto the works'
+/// tower, the cell's gallery and the dock's foredeck). The proving cell's and the drydock's
+/// routes compare the level the robot stands at after them instead.
+#[test]
+fn steps_ledges_and_pads_match_the_rapier_oracle() {
+    use shooter_sim::robot::STANDARD;
+    let steps = [scenarios::STEP, scenarios::DOCK_STERN];
+    let ledges = [
+        scenarios::JUMP_PAD,
+        scenarios::YARD_JUMP_PAD,
+        scenarios::WORKS_TOWER_PAD,
+        scenarios::CELL_PAD,
+        scenarios::DOCK_PAD,
+        scenarios::THIN_WALL,
+        scenarios::GRAPPLE,
+        scenarios::DOCK_GANTRY,
+    ];
+    let routes = steps
+        .iter()
+        .map(|scenario| (scenario, STEP_TOLERANCE_UNITS))
+        .chain(
+            ledges
+                .iter()
+                .map(|scenario| (scenario, LEDGE_TOLERANCE_UNITS)),
+        );
+    let mut parted = Vec::new();
+    for (scenario, tolerance) in routes {
+        // The standard robot as it spawns (as on flat ground above).
+        let run = |backend| {
+            using_backend(backend, || {
+                let mut session = Session::new((scenario.arena)()).expect("arena builds");
+                assert_eq!(session.fighters[0].build, STANDARD);
+                tour::run_legs(&mut session, scenario.legs).expect("script runs")
+            })
+        };
+        let (engine, rapier) = (run(Backend::Engine), run(Backend::Rapier));
+        let mut worst = (0.0f32, 0);
+        for (at, (a, b)) in engine.iter().zip(&rapier).enumerate() {
+            for axis in 0..3 {
+                let gap = (a.center[axis] - b.center[axis]).abs();
+                if gap > worst.0 {
+                    worst = (gap, at);
+                }
+            }
+        }
+        println!("{}: worst path gap {:.3} units", scenario.name, worst.0);
+        if worst.0 > tolerance {
+            parted.push(format!(
+                "{}: paths part by {:.3} units: engine {:?} rapier {:?}",
+                scenario.name, worst.0, engine[worst.1], rapier[worst.1],
+            ));
+        }
+        // The same throws, each within a tick (the robot's feet reach the pad a tick apart), and
+        // the hook set and let go within a tick.
+        let ticks = |samples: &[Sample], what: fn(&Sample) -> bool| {
+            samples
+                .iter()
+                .filter(|s| what(s))
+                .map(|s| s.tick)
+                .collect::<Vec<_>>()
+        };
+        let hooked = |samples: &[Sample]| {
+            let first = samples.iter().position(|s| s.hooked);
+            let last = samples.iter().rposition(|s| s.hooked);
+            (first, last)
+        };
+        let (throws_a, throws_b) = (
+            ticks(&engine, |s| s.launched),
+            ticks(&rapier, |s| s.launched),
+        );
+        assert_eq!(throws_a.len(), throws_b.len(), "{}: throws", scenario.name);
+        let near = |a: Option<usize>, b: Option<usize>| match (a, b) {
+            (Some(a), Some(b)) => a.abs_diff(b) <= 1,
+            (a, b) => a == b,
+        };
+        for (a, b) in throws_a.iter().zip(&throws_b) {
+            assert!(a.abs_diff(*b) <= 1, "{}: thrown {a} {b}", scenario.name);
+        }
+        let (hook_a, hook_b) = (hooked(&engine), hooked(&rapier));
+        assert!(
+            near(hook_a.0, hook_b.0) && near(hook_a.1, hook_b.1),
+            "{}: hook {hook_a:?} {hook_b:?}",
+            scenario.name
+        );
+    }
+    assert!(parted.is_empty(), "{parted:#?}");
 }
 
 /// The match's twelve slots, every one a bot's mechanical robot, on the default map: the mean

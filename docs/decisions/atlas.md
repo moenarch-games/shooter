@@ -211,6 +211,10 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   roll and the joints' turn included; shooter#54), not from the kit's leg clips.
   Since shooter#58 (D2.i74.1) the drive carries only robots with a connected leg: a robot on
   wheels or tracks alone moves on its own actuators, with its own friction.
+  Since shooter#73's dummies and A/B pass the robots' world holds every standing target dummy as a
+  fixed box where its body stands (rebuilt exactly when one goes down, comes back or walks), so
+  robots stop against dummies instead of passing through; and a jump pad throws a grounded robot
+  rising slower than 0.6 m/s (a walking robot's gait bob), not only one not rising at all.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
   humanoids and other bipeds, four-leg robo-dogs on built-in quadruped walking presets, wheels and
   tracks, stationary platforms and grappling-only machines, all from the same part types and rules.
