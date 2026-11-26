@@ -1288,9 +1288,10 @@ fn bots_keep_moving_and_scoring_on_the_drydock() {
     bots_keep_moving_and_scoring_on(MapId::Drydock, 2_000.0);
 }
 
-/// Twelve bots for 90 s on `map`: plenty of shots, at least ten kills, every bot at least
-/// `roams` units from where it started and none idle (alive, mobile, not firing, within 1 m of
-/// one spot) for 5 s.
+/// Twelve bots for 90 s on `map`: plenty of shots, at least ten kills, every bot that could walk
+/// for at least half the match at least `roams` units from where it started (a robot whose legs
+/// are shot off and that nobody finishes stands where it fell) and none idle (alive, mobile, not
+/// firing, within 1 m of one spot) for 5 s.
 fn bots_keep_moving_and_scoring_on(map: MapId, roams: f32) {
     let rules = Rules {
         frag_limit: 0,
@@ -1305,6 +1306,7 @@ fn bots_keep_moving_and_scoring_on(map: MapId, roams: f32) {
     let mut idle = vec![0u32; slots];
     let mut start: Vec<Option<[f32; 3]>> = vec![None; slots];
     let mut farthest = vec![0.0f32; slots];
+    let mut mobile = vec![0u32; slots];
     for _ in 0..90 * 60 {
         session.step().unwrap();
         let tick = session.ticks();
@@ -1326,6 +1328,7 @@ fn bots_keep_moving_and_scoring_on(map: MapId, roams: f32) {
                 anchor[slot] = None;
                 continue;
             }
+            mobile[slot] += 1;
             let feet = fighter.feet();
             let from = *start[slot].get_or_insert(feet);
             farthest[slot] = farthest[slot].max((feet[0] - from[0]).hypot(feet[2] - from[2]));
@@ -1342,9 +1345,10 @@ fn bots_keep_moving_and_scoring_on(map: MapId, roams: f32) {
     assert!(kills >= 10, "{kills} kills in 90 s");
     for slot in 0..slots {
         assert!(
-            farthest[slot] > roams,
-            "{map}: slot {slot} got {} units",
-            farthest[slot]
+            farthest[slot] > roams || mobile[slot] < 45 * 60,
+            "{map}: slot {slot} got {} units in {} ticks able to walk",
+            farthest[slot],
+            mobile[slot]
         );
         assert!(
             idle[slot] < 5 * 60,

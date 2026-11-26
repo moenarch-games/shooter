@@ -104,7 +104,7 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
             (Vec3::new(-9.0, 5.0, -14.0), Vec3::new(12.0, 2.0, -9.0)),
             // Through the booth's south doorway to its blast screen.
             (Vec3::new(12.5, 1.8, -6.2), Vec3::new(13.0, 1.5, -12.0)),
-            // The passage under the north gallery, west toward its closed end.
+            // The passage under the north gallery, west toward its screened end.
             (Vec3::new(5.0, 1.8, -13.5), Vec3::new(-14.0, 1.5, -15.0)),
             // The floor west of the stage: the container, the jump pad and the gallery's ramp.
             (Vec3::new(-5.5, 2.2, 1.5), Vec3::new(-10.0, 2.0, -9.0)),
