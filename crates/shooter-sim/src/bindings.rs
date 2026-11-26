@@ -629,8 +629,10 @@ impl Bindings {
     /// - **Wheels and tracks**: W turns each at its top rate the way that rolls it toward the
     ///   robot's front as mounted (its axle across the robot), S the other way; D turns the
     ///   left side forward and the right side back at 60 %, A the other way. A part whose axle
-    ///   points along the robot rolls it sideways for W: its mounting says so.
-    /// - **Joints**: every rotor follows the mouse's horizontal offset and every hinge its
+    ///   points along the robot rolls it sideways for W: its mounting says so. When a vertical
+    ///   steering motor carries a horizontal wheel axle, A/D command those motors instead of
+    ///   differential wheel rates (tracks retain their differential bindings).
+    /// - **Other joints**: every rotor follows the mouse's horizontal offset and every hinge its
     ///   vertical offset (up raises), so two joint axes aim a turret; the offset stays when the
     ///   mouse stops. Held, the right mouse button (the precision aim's, shooter#132) makes every
     ///   joint track the camera's target instead ([`Output::Track`]).
@@ -692,7 +694,14 @@ impl Bindings {
         }
         // Wheels and tracks: the spin that rolls each forward is along axle × up, and which
         // side its axle is on.
-        let rolling: Vec<(PartId, bool, bool)> = layout
+        let steering: Vec<Target> = layout
+            .steering_joints()
+            .map(|(actuator, hinge)| Target {
+                part: actuator.part,
+                invert: hinge.axis[1] > 0.0,
+            })
+            .collect();
+        let rolling: Vec<(PartId, bool, bool, bool)> = layout
             .actuators
             .iter()
             .filter(|actuator| {
@@ -712,20 +721,26 @@ impl Bindings {
                     hinge.axis[0]
                 };
                 let backward = along < 0.0;
-                Some((actuator.part, backward, hinge.anchor[2] < 0.0))
+                Some((
+                    actuator.part,
+                    backward,
+                    hinge.anchor[2] < 0.0,
+                    actuator.kind == Actuator::Locomotion(Locomotion::Track),
+                ))
             })
             .collect();
         if !rolling.is_empty() {
             let along: Vec<Target> = rolling
                 .iter()
-                .map(|&(part, backward, _)| Target {
+                .map(|&(part, backward, _, _)| Target {
                     part,
                     invert: backward,
                 })
                 .collect();
             let right: Vec<Target> = rolling
                 .iter()
-                .map(|&(part, backward, left)| Target {
+                .filter(|&&(_, _, _, track)| track || steering.is_empty())
+                .map(|&(part, backward, left, _)| Target {
                     part,
                     invert: backward != !left,
                 })
@@ -735,11 +750,16 @@ impl Bindings {
             add(d, Mode::Hold, Output::Rate, false, 60, &right);
             add(a, Mode::Hold, Output::Rate, true, 60, &right);
         }
+        // A/D steer the actual wheel mounts; W/S keep rolling both sides together.
+        // Releasing A/D returns the motors to their authored straight-ahead angles.
+        add(d, Mode::Hold, Output::Angle, false, 33, &steering);
+        add(a, Mode::Hold, Output::Angle, true, 33, &steering);
         let joints = |joint: Joint| -> Vec<Target> {
             layout
                 .actuators
                 .iter()
                 .filter(|actuator| actuator.kind == Actuator::Joint(joint))
+                .filter(|actuator| !steering.iter().any(|target| target.part == actuator.part))
                 .map(|actuator| Target {
                     part: actuator.part,
                     invert: false,

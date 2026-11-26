@@ -1294,6 +1294,21 @@ pub const ROVER: Assembly = authored(&[
     Part::on(8, &GENERATOR, 7, &FUEL_TANK, Face::PosZ, 0, 0),
 ]);
 
+/// The rover with two hinge servos on its front wheels, steering around vertical axes.
+pub const STEER_CAR: Assembly = authored(&[
+    Part::root(0, &CHASSIS_L),
+    Part::on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+    Part::on(2, &WHEEL, 0, &CHASSIS_L, Face::PosY, 0, 0).yawed(2 * Orientation::QUARTER),
+    Part::on(3, &HINGE, 0, &CHASSIS_L, Face::PosY, 0, 1),
+    Part::on(4, &WHEEL, 0, &CHASSIS_L, Face::NegY, 0, 0).yawed(2 * Orientation::QUARTER),
+    Part::on(5, &HINGE, 0, &CHASSIS_L, Face::NegY, 1, 0).yawed(Orientation::QUARTER),
+    forward(6, &ENERGY_RIFLE, &CHASSIS_L, 1, 2),
+    Part::on(7, &FUEL_TANK, 0, &CHASSIS_L, Face::PosZ, 1, 0),
+    Part::on(8, &GENERATOR, 7, &FUEL_TANK, Face::PosZ, 0, 0),
+    Part::on(9, &WHEEL, 3, &HINGE, Face::PosZ, 0, 0).yawed(Orientation::QUARTER),
+    Part::on(10, &WHEEL, 5, &HINGE, Face::PosZ, 0, 0).yawed(2 * Orientation::QUARTER),
+]);
+
 /// A four-legged robot with forelegs under two beams, a forward shotgun and a roof power
 /// plant. Its legs use the match's interim drive until physical gait balance is viable.
 pub const ROBO_DOG: Assembly = authored(&[
@@ -1329,7 +1344,7 @@ pub const MINI_TANK: Assembly = authored(&[
 /// builds. The builds with
 /// several copies of one weapon ([`TWIN_RAIL`], [`ROCKET_POD`]) are fixtures, not among them;
 /// the builder makes any such build.
-pub const LOADOUTS: [(&str, Assembly); 10] = [
+pub const LOADOUTS: [(&str, Assembly); 11] = [
     ("standard", STANDARD),
     ("heavy", HEAVY),
     ("skirmisher", SKIRMISHER),
@@ -1340,6 +1355,7 @@ pub const LOADOUTS: [(&str, Assembly); 10] = [
     ("robo-dog", ROBO_DOG),
     ("rover", ROVER),
     ("mini-tank", MINI_TANK),
+    ("steer-car", STEER_CAR),
 ];
 
 /// The loadout called `name` in [`LOADOUTS`] (any case).

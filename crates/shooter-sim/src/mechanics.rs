@@ -683,7 +683,6 @@ impl Layout {
         for part in parts {
             if let Some(joint) = group(part)
                 && !groups.contains(&Some(joint))
-                && !matches!(part_type(part).kind, Kind::Locomotion(_))
             {
                 groups.push(Some(joint));
             }
@@ -850,7 +849,22 @@ impl Layout {
                 }
                 _ => {
                     let body = body_of(part);
-                    let half = [x / 2.0, y / 2.0, z / 2.0];
+                    // If only articulated parts hang from a motor, its output still needs a
+                    // rigid carrier. Split the existing housing's mass rather than adding mass.
+                    let carrier = groups.iter().position(|key| *key == Some(part.id)).filter(
+                        |_| {
+                            !parts.iter().any(|child| {
+                                group(child) == Some(part.id)
+                                    && !matches!(part_type(child).kind, Kind::Locomotion(_))
+                            })
+                        },
+                    );
+                    let half = [
+                        x / 2.0,
+                        y / 2.0,
+                        if carrier.is_some() { z / 4.0 } else { z / 2.0 },
+                    ];
+                    let mass = if carrier.is_some() { mass / 2.0 } else { mass };
                     layout.bodies[body].children.push(Child {
                         shape: Shape::Box(half),
                         position: frame.point(half),
@@ -862,6 +876,19 @@ impl Layout {
                         body,
                         child: layout.bodies[body].children.len() - 1,
                     });
+                    if let Some(carrier) = carrier {
+                        layout.bodies[carrier].children.push(Child {
+                            shape: Shape::Box(half),
+                            position: frame.point([half[0], half[1], 3.0 * half[2]]),
+                            orientation: frame.rotation.quaternion(),
+                            mass,
+                        });
+                        layout.segments.push(Segment {
+                            part: part.id,
+                            body: carrier,
+                            child: layout.bodies[carrier].children.len() - 1,
+                        });
+                    }
                 }
             }
         }
@@ -904,6 +931,43 @@ impl Layout {
             .map(|part| part.id)
             .collect();
         layout
+    }
+
+    /// Vertical-axis motors upstream of a wheel with a horizontal axle, in part-ID order.
+    /// These change the wheel's rolling direction rather than its speed or a weapon's aim.
+    pub fn steering_joints(&self) -> impl Iterator<Item = (&ActuatorPlan, &HingePlan)> {
+        self.actuators.iter().filter_map(move |actuator| {
+            if !matches!(actuator.kind, Actuator::Joint(_)) {
+                return None;
+            }
+            let joint = self.hinges.get(*actuator.hinges.first()?)?;
+            if joint.axis[1].abs() < 0.9 {
+                return None;
+            }
+            let steers_wheel = self.actuators.iter().any(|wheel| {
+                if wheel.kind != Actuator::Locomotion(Locomotion::Wheel) {
+                    return false;
+                }
+                let Some(axle) = wheel.hinges.first().and_then(|&at| self.hinges.get(at)) else {
+                    return false;
+                };
+                if axle.axis[1].abs() > 0.1 {
+                    return false;
+                }
+                let mut body = axle.a;
+                while body != 0 {
+                    if body == joint.b {
+                        return true;
+                    }
+                    let Some(parent) = self.hinges.iter().find(|hinge| hinge.b == body) else {
+                        break;
+                    };
+                    body = parent.a;
+                }
+                false
+            });
+            steers_wheel.then_some((actuator, joint))
+        })
     }
 
     /// The legs' gait preset the build suggests: two legs walk as a biped, four as a quadruped,

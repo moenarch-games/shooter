@@ -151,6 +151,49 @@ fn an_action_group_drives_every_motor_in_it_each_its_own_way() {
 }
 
 #[test]
+fn wheel_steering_uses_the_motors_not_the_turret_or_differential_drive() {
+    use shooter_sim::robot::{BETA, STEER_CAR};
+
+    let build = BETA.validate(&STEER_CAR.candidate()).unwrap();
+    let robot = Layout::of(&build);
+    let steering: Vec<_> = robot.steering_joints().map(|(motor, _)| motor.part).collect();
+    assert_eq!(steering, [PartId(3), PartId(5)]);
+    assert!(Layout::of(&fixtures::car()).steering_joints().next().is_none());
+    assert!(Layout::of(&fixtures::paired_turret()).steering_joints().next().is_none());
+    let preset = Bindings::preset(&robot);
+    preset.check(&robot).unwrap();
+    let resolve = |pressed| preset.resolve(&robot, &mut BindingState::default(), pressed);
+    let straight = resolve(Pressed::wasd(1, 0));
+    let right = resolve(Pressed::wasd(1, 1));
+    let left = resolve(Pressed::wasd(1, -1));
+    let aim = resolve(Pressed {
+        buttons: u8::MAX,
+        mouse: [20, -10],
+        ..Pressed::default()
+    });
+    for part in steering {
+        assert_eq!(straight.get(part), Some(Command::Angle(0)));
+        assert_eq!(aim.get(part), Some(Command::Angle(0)));
+        assert_eq!(right.get(part), Some(Command::Angle(-5406)));
+        assert_eq!(left.get(part), Some(Command::Angle(5406)));
+    }
+    for part in [PartId(2), PartId(4), PartId(9), PartId(10)] {
+        assert!(matches!(straight.get(part), Some(Command::Rate(rate)) if rate.abs() == 20_000));
+        assert_eq!(straight.get(part), right.get(part));
+        assert_eq!(straight.get(part), left.get(part));
+    }
+    // Drive the actual articulated parts, not just a binding fixture.
+    let mut world = Mechanics::new(&floor()).unwrap();
+    world.spawn(build, [0.0, 0.0, 0.0], 0).unwrap();
+    for _ in 0..180 {
+        world.step(&[right.controls(&robot)]).unwrap();
+    }
+    for part in [PartId(3), PartId(5)] {
+        assert!(world.joint(0, part).unwrap().0 < -0.1, "{part:?}");
+    }
+}
+
+#[test]
 fn inversion_flips_a_binding_and_a_part_flips_its_own_share() {
     let robot = Layout::of(&STANDARD);
     let mut flipped = legs_on("KeyW", Mode::Hold);
