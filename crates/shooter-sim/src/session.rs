@@ -1191,6 +1191,7 @@ impl Session {
         session.reset_pickups();
         session.spawn_everyone()?;
         session.dummies = Dummy::spawn_all(&mut session.world, &session.arena.posts)?;
+        session.settle_robot_statics(false)?;
         session.record();
         Ok(session)
     }
@@ -1315,13 +1316,14 @@ impl Session {
     }
 
     /// The arena catches up with its placeables ([`crate::scenery`]): each one that broke (or
-    /// came back whole) this tick takes its new pieces in the arena, the physics world and the
-    /// robots' world, and a hook set on one that broke lets go. Last in the tick, like the
-    /// robots' changes: from the next tick on every query meets the new pieces.
-    fn settle_scenery(&mut self) -> Result<(), PhysicsError> {
+    /// came back whole) this tick takes its new pieces in the arena and the physics world (the
+    /// robots' world in [`Session::settle_robot_statics`]), and a hook set on one that broke lets
+    /// go. Last in the tick, like the robots' changes: from the next tick on every query meets
+    /// the new pieces. Whether any placeable changed.
+    fn settle_scenery(&mut self) -> Result<bool, PhysicsError> {
         let changed = self.scenery.settle(&mut self.arena);
         if changed.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         for &index in &changed {
             for id in self.scenery.body_ids(index) {
@@ -1340,8 +1342,40 @@ impl Session {
                 }
             }
         }
-        // The robots stand as they stood: only the scenery under them changes.
-        self.mechanics.reshape(&self.scenery.statics(&self.arena))
+        Ok(true)
+    }
+
+    /// The robots' statics: the arena's pieces as they stand ([`Scenery::statics`]) and, after
+    /// them in post order, every standing target dummy as a fixed box of its size where its
+    /// body is. The dummies walk in the physics world ([`crate::dummies`]); the robots meet them
+    /// here, so a robot driving or rolling into one stops against it as against cover.
+    fn robot_statics(&self) -> Vec<crate::physics::RigidBody> {
+        let mut statics = self.scenery.statics(&self.arena);
+        statics.extend(self.dummies.iter().filter_map(|dummy| {
+            let body = self.world.body(dummy.body)?;
+            Some(crate::physics::RigidBody::fixed(
+                dummy.body,
+                body.position(),
+                PLAYER_HALF_EXTENTS,
+            ))
+        }));
+        statics
+    }
+
+    /// The robots' world catches up with the arena and the dummies ([`Session::robot_statics`]):
+    /// when a placeable broke or came back, or a dummy went down, came back or walked, it is
+    /// rebuilt on the new statics with the robots standing as they stood
+    /// ([`Mechanics::reshape`]), so the host, a predicting client and a replay continue alike.
+    /// Last in the tick, like the robots' own changes.
+    fn settle_robot_statics(&mut self, scenery_changed: bool) -> Result<(), PhysicsError> {
+        if !scenery_changed && self.dummies.is_empty() {
+            return Ok(());
+        }
+        let statics = self.robot_statics();
+        if statics.as_slice() == self.mechanics.statics() {
+            return Ok(());
+        }
+        self.mechanics.reshape(&statics)
     }
 
     /// The host's word on the arena's placeables (a snapshot's [`crate::Snapshot::scenery`]),
@@ -1353,7 +1387,8 @@ impl Session {
     /// new pieces.
     pub fn adopt_scenery(&mut self, state: &[PlaceableState]) -> Result<(), PhysicsError> {
         self.scenery.adopt(state).map_err(crate::physics::error)?;
-        self.settle_scenery()
+        let changed = self.settle_scenery()?;
+        self.settle_robot_statics(changed)
     }
 
     fn spawn(&mut self, slot: usize, at: Spawn) -> Result<(), PhysicsError> {
@@ -2124,7 +2159,8 @@ impl Session {
             }
         }
         self.settle_robots()?;
-        self.settle_scenery()?;
+        let changed = self.settle_scenery()?;
+        self.settle_robot_statics(changed)?;
         if playing {
             self.run_pickups();
         }
@@ -2311,7 +2347,8 @@ impl Session {
         self.reset_pickups();
         // Every placeable comes back whole for the new round.
         self.scenery.restore();
-        self.settle_scenery()?;
+        let changed = self.settle_scenery()?;
+        self.settle_robot_statics(changed)?;
         self.phase = Phase::Playing {
             ends_at: (self.rules.time_limit_ticks > 0)
                 .then_some(self.tick + self.rules.time_limit_ticks),

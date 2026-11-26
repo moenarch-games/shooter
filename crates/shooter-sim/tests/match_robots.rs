@@ -382,3 +382,135 @@ fn a_part_shot_off_leaves_the_bodies_mass_and_motors() {
         }
     );
 }
+
+/// [`floor`] with a target dummy standing 4 m ahead of the first spawn point, in its way.
+fn floor_with_dummy() -> Arena {
+    Arena {
+        posts: vec![shooter_sim::Post {
+            feet: Vec3i::new(0, 0, -200),
+            patrol_units: 0,
+        }],
+        ..floor()
+    }
+}
+
+/// How far (units, along +Z) `build` gets from the first spawn point in `ticks` of W, and the
+/// session after.
+fn run_into(arena: Arena, build: shooter_sim::Assembly, ticks: u32) -> (f32, Session) {
+    let mut session = Session::with_rules(arena, Rules::solo()).unwrap();
+    assert!(session.configure(LOCAL_PLAYER, build));
+    for _ in 0..ticks {
+        let intent = session.with_preset(
+            0,
+            Intent {
+                forward: 1,
+                ..Intent::IDLE
+            },
+        );
+        session.tick(intent).unwrap();
+    }
+    (session.local().center()[2], session)
+}
+
+/// Target dummies stand in the robots' world (shooter#73): a robot walking on its legs (the
+/// movement drive) or rolling on its wheels into one stops against it, where on open floor it
+/// carries on past the post; the dummy still takes the robot's shots.
+#[test]
+fn robots_stop_against_target_dummies() {
+    for (build, ticks) in [(STANDARD, 120), (fixtures::car(), 240)] {
+        let (open, _) = run_into(floor(), build, ticks);
+        let (blocked, mut session) = run_into(floor_with_dummy(), build, ticks);
+        println!("open {open} blocked {blocked}");
+        assert!(open > 100.0, "it passes the post on open floor: {open}");
+        // The dummy's near side is 30 units before its post; the robot's centre stays short of it.
+        assert!(blocked < -230.0, "it stops against the dummy: {blocked}");
+        assert!(blocked > -600.0, "it moved toward it: {blocked}");
+        // The robot does not move it: it stands where it stood, in both worlds (so the robots'
+        // world is not rebuilt for it tick after tick).
+        let dummy = session.dummies[0].body;
+        let standing = Vec3i::new(0, 90, -200);
+        assert_eq!(session.world.body(dummy).unwrap().position(), standing);
+        let boxed = session
+            .mechanics
+            .statics()
+            .iter()
+            .find(|body| body.id() == dummy);
+        assert_eq!(boxed.unwrap().position(), standing);
+        if build == STANDARD {
+            let mut hit = false;
+            for _ in 0..60 {
+                let report = session
+                    .tick(Intent {
+                        fire: true,
+                        ..Intent::IDLE
+                    })
+                    .unwrap();
+                hit |= report.damage > 0;
+            }
+            assert!(hit, "its shots still hit the dummy");
+            assert!(session.dummies[0].health < shooter_sim::dummies::DUMMY_HEALTH);
+        }
+    }
+}
+
+/// A dummy that goes down leaves the robots' world, so a robot held up by it walks on; it comes
+/// back into both worlds when it stands again. A replay of the same inputs goes alike, and a
+/// client predicting the robot from a snapshot follows the host bit for bit as it walks into the
+/// dummy and on past it once it is down.
+#[test]
+fn a_downed_dummy_lets_robots_through_alike_on_host_client_and_replay() {
+    let dummy = shooter_sim::physics::BodyId(shooter_sim::arena::FIRST_DUMMY_BODY);
+    let walls = |session: &Session| {
+        session
+            .mechanics
+            .statics()
+            .iter()
+            .any(|body| body.id() == dummy)
+    };
+    let play = || {
+        let mut host = Session::with_rules(floor_with_dummy(), people(1)).unwrap();
+        host.join(7).unwrap();
+        let mut predictor = Session::with_rules(floor_with_dummy(), Rules::solo()).unwrap();
+        let walk = Intent {
+            forward: 1,
+            ..Intent::IDLE
+        };
+        let mut trace = Vec::new();
+        for tick in 0..240u32 {
+            input(&mut host, 7, tick + 1, walk);
+            if tick == 120 {
+                assert!(walls(&host), "the standing dummy is in the robots' world");
+                let at = host.ticks();
+                assert!(host.dummies[0].hurt(&mut host.world, 10_000, at));
+                // The predictor learns of it as a client would, from the host's events.
+                let at = predictor.ticks();
+                assert!(predictor.dummies[0].hurt(&mut predictor.world, 10_000, at));
+            }
+            host.step().unwrap();
+            if tick == 121 {
+                assert!(!walls(&host), "the downed dummy left the robots' world");
+            }
+            let snapshot = decode_snapshot(&encode_snapshot(&host.snapshot())).unwrap();
+            let me = snapshot.of_player(7).unwrap().clone();
+            let robot = me.robot.clone().unwrap();
+            if tick == 30 {
+                predictor.fighters[0].parts = me.parts;
+                predictor.fighters[0].energy = me.energy;
+                predictor
+                    .place(0, &robot, me.motion, me.held, me.hook)
+                    .unwrap();
+            } else if tick > 30 {
+                predictor.tick(walk).unwrap();
+                let predicted = predictor.mechanics.state().robots[0].clone();
+                assert_eq!(predicted.bodies, robot.bodies, "tick {tick}");
+            }
+            trace.push(host.local().center());
+        }
+        trace
+    };
+    let trace = play();
+    // Held up at the dummy, then on past its post once it went down.
+    assert!(trace[119][2] < -230.0, "{:?}", trace[119]);
+    assert!(trace[239][2] > 0.0, "{:?}", trace[239]);
+    assert_eq!(trace, play(), "a replay goes alike");
+}

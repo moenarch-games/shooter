@@ -23,12 +23,12 @@ that materially changes the task.
 ```sh
 cargo fmt --all -- --check
 cargo test -p shooter-sim --locked                                         # movement and weapons on physics-engine
-cargo test -p shooter-sim --features physics-ab --test physics_ab --locked # Rapier A/B: robots on flat ground (whole, one leg), weapons, mechanics
+cargo test -p shooter-sim --features physics-ab --test physics_ab --locked # Rapier A/B: robots on flat ground (whole, one leg), up steps and over pads and ledges, weapons, mechanics
 cargo test -p shooter-sim --test deathmatch --locked                       # bots, scoring, rounds, lag compensation
 cargo test -p shooter-sim --test energy --locked                           # resources: storage from parts, fuel-to-electric generation, no free recharge, walk by speed and load, concurrent motors/guns/repair, depletion stops only dependents, wire
 cargo test -p shooter-sim --test powertrains --locked                      # electric and combustion powertrains: engine drive on fuel, flamethrower on fuel, hybrids, notices, lost supplies, prediction, bots
 cargo test -p shooter-sim --test mechanics --locked                        # mechanical robots: fixtures, gaits, motor energy, exact restore
-cargo test -p shooter-sim --test match_robots --locked                     # robots in the match: slots, exact prediction (whole, one leg), replay, severed parts
+cargo test -p shooter-sim --test match_robots --locked                     # robots in the match: slots, exact prediction (whole, one leg), replay, severed parts, stopped by target dummies
 cargo test -p shooter-sim --test damage --locked                           # per-part damage: front/side hits, splash, plates, lost parts, core kill, battery blast
 cargo test -p shooter-sim --test bindings --locked                         # control layouts: groups, inversion, hold/toggle, mouse modes, presets per locomotion, codecs, host check, prediction
 cargo test -p shooter-sim --test concurrent_fire --locked                  # concurrent fire: direct buttons and overlapping groups, two rail guns at once, mixed families, refusals, rocket salvo limit, wire, prediction, bots
