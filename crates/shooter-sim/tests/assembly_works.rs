@@ -82,8 +82,7 @@ fn playtest_report() {
 /// 20 s at the median, no one position (the open floor aside) makes most of the kills and every
 /// fighter gets well away from where it started; twelve on wheels, tracks or mixed builds fight
 /// and most of them roam. (Four on wheels may not find each other in 90 s: a skid-steered
-/// chassis turns in place only slowly, shooter#170, and wheels do not climb the kit's ramps,
-/// shooter#174.)
+/// chassis turns in place only slowly, shooter#170.)
 #[test]
 fn skirmishes_and_full_matches_find_fights_without_spawn_traps() {
     let seed = 3;
@@ -165,11 +164,13 @@ fn the_high_ground_sees_and_is_seen_from_the_floor() {
 
 /// Tracks drive onto the gantry bridge both ways on their own actuators: up the mezzanine's ramp
 /// and along its deck, and (shooter#152) up the loading ramp from the floor east of the bridge
-/// straight onto its edge; no contested high place needs legs, a jump or the grapple. Wheels do
-/// not yet: the car gets about half a metre up the kit's 1:4 ramps and rolls back, on every
-/// kit-built map (shooter#174, a locomotion matter, not this layout's).
+/// straight onto its edge; no contested high place needs legs, a jump or the grapple. Wheels
+/// climb the kit's 1:4 ramps too since shooter#174 (before it the car got about half a metre up
+/// and rolled back): the armed car drives up the loading ramp onto the bridge as the tank does.
+/// (By the mezzanine it climbs onto the deck but does not yet make the deck's turn onto the
+/// bridge: a skid-steered chassis turns slowly, shooter#170.)
 #[test]
-fn tracks_drive_onto_the_bridge_by_either_ramp() {
+fn wheels_and_tracks_drive_onto_the_bridge() {
     use shooter_sim::assembly_works::DECK_TOP;
     let loading = [Vec3i::new(1_600, 0, -700), Vec3i::new(0, DECK_TOP, -700)];
     let mezzanine = [
@@ -178,18 +179,20 @@ fn tracks_drive_onto_the_bridge_by_either_ramp() {
         Vec3i::new(0, DECK_TOP, -1_600),
         Vec3i::new(0, DECK_TOP, -800),
     ];
-    let (at, _) = drive_route(
-        Arena::assembly_works(),
-        fixtures::armed_tank(),
-        Vec3i::new(2_200, 0, -700),
-        &loading,
-        25,
-    );
-    assert!(
-        at[1] > (DECK_TOP - 30) as f32,
-        "up the loading ramp: {at:?}"
-    );
-    assert!(at[0].abs() < 250.0, "onto the bridge: {at:?}");
+    for build in [fixtures::armed_tank(), fixtures::armed_car()] {
+        let (at, _) = drive_route(
+            Arena::assembly_works(),
+            build,
+            Vec3i::new(2_200, 0, -700),
+            &loading,
+            25,
+        );
+        assert!(
+            at[1] > (DECK_TOP - 30) as f32,
+            "up the loading ramp: {at:?}"
+        );
+        assert!(at[0].abs() < 250.0, "onto the bridge: {at:?}");
+    }
     let (at, _) = drive_route(
         Arena::assembly_works(),
         fixtures::armed_tank(),
@@ -200,17 +203,5 @@ fn tracks_drive_onto_the_bridge_by_either_ramp() {
     assert!(
         at[1] > (DECK_TOP - 30) as f32 && at[0].abs() < 250.0,
         "up the mezzanine ramp and onto the bridge: {at:?}"
-    );
-    let (at, highest) = drive_route(
-        Arena::assembly_works(),
-        fixtures::armed_car(),
-        Vec3i::new(2_200, 0, -700),
-        &loading,
-        25,
-    );
-    println!("the car up the loading ramp: at {at:?}, highest {highest}");
-    assert!(
-        highest < 100.0,
-        "wheels climb the ramp now: drive them onto the bridge here"
     );
 }

@@ -101,8 +101,13 @@ const CELL: f32 = CELL_MM as f32 / 10.0;
 pub const FIRST_ROBOT_BODY: u64 = 10_000;
 /// Body ids a robot reserves: every part could be two bodies (a leg, a track), plus its root.
 pub const BODIES_PER_ROBOT: u64 = 2 * MAX_PARTS as u64 + 1;
-/// Friction of wheels, tracks and feet; other bodies keep the default.
+/// Friction of tracks and feet; other bodies keep the default.
 const GRIP: f32 = 1.0;
+/// Friction of a wheel's tyre (shooter#174, provisional, Atlas Q2.i70.1): 1.0 against the
+/// arena's 0.5 (averaged), so under the match's gravity a front wheel unloaded as a car climbs
+/// or launches at full torque still grips instead of spinning (at [`GRIP`] the 60 N·m wheels
+/// that climb the arena kit's 1:4 ramps spun the car's front wheels and swung it off line).
+const TYRE: f32 = 1.5;
 const FRICTION: f32 = 0.5;
 /// A hinge part turns within a quarter turn either way.
 const HINGE_LIMITS: [f32; 2] = [-FRAC_PI_2, FRAC_PI_2];
@@ -755,7 +760,7 @@ impl Layout {
                                 orientation: frame.rotation.quaternion(),
                                 mass,
                             };
-                            let body = new_body(&mut layout, vec![wheel], GRIP);
+                            let body = new_body(&mut layout, vec![wheel], TYRE);
                             layout.segments.push(Segment {
                                 part: part.id,
                                 body,

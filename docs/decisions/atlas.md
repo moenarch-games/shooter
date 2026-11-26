@@ -722,7 +722,10 @@ whether resupply locks movement or firing (Q2.i123.3).
   mounted level with its hull's bottom holds the hull off flat ground and drives it (the
   clients stand a tracked robot on them; the kit's drawn road wheels are 4 cm smaller). *Drive
   retune*, provisional (Q2.i123.2): a wheel's top rate 20 rad/s (about 3.6 m/s), a track's
-  25 rad/s (about 3.5 m/s) and 60 N·m; legs unchanged. **Not yet**: legs. A robot with a
+  25 rad/s (about 3.5 m/s) and 60 N·m; legs unchanged. *Ramps* (shooter#174): a wheel's motor
+  gives 60 N·m too and its tyre grips the arena at 1.0 (Q2.i70.1), so wheels as well as tracks
+  climb the arena kit's 1:4 ramps on every kit-built map, on physics-engine and on the Rapier
+  oracle (`tests/physics_ab.rs`); no ramp or chassis force does it. **Not yet**: legs. A robot with a
   connected leg stays on the interim movement drive (D2.i70.5, unchanged: walk, sprint, slide,
   its jump and air jump, step-up, facing the aim): the bounded fallback until legs balance and
   walk on their own servos in the match. Measured on physics-engine at the match's 18 m/s²
@@ -960,7 +963,7 @@ whether resupply locks movement or firing (Q2.i123.3).
   Performance is unchanged: the simulation 0.30 → 0.31 ms a tick with 6 bots and 0.66 → 0.68 with
   12 (different matches), the native client 2.33 ms a frame on an RTX 3060 Ti either way.
   Capacity is unchanged (2 to 6 recommended, 12 spawn points). Open: wheels do not climb the
-  kit's 1:4 ramps on any map (shooter#174), and two wheeled or tracked bots rarely find each
+  kit's 1:4 ramps on any map (shooter#174; since it they climb both), and two wheeled or tracked bots rarely find each
   other (a skid-steered chassis turns in place slowly, shooter#170); resupply stations wait on
   shooter#129; the proposed clean white and amber lighting waits on per-map lighting, which the
   client does not have (one sun and ambient for every map). Captures in `docs/captures/151/`.
@@ -996,7 +999,8 @@ whether resupply locks movement or firing (Q2.i123.3).
   bridge's ends 41% → 40%, the mezzanines 25–34%, the tower tops 27% → 26% (sight is mutual:
   as much of the floor can shoot back; the test holds every high place between a sixth and a
   half). Tracks drive up both ramps onto the bridge; wheels do not climb the kit's 1:4 ramps on
-  any map (shooter#174) and keep to the floor and bays, whose fights the changes opened to them.
+  any map (shooter#174) and keep to the floor and bays, whose fights the changes opened to them
+  (since shooter#174 they climb onto the bridge by the loading ramp).
   Performance is unchanged: the simulation 0.56 → 0.59 ms a tick with 12 bots on legs
   (different matches), the native client 2.33 → 2.36 ms a frame (RTX 3060 Ti). Open: the kit
   has no assembly machinery or crane props to make the works read as an assembly line
@@ -1058,7 +1062,7 @@ whether resupply locks movement or firing (Q2.i123.3).
   ground is judged by sightlines and the route fixtures (`tests/moves.rs`, the physics A/B
   routes): the freighter's stern pad, the cutter's prow, bridge and pad. Tracks drive up the
   cutter's prow onto its foredeck and up its bridge; wheels do not climb the kit's 1:4 ramps on
-  any map (shooter#174). Performance is unchanged: the simulation 0.53 → 0.55 ms a tick with 12
+  any map (shooter#174; since it they climb the gantries' and the bridge's). Performance is unchanged: the simulation 0.53 → 0.55 ms a tick with 12
   bots on legs (different matches), the native client 2.45 → 2.38 ms a frame on an RTX 3060 Ti
   (the profile run, a median of repeated runs: within their noise). Open: the kit has
   no spacecraft props (engine nozzles, a bridge canopy, a docking clamp, hull markings) to tell
@@ -1105,6 +1109,13 @@ whether resupply locks movement or firing (Q2.i123.3).
   in the match the locomotion pays for the drive's walk at a walk's or sprint's share of a
   sprint (the standard robot's two legs: about 4.7 a second walking, 6.7 sprinting), nothing
   standing or airborne.
+  Since shooter#174 a wheel's motor gives at most 60 N·m (was 30, a track road wheel's 60) and
+  a wheel's tyre has friction 1.5 (1.0 against the arena's 0.5, averaged; tracks and feet keep
+  1.0), tuned to the match's 18 m/s² gravity: four such wheels push the armed car (254 kg) up the
+  arena kit's 1:4 ramps (it needs about 1100 N; 30 N·m gave about 670 and it stalled half a metre
+  up), short of lifting its front wheels on a launch (its 80 cm tall chassis stands on a 40 cm
+  wheelbase), and the tyre keeps those unloaded front wheels gripping rather than spinning. The
+  draw is unchanged (by work and load, not by the motor's torque).
 - **Q2.i70.2**: The predetermined chassis sizes and their costs, and whether the 20 cm socket cell
   is final (D2.i70.1).
   Defaults in use until decided (shooter#71): a 20 cm cell; chassis sections of 20 × 40 × 80,

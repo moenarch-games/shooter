@@ -190,11 +190,13 @@ fn skirmishes_and_full_matches_find_fights_without_spawn_traps() {
 /// shooter#153 layout adds beside the gantries' ramps and gangways: up its gantry's bow ramp,
 /// across onto the prow step and up the prow's ramp onto the foredeck; and from the foredeck up
 /// the bridge's fore ramp onto the 6 m bridge. No hull top needs legs, a jump, a pad or the
-/// grapple. Wheels do not yet: the car gets about half a metre up the kit's 1:4 ramps and rolls
-/// back, on every kit-built map (shooter#174, a locomotion matter, not this layout's).
+/// grapple. Wheels climb the kit's 1:4 ramps too since shooter#174 (before it the car got about
+/// half a metre up and rolled back): the armed car drives up the gantry's 16 m bow ramp onto its
+/// 4 m deck and from the foredeck up the fore ramp onto the bridge. (Across onto the prow step it
+/// does not yet steer: a skid-steered chassis turns slowly, shooter#170.)
 #[test]
-fn tracks_drive_onto_the_cutter_by_its_prow_and_its_bridge() {
-    use shooter_sim::drydock::{FOREDECK_TOP, GANTRY_X, PROW_TOP, SHIP_X, STERN_TOP};
+fn wheels_and_tracks_drive_onto_the_cutter() {
+    use shooter_sim::drydock::{FOREDECK_TOP, GANTRY_TOP, GANTRY_X, PROW_TOP, SHIP_X, STERN_TOP};
     let (cutter, gantry) = (-SHIP_X, -GANTRY_X);
     let prow = [
         Vec3i::new(gantry, PROW_TOP, 1_950),
@@ -216,27 +218,28 @@ fn tracks_drive_onto_the_cutter_by_its_prow_and_its_bridge() {
         Vec3i::new(cutter, FOREDECK_TOP, 500),
         Vec3i::new(cutter, STERN_TOP, -800),
     ];
+    for build in [fixtures::armed_tank(), fixtures::armed_car()] {
+        let (at, _) = drive_route(
+            Arena::drydock(),
+            build,
+            Vec3i::new(cutter, FOREDECK_TOP, 1_100),
+            &bridge,
+            30,
+        );
+        assert!(
+            at[1] > (STERN_TOP - 30) as f32 && (at[0] - cutter as f32).abs() < 200.0,
+            "up the fore ramp onto the bridge: {at:?}"
+        );
+    }
     let (at, _) = drive_route(
-        Arena::drydock(),
-        fixtures::armed_tank(),
-        Vec3i::new(cutter, FOREDECK_TOP, 1_100),
-        &bridge,
-        30,
-    );
-    assert!(
-        at[1] > (STERN_TOP - 30) as f32 && (at[0] - cutter as f32).abs() < 200.0,
-        "up the fore ramp onto the bridge: {at:?}"
-    );
-    let (at, highest) = drive_route(
         Arena::drydock(),
         fixtures::armed_car(),
         Vec3i::new(gantry, 0, 3_400),
-        &prow,
-        30,
+        &[Vec3i::new(gantry, GANTRY_TOP, 1_000)],
+        20,
     );
-    println!("the car up the gantry's ramp: at {at:?}, highest {highest}");
     assert!(
-        highest < 100.0,
-        "wheels climb the ramp now: drive them onto the hulls here"
+        at[1] > (GANTRY_TOP - 30) as f32 && (at[0] - gantry as f32).abs() < 200.0,
+        "the car up the gantry's bow ramp onto its deck: {at:?}"
     );
 }

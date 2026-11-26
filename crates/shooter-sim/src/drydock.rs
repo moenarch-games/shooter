@@ -40,7 +40,7 @@
 //! cutter's bridge by its two ramps; and every one by the grapple (the masts). Each 6 m deck is
 //! seen from the other ship's hull across the corridor and from the gantries, and sees about as
 //! much of the dock floor as the other: no hull top is a perch nobody can reach or answer.
-//! Wheeled and tracked builds climb by the ramps (wheels not yet: shooter#174); the pads and the
+//! Wheeled and tracked builds climb by the ramps (wheels since shooter#174); the pads and the
 //! grapple are the agile builds' shortcuts.
 //!
 //! Fourteen spawn points, none in sight of another, all on the ground: in the outer lanes and
