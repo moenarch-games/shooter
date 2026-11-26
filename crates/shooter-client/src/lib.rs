@@ -21,6 +21,7 @@ pub mod overlay;
 pub mod repair_menu;
 pub mod robots;
 pub mod scene;
+pub mod touch;
 pub mod ui;
 
 use shooter_sim::MapId;
@@ -426,6 +427,38 @@ pub(crate) mod web {
     /// Whether the page holds Pointer Lock (the browser releases it on Escape).
     pub fn pointer_locked() -> bool {
         document().is_some_and(|document| document.pointer_lock_element().is_some())
+    }
+
+    /// The page's touch controls this frame (`window.shooterTouch`, [`crate::touch`]); the look
+    /// pad's drag is taken (reset on the page).
+    pub fn touch() -> crate::touch::Frame {
+        use js_sys::Reflect;
+        let Some(state) = web_sys::window()
+            .and_then(|window| Reflect::get(&window, &"shooterTouch".into()).ok())
+            .filter(wasm_bindgen::JsValue::is_object)
+        else {
+            return crate::touch::Frame::default();
+        };
+        let number = |name: &str| {
+            Reflect::get(&state, &name.into())
+                .ok()
+                .and_then(|value| value.as_f64())
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0)
+        };
+        let look = [number("lookX"), number("lookY")];
+        let _ = Reflect::set(&state, &"lookX".into(), &0.into());
+        let _ = Reflect::set(&state, &"lookY".into(), &0.into());
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        crate::touch::Frame {
+            on: Reflect::get(&state, &"on".into())
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            stick: [number("stickX"), number("stickY")].map(|axis| axis.clamp(-1.0, 1.0) as f32),
+            look,
+            held: number("held").clamp(0.0, f64::from(u32::MAX)) as u32,
+        }
     }
 
     /// Marks the page's body while the builder is open (`data-builder`): the page hides its own

@@ -51,6 +51,16 @@ until asset-tooling delivers them.
 **Practice offline.** The native client without arguments, and the browser build (Pages), run the
 same simulation in-process: you in slot 0 against eleven bots, no server needed.
 
+**On a phone or tablet.** The Pages build plays on a touch screen with a WebGPU browser (current
+Chrome on Android, Safari on iOS 26), best in landscape: the page shows touch controls instead of
+the keyboard help (`?touch=1` forces them, `?touch=0` keeps them off). The left thumb drags a move
+stick wherever it lands, dragging the rest of the screen (or Fire and Hook while held) looks, and
+buttons stand in for fire, jump, sprint (a toggle), slide, the energy blade, the grapple, the
+weapon cycle, the scores, field repair and Edit Robot; ❚❚ pauses. The page keeps what they hold
+in `window.shooterTouch` and the client presses the same keys and mouse buttons a keyboard and
+mouse would (`shooter-client`'s `touch`), so layouts, the host's checks and prediction see nothing
+new. In the builder a finger is the left mouse button (tap Ready to start).
+
 **Without WebGPU.** The browser build draws with render-engine on WebGPU where the browser has
 it, and otherwise with the client's lite renderer on WebGL 2 (`shooter_client::gfx::lite`;
 render-engine has no WebGL 2 backend). The lite renderer draws the same arenas, robots, effects
