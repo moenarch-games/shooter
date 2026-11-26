@@ -11,9 +11,9 @@ use shooter_sim::damage::PartDamage;
 use shooter_sim::energy::Pool;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{
-    ARMOR_PLATE, BATTERY, BEAM_LONG, BEAM_SHORT, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE,
-    ENERGY_RIFLE, FUEL_TANK, GENERATOR, GRAPPLE, HINGE, LASER, LEG, RAIL_GUN, ROCKET_LAUNCHER,
-    ROTOR, SENSOR, SHOTGUN, TRACK, WHEEL,
+    ADAPTER, ARMOR_PLATE, BATTERY, BEAM_LONG, BEAM_SHORT, CHASSIS_L, CHASSIS_M, CHASSIS_S,
+    ENERGY_BLADE, ENERGY_RIFLE, FUEL_TANK, GENERATOR, GRAPPLE, HINGE, LASER, LEG, MOUNT_RAIL_LONG,
+    RAIL_GUN, ROCKET_LAUNCHER, ROTOR, SENSOR, SHOTGUN, TRACK, WHEEL,
 };
 use shooter_sim::robot::{
     ARMORY, AssemblyError, BETA, Candidate, Catalog, EFFICIENCY_COIL, Face, HEAVY, Kind, LOADOUTS,
@@ -232,7 +232,7 @@ fn orientations_fold_into_one_canonical_form_of_the_same_rotation() {
         Orientation::canonical(5_000, QUARTER, 1_000),
         Orientation::canonical(4_000, QUARTER, 0)
     );
-    // The footprint turns with the yaw's nearest quarter turn.
+    // The yaw's nearest quarter turn.
     let quarters = |yaw| Orientation::canonical(yaw, 0, 0).quarter_turns();
     assert_eq!(
         [0, 8_191, 8_192, QUARTER, 3 * QUARTER, u16::MAX].map(quarters),
@@ -319,7 +319,7 @@ fn lopsided() -> Candidate {
     build(vec![
         root(0, &CHASSIS_S),
         turned(
-            on(1, &SENSOR, 0, &CHASSIS_S, Face::PosY, 2, 0),
+            on(1, &SENSOR, 0, &CHASSIS_S, Face::PosY, 3, 0),
             1_234,
             40_000,
             7,
@@ -1575,4 +1575,328 @@ fn a_preview_placement_is_where_the_placed_part_lands() {
     let mut orphan = placed;
     orphan.mount.as_mut().unwrap().parent = PartId(30);
     assert!(placement_of(&STANDARD, &orphan).is_none());
+}
+
+// Seating turned parts (shooter#124): a part pitched or rolled rests on the face it attaches to,
+// its footprint is the shadow it casts on that face, and validation, the placement and the
+// builder's preview agree.
+
+/// `v` turned by the unit quaternion `[x, y, z, w]`.
+fn rotate([x, y, z, w]: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let q = [x, y, z];
+    let t = cross(q, v).map(|c| 2.0 * c);
+    let u = cross(q, t);
+    [0, 1, 2].map(|i| v[i] + w * t[i] + u[i])
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn minus(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+/// The eight corners of a placed part (units, the robot's frame).
+fn corners(placement: &shooter_sim::mechanics::Placement) -> Vec<[f32; 3]> {
+    let h = placement.half_extents;
+    let mut corners = Vec::new();
+    for sx in [-1.0, 1.0] {
+        for sy in [-1.0, 1.0] {
+            for sz in [-1.0, 1.0] {
+                let local = rotate(placement.orientation, [sx * h[0], sy * h[1], sz * h[2]]);
+                corners.push([0, 1, 2].map(|i| placement.centre[i] + local[i]));
+            }
+        }
+    }
+    corners
+}
+
+/// Whether the line through `point` along `direction` passes through the placed part's box by
+/// more than `margin` (units) on every side.
+fn under(
+    placement: &shooter_sim::mechanics::Placement,
+    point: [f32; 3],
+    direction: [f32; 3],
+    margin: f32,
+) -> bool {
+    let [x, y, z, w] = placement.orientation;
+    let inverse = [-x, -y, -z, w];
+    let p = rotate(inverse, minus(point, placement.centre));
+    let d = rotate(inverse, direction);
+    let (mut near, mut far) = (f32::NEG_INFINITY, f32::INFINITY);
+    for axis in 0..3 {
+        let h = placement.half_extents[axis] - margin;
+        if d[axis].abs() < 1e-6 {
+            if p[axis].abs() >= h {
+                return false;
+            }
+        } else {
+            let (a, b) = ((-h - p[axis]) / d[axis], (h - p[axis]) / d[axis]);
+            near = near.max(a.min(b));
+            far = far.min(a.max(b));
+        }
+    }
+    near < far
+}
+
+/// A medium chassis carrying a rotor with an adapter turned an eighth on it, and a long rail
+/// turned a quarter across the top of its front: parents at every depth and turn.
+fn nested() -> Vec<RawPart> {
+    vec![
+        root(0, &CHASSIS_M),
+        on(1, &ROTOR, 0, &CHASSIS_M, Face::PosZ, 0, 0),
+        turned(
+            on(2, &ADAPTER, 1, &ROTOR, Face::PosZ, 0, 0),
+            QUARTER / 2,
+            0,
+            0,
+        ),
+        turned(
+            on(3, &MOUNT_RAIL_LONG, 0, &CHASSIS_M, Face::PosX, 1, 3),
+            QUARTER,
+            0,
+            0,
+        ),
+    ]
+}
+
+/// The sockets a turned part is tried on in [`nested`]: the chassis' back, the adapter's side
+/// and the rail's top.
+const SITES: [(u8, &PartType, Face, u8, u8); 3] = [
+    (0, &CHASSIS_M, Face::NegX, 1, 0),
+    (2, &ADAPTER, Face::PosX, 0, 0),
+    (3, &MOUNT_RAIL_LONG, Face::PosZ, 0, 1),
+];
+
+/// Every angle a builder's step reaches about one axis: quarter turns, eighths and a degree.
+const ANGLES: [u16; 6] = [
+    QUARTER,
+    2 * QUARTER,
+    3 * QUARTER,
+    QUARTER / 2,
+    5 * (QUARTER / 2),
+    182,
+];
+
+/// `(yaw, pitch, roll)` with `angle` about `axis` (0 yaw, 1 pitch, 2 roll).
+fn about(axis: usize, angle: u16) -> (u16, u16, u16) {
+    match axis {
+        0 => (angle, 0, 0),
+        1 => (0, angle, 0),
+        _ => (0, 0, angle),
+    }
+}
+
+/// `kind` placed as part 30 on `site` of [`nested`], turned `(yaw, pitch, roll)`: the build, the
+/// part's placement and the socket it sits on.
+fn seat(
+    kind: &PartType,
+    (parent, on_kind, face, u, v): (u8, &PartType, Face, u8, u8),
+    (yaw, pitch, roll): (u16, u16, u16),
+) -> (
+    Assembly,
+    shooter_sim::mechanics::Placement,
+    shooter_sim::mechanics::SocketSpot,
+) {
+    use shooter_sim::mechanics::{placements, sockets};
+    let mut parts = nested();
+    parts.push(turned(
+        on(30, kind, parent, on_kind, face, u, v),
+        yaw,
+        pitch,
+        roll,
+    ));
+    let build = BETA
+        .validate(&build(parts))
+        .unwrap_or_else(|error| panic!("{} on {parent}: {error}", kind.key));
+    let placement = placements(&build)
+        .into_iter()
+        .find(|placement| placement.part == PartId(30))
+        .unwrap();
+    let socket = on_kind.socket(face, u, v).unwrap();
+    let spot = sockets(&build)
+        .into_iter()
+        .find(|spot| spot.part == PartId(parent) && spot.socket == socket)
+        .unwrap();
+    (build, placement, spot)
+}
+
+#[test]
+fn a_part_turned_about_any_axis_rests_on_its_socket_face() {
+    for kind in [&ENERGY_RIFLE, &BATTERY, &TRACK, &SENSOR] {
+        for site in SITES {
+            for axis in 0..3 {
+                for angle in ANGLES {
+                    let turn = about(axis, angle);
+                    let (_, placement, spot) = seat(kind, site, turn);
+                    // Its lowest corner is on the face: not sunk into the parent, not floating.
+                    let lowest = corners(&placement)
+                        .into_iter()
+                        .map(|corner| dot(minus(corner, spot.centre), spot.normal))
+                        .fold(f32::INFINITY, f32::min);
+                    assert!(
+                        lowest.abs() < 1e-3,
+                        "{} on {} turned {turn:?}: lowest {lowest}",
+                        kind.key,
+                        site.0
+                    );
+                    // It stands over its socket's cell.
+                    assert!(
+                        under(&placement, spot.centre, spot.normal, 0.5),
+                        "{} on {} turned {turn:?}",
+                        kind.key,
+                        site.0
+                    );
+                }
+            }
+        }
+    }
+    // A rifle pitched a quarter lies along the face from its socket, its muzzle end over the
+    // next cell up the face's u axis; rolled a quarter it lies along the face's v axis.
+    let (_, pitched, spot) = seat(&ENERGY_RIFLE, SITES[0], (0, QUARTER, 0));
+    let height = dot(minus(pitched.centre, spot.centre), spot.normal);
+    assert!((height - 10.0).abs() < 1e-3, "{height}");
+}
+
+/// At quarter turns about any axes a part reserves exactly the cells it lies over; at any other
+/// angle at least those.
+#[test]
+fn a_turned_part_reserves_the_cells_it_lies_over() {
+    use shooter_sim::mechanics::sockets;
+    let mut turns = Vec::new();
+    for yaw in [0, QUARTER, 2 * QUARTER, 3 * QUARTER] {
+        for pitch in [0, QUARTER, 2 * QUARTER, 3 * QUARTER] {
+            for roll in [0, QUARTER, 2 * QUARTER, 3 * QUARTER] {
+                turns.push(((yaw, pitch, roll), true));
+            }
+        }
+    }
+    for axis in 0..3 {
+        for angle in [QUARTER / 2, 5 * (QUARTER / 2), 182, 3_000] {
+            turns.push((about(axis, angle), false));
+        }
+    }
+    turns.push(((QUARTER / 2, QUARTER / 2, QUARTER), false));
+    for kind in [&ENERGY_RIFLE, &BATTERY, &TRACK] {
+        for site in SITES {
+            for &(turn, quarter) in &turns {
+                let (build, placement, spot) = seat(kind, site, turn);
+                let part = build.part(PartId(30)).unwrap();
+                let mount = part.mount.unwrap();
+                let reserved = BETA.footprint(
+                    &build,
+                    mount.parent,
+                    mount.socket,
+                    part.kind,
+                    None,
+                    mount.orientation,
+                );
+                assert!(reserved.contains(&mount.socket), "its own socket");
+                let face = BETA
+                    .part_type(build.part(mount.parent).unwrap().kind)
+                    .unwrap()
+                    .site(mount.socket)
+                    .unwrap()
+                    .face;
+                let on_face: Vec<_> = sockets(&build)
+                    .into_iter()
+                    .filter(|other| {
+                        other.part == mount.parent
+                            && BETA
+                                .part_type(build.part(mount.parent).unwrap().kind)
+                                .unwrap()
+                                .site(other.socket)
+                                .unwrap()
+                                .face
+                                == face
+                    })
+                    .collect();
+                for other in &on_face {
+                    let lies_over = under(&placement, other.centre, spot.normal, 0.01);
+                    let label = format!(
+                        "{} on {} turned {turn:?}: {:?}",
+                        kind.key, site.0, other.socket
+                    );
+                    if quarter {
+                        assert_eq!(reserved.contains(&other.socket), lies_over, "{label}");
+                    } else if lies_over {
+                        assert!(reserved.contains(&other.socket), "{label}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Validation refuses a part beside a turned one exactly where the turned part lies, and a
+/// degree's fine turn does not take a neighbour's cell.
+#[test]
+fn validation_refuses_a_neighbour_under_a_pitched_or_rolled_part() {
+    let front = |u, v| (0, &CHASSIS_M, Face::PosX, u, v);
+    let check = |turn: (u16, u16, u16), (u, v): (u8, u8), taken: bool| {
+        let mut parts = vec![root(0, &CHASSIS_M)];
+        parts.push(turned(
+            on(1, &ENERGY_RIFLE, 0, &CHASSIS_M, Face::PosX, 0, 1),
+            turn.0,
+            turn.1,
+            turn.2,
+        ));
+        parts.push(on(2, &SENSOR, 0, &CHASSIS_M, Face::PosX, u, v));
+        let result = BETA.validate(&build(parts));
+        if taken {
+            assert_eq!(
+                result,
+                Err(AssemblyError::Overlap(PartId(1), PartId(2))),
+                "{turn:?} {u} {v}"
+            );
+        } else {
+            assert!(result.is_ok(), "{turn:?} {u} {v}: {result:?}");
+        }
+    };
+    // Pitched a quarter the rifle lies toward +u, over (1, 1); the other way it overhangs the
+    // face's edge and reserves its own cell only.
+    check((0, QUARTER, 0), (1, 1), true);
+    check((0, QUARTER, 0), (0, 0), false);
+    check((0, 3 * QUARTER, 0), (1, 1), false);
+    // Rolled a quarter it lies toward −v, over (0, 0); the other way over (0, 2).
+    check((0, 0, QUARTER), (0, 0), true);
+    check((0, 0, QUARTER), (0, 2), false);
+    check((0, 0, 3 * QUARTER), (0, 2), true);
+    check((0, 0, 3 * QUARTER), (0, 0), false);
+    // Unturned, or turned about the normal, it stands on its own cell.
+    check((0, 0, 0), (1, 1), false);
+    check((QUARTER, 0, 0), (1, 1), false);
+    // Pitched an eighth it leans well over (1, 1); a degree, only a sliver.
+    check((0, QUARTER / 2, 0), (1, 1), true);
+    check((0, 182, 0), (1, 1), false);
+    check((0, 0, 182), (0, 0), false);
+    // The preview's footprint names the cells the validation refused.
+    let pitched = BETA
+        .validate(&build(vec![
+            root(0, &CHASSIS_M),
+            turned(
+                on(1, &ENERGY_RIFLE, 0, &CHASSIS_M, Face::PosX, 0, 1),
+                0,
+                QUARTER,
+                0,
+            ),
+        ]))
+        .unwrap();
+    let socket =
+        |(_, kind, face, u, v): (u8, &PartType, Face, u8, u8)| kind.socket(face, u, v).unwrap();
+    assert_eq!(
+        BETA.claims(&pitched, PartId(0)),
+        [
+            (socket(front(0, 1)), PartId(1)),
+            (socket(front(1, 1)), PartId(1))
+        ]
+    );
 }

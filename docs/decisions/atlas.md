@@ -126,6 +126,13 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   Since shooter#126 mount rails (20 × 40 and 20 × 80 cm, a row of hardpoints on top) and an
   adapter (a 20 cm cube with five sockets) are catalog parts beside the beams, extending the tree
   through the same validator, placement, damage and detachment (no wire or replay change).
+  Since shooter#124 a turned part is seated on its parent's face: it turns about the centre of
+  its first cell and rests its lowest corner on the face (a pitched or rolled part no longer
+  sinks into its parent), and its footprint is the cells of the face its turned cuboid lies
+  over (its shadow, a 10 mm margin), so a part pitched a quarter reserves the cells it lies
+  across. Parts turned only about the normal by quarter turns stand and reserve as before
+  (every named loadout and fixture); the same bytes now mean other rules for other turns
+  (wire 30, replay format 23).
 - **D2.i70.2** (owner, 2026-11-13; shooter#70): Every robot has exactly one control core, on an
   exterior socket of the player's choice. Armor may cover it (penetration exists, D2.i70.8); there
   is no exposed-face check. Destroying the core, and only that, eliminates the robot: losing

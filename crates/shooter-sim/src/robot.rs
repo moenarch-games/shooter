@@ -18,9 +18,10 @@
 //! type exposes sockets on some of its faces ([`Faces`]): one per surface cell, numbered face by
 //! face in [`Face::ALL`] order and, on a face, row by row ([`PartType::socket`]); a 20 × 40 × 80 cm
 //! chassis has 28. A child sits on one socket of its parent with its mount face (its own `NegZ`
-//! face) against the parent's face, and reserves its base (`cells[0]` × `cells[1]`, the
-//! *footprint*) on that face from the socket on; no two children may reserve the same cell. Cells
-//! past the face's edge overhang and reserve nothing (a turret wider than its rotor is fine).
+//! face) against the parent's face, and reserves the cells of that face it lies over (the
+//! *footprint*: unturned, its base `cells[0]` × `cells[1]` from the socket on); no two children
+//! may reserve the same cell. Cells past the face's edge overhang and reserve nothing (a turret
+//! wider than its rotor is fine).
 //! A part's own mount face rests on its parent, so its sockets are interior and take nothing (the
 //! root's are free). Larger parts therefore occupy several cells but stay attached to one parent
 //! socket only. Footprints are checked per face; whether parts on different faces or parents
@@ -41,10 +42,19 @@
 //! pitch, then roll (intrinsic Z-Y-X). [`Orientation::canonical`] folds any triple into the one
 //! representation of its rotation (pitch within a quarter turn either way, roll zero at a quarter
 //! turn of pitch), so the same rotation always serialises the same way. Quarter, eighth and finer
-//! binary turns are exact; a builder's snaps (shooter#57) choose among them. The footprint turns
-//! with the yaw's nearest quarter turn; pitch and roll tilt the part on its socket without moving
-//! its footprint. The socket frame of each face is fixed ([`Face::grid`]): `u` × `v` is the
-//! outward normal.
+//! binary turns are exact; a builder's snaps (shooter#57) choose among them. The socket frame of
+//! each face is fixed ([`Face::grid`]): `u` × `v` is the outward normal.
+//!
+//! **Seating** (shooter#124). A part turns about the centre of its first cell (the cube standing
+//! on the socket cell) and then rests on the face: [`crate::mechanics`] lifts it along the normal
+//! until its lowest corner touches the face, so a pitched or rolled part lies or leans on the face
+//! it attaches to instead of sinking into its parent, and at quarter turns its first cell still
+//! covers the socket cell. Its footprint is its shadow on the face, every cell the turned cuboid
+//! lies over by more than [`SHADOW_MARGIN_MM`] (a rifle pitched a quarter lies across two cells and
+//! reserves both; turned a degree it reserves its own). Turned only about the normal by quarter
+//! turns, a part stands and reserves as it always did. The simulation's hitboxes and bodies, the
+//! builder's preview and the client's drawing all place a part by this one rule, and the
+//! validation and the preview reserve by the one shadow.
 //!
 //! **Rules.** Only objective rules reject a build: known codes, one root chassis, existing parents
 //! and sockets, no cycles, footprints on their faces without overlaps, mods on the weapons they
@@ -818,7 +828,7 @@ impl Orientation {
         Self { yaw, pitch, roll }
     }
 
-    /// The yaw's nearest quarter turn (0 to 3; a tie turns further): how the footprint turns.
+    /// The yaw's nearest quarter turn (0 to 3; a tie turns further).
     #[must_use]
     pub const fn quarter_turns(self) -> u8 {
         (self.yaw.wrapping_add(Self::QUARTER / 2) / Self::QUARTER) as u8
@@ -1498,28 +1508,96 @@ pub fn capacity(part: &Part, kind: &PartType) -> u16 {
     }
 }
 
-/// The cells of a face of `grid` that a footprint of `(width, length)` reserves from `(u, v)`,
-/// turned `quarters` quarter turns about the face's normal (cells past the face's edge overhang
-/// and reserve nothing).
-fn footprint(
-    (width, length): (u8, u8),
-    quarters: u8,
+/// A part's shadow must reach more than this far (mm) into a cell of its parent's face to
+/// reserve it (shooter#124): a part turned a few degrees does not block its neighbours over a
+/// sliver, and fixed-point rounding never claims a cell a quarter-turned part only touches.
+pub const SHADOW_MARGIN_MM: u32 = 10;
+
+/// A rotation in exact Q16 fixed point ([`crate::trig::TRIG_ONE`] is 1): the images of the
+/// part's x, y and z in its socket's frame (`u`, `v`, the outward normal).
+type Turn = [[i64; 3]; 3];
+
+/// `angle` binary angles about `axis` (0 x, 1 y, 2 z), as [`crate::mechanics`] turns parts.
+const fn about(axis: usize, angle: u16) -> Turn {
+    let (s, c) = (
+        crate::trig::sin(angle) as i64,
+        crate::trig::cos(angle) as i64,
+    );
+    let one = crate::trig::TRIG_ONE as i64;
+    match axis {
+        0 => [[one, 0, 0], [0, c, s], [0, -s, c]],
+        1 => [[c, 0, -s], [0, one, 0], [s, 0, c]],
+        _ => [[c, s, 0], [-s, c, 0], [0, 0, one]],
+    }
+}
+
+/// `inner` then `outer`, rounded back to Q16.
+fn compose(outer: Turn, inner: Turn) -> Turn {
+    inner.map(|column| {
+        [0, 1, 2].map(|row| {
+            let sum: i64 = (0..3).map(|k| outer[k][row] * column[k]).sum();
+            (sum + (1 << 15)) >> 16
+        })
+    })
+}
+
+/// How `orientation` turns a part in its socket's frame: yaw, then pitch, then roll.
+fn turn_of(orientation: Orientation) -> Turn {
+    let (yaw, pitch, roll) = orientation.raw();
+    compose(compose(about(2, yaw), about(1, pitch)), about(0, roll))
+}
+
+/// The cells of a face of `grid` a part of `cells` mounted on its cell `(u, v)` and turned `turn`
+/// reserves: those its shadow on the face (the turned cuboid projected along the normal) reaches
+/// more than [`SHADOW_MARGIN_MM`] into, in socket order. The part turns about the centre of its
+/// first cell, which stands on the socket cell (as [`crate::mechanics`] places it; lifting it
+/// onto the face does not move its shadow), so a part turned only by quarter turns reserves
+/// exactly the cells it covers, and a pitched or rolled part reserves what it lies over. Cells
+/// past the face's edge overhang and reserve nothing. Exact integer arithmetic: a separating-axis
+/// test of each cell, shrunk by the margin, against the shadow (the sum of the cuboid's three
+/// projected edges).
+fn shadow(
+    cells: [u8; 3],
+    turn: Turn,
     (u, v): (u8, u8),
     (columns, rows): (u8, u8),
-) -> impl Iterator<Item = (u8, u8)> {
-    (0..i16::from(width))
-        .flat_map(move |i| (0..i16::from(length)).map(move |j| (i, j)))
-        .filter_map(move |(i, j)| {
-            let (du, dv) = match quarters & 3 {
-                0 => (i, j),
-                1 => (-j, i),
-                2 => (-i, -j),
-                _ => (j, -i),
-            };
-            let cell_u = u8::try_from(i16::from(u) + du).ok()?;
-            let cell_v = u8::try_from(i16::from(v) + dv).ok()?;
-            (cell_u < columns && cell_v < rows).then_some((cell_u, cell_v))
-        })
+) -> Vec<(u8, u8)> {
+    let one = i64::from(crate::trig::TRIG_ONE);
+    let cell = i64::from(CELL_MM);
+    let size = cells.map(|count| i64::from(count) * cell);
+    // The projected edges and the shadow's centre from the socket cell's centre (Q16 mm).
+    let edges: [[i64; 2]; 3] = [0, 1, 2].map(|k| [turn[k][0] * size[k], turn[k][1] * size[k]]);
+    let centre: [i64; 2] = [0, 1].map(|row| {
+        (0..3)
+            .map(|k| turn[k][row] * (size[k] / 2 - cell / 2))
+            .sum()
+    });
+    let inner = (cell / 2 - i64::from(SHADOW_MARGIN_MM)) * one;
+    let mut axes = vec![[one, 0], [0, one]];
+    axes.extend(
+        edges
+            .iter()
+            .filter(|edge| **edge != [0, 0])
+            .map(|&[x, y]| [-y, x]),
+    );
+    let dot = |a: [i64; 2], b: [i64; 2]| a[0] * b[0] + a[1] * b[1];
+    let mut reserved = Vec::new();
+    for cell_v in 0..rows {
+        for cell_u in 0..columns {
+            let offset = [
+                centre[0] - (i64::from(cell_u) - i64::from(u)) * cell * one,
+                centre[1] - (i64::from(cell_v) - i64::from(v)) * cell * one,
+            ];
+            let apart = axes.iter().any(|&axis| {
+                let reach: i64 = edges.iter().map(|&edge| dot(edge, axis).abs()).sum();
+                2 * dot(offset, axis).abs() >= reach + 2 * inner * (axis[0].abs() + axis[1].abs())
+            });
+            if !apart {
+                reserved.push((cell_u, cell_v));
+            }
+        }
+    }
+    reserved
 }
 
 impl Catalog {
@@ -1613,9 +1691,9 @@ impl Catalog {
     }
 
     /// The cells of `site`'s face on a parent of type `parent` that a part of type `kind` with
-    /// `modification`, turned `orientation` there, reserves: its base (a heavy mod makes it at
-    /// least two cells long) turned with the yaw's nearest quarter turn, cells past the face's
-    /// edge left out. The footprint rule of [`Catalog::validate`].
+    /// `modification`, turned `orientation` there, reserves: its shadow on the face ([`shadow`];
+    /// a heavy mod makes it at least two cells long), cells past the face's edge left out. The
+    /// footprint rule of [`Catalog::validate`].
     fn reserved(
         &self,
         kind: &PartType,
@@ -1627,17 +1705,17 @@ impl Catalog {
         let heavy = modification
             .and_then(|id| self.modification(id))
             .is_some_and(|modification| modification.heavy);
-        let length = if heavy {
-            kind.cells[1].max(2)
-        } else {
-            kind.cells[1]
-        };
-        footprint(
-            (kind.cells[0], length),
-            orientation.quarter_turns(),
+        let mut cells = kind.cells;
+        if heavy {
+            cells[1] = cells[1].max(2);
+        }
+        shadow(
+            cells,
+            turn_of(orientation),
             (site.u, site.v),
             site.face.grid(parent.cells),
         )
+        .into_iter()
     }
 
     /// The sockets of `parent` in `build` that a part of type `kind` with `modification`,

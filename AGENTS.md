@@ -56,6 +56,7 @@ scripts/build-web.sh && python3 -m http.server -d web/dist                 # bro
 cargo run --release -p shooter-server --bin shooter-replay -- record -o dm.shrp  # scripted match replay (then verify / promote)
 cargo run -p shooter-client --release -- --frames 600 [--scene cover|swing] [--capture DIR] # native client, scripted match drawn offscreen (profile run; --scene cover: the rifle blocked by a kit map's cover, --map assembly-works|proving-cell; --scene swing: a grapple up the works' crane tower, --map assembly-works); --capture writes every 30th frame
 node scripts/capture-web.mjs OUT MAP:FRAMES[:NAME[:SCENE]] ...             # browser (WebGPU, needs a GPU) screenshots of the scripted match's (or the staged scene's) last frame (after build-web.sh)
+node scripts/builder-web.mjs OUT                                           # the robot builder clicked through in the browser (WebGPU, needs a GPU; after build-web.sh): pick, place, R/T/F and G, undo/redo, a refusal, a cancelled drag, Ready, each step checked against `window.shooterBuilder` and screenshotted
 scripts/profile.sh [OUT] [native|web|all]                                  # runtime-profiler bundles: bot match, offscreen native client, browser (?frames=120)
 ```
 

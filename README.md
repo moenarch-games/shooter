@@ -453,7 +453,11 @@ turns back, Ctrl a degree whatever the step; exact either way); M cycles a weapo
 Delete removes a part and what hangs from it (never the root chassis: "new frame" starts over
 from a chassis in hand), Z undoes an edit and Y or Shift+Z redoes it (back to the exact build),
 Escape cancels a drag, drops what is in hand or deselects, right drag or the arrow keys turn the
-view, the wheel zooms. A drop the rules refuse keeps the part in hand. A further chassis mounts
+view, the wheel zooms. A pitched or rolled part stays seated on the face it attaches to (#124):
+it turns about its first cell and rests its lowest corner on the face, and it reserves the cells
+of the face it lies over (a rifle pitched a quarter lies across two cells and takes both; turned
+a degree it keeps to its own), the simulation's one rule for the preview, the hitboxes, the
+bodies and the drawing alike (wire 30, replay format 23). A drop the rules refuse keeps the part in hand. A further chassis mounts
 on a socket like any part, so frames of several cuboids build up. Every edit goes through the
 simulation's one validation path: an edit that breaks a structural rule (a taken cell, a mod
 that does not fit, the part ceiling) is refused with the reason, and only the build points may
@@ -493,6 +497,15 @@ file per build, `<NAME>.build`, in `shooter/builds` under the user's data direct
 axis, a refused placement, a turned parent, a part selected again, a selected weapon, the
 controls panel, the saved builds panel, an over-budget build, a build between lives) offscreen;
 [captures](docs/captures/57-builder/), [snapping and turning](docs/captures/124/).
+`node scripts/builder-web.mjs <dir>` (after `scripts/build-web.sh`, with a GPU) clicks the
+builder through in headless Chromium as a person would, with the mouse and keys: a part from
+the catalogue, a socket under the pointer, the part turned about each axis in hand (R, T, F; G
+to an eighth and a degree), placed, turned on its socket, undone and redone to the exact builds,
+a refused placement, a cancelled drag and Ready into the match. Each step checks the page's
+builder readout (`window.shooterBuilder`: the build's bytes, the part in hand, the placement
+under the pointer and its verdict, where the sockets and buttons are) and is screenshotted
+([browser captures](docs/captures/124/), `browser-*.png`; `SHOOTER_BUILDER_RENDERER=lite` runs
+it on the WebGL 2 renderer).
 
 **Energy and fuel** (#128, Atlas D2.i123.1–4). Every robot has two pools (`shooter_sim::energy`,
 Atlas D2.i70.3, D2.i70.4, D2.i89.1): electricity and fuel. The root chassis stores 100
