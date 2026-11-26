@@ -392,6 +392,16 @@ fn the_proving_cell_is_the_kit_built_small_map() {
             .all(|p| p.module.broken_proxies().is_some())
     );
     assert!(!cell.repair_anchors.is_empty());
+    // Its landmark (shooter#151): the test rig over the stage, a pillar at each corner carrying
+    // a canopy over the whole stage.
+    let over_stage = |module| {
+        cell.placements
+            .iter()
+            .filter(|p| p.module == module && p.at.x.abs() <= 300 && p.at.z.abs() <= 300)
+            .count()
+    };
+    assert_eq!(over_stage(arena_kit::Module::Pillar), 4);
+    assert_eq!(over_stage(arena_kit::Module::Ceiling), 9);
     // Its own layout, not a copy of the works.
     assert_ne!(cell.placements, works.placements);
 }

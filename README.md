@@ -146,19 +146,24 @@ in, built from asset-tooling's arena kit; two interim greybox maps stay:
   the default 12 slots still fit): a purpose-built combat test cell (the owner's choice of
   setting), a 32 m square inside 10 m walls, point-symmetric, from the same kit as the works. In
   the middle stands the 2 m test stage, a 6 m dais with the rail capacitor at its centre and
-  staggered low cover, climbed by an 8 m ramp from the north and from the south (or a double
+  staggered low cover under the test rig (a pillar at each corner carrying a lit canopy at 6 m,
+  the cell's landmark), climbed by an 8 m ramp from the north and from the south (or a double
   jump; a 2 m container west of it meets its corner). Along the north and the south wall runs a
   3 m observation gallery, 4 m deep, with low cover at its edge and thrusters on it, reached by
   a 12 m ramp along the side wall, a jump pad in front of it (12 m/s up, 6 m/s toward it) or the
   grapple (hooked on the wall above it, from the stage); under it a 2.6 m high passage runs from
   behind its ramp to a control booth, a 7 m room in the corner with a doorway onto the floor and
-  one into the passage, each behind a 2 m blast screen. A 4 m deep test bay in each side wall,
-  a barrier and crates break up the floor. Nothing is far and fights are close; the booths have two
+  one into the passage, each screened by a 2 m blast screen with a way out at least 2.4 m wide.
+  A 4 m deep test bay in each side wall (behind a screen of its own, open north and south), a
+  barrier and crates break up the floor. Nothing is far and fights are close; the booths have two
   doorways and the passages open along their length, so no fight is forced down a one-way
-  corridor; no spawn point is in sight of another. Its low cover, open-floor
+  corridor; no spawn point is in sight of another, and none holds a wheeled or tracked robot
+  (shooter#151's playtests, `crates/shooter-sim/tests/proving_cell.rs`). Tracks climb both ramps;
+  wheels do not yet climb the kit's 1:4 ramps on any map (shooter#174). Its low cover, open-floor
   barriers and crates are destruction candidates for shooter#60 (the blast screens stay, the
-  booths' spawn points rely on them) and a repair anchor in each booth is data for shooter#61.
-  Views and frames: [docs/captures/53](docs/captures/53).
+  spawn points behind them rely on them) and a repair anchor in each booth is data for
+  shooter#61. Views and frames: [docs/captures/53](docs/captures/53), polished layout
+  [docs/captures/151](docs/captures/151).
 - `drydock`, the large long-sightline arena (shooter#55; 8 to 12 players, 14 spawn points): a
   repurposed spaceship shipyard (the owner's choice, Atlas D2.i55.1), an 80 m square inside 10 m
   walls, point-symmetric, from the same kit. Two docked spacecraft lie head to tail either side

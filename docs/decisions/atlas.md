@@ -933,7 +933,38 @@ whether resupply locks movement or firing (Q2.i123.3).
   observation galleries along two walls carrying thrusters, a control booth with two doorways in
   two corners and a test bay in two side walls; its name, size, layout, spawn count, pickup and
   repair anchors (in the booths) and destruction candidates (its low cover, open-floor barriers
-  and crates) are provisional choices, to be tuned in playtests. Since shooter#55 the large arena
+  and crates) are provisional choices, to be tuned in playtests. Since shooter#151 its layout is
+  tuned from deterministic bot playtests (`crates/shooter-sim/tests/proving_cell.rs`: 2 and 6
+  fighters on the named legged loadouts, an armed car and an armed tank; its ignored report sums
+  five seeds of two minutes): the stage carries a test rig, a 4 m pillar at each corner under a
+  lit canopy of ceiling panels at 6 m (the cell's landmark), with the stage's low cover between
+  the pillars, and the galleries instrument pipes against the wall; each booth's two blast
+  screens moved to cover the lines from its doorways into its back corner while leaving ways
+  out at least 2.4 m wide, its generator (the rig's console) in that corner, its spawn point
+  between the screens facing the way out and its repair anchor in the open corner between the
+  doorways; the passage end's screen moved to leave a 2.5 m way in along the wall (its pipes went
+  up to the gallery); each test bay gained a blast screen of its own, the bay open north and
+  south along it; the spawn point between a gallery and a booth moved 2.3 m toward the booth;
+  bot points were added on the stage, at the bay mouths and in the middle of the passage's lane;
+  and bots on wheels or tracks back out when stuck instead of hopping (`shooter_sim::bots`).
+  Measured before → after (five seeds): robots stranded at a spawn point (alive 20 s without
+  getting 3 m from it) 0 → 0 on legs, 11 → 0 on wheels and 16 → 0 on tracks (the booths and the
+  passage end held them); respawns killed within 3 s 0 → 0 everywhere; respawns first hit within
+  2 s, 6 on legs, 12 → 11 (the east test bay 3 of 7 → 0); first contact median 6.4 → 3.6 s for
+  two on legs and 1.7 → 1.9 s for six; two tracked robots never met before and fight now (0 → 5
+  kills, median contact 24.5 s), while six wheeled ones fight less (55 → 26 kills, median
+  contact 3.0 → 6.8 s: they back out and turn rather than sit stranded); in the six-fighter
+  matches no position other than the open
+  floor makes more than a third of the kills (the ramps and the container 34% → 22% on legs; the
+  stage and galleries about 1%).
+  Performance is unchanged: the simulation 0.30 → 0.31 ms a tick with 6 bots and 0.66 → 0.68 with
+  12 (different matches), the native client 2.33 ms a frame on an RTX 3060 Ti either way.
+  Capacity is unchanged (2 to 6 recommended, 12 spawn points). Open: wheels do not climb the
+  kit's 1:4 ramps on any map (shooter#174), and two wheeled or tracked bots rarely find each
+  other (a skid-steered chassis turns in place slowly, shooter#170); resupply stations wait on
+  shooter#129; the proposed clean white and amber lighting waits on per-map lighting, which the
+  client does not have (one sun and ambient for every map). Captures in `docs/captures/151/`.
+  Since shooter#55 the large arena
   is in: `drydock`, an 80 m repurposed spaceship shipyard (D2.i55.1) built from the same arena
   kit (8 to 12 players recommended, 14 spawn points, all on the ground), point-symmetric: two
   identical docked ships head to tail either side of a 32 m central corridor, each hull 12 m

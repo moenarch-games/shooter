@@ -693,9 +693,16 @@ fn every_map_places_a_weapon_and_a_movement_module_at_contested_points() {
                 arena.pad_under(pad.center).is_none(),
                 "{pad:?} on a jump pad"
             );
-            // A fighter walks onto it (or along the platform's top to it).
-            let beside = Vec3i::new(pad.center.x - 200, pad.center.y, pad.center.z);
-            assert!(arena.clear_walk(beside, pad.center), "{pad:?}");
+            // A fighter walks onto it from one side or another (or along the platform's top to
+            // it).
+            let sides = [(-200, 0), (200, 0), (0, -200), (0, 200)];
+            assert!(
+                sides.iter().any(|(x, z)| {
+                    let beside = Vec3i::new(pad.center.x + x, pad.center.y, pad.center.z + z);
+                    arena.clear_walk(beside, pad.center)
+                }),
+                "{pad:?}"
+            );
         }
     }
 }
