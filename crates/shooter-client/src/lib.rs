@@ -108,6 +108,27 @@ pub fn practice_map(requested: Option<&str>) -> Result<MapId, String> {
     })
 }
 
+/// The profile run's staged scene (`--scene <name>`, `?scene=<name>`) on `map`: none, or
+/// `cover`, the standard build behind the map's arena cover firing its rifle past it, its shots
+/// stopping on the cover short of the reticle ([`shooter_sim::scenarios::CoverShot`],
+/// shooter#102's captures).
+///
+/// # Errors
+///
+/// If `requested` names another scene, or `map` has no staged cover shot.
+pub fn scene(
+    requested: Option<&str>,
+    map: MapId,
+) -> Result<Option<shooter_sim::scenarios::CoverShot>, String> {
+    match requested {
+        None => Ok(None),
+        Some("cover") => shooter_sim::scenarios::CoverShot::of(map)
+            .map(Some)
+            .ok_or_else(|| format!("no staged cover shot on {map}")),
+        Some(other) => Err(format!("unknown scene {other}")),
+    }
+}
+
 /// The native command line.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
@@ -123,6 +144,8 @@ struct Args {
     loadout: Option<String>,
     /// `--capture <dir>`: the offscreen run writes every [`CAPTURE_EVERY`]th frame there.
     capture: Option<std::path::PathBuf>,
+    /// `--scene <name>`: the offscreen run plays a staged scene ([`scene`]).
+    scene: Option<String>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -139,6 +162,7 @@ impl Args {
                 "--loadout" => parsed.loadout = args.next(),
                 "--frames" => parsed.frames = args.next().and_then(|n| n.parse().ok()),
                 "--capture" => parsed.capture = args.next().map(std::path::PathBuf::from),
+                "--scene" => parsed.scene = args.next(),
                 other => log(&format!("unknown argument {other}")),
             }
         }
@@ -171,10 +195,10 @@ pub fn write_ppm(
     std::fs::write(path, ppm).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// The profile run (`shooter-client --frames <n> [--map <id>] [--loadout <name>] [--capture
-/// <dir>]`): `frames` frames of a practice match on `map` at one tick per frame, the local
-/// fighter (as `build`, if given) played by the replays' scripted person 0
-/// ([`shooter_sim::scenarios::scripted_intent`]), drawn to an offscreen [`OFFSCREEN_SIZE`]
+/// The profile run (`shooter-client --frames <n> [--map <id>] [--loadout <name>] [--scene
+/// <name>] [--capture <dir>]`): `frames` frames of a practice match on `map` at one tick per
+/// frame, the local fighter (as `build`, if given) played by the replays' scripted person 0
+/// ([`shooter_sim::scenarios::scripted_intent`]) or staged by `stage` ([`scene`]), drawn to an offscreen [`OFFSCREEN_SIZE`]
 /// target with no window, as fast as the GPU finishes them. Prints frame times; nothing gates
 /// on them. With `capture`, every [`CAPTURE_EVERY`]th frame is also written there as a PPM
 /// image (outside the timed frames).
@@ -187,16 +211,21 @@ pub fn offscreen(
     frames: u32,
     map: MapId,
     build: Option<shooter_sim::Assembly>,
+    stage: Option<shooter_sim::scenarios::CoverShot>,
     capture: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let (width, height) = OFFSCREEN_SIZE;
     let gpu = gpu::Gpu::offscreen(width, height)?;
-    let game = game::Game::practice(map);
+    let game = if stage.is_some() {
+        game::Game::staged(map)
+    } else {
+        game::Game::practice(map)
+    };
     let game = match build {
         Some(build) => game.with_loadout(build),
         None => game,
     };
-    let mut app = app::App::scripted(game, gpu);
+    let mut app = app::App::scripted(game, gpu).staged(stage);
     if let Some(directory) = capture {
         std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     }
@@ -350,7 +379,11 @@ pub fn run() {
             fail(&error);
             std::process::exit(2);
         });
-        if let Err(error) = offscreen(frames, map, build, args.capture.as_deref()) {
+        let stage = scene(args.scene.as_deref(), map).unwrap_or_else(|error| {
+            fail(&error);
+            std::process::exit(2);
+        });
+        if let Err(error) = offscreen(frames, map, build, stage, args.capture.as_deref()) {
             fail(&error);
             std::process::exit(1);
         }
@@ -362,8 +395,19 @@ pub fn run() {
     // `?frames=<n>`: the browser profile run, a scripted practice match ([`web::Profile`]).
     #[cfg(target_arch = "wasm32")]
     let profile = web::query("frames").and_then(|n| n.parse::<u32>().ok());
+    // `&scene=cover`: a staged scene instead of the scripted person ([`scene`]).
+    #[cfg(target_arch = "wasm32")]
+    let stage = match profile.map(|_| scene(web::query("scene").as_deref(), map)) {
+        Some(Err(error)) => {
+            fail(&error);
+            return;
+        }
+        Some(Ok(stage)) => stage,
+        None => None,
+    };
     #[cfg(target_arch = "wasm32")]
     let (game, build) = match profile {
+        Some(_) if stage.is_some() => (game::Game::staged(map), None),
         Some(_) => (game::Game::practice(map), None),
         None => game(map),
     };
@@ -373,7 +417,7 @@ pub fn run() {
     // The match starts at the builder (shooter#57), on the requested loadout.
     #[cfg(target_arch = "wasm32")]
     let app = match profile {
-        Some(frames) => app.profiled(frames),
+        Some(frames) => app.profiled(frames).staged(stage),
         None => app.with_builder(build.unwrap_or_default()),
     };
     #[cfg(not(target_arch = "wasm32"))]

@@ -133,7 +133,7 @@ fn main() -> Result<(), String> {
                     hook: None,
                     since_fired: f32::INFINITY,
                     fired: Instance::new(7, Weapon::EnergyRifle),
-                    shots: 0,
+                    tube: 0,
                     recent: robots::pose::Recent::NONE,
                     held: Instance::new(7, Weapon::EnergyRifle),
                     energy: 1.0,

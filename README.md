@@ -284,8 +284,13 @@ muzzle where your robot carries it (the weapons kit's muzzle anchor on the weapo
 barrel's when it has one) and flies toward that point, so cover beside your robot that the
 camera sees past stops it: a red marker then shows where the shot will really land. The host
 resolves every shot with the same functions (`shooter_sim::aim`), lag-compensated as before, and
-draws its flash, beam, pellets and rockets from that muzzle. The grapple module's hook leaves its
-own muzzle toward the same point (#104; its rope is tied at the eye), the blade the feet.
+draws its flash, beam, pellets and rockets from that muzzle; the rocket pod's launches alternate
+between its two tubes, the simulation choosing which (wire 28). Online, your client shows your
+own shots at once, every ranged one (beams, rockets, shotgun blasts and flame) aimed again as the
+host aims it among the others as you see them (`Session::predicted_shots`). The grapple module's
+hook leaves its own muzzle toward the same point (#104; its rope is tied at the eye), the blade
+the feet. Native and browser captures of a shot stopping on arena cover short of the reticle (the
+profile run's `--scene cover` / `?scene=cover`): [docs/captures/102](docs/captures/102).
 
 **Guns keep their mounts** (#132, Atlas D2.i123.8). A gun's shot flies toward the camera's
 target only when the target lies within 10° of the gun's barrel as mounted (its part's own
@@ -739,9 +744,10 @@ road wheel) has turned about its axle; a hinge's or rotor's moving piece, and ev
 turns as the body it carries has turned. The kit's leg clips are not played. Without a mechanical
 robot (the builder's bench) a robot stands at rest on its feet. The weapons play the kit's
 states from the match (`robots::weapon`): a shot's recoil and muzzle flash, the laser's and
-flamethrower's loops while firing, the rail gun's recharge and the rocket pod's alternating tubes
-and reload over their (mod-tuned) refire time, the grapple's launch (its hook flies to where the
-host set it, the cable runs from the launcher) and retract, and the blade extending when held or
+flamethrower's loops while firing, the rail gun's recharge and the kick of the rocket pod's tube
+that fired (the simulation alternates them, #102) and reload over their (mod-tuned) refire time,
+the grapple's launch (its hook flies to where the host set it, the cable runs from the launcher)
+and retract, and the blade extending when held or
 swung, retracting otherwise, and the kit's quick-melee swing about its wrist (the part it is
 mounted on stays rigid); between shots each weapon's charge light shows the robot's energy pool. Shots, beams,
 flames and pellets are drawn from the weapon's muzzle frame (the long barrel's when it has one)

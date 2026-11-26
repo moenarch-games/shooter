@@ -19,7 +19,7 @@ use shooter_sim::damage::{Hitboxes, PartDamage};
 use shooter_sim::physics::Vec3i;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
 use shooter_sim::robot::PartId;
-use shooter_sim::scenarios::scripted_intent;
+use shooter_sim::scenarios::{CoverShot, scripted_intent};
 use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, Select, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
@@ -92,6 +92,9 @@ pub struct App {
     /// The offscreen profile run's tick: the local fighter plays
     /// [`scripted_intent`]`(0, tick)` instead of the controls.
     scripted: Option<u32>,
+    /// The profile run's staged scene, if any: the local fighter stands where it says and plays
+    /// its intent instead of [`scripted_intent`] (the `cover` scene, shooter#102).
+    stage: Option<CoverShot>,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
     game: Game,
@@ -248,6 +251,7 @@ impl App {
         Self {
             proxy: Some(proxy),
             scripted: None,
+            stage: None,
             window: None,
             gpu: None,
             look: Look::new(radians(game.map().map_or(0, |map| map.arena().spawn_yaw))),
@@ -428,6 +432,7 @@ impl App {
         let mut app = Self {
             proxy: None,
             scripted: Some(0),
+            stage: None,
             window: None,
             gpu: None,
             look: Look::new(radians(game.map().map_or(0, |map| map.arena().spawn_yaw))),
@@ -485,6 +490,13 @@ impl App {
         } else {
             Err("the scripted match failed".into())
         }
+    }
+
+    /// The profile run plays `stage` (a staged scene) instead of the scripted person.
+    #[must_use]
+    pub const fn staged(mut self, stage: Option<CoverShot>) -> Self {
+        self.stage = stage;
+        self
     }
 
     /// The offscreen run's GPU (`--capture` reads its frames).
@@ -723,10 +735,22 @@ impl App {
     fn tick(&mut self, now: Instant) -> bool {
         let (forward, strafe) = self.controls.movement();
         let repairs = self.controls.take_repairs();
-        let intent = if let Some(tick) = &mut self.scripted {
-            let intent = scripted_intent(0, *tick);
-            *tick += 1;
+        let intent = if let Some(tick) = self.scripted {
+            self.scripted = Some(tick + 1);
+            let intent = match self.stage {
+                // Staged once the local fighter is in the match, then held there.
+                Some(stage) => {
+                    if tick == 1
+                        && let Err(error) = self.game.stage(stage.feet, stage.yaw)
+                    {
+                        crate::log(&format!("the staged scene: {error}"));
+                    }
+                    stage.intent(tick)
+                }
+                None => scripted_intent(0, tick),
+            };
             self.look = Look::new(radians(intent.yaw));
+            self.look.pitch = f32::from(intent.pitch) / 65_536.0 * std::f32::consts::TAU;
             intent
         } else if self.builder.is_some() {
             // In the builder: Edit Robot held, the robot dead and waiting (D2.i70.11).
@@ -1054,7 +1078,7 @@ impl App {
             self.tracker.parts(me.slot, &me.build, &me.parts, frame);
             if view.center.is_some() {
                 let moved = Vec3::from(self.center) - Vec3::from(self.previous_center);
-                let (fired, shots) = self.tracker.fired(me.slot);
+                let (fired, tube) = self.tracker.fired(me.slot);
                 robot_views.push(RobotView {
                     slot: me.slot,
                     build: me.build,
@@ -1066,7 +1090,7 @@ impl App {
                         hook: view.hook,
                         since_fired: self.tracker.since_fired(me.slot),
                         fired,
-                        shots,
+                        tube,
                         recent: self.tracker.recent(me.slot),
                         held: me.held,
                         energy: energy_share(me),
@@ -1118,7 +1142,7 @@ impl App {
                 let frame = robots::track::rest_frame(&fighter.build, at, view.forward);
                 self.tracker
                     .parts(fighter.slot, &fighter.build, &fighter.parts, frame);
-                let (fired, shots) = self.tracker.fired(fighter.slot);
+                let (fired, tube) = self.tracker.fired(fighter.slot);
                 robot_views.push(RobotView {
                     slot: fighter.slot,
                     build: fighter.build,
@@ -1132,7 +1156,7 @@ impl App {
                         hook: view.hook,
                         since_fired: self.tracker.since_fired(fighter.slot),
                         fired,
-                        shots,
+                        tube,
                         recent: self.tracker.recent(fighter.slot),
                         held: fighter.held,
                         energy: energy_share(fighter),
@@ -1158,7 +1182,7 @@ impl App {
                     hook: None,
                     since_fired: f32::INFINITY,
                     fired: remains.held,
-                    shots: 0,
+                    tube: 0,
                     recent: robots::pose::Recent::NONE,
                     held: remains.held,
                     energy: 0.0,

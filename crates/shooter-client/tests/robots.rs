@@ -43,7 +43,7 @@ fn standing() -> RobotState {
         hook: None,
         since_fired: f32::INFINITY,
         fired: Instance::new(7, Weapon::EnergyRifle),
-        shots: 0,
+        tube: 0,
         recent: shooter_client::robots::pose::Recent::NONE,
         held: Instance::new(7, Weapon::EnergyRifle),
         energy: 1.0,
@@ -895,6 +895,12 @@ fn the_simulations_muzzles_are_the_kits() {
         };
         assert_eq!(mm(at), table, "{key} {modification:?}");
     }
+    // The rocket pod's second tube (shooter#102).
+    let pod = gear("weapon.rocket-launcher");
+    assert_eq!(
+        mm(pod.anchor("muzzle-b").unwrap().position),
+        shooter_sim::aim::SECOND_TUBE_MM
+    );
     // Every weapon but the blade has one, every long-barrel weapon its own.
     for weapon in Weapon::ALL {
         assert_eq!(
@@ -906,9 +912,9 @@ fn the_simulations_muzzles_are_the_kits() {
 
 /// Where the simulation fires from is where the client draws the muzzle at rest: every
 /// weapon of the armory, the marksman's long barrel and every copy of the twin rail's rail gun
-/// (shooter#125), and every weapon on a mount rail or an adapter (shooter#126); the rocket
-/// launchers' tubes alternate, so each launcher's drawn tube is within a tube's width of its
-/// simulated muzzle, every launcher of the rocket pod at its own.
+/// (shooter#125), and every weapon on a mount rail or an adapter (shooter#126); a rocket
+/// launcher's two tubes each where the simulation fires that tube from (shooter#102), every
+/// launcher of the rocket pod at its own.
 #[test]
 fn the_simulations_muzzles_are_where_the_robot_draws_them() {
     use shooter_sim::damage::{Hitboxes, PartDamage};
@@ -925,12 +931,15 @@ fn the_simulations_muzzles_are_where_the_robot_draws_them() {
         ADAPTER_MAST,
     ] {
         let model = Model::of(&build, kit).unwrap();
-        let idle = posed(&model, &standing(), &PartStates::default());
-        let shot = RobotState {
-            shots: 1,
-            ..standing()
-        };
-        let tube_a = posed(&model, &shot, &PartStates::default());
+        // The tube each drawn after a shot from it (0 the first).
+        let tubes = [0, 1].map(|tube| {
+            posed(
+                &model,
+                &RobotState { tube, ..standing() },
+                &PartStates::default(),
+            )
+        });
+        let idle = &tubes[0];
         // The parts in the robot's own frame.
         let frames: Vec<(PartId, Pose)> = build
             .parts()
@@ -952,25 +961,35 @@ fn the_simulations_muzzles_are_where_the_robot_draws_them() {
                 part: drawn.part,
                 weapon: drawn.weapon,
             };
-            let muzzle = shooter_sim::aim::muzzle(&build, &boxes, copy).unwrap();
-            let at = idle
-                .world_from_robot
-                .transform_point3(Vec3::from(muzzle.at) * 0.01);
-            // A launcher draws its first tube after an odd number of shots.
-            let drawn = if drawn.weapon == Weapon::RocketLauncher {
-                tube_a
+            for tube in 0..drawn.weapon.tubes() {
+                let muzzle = shooter_sim::aim::tube_muzzle(&build, &boxes, copy, tube).unwrap();
+                let at = idle
+                    .world_from_robot
+                    .transform_point3(Vec3::from(muzzle.at) * 0.01);
+                let drawn = tubes[usize::from(tube)]
                     .muzzles
                     .iter()
-                    .find(|tube| tube.part == drawn.part)
-                    .unwrap()
-            } else {
-                drawn
-            };
-            assert!(
-                (at - drawn.position).length() < 0.01,
-                "{copy:?}: simulation {at} drawn {}",
-                drawn.position
-            );
+                    .find(|muzzle| muzzle.part == drawn.part)
+                    .unwrap();
+                assert!(
+                    (at - drawn.position).length() < 0.01,
+                    "{copy:?} tube {tube}: simulation {at} drawn {}",
+                    drawn.position
+                );
+            }
+        }
+        // The rocket pod's two tubes are apart.
+        if let Some(launcher) = idle
+            .muzzles
+            .iter()
+            .find(|muzzle| muzzle.weapon == Weapon::RocketLauncher)
+        {
+            let other = tubes[1]
+                .muzzles
+                .iter()
+                .find(|muzzle| muzzle.part == launcher.part)
+                .unwrap();
+            assert!((launcher.position - other.position).length() > 0.1);
         }
     }
 }
@@ -1107,12 +1126,12 @@ fn weapon_states_follow_the_shots_hook_and_blade() {
     let rail = locals(&heavy, "weapon.rail-gun", &low, &Memory::settled(&low));
     let charge = rig(&heavy, "weapon.rail-gun").joint("glow-charge").unwrap();
     assert!((rail[charge].scale.y - 0.25).abs() < 1e-6);
-    // The rocket pod's tubes alternate; then both reload over its refire.
-    let rocket = |shots, since| {
+    // The tube the simulation fired kicks; then both reload over its refire.
+    let rocket = |tube, since| {
         let state = RobotState {
             fired: Instance::new(9, Weapon::RocketLauncher),
             since_fired: since,
-            shots,
+            tube,
             ..standing()
         };
         let rig = rig(&heavy, "weapon.rocket-launcher");
@@ -1128,13 +1147,13 @@ fn weapon_states_follow_the_shots_hook_and_blade() {
         );
         (locals[a].translation.y, locals[b].translation.y)
     };
-    let (a, b) = rocket(1, 0.1);
+    let (a, b) = rocket(0, 0.1);
     assert!(a > 0.31 && (b - 0.3).abs() < 1e-4, "{a} {b}");
-    let (a, b) = rocket(2, 0.1);
+    let (a, b) = rocket(1, 0.1);
     assert!(b > 0.31 && (a - 0.3).abs() < 1e-4, "{a} {b}");
-    let (a, b) = rocket(2, 0.5);
+    let (a, b) = rocket(1, 0.5);
     assert!(a < 0.29 && b < 0.29, "reloading {a} {b}");
-    let (a, b) = rocket(2, 5.0);
+    let (a, b) = rocket(1, 5.0);
     assert!((a - 0.3).abs() < 1e-4 && (b - 0.3).abs() < 1e-4, "{a} {b}");
     // The rail gun recharges over its refire (the overcharger's is longer).
     let marksman = Model::of(&MARKSMAN, kit).unwrap();

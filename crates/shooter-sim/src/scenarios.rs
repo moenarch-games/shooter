@@ -891,3 +891,59 @@ pub const fn scripted_build(index: u8) -> Option<Assembly> {
         _ => None,
     }
 }
+
+/// A staged shot at a map's arena cover (shooter#102's visual captures, the profile run's
+/// `cover` scene): the standard build standing at `feet` (units) behind a piece of the arena's
+/// static cover, aiming at `yaw` and `pitch` past it, so the camera over its right shoulder
+/// sees a target beyond while its rifle's muzzle, low on its left, is behind the cover: the
+/// rifle's shots stop on the cover, short of the reticle ([`crate::aim::Lands::Blocked`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CoverShot {
+    pub map: crate::maps::MapId,
+    pub feet: [f32; 3],
+    pub yaw: u16,
+    pub pitch: i16,
+}
+
+/// The staged cover shots, one per map that has one: the assembly works' and the proving
+/// cell's (found by searching each map's floor for a spot where the rifle's shot is blocked
+/// about 3 m ahead by the arena's static cover, where the camera sees it, while the camera's
+/// target lies 17 m or more beyond).
+pub const COVER_SHOTS: [CoverShot; 2] = [
+    CoverShot {
+        map: crate::maps::MapId::AssemblyWorks,
+        feet: [-1_900.0, 1.0, -1_500.0],
+        yaw: 18_432,
+        pitch: 0,
+    },
+    CoverShot {
+        map: crate::maps::MapId::ProvingCell,
+        feet: [-300.0, 1.0, -1_300.0],
+        yaw: 18_432,
+        pitch: 0,
+    },
+];
+
+/// When the staged fighter starts firing (ticks): the captures at 60 and 90 ticks show beams.
+pub const COVER_FIRE_TICK: u32 = 45;
+
+impl CoverShot {
+    /// The staged shot on `map`, if it has one.
+    #[must_use]
+    pub fn of(map: crate::maps::MapId) -> Option<Self> {
+        COVER_SHOTS.into_iter().find(|shot| shot.map == map)
+    }
+
+    /// Its intent at `tick`: holding the rifle, aimed past the cover, standing still, firing
+    /// from [`COVER_FIRE_TICK`] on.
+    #[must_use]
+    pub fn intent(self, tick: u32) -> Intent {
+        Intent {
+            yaw: self.yaw,
+            pitch: self.pitch,
+            select: Some(Select::Weapon(Weapon::EnergyRifle)),
+            fire: tick >= COVER_FIRE_TICK,
+            ..Intent::IDLE
+        }
+    }
+}

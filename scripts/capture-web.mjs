@@ -5,9 +5,10 @@
 // PNG. The run is deterministic: the same map and frame count draw the same frame. The
 // result names the cover broken by then (shooter#60).
 //
-// Usage (after scripts/build-web.sh): node scripts/capture-web.mjs OUT MAP:FRAMES[:NAME] ...
+// Usage (after scripts/build-web.sh): node scripts/capture-web.mjs OUT MAP:FRAMES[:NAME[:SCENE]] ...
 // e.g. node scripts/capture-web.mjs docs/captures/53 proving-cell:120:browser-match
-// writes docs/captures/53/browser-match.png.
+// writes docs/captures/53/browser-match.png. SCENE stages the run (&scene=<name>: `cover`, the
+// standard build firing its rifle past the map's arena cover, shooter#102).
 //
 // WebGPU runs on the machine's GPU (Vulkan). SHOOTER_CAPTURE_SWIFTSHADER=1 uses the profile
 // lane's SwiftShader adapter (profiles/web-client.yaml) instead: it renders, but its frames
@@ -52,7 +53,7 @@ function serve() {
 
 const [out, ...shots] = process.argv.slice(2);
 if (!out || shots.length === 0) {
-  console.error("usage: node scripts/capture-web.mjs OUT MAP:FRAMES[:NAME] ...");
+  console.error("usage: node scripts/capture-web.mjs OUT MAP:FRAMES[:NAME[:SCENE]] ...");
   process.exit(2);
 }
 await readFile(path.join(root, "shooter_client_bg.wasm")).catch(() => {
@@ -70,11 +71,14 @@ let failed = false;
 try {
   const { port } = server.address();
   for (const shot of shots) {
-    const [map, frames, name = `browser-${map}-${frames}`] = shot.split(":");
+    const [map, frames, name = `browser-${map}-${frames}`, scene] = shot.split(":");
+    const staged = scene ? `&scene=${scene}` : "";
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
     const logs = [];
     page.on("console", (message) => logs.push(message.text()));
-    await page.goto(`http://127.0.0.1:${port}/?frames=${frames}&map=${map}`, { waitUntil: "load" });
+    await page.goto(`http://127.0.0.1:${port}/?frames=${frames}&map=${map}${staged}`, {
+      waitUntil: "load",
+    });
     const result = await page
       .waitForFunction(() => Reflect.get(window, "shooterProfile"), null, {
         timeout: RESULT_TIMEOUT_MS,

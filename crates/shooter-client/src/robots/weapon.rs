@@ -8,7 +8,7 @@
 //! | rifle, shotgun | just fired | `fire` from the shot |
 //! | laser, flamethrower | firing (every tick the trigger is held) | `beam` / `fire`, looping |
 //! | rail gun | just fired, then until it may fire again | `fire`, then `charge` over the rest of its refire |
-//! | rocket launcher | just fired, then until it may fire again | `fire-a` / `fire-b` (the tubes alternate shot by shot), then `reload` over the rest of its refire |
+//! | rocket launcher | just fired, then until it may fire again | `fire-a` / `fire-b` (the tube the simulation fired), then `reload` over the rest of its refire |
 //! | grapple | its hook set, then released | `launch` (the hook flies to where the host set it), then `retract` (it flies back) |
 //! | blade | held or swinging, else put away | `extend` / `retract`; a quick-melee swing plays `swing` through the swing |
 //!
@@ -157,11 +157,7 @@ pub fn locals(
         Weapon::Laser | Weapon::Flamethrower => {}
         Weapon::RailGun => then_recover(rig, ["fire", "charge"], since, refire, &mut locals),
         Weapon::RocketLauncher => {
-            let tube = if state.shots % 2 == 1 {
-                "fire-a"
-            } else {
-                "fire-b"
-            };
+            let tube = if state.tube == 1 { "fire-b" } else { "fire-a" };
             then_recover(rig, [tube, "reload"], since, refire, &mut locals);
         }
         Weapon::Grapple => {

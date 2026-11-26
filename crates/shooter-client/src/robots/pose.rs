@@ -71,8 +71,9 @@ pub struct RobotState {
     /// (shooter#125: only that copy shows the shot).
     pub since_fired: f32,
     pub fired: Instance,
-    /// How many shots it has fired this life (the rocket pod's tubes alternate).
-    pub shots: u32,
+    /// The tube its last shot left (0 the first; the rocket pod's alternate, as the
+    /// simulation fired them, shooter#102).
+    pub tube: u8,
     /// Seconds since each of its copies that fired lately last did (shooter#127: copies fire
     /// together, each showing its own shot); a copy not in it shows `fired`'s.
     pub recent: Recent,
@@ -522,7 +523,7 @@ pub fn pose(
                     })
                 });
                 let name = match held {
-                    Weapon::RocketLauncher if state.shots.is_multiple_of(2) => "muzzle-b",
+                    Weapon::RocketLauncher if state.tube == 1 => "muzzle-b",
                     Weapon::RocketLauncher => "muzzle-a",
                     _ => "muzzle",
                 };

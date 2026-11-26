@@ -9,7 +9,9 @@ use shooter_sim::damage::PartDamage;
 use shooter_sim::melee;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{CHASSIS_L, CHASSIS_S};
-use shooter_sim::robot::{ARMORY, HEAVY, MARKSMAN, PYRO, ROCKET_JUMPER, SKIRMISHER, STANDARD};
+use shooter_sim::robot::{
+    ARMORY, HEAVY, MARKSMAN, PYRO, ROCKET_JUMPER, ROCKET_POD, SKIRMISHER, STANDARD,
+};
 use shooter_sim::scenarios;
 use shooter_sim::session::{SELF_SPLASH_PERCENT, body_of, slot_of};
 use shooter_sim::tour::run_legs;
@@ -1560,5 +1562,259 @@ fn a_bot_match_on_the_drydock_replays_exactly() {
     for slots in [8, 12] {
         assert_eq!(play(3, slots), play(3, slots));
         assert_ne!(play(3, slots), play(4, slots));
+    }
+}
+
+/// The rocket pod's launches alternate between its two tubes (shooter#102): the simulation
+/// picks the tube, fires from it, says which in its `Fired`, and its snapshots carry the tube
+/// each launcher fires next from, so a predicting client and the drawn robot use the host's.
+#[test]
+fn the_rocket_pod_alternates_its_tubes_and_says_which() {
+    let (mut session, mut step) = duel_on(duel_arena(), ROCKET_POD);
+    let (yaw, pitch) = at_chassis(&session, 0, 1);
+    let aiming = Intent {
+        yaw,
+        pitch,
+        select: Some(Weapon::RocketLauncher.into()),
+        ..Intent::IDLE
+    };
+    for _ in 0..60 {
+        step(&mut session, aiming);
+    }
+    let mut fired = Vec::new();
+    for _ in 0..4 {
+        let next = session.fighters[0]
+            .muzzle(Weapon::RocketLauncher)
+            .unwrap()
+            .at;
+        step(
+            &mut session,
+            Intent {
+                fire: true,
+                ..aiming
+            },
+        );
+        let (tube, from) = session
+            .events
+            .iter()
+            .find_map(|event| match *event {
+                Event::Fired {
+                    slot: 0,
+                    weapon: Weapon::RocketLauncher,
+                    tube,
+                    from,
+                    ..
+                } => Some((tube, from)),
+                _ => None,
+            })
+            .expect("A launched");
+        // From the tube its muzzle said was next.
+        assert_eq!(from, next, "tube {tube}");
+        fired.push((tube, from));
+        let snapshot = decode_snapshot(&encode_snapshot(&session.snapshot())).unwrap();
+        assert_eq!(
+            snapshot.slot(0).unwrap().tubes,
+            session.fighters[0].arsenal.tubes
+        );
+        for _ in 0..Weapon::RocketLauncher.refire_ticks() {
+            step(&mut session, aiming);
+        }
+    }
+    let tubes: Vec<u8> = fired.iter().map(|(tube, _)| *tube).collect();
+    assert_eq!(tubes, [0, 1, 0, 1]);
+    // The two tubes sit 20 cm apart; each fires from the same place every time (the robot
+    // barely sways).
+    let apart = |a: [f32; 3], b: [f32; 3]| {
+        (0..3)
+            .map(|axis| (a[axis] - b[axis]).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    };
+    assert!((apart(fired[0].1, fired[1].1) - 20.0).abs() < 1.0);
+    assert!(apart(fired[0].1, fired[2].1) < 0.1);
+    assert!(apart(fired[1].1, fired[3].1) < 0.1);
+}
+
+/// A predicting client: a one-fighter session on the duel arena placed where the host has A,
+/// as [`shooter_client`]'s reconcile places it.
+fn predictor_of(host: &Session) -> Session {
+    let snapshot = decode_snapshot(&encode_snapshot(&host.snapshot())).unwrap();
+    let me = snapshot.slot(0).unwrap().clone();
+    let mut predictor = Session::with_rules(duel_arena(), Rules::solo()).unwrap();
+    let fighter = &mut predictor.fighters[0];
+    fighter.build = me.build;
+    fighter.parts = me.parts;
+    fighter.energy = me.energy;
+    fighter.fuel = me.fuel;
+    fighter.arsenal.tubes = me.tubes;
+    predictor
+        .place(0, me.robot.as_ref().unwrap(), me.motion, me.held, me.hook)
+        .unwrap();
+    predictor
+}
+
+fn close(a: [f32; 3], b: [f32; 3], within: f32) -> bool {
+    (0..3).all(|axis| (a[axis] - b[axis]).abs() <= within)
+}
+
+/// Online prediction aims every ranged shot as the host does (shooter#102), not only hitscan:
+/// the camera picks B among the others as the client draws them, so the predicted rocket's,
+/// shotgun blast's and flame's `Fired` (and the rifle's beam and the flame) leave the same
+/// muzzle (the rocket pod's same tube) in the same direction as the host's, though the
+/// predicting session itself has no B to aim at.
+#[test]
+fn prediction_aims_rockets_pellets_and_flame_like_the_host() {
+    for (build, weapons) in [
+        (STANDARD, &[Weapon::EnergyRifle, Weapon::Shotgun][..]),
+        (ROCKET_POD, &[Weapon::RocketLauncher][..]),
+        (PYRO, &[Weapon::Laser, Weapon::Flamethrower][..]),
+    ] {
+        let (mut host, mut step) = duel_on(duel_arena(), build);
+        for &weapon in weapons {
+            // Aimed a little above B's chassis, so a muzzle's line differs from the camera's.
+            let (yaw, pitch) = at_chassis(&host, 0, 1);
+            let aiming = Intent {
+                yaw,
+                pitch: pitch + 200,
+                select: Some(weapon.into()),
+                ..Intent::IDLE
+            };
+            for _ in 0..60 {
+                step(&mut host, aiming);
+            }
+            let mut predictor = predictor_of(&host);
+            let firing = Intent {
+                fire: true,
+                ..aiming
+            };
+            let mut compared = 0;
+            let mut turned = false;
+            for _ in 0..weapons::FLAME_IGNITION_TICKS + 4 {
+                // B where A's person saw it: as of its input's view tick, the tick before.
+                let seen = host.fighters[1].hitboxes();
+                step(&mut host, firing);
+                predictor.tick(firing).unwrap();
+                let hosted: Vec<Event> = host
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        matches!(event, Event::Fired { slot: 0, .. } | Event::Beam { .. })
+                    })
+                    .copied()
+                    .collect();
+                let predicted = predictor.predicted_shots(0, &[seen]);
+                assert_eq!(hosted.len(), predicted.len(), "{weapon:?}: {predicted:?}");
+                for (hosted, predicted) in hosted.iter().zip(&predicted) {
+                    match (*hosted, *predicted) {
+                        (
+                            Event::Fired {
+                                weapon: a,
+                                tube: tube_a,
+                                from: from_a,
+                                direction: direction_a,
+                                ..
+                            },
+                            Event::Fired {
+                                weapon: b,
+                                tube: tube_b,
+                                from: from_b,
+                                direction: direction_b,
+                                ..
+                            },
+                        ) => {
+                            assert_eq!((a, tube_a), (b, tube_b));
+                            assert!(close(from_a, from_b, 0.01), "{weapon:?}");
+                            assert!(
+                                close(direction_a, direction_b, 1e-4),
+                                "{weapon:?}: host {direction_a:?} predicted {direction_b:?}"
+                            );
+                            // The prediction's own aim (no B in its session) was another.
+                            let own = predictor.events.iter().find_map(|event| match *event {
+                                Event::Fired { direction, .. } => Some(direction),
+                                _ => None,
+                            });
+                            turned |= own.is_some_and(|own| !close(own, direction_a, 1e-4));
+                            compared += 1;
+                        }
+                        (
+                            Event::Beam {
+                                end: end_a,
+                                struck: struck_a,
+                                ..
+                            },
+                            Event::Beam {
+                                end: end_b,
+                                struck: struck_b,
+                                ..
+                            },
+                        ) => {
+                            assert_eq!(struck_a, struck_b, "{weapon:?}");
+                            assert!(
+                                close(end_a, end_b, 0.5),
+                                "{weapon:?}: host {end_a:?} predicted {end_b:?}"
+                            );
+                        }
+                        pair => panic!("{weapon:?}: {pair:?}"),
+                    }
+                }
+            }
+            assert!(compared > 0, "{weapon:?} fired");
+            assert!(turned, "{weapon:?}: B changed the aim");
+            for _ in 0..90 {
+                step(&mut host, Intent::IDLE);
+            }
+        }
+    }
+}
+
+/// Each staged cover shot (the profile run's `cover` scene, shooter#102's captures) does what
+/// it shows: standing there, the camera's target lies far beyond, and the rifle's shots, from
+/// its muzzle behind the arena's static cover, stop on that cover close to the robot.
+#[test]
+fn the_staged_cover_shots_are_blocked_by_the_arenas_cover() {
+    use shooter_sim::scenarios::{COVER_FIRE_TICK, COVER_SHOTS};
+    for stage in COVER_SHOTS {
+        let mut session = Session::on_map(stage.map, Rules::solo()).unwrap();
+        session.tick(Intent::IDLE).unwrap();
+        session.fighters[0].intent.yaw = stage.yaw;
+        session.stand(0, stage.feet).unwrap();
+        let mut beams = Vec::new();
+        for tick in 0..COVER_FIRE_TICK + 20 {
+            session.tick(stage.intent(tick)).unwrap();
+            beams.extend(session.events.iter().filter_map(|event| match *event {
+                Event::Beam {
+                    weapon: Weapon::EnergyRifle,
+                    from,
+                    end,
+                    struck,
+                    ..
+                } => Some((from, end, struck)),
+                _ => None,
+            }));
+        }
+        assert!(beams.len() >= 2, "{}: {beams:?}", stage.map);
+        let me = &session.fighters[0];
+        let shot = aim::aimed(
+            &session.world,
+            me.eye(),
+            me.muzzle(Weapon::EnergyRifle),
+            stage.yaw,
+            stage.pitch,
+            body_of(0),
+            |body| slot_of(body).is_none(),
+            std::iter::empty(),
+        );
+        let far = (0..3)
+            .map(|axis| (shot.target.end[axis] - me.eye()[axis]).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        assert!(far > 1_200.0, "{}: target {far}", stage.map);
+        for (from, end, struck) in beams {
+            let near = (0..3)
+                .map(|axis| (end[axis] - from[axis]).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            assert!(struck && near < 400.0, "{}: beam {near}", stage.map);
+        }
     }
 }
