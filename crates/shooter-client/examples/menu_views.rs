@@ -4,7 +4,8 @@
 //! the menu, a practice match with a chosen count, and the Workshop's active build (shooter#155):
 //! a loadout put on the bench, saved under a name and made active with Done, an edit dropped with
 //! Back, the client restarted on the same stores still playing it, a practice match with it and
-//! nothing connecting. Every step checks what the app then plays (map, fighters and build) and
+//! nothing connecting, then the robo-dog, rover and mini-tank presets each made active from the
+//! Workshop and played in a practice match (shooter#169). Every step checks what the app then plays (map, fighters and build) and
 //! writes the frame:
 //!
 //! ```text
@@ -20,7 +21,7 @@ use shooter_client::builder::saved::{self, MemoryBuilds, SavedBuilds};
 use shooter_client::gpu::Gpu;
 use shooter_client::prefs::{MemoryPrefs, PrefStore};
 use shooter_sim::MapId;
-use shooter_sim::robot::{HEAVY, MARKSMAN};
+use shooter_sim::robot::{HEAVY, LOADOUTS, MARKSMAN, MINI_TANK, ROBO_DOG, ROVER};
 use std::rc::Rc;
 use winit::keyboard::KeyCode;
 
@@ -297,6 +298,49 @@ fn main() -> Result<(), String> {
         "Practice plays SCOUT in this process, nothing connecting",
     )?;
     run.shoot("practice-active-build")?;
+
+    // The robo-dog, rover and mini-tank presets (shooter#169): each put on the bench from the
+    // Workshop's START FROM list, made active with Done and played in a practice match.
+    for (name, build) in [
+        ("robo-dog", ROBO_DOG),
+        ("rover", ROVER),
+        ("mini-tank", MINI_TANK),
+    ] {
+        let index = LOADOUTS
+            .iter()
+            .position(|(key, _)| *key == name)
+            .ok_or("no such loadout")?;
+        let leave = run.app.leave_at().ok_or("no Leave button")?;
+        run.app.click(leave.x, leave.y);
+        run.frames(2)?;
+        run.click("Workshop")?;
+        run.frames(30)?;
+        run.click_bench(&format!("Loadout({index})"))?;
+        let bench = run.bench()?;
+        run.check(
+            bench["build"] == hex(&build) && bench["valid"] == true,
+            &format!("the {name} preset is on the bench and valid"),
+        )?;
+        run.frames(20)?;
+        run.shoot(&format!("workshop-{name}"))?;
+        run.click_bench("Ready")?;
+        run.check(
+            run.app.active() == (build, "")
+                && run.menu()?["robot"]
+                    .as_str()
+                    .is_some_and(|line| line.contains(&format!("{name} loadout"))),
+            &format!("Done makes the {name} the active build"),
+        )?;
+        run.click("Practice")?;
+        run.click("Map:proving-cell")?;
+        run.click("Start")?;
+        run.frames(240)?;
+        run.check(
+            run.app.played() == Some((Some(build), true)),
+            &format!("Practice plays the {name}"),
+        )?;
+        run.shoot(&format!("practice-{name}"))?;
+    }
 
     // With `SHOOTER_MENU_CONNECT=<match url>` and `SHOOTER_MENU_CERT=<pem>` (a host running as
     // `scripts/dev.sh` starts it): Settings' developer connection joins it.

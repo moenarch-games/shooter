@@ -1066,16 +1066,33 @@ fn shots_start_at_the_muzzles_and_mods_ride_their_weapons() {
 fn every_loadout_weapon_points_its_kit_muzzle_along_the_aim() {
     // Mounted on the chassis' front (shooter#91), every weapon's kit muzzle (and the blade's
     // tip) points within a degree of where the fighter faces, with no aim offset in the drawing.
+    // The bipeds carry four weapons (a blade among them), the dog, rover and mini-tank one gun.
     let kit = kit();
     let forward = standing().forward;
     let within = 1.0_f32.to_radians().cos();
     for (name, build) in LOADOUTS {
         let model = Model::of(&build, kit).unwrap();
         let idle = posed(&model, &standing(), &PartStates::default());
-        assert_eq!(idle.muzzles.len(), 3, "{name}: every weapon but the blade");
+        let weapons: Vec<Weapon> = shooter_sim::robot::BETA
+            .weapons(&build)
+            .map(|instance| instance.weapon)
+            .collect();
+        let guns = weapons
+            .iter()
+            .filter(|weapon| **weapon != Weapon::EnergyBlade)
+            .count();
+        assert!(guns > 0, "{name}");
+        assert_eq!(
+            idle.muzzles.len(),
+            guns,
+            "{name}: every weapon but the blade"
+        );
         for muzzle in &idle.muzzles {
             let along = muzzle.direction.normalize().dot(forward);
             assert!(along > within, "{name}: {:?} {along}", muzzle.weapon);
+        }
+        if !weapons.contains(&Weapon::EnergyBlade) {
+            continue;
         }
         let blade = &model.parts[part_of(&model, "weapon.energy-blade")];
         let entry = blade.entry;

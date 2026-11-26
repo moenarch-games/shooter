@@ -906,6 +906,11 @@ whether resupply locks movement or firing (Q2.i123.3).
   Until the builder (shooter#57), people pick a named loadout (`robot::LOADOUTS`: standard,
   heavy, skirmisher, marksman; pyro since shooter#96), sent through the existing build request.
   Since shooter#57 they are where the builder starts from (D2.i70.11).
+  Since shooter#169 (owner, 2026-11-26) three of them stand on other locomotion, on the
+  mechanics fixtures' geometry: `robo-dog` (four legs, a shotgun; its legs on the interim drive
+  like every leg), `rover` (four wheels, the energy rifle: the armed car) and `mini-tank` (two
+  flat tracks, the rail gun), each with its own fuel tank and generator; wheels and tracks drive
+  and turn them on their own actuators (D2.i74.1). Motor-steered axles are separate (shooter#170).
   Attachment rules answered by D2.i70.1 and D2.i70.2, cooling superseded by D2.i70.4; the numbers
   remain open as Q2.i70.1 and Q2.i70.2. The defaults above stay shipped until migrated
   (D2.i70.12). The sockets, hardpoints and load budget were migrated by shooter#71; the power and

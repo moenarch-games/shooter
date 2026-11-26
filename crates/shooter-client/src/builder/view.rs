@@ -203,7 +203,7 @@ const BAR_HEIGHT: f32 = 92.0;
 const ROW: f32 = 18.0;
 /// A catalogue or loadout row: tighter than [`ROW`], so every catalogue part and loadout fits
 /// above the bar at 720 lines.
-const CATALOGUE_ROW: f32 = 16.0;
+const CATALOGUE_ROW: f32 = 15.0;
 const CELL: f32 = 2.0;
 /// The font cell of the smaller text: a glyph cell snaps to whole pixels, so below 2 it reads no
 /// smaller at 720 lines; it stays one name for the lines that would shrink first.
@@ -2421,6 +2421,16 @@ mod tests {
         // The loadouts, two a row, end above the bar.
         let last = rows.last().unwrap().0;
         assert!(last.y + last.height <= builder.layout().bar.y - 8.0);
+        for name in ["robo-dog", "rover", "mini-tank"] {
+            let index = LOADOUTS.iter().position(|(key, _)| *key == name).unwrap();
+            assert!(
+                rows.iter()
+                    .any(|(_, target)| *target == Target::Loadout(index))
+            );
+            builder.act(Target::Loadout(index));
+            assert_eq!(*builder.bench.draft(), LOADOUTS[index].1);
+            assert_eq!(builder.bench.check(), Ok(LOADOUTS[index].1));
+        }
     }
 
     #[test]

@@ -106,9 +106,10 @@
 use crate::energy::Resource;
 use crate::weapons::{Delivery, Instance, Weapon};
 use parts::{
-    ADAPTER, BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, COMBUSTION_M, ENERGY_BLADE, ENERGY_RIFLE,
-    ENGINE, FLAMETHROWER, FUEL_TANK, GENERATOR, GRAPPLE, HINGE, LASER, LEG, MOUNT_RAIL_LONG,
-    MOUNT_RAIL_SHORT, RAIL_GUN, REPAIR_MODULE, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    ADAPTER, BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_M, CHASSIS_S, COMBUSTION_M, ENERGY_BLADE,
+    ENERGY_RIFLE, ENGINE, FLAMETHROWER, FUEL_TANK, GENERATOR, GRAPPLE, HINGE, LASER, LEG,
+    MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, RAIL_GUN, REPAIR_MODULE, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    TRACK, WHEEL,
 };
 use std::fmt;
 
@@ -1281,13 +1282,56 @@ pub const ADAPTER_MAST: Assembly = authored(&[
     Part::on(7, &GRAPPLE, 3, &ADAPTER, Face::PosZ, 0, 0),
 ]);
 
+/// A four-wheel differential-drive rover, with the match-tested car's wheel geometry,
+/// a forward rifle and a roof-mounted power plant.
+pub const ROVER: Assembly = authored(&[
+    Part::root(0, &CHASSIS_L),
+    Part::on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+    Part::on(2, &WHEEL, 0, &CHASSIS_L, Face::PosY, 0, 0).yawed(2 * Orientation::QUARTER),
+    Part::on(3, &WHEEL, 0, &CHASSIS_L, Face::PosY, 0, 1).yawed(Orientation::QUARTER),
+    Part::on(4, &WHEEL, 0, &CHASSIS_L, Face::NegY, 0, 0).yawed(2 * Orientation::QUARTER),
+    Part::on(5, &WHEEL, 0, &CHASSIS_L, Face::NegY, 1, 0).yawed(3 * Orientation::QUARTER),
+    forward(6, &ENERGY_RIFLE, &CHASSIS_L, 1, 2),
+    Part::on(7, &FUEL_TANK, 0, &CHASSIS_L, Face::PosZ, 1, 0),
+    Part::on(8, &GENERATOR, 7, &FUEL_TANK, Face::PosZ, 0, 0),
+]);
+
+/// A four-legged robot with forelegs under two beams, a forward shotgun and a roof power
+/// plant. Its legs use the match's interim drive until physical gait balance is viable.
+pub const ROBO_DOG: Assembly = authored(&[
+    Part::root(0, &CHASSIS_L),
+    Part::on(2, &BEAM_LONG, 0, &CHASSIS_L, Face::PosX, 0, 0),
+    Part::on(3, &BEAM_LONG, 0, &CHASSIS_L, Face::PosX, 2, 0),
+    Part::on(4, &LEG, 0, &CHASSIS_L, Face::NegZ, 0, 0),
+    Part::on(5, &LEG, 0, &CHASSIS_L, Face::NegZ, 2, 0),
+    Part::on(6, &LEG, 2, &BEAM_LONG, Face::NegY, 0, 3),
+    Part::on(7, &LEG, 3, &BEAM_LONG, Face::NegY, 0, 3),
+    Part::on(8, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+    forward(9, &SHOTGUN, &CHASSIS_L, 1, 2),
+    Part::on(10, &FUEL_TANK, 0, &CHASSIS_L, Face::PosZ, 1, 0),
+    Part::on(11, &GENERATOR, 10, &FUEL_TANK, Face::PosZ, 0, 0),
+]);
+
+/// A mini-tank with the flat track fixture's ground clearance, a forward rail gun and
+/// its own power plant. Both tracks turn differentially through their own actuators.
+pub const MINI_TANK: Assembly = authored(&[
+    Part::root(0, &CHASSIS_L),
+    Part::on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
+    Part::on(2, &TRACK, 0, &CHASSIS_L, Face::PosY, 0, 0),
+    Part::on(3, &TRACK, 0, &CHASSIS_L, Face::NegY, 0, 0).yawed(3 * Orientation::QUARTER),
+    forward(4, &RAIL_GUN, &CHASSIS_L, 1, 2),
+    Part::on(5, &FUEL_TANK, 0, &CHASSIS_L, Face::PosZ, 1, 0),
+    Part::on(6, &GENERATOR, 5, &FUEL_TANK, Face::PosZ, 0, 0),
+]);
+
 /// The named loadouts a person picks from until the builder (shooter#57): the unmodified
 /// standard and heavy builds, the two contrasting modded ones and the pyro (the laser and the
 /// flamethrower, shooter#96), the mechanic (a field repair module, shooter#61), all electric,
-/// and the stoker (a combustion hybrid, shooter#130), all component trees. The builds with
+/// and the stoker (a combustion hybrid, shooter#130), plus three alternative locomotion
+/// builds. The builds with
 /// several copies of one weapon ([`TWIN_RAIL`], [`ROCKET_POD`]) are fixtures, not among them;
 /// the builder makes any such build.
-pub const LOADOUTS: [(&str, Assembly); 7] = [
+pub const LOADOUTS: [(&str, Assembly); 10] = [
     ("standard", STANDARD),
     ("heavy", HEAVY),
     ("skirmisher", SKIRMISHER),
@@ -1295,6 +1339,9 @@ pub const LOADOUTS: [(&str, Assembly); 7] = [
     ("pyro", PYRO),
     ("mechanic", MECHANIC),
     ("stoker", STOKER),
+    ("robo-dog", ROBO_DOG),
+    ("rover", ROVER),
+    ("mini-tank", MINI_TANK),
 ];
 
 /// The loadout called `name` in [`LOADOUTS`] (any case).

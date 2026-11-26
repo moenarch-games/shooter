@@ -876,12 +876,17 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         assert_eq!((budget.fuel, budget.burn), (1_000, 12), "{name}");
         assert_eq!(BETA.notices(&build), [], "{name}");
         assert!(budget.points <= budget.build_points);
-        // Four weapons each.
+        // The original bipeds have four weapons; the alternate locomotion builds have one gun.
         let weapons: Vec<Weapon> = BETA
             .weapons(&build)
             .map(|instance| instance.weapon)
             .collect();
-        assert_eq!(weapons.len(), 4, "{name}");
+        let expected = if matches!(name, "robo-dog" | "rover" | "mini-tank") {
+            1
+        } else {
+            4
+        };
+        assert_eq!(weapons.len(), expected, "{name}");
     }
     assert_eq!(loadout(" Marksman "), Some(MARKSMAN));
     assert_eq!(loadout("sniper"), None);
@@ -1038,13 +1043,15 @@ fn every_loadout_weapon_faces_the_aim_from_the_chassis() {
     // (+X, the aim at rest).
     let forward = 1.0_f32.to_radians().cos();
     for (name, build) in LOADOUTS {
-        assert!(
-            build
-                .parts()
-                .iter()
-                .all(|part| !matches!(BETA.part_type(part.kind).unwrap().kind, Kind::Beam)),
-            "{name}"
-        );
+        if name != "robo-dog" {
+            assert!(
+                build
+                    .parts()
+                    .iter()
+                    .all(|part| !matches!(BETA.part_type(part.kind).unwrap().kind, Kind::Beam)),
+                "{name}"
+            );
+        }
         let placed = shooter_sim::mechanics::placements(&build);
         let mut weapons = 0;
         for (part, placement) in build.parts().iter().zip(&placed) {
@@ -1059,7 +1066,38 @@ fn every_loadout_weapon_faces_the_aim_from_the_chassis() {
             // In front of the chassis, not inside it.
             assert!(placement.centre[0] > 0.0, "{name}: {:?}", part.id);
         }
-        assert_eq!(weapons, 4, "{name}");
+        let expected = if matches!(name, "robo-dog" | "rover" | "mini-tank") {
+            1
+        } else {
+            4
+        };
+        assert_eq!(weapons, expected, "{name}");
+    }
+}
+
+#[test]
+fn the_alternative_loadouts_have_distinct_locomotion_and_valid_controls() {
+    use shooter_sim::bindings::Bindings;
+    use shooter_sim::mechanics::{Actuator, Layout};
+    use shooter_sim::robot::Locomotion;
+
+    for (name, locomotion, count, gun) in [
+        ("robo-dog", Locomotion::Leg, 4, Weapon::Shotgun),
+        ("rover", Locomotion::Wheel, 4, Weapon::EnergyRifle),
+        ("mini-tank", Locomotion::Track, 2, Weapon::RailGun),
+    ] {
+        let build = loadout(name).unwrap();
+        let layout = Layout::of(&build);
+        assert_eq!(layout.actuators.len(), count, "{name}");
+        assert!(
+            layout
+                .actuators
+                .iter()
+                .all(|actuator| actuator.kind == Actuator::Locomotion(locomotion)),
+            "{name}"
+        );
+        assert!(BETA.first(&build, gun).is_some(), "{name}");
+        assert_eq!(Bindings::preset_of(&build).validate(&build), Ok(()));
     }
 }
 
