@@ -25,7 +25,10 @@ use shooter_sim::{MapId, Session};
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"SHRP";
-/// 24: the logged commands are wire-31 inputs (the scripted people arm, cancel and set off their
+/// 25: the logged commands are wire-32 inputs and the digests cover wire-32 snapshots (each
+/// fighter's intervals left: every gun copy's refire, the salvo spacing, a swing's lockout, the
+/// blade's and the grapple module's refire, the flame's ignition, shooter#163).
+/// 24:the logged commands are wire-31 inputs (the scripted people arm, cancel and set off their
 /// self-destruct, shooter#131) and the digests cover wire-31 snapshots (each fighter's countdown).
 /// 23: the logged commands are wire-30 inputs and the digests cover wire-30 snapshots (turned
 /// parts seated on their socket's face, their footprint the cells they lie over, shooter#124).
@@ -62,7 +65,7 @@ const MAGIC: &[u8; 4] = b"SHRP";
 /// robot's part healths, part hits and detachments); 7 carried wire 12 (shared energy charge,
 /// batteries, no heat), 6 wire 11 (robot builds as socket-grid component trees), 5 wire 10
 /// (module pickups), 4 wire 9 (robot builds with weapon mods).
-const FORMAT: u8 = 24;
+const FORMAT: u8 = 25;
 /// The magic, the format byte, the seed and the slot count; the map follows.
 const HEADER_BYTES: usize = MAGIC.len() + 1 + 8 + 1;
 
@@ -434,6 +437,57 @@ mod tests {
             charges
         };
         assert_eq!(pools(), pools());
+    }
+
+    /// Shots, swings and their cooldowns replay (shooter#163): every tick's snapshot digest
+    /// covers each fighter's cooldowns, and a replay fires and swings the same copies on the
+    /// same ticks with the same intervals left after each.
+    #[test]
+    fn a_replay_reproduces_every_shot_swing_and_cooldown() {
+        let replay = record(Script::DEFAULT).unwrap();
+        assert_eq!(verify(&replay).unwrap().checkpoints_verified, 1_800);
+        let fire = || {
+            let mut fire = Vec::new();
+            replay
+                .play(u64::MAX, |session| {
+                    for event in &session.events {
+                        if let Event::Fired {
+                            slot, weapon, part, ..
+                        } = *event
+                        {
+                            fire.push((session.ticks(), slot, weapon, part));
+                        }
+                    }
+                    let cooldowns: Vec<_> = session
+                        .fighters
+                        .iter()
+                        .map(|fighter| fighter.arsenal.cooldowns(session.ticks()))
+                        .collect();
+                    assert_eq!(
+                        session
+                            .snapshot()
+                            .fighters
+                            .iter()
+                            .map(|fighter| fighter.cooldowns)
+                            .collect::<Vec<_>>(),
+                        cooldowns
+                    );
+                    Ok(())
+                })
+                .unwrap();
+            fire
+        };
+        let first = fire();
+        let swings = first
+            .iter()
+            .filter(|(_, _, weapon, _)| *weapon == shooter_sim::Weapon::EnergyBlade)
+            .count();
+        assert!(
+            first.len() > 100 && swings > 0,
+            "{} shots, {swings} swings",
+            first.len()
+        );
+        assert_eq!(first, fire());
     }
 
     /// The scripted people's grapples replay (shooter#104): they play six ticks behind the host,

@@ -387,7 +387,11 @@ always out: a switch delays nothing (the 0.2 s draw is gone). Rocket launchers s
 limit per robot: at most one rocket a tick and 0.1 s (6 ticks) between launches, so four
 launchers stagger over 0.3 s rather than launching four rockets at once (provisional numbers,
 Atlas Q2.i123.2); no other family has one. Bots fire every copy of the gun they pick through the
-same per-copy requests.
+same per-copy requests. Snapshots carry what is left of each robot's intervals (every gun copy's
+refire, the salvo spacing, a swing's lockout of the guns, the blade's and the grapple module's
+refire and the flame's ignition; wire 32, replay format 25, #163), and a predicting client resumes
+them when it corrects, so rapid fire and swings are refused and granted as the host does at
+latency; `tests/hosted_cooldowns.rs` plays them through delayed inputs and snapshots.
 
 | Key | Weapon | Shot |
 | --- | --- | --- |

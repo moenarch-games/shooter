@@ -313,7 +313,7 @@ pub mod online {
     use shooter_sim::player::Motion;
     use shooter_sim::repair::Repair;
     use shooter_sim::scenery::PlaceableState;
-    use shooter_sim::weapons::Instance;
+    use shooter_sim::weapons::{Cooldowns, Instance};
     use shooter_sim::wire::encode_input;
     use shooter_sim::{
         Assembly, Event, Intent, MapId, Rules, Session, Snapshot, StepReport, Weapon,
@@ -343,6 +343,9 @@ pub mod online {
         /// Its self-destruct countdown's ticks left (the host may refuse a press the prediction
         /// took, shooter#131).
         destruct: Option<u32>,
+        /// What is left of its guns', blade's and grapple module's intervals (a shot, swing or
+        /// hook the host refused or granted otherwise, shooter#163).
+        cooldowns: Cooldowns,
     }
 
     pub struct Online {
@@ -588,6 +591,12 @@ pub mod online {
             let at = predictor.local().destruct?;
             Some(at.saturating_sub(predictor.ticks()))
         }
+        /// What is left of the predicted intervals (shooter#163).
+        fn cooldowns(&self) -> Cooldowns {
+            self.live().map_or_else(Cooldowns::default, |predictor| {
+                predictor.local().arsenal.cooldowns(predictor.ticks())
+            })
+        }
 
         pub fn hook(&self) -> Option<[f32; 3]> {
             self.live()?.local().hook.map(|hook| hook.anchor_units())
@@ -642,11 +651,11 @@ pub mod online {
                 predictor.fighters[0].fuel = me.fuel;
                 predictor.fighters[0].repair = me.repair;
                 predictor.fighters[0].arsenal.tubes = me.tubes;
-                // The host's interval before the grapple module may hook again (shooter#104).
+                // The host's intervals before each gun copy, the blade and the grapple module
+                // may fire, swing or hook again: the predictor's own clock runs ahead through
+                // every correction (shooter#104, shooter#163).
                 let tick = predictor.ticks();
-                predictor.fighters[0]
-                    .arsenal
-                    .resume_grapple(tick, me.grapple_in);
+                predictor.fighters[0].arsenal.resume(tick, &me.cooldowns);
                 // And its self-destruct countdown (shooter#131).
                 predictor.fighters[0].destruct = me.destruct_in.map(|left| tick + left);
                 Ok::<(), String>(())
@@ -681,7 +690,8 @@ pub mod online {
                 || acked.held != me.held
                 || acked.tubes != me.tubes
                 || acked.repair != me.repair
-                || acked.destruct != me.destruct_in;
+                || acked.destruct != me.destruct_in
+                || acked.cooldowns != me.cooldowns;
             if off {
                 place(self.predictor_mut()?)?;
                 let replay: Vec<Pending> = self.pending.drain(..).collect();
@@ -697,6 +707,7 @@ pub mod online {
                     ) = self.state();
                     pending.repair = self.repair();
                     pending.destruct = self.destruct();
+                    pending.cooldowns = self.cooldowns();
                     self.pending.push_back(pending);
                 }
             }
@@ -793,6 +804,7 @@ pub mod online {
                         tubes,
                         repair: self.repair(),
                         destruct: self.destruct(),
+                        cooldowns: self.cooldowns(),
                     });
                     while self.pending.len() > 120 {
                         self.pending.pop_front();

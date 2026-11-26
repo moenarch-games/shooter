@@ -459,6 +459,58 @@ impl Volley {
     }
 }
 
+/// What is left of an [`Arsenal`]'s intervals at one tick, in ticks (shooter#163): a swing's
+/// lockout of the guns, the blade's and the grapple module's refire, each salvo-limited
+/// family's spacing and each gun copy's own refire, and how long a flamethrower has fired in a
+/// row (to its ignition). Snapshots carry it ([`crate::wire::FighterState::cooldowns`]) and a
+/// predicting client resumes it when it corrects ([`Arsenal::resume`]). Canonical: arsenals
+/// that grant and refuse alike from a tick on have equal values at it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Cooldowns {
+    /// Until a swing lets the guns fire again.
+    pub guns: u16,
+    /// Until the blade may swing again.
+    pub blade: u16,
+    /// Until the grapple module may hook again.
+    pub grapple: u16,
+    /// Until each salvo-limited family ([`Weapon::salvo`]) may fire again, by
+    /// [`Weapon::index`]; 0 for the others.
+    pub families: [u16; Weapon::ALL.len()],
+    /// The gun copies still refiring and the ticks each has left, by part, `refiring` of them.
+    refire: [(PartId, u16); MAX_PARTS],
+    refiring: u8,
+    /// Ticks in a row a flamethrower has fired, up to one past [`FLAME_IGNITION_TICKS`] (all
+    /// that tells whether it burns).
+    pub flaming: u8,
+}
+
+impl Cooldowns {
+    /// The gun copies still refiring and the ticks each has left, in ascending part order.
+    #[must_use]
+    pub fn refiring(&self) -> &[(PartId, u16)] {
+        &self.refire[..usize::from(self.refiring)]
+    }
+
+    /// Adds a gun copy refiring for `left` ticks after those already there: `false`, and
+    /// nothing added, past [`MAX_PARTS`] copies, out of ascending part order or with none left
+    /// (what a snapshot's decoder refuses).
+    pub fn push_refire(&mut self, part: PartId, left: u16) -> bool {
+        let count = usize::from(self.refiring);
+        if count >= MAX_PARTS
+            || left == 0
+            || self
+                .refiring()
+                .last()
+                .is_some_and(|(last, _)| *last >= part)
+        {
+            return false;
+        }
+        self.refire[count] = (part, left);
+        self.refiring += 1;
+        true
+    }
+}
+
 /// The weapon copy a player holds (what the primary trigger fires, a convenience: shooter#127)
 /// and when each mounted gun, its salvo-limited families, the blade and the grapple module may
 /// fire next: part of the simulation state.
@@ -645,10 +697,54 @@ impl Arsenal {
         self.grapple_ready_at.saturating_sub(tick)
     }
 
-    /// The grapple module may hook again `cooldown` ticks from `tick`: a predicting client
-    /// resuming the host's interval ([`crate::wire::FighterState::grapple_in`], shooter#104).
-    pub const fn resume_grapple(&mut self, tick: u32, cooldown: u32) {
-        self.grapple_ready_at = tick.saturating_add(cooldown);
+    /// What is left at `tick` of every interval it keeps (shooter#163): what a snapshot
+    /// carries and a predicting client resumes ([`Arsenal::resume`]).
+    #[must_use]
+    pub fn cooldowns(&self, tick: u32) -> Cooldowns {
+        let left = |at: u32| u16::try_from(at.saturating_sub(tick)).unwrap_or(u16::MAX);
+        let mut cooldowns = Cooldowns {
+            guns: left(self.guns_ready_at),
+            blade: left(self.blade_ready_at),
+            grapple: left(self.grapple_ready_at),
+            flaming: u8::try_from(self.flaming.min(FLAME_IGNITION_TICKS + 1)).unwrap_or(u8::MAX),
+            ..Cooldowns::default()
+        };
+        for weapon in Weapon::ALL {
+            if weapon.salvo().is_some() {
+                let family = usize::from(weapon.index());
+                cooldowns.families[family] = left(self.family_ready_at[family]);
+            }
+        }
+        let mut refiring: Vec<(PartId, u16)> = self
+            .refire
+            .iter()
+            .map(|(part, at)| (*part, left(*at)))
+            .filter(|(_, left)| *left > 0)
+            .collect();
+        refiring.sort_unstable_by_key(|(part, _)| *part);
+        for (part, left) in refiring {
+            cooldowns.push_refire(part, left);
+        }
+        cooldowns
+    }
+
+    /// Resumes the intervals `cooldowns` has left from `tick` (shooter#163, as shooter#104 did
+    /// for the grapple): a predicting client takes the host's when it corrects, so its own
+    /// clock, which runs ahead through every correction, refuses and grants shots, swings and
+    /// hooks as the host does. The held copy and the tubes are not intervals and stay.
+    pub fn resume(&mut self, tick: u32, cooldowns: &Cooldowns) {
+        let at = |left: u16| tick.saturating_add(u32::from(left));
+        self.guns_ready_at = at(cooldowns.guns);
+        self.blade_ready_at = at(cooldowns.blade);
+        self.grapple_ready_at = at(cooldowns.grapple);
+        for (ready, left) in self.family_ready_at.iter_mut().zip(cooldowns.families) {
+            *ready = at(left);
+        }
+        self.refire = [(PartId(0), 0); MAX_PARTS];
+        for (part, left) in cooldowns.refiring() {
+            self.set_refire(*part, at(*left));
+        }
+        self.flaming = u32::from(cooldowns.flaming);
     }
 
     /// Ticks from `tick` until the blade may swing again: 0 when it is ready.
