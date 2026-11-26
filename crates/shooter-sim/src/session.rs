@@ -21,11 +21,15 @@
 //! hands removes it, and a part that comes off ([`crate::damage`]) leaves the bodies, so it no
 //! longer weighs, touches or drives anything ([`Mechanics::sever`]); each of those rebuilds the
 //! world from its exact state, so the host, a predicting client and a replay continue alike.
-//! Each tick the movement rules ([`crate::player::Motion::drive`]: walk, sprint, slide, jumps,
-//! pads, air control, the rope) give the velocity the movement drive sets on the whole robot
-//! ([`Mechanics::drive`]); for robots with connected legs it also balances and faces the aim.
-//! Wheels and tracks alone neither jump nor turn their chassis toward the camera. This is an
-//! interim chassis drive (Atlas D2.i70.5) until robots walk and roll on their actuators alone. Its
+//! A robot without a connected leg moves on its own wheels and tracks alone (shooter#58, Atlas
+//! D2.i74.1): no drive carries or turns it, its actuators take its control layout's commands and
+//! pay by them ([`mechanics::draw`]; a refused wheel or track brakes), a jump press fires the
+//! thruster module it carries and nothing else, and the arena's jump pads throw it
+//! ([`crate::player::Motion::act`]). A robot with a connected leg stays on the interim movement
+//! drive, the bounded fallback until legs walk on their own servos: each tick the movement rules
+//! ([`crate::player::Motion::drive`]: walk, sprint, slide, jumps, pads, air control, the rope)
+//! give the velocity the drive sets on the whole robot ([`Mechanics::drive`]), and it also
+//! balances the robot and faces it toward the aim (an interim chassis drive, Atlas D2.i70.5). Its
 //! actuators take what its person's control layout resolved ([`crate::bindings`]; a bot's, its
 //! build's preset from its movement keys), its motors paying first in the tick: its locomotion for
 //! the walk the drive carries it on, by speed and load ([`walk_draw`]; a refused walk leaves it
@@ -493,6 +497,20 @@ impl Fighter {
         traction
     }
 
+    /// Which way its chassis faces (binary yaw): its robot frame's +X, level. On wheels or tracks
+    /// alone (shooter#58) the way it rolls, not where its person looks.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn heading(&self) -> u16 {
+        let Some(stance) = self.stance.as_ref() else {
+            return 0;
+        };
+        let [x, y, z, w] = stance.origin.orientation;
+        let ahead = [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * z - y * w)];
+        let [ax, az] = ahead.map(|axis| (axis * 4_096.0).round() as i32);
+        crate::trig::yaw_from_vector(ax, az).unwrap_or(0)
+    }
+
     /// An operational leg is the interim movement drive's only source of natural jump and
     /// chassis turning. Wheels, tracks and detached legs do not grant either capability.
     #[must_use]
@@ -626,6 +644,39 @@ fn power(
         }
     }
     (intent, controls, stalled)
+}
+
+/// [`power`] for a robot that moves on its own wheels and tracks (shooter#58): each actuator
+/// asks for what `controls` command it ([`mechanics::draw`]), in part-ID order, locomotion from
+/// what `pool`'s drive runs on and joints from the electricity. A refused wheel or track brakes,
+/// which costs nothing; a refused joint is idle this tick. The controls to act on, and whether
+/// any locomotion was refused.
+fn power_own(
+    (pool, charge, fuel): (Pool, &mut u32, &mut u32),
+    load_kg: u32,
+    layout: &mechanics::Layout,
+    controls: Controls,
+) -> (Controls, bool) {
+    let mut controls = controls;
+    let mut stalled = false;
+    for actuator in &layout.actuators {
+        let at = usize::from(actuator.part.0);
+        let work = mechanics::draw(actuator, controls.commands[at], load_kg);
+        let paid = match actuator.kind {
+            mechanics::Actuator::Locomotion(_) => energy::pay(pool.drive(), charge, fuel, work),
+            mechanics::Actuator::Joint(_) => energy::spend(charge, work),
+        };
+        if !paid {
+            controls.commands[at] = match actuator.kind {
+                mechanics::Actuator::Locomotion(_) => {
+                    stalled = true;
+                    mechanics::Command::Rate(0)
+                }
+                mechanics::Actuator::Joint(_) => mechanics::Command::Idle,
+            };
+        }
+    }
+    (controls, stalled)
 }
 
 /// Below this speed up or down (units a second) a robot held up by its chassis has come to rest
@@ -1601,10 +1652,96 @@ impl Session {
             let Some(stance) = fighter.stance.as_ref() else {
                 continue;
             };
-            // Without connected locomotion nothing walks or slides it ([`crate::damage`]).
-            // Natural jumping and the interim camera-facing chassis drive need a connected leg;
-            // a wheel/track-only robot still falls, is pushed and reels in on its hook.
-            let legged = fighter.connected_leg();
+            // A robot without a connected leg moves on its own wheels and tracks alone
+            // (shooter#58, Atlas D2.i74.1): no drive carries or turns it, its locomotion pays by
+            // its commands, a jump press fires the thrusters it carries and nothing else, and the
+            // arena's jump pads throw it. The interim movement drive below carries only robots
+            // with a connected leg (the bounded fallback until legs balance and walk on their
+            // own servos in the match).
+            if !fighter.connected_leg() {
+                let id = u8::try_from(slot).unwrap_or(u8::MAX);
+                let intent = if playing {
+                    fighter.intent
+                } else {
+                    Intent {
+                        yaw: fighter.intent.yaw,
+                        pitch: fighter.intent.pitch,
+                        ..Intent::IDLE
+                    }
+                };
+                let footing = Footing {
+                    velocity: per_tick(stance.velocity),
+                    // Right after a rebuild (a client placing its robot) its contacts are not
+                    // known until it steps: the scenery under its feet stands for them, as for the
+                    // drive's robots.
+                    grounded: stance.footing.feet || on_ground(&self.world, stance),
+                    feet: whole(stance.feet()),
+                };
+                let (thrust, boosted) = pickups::jump(fighter.carried, fighter.energy);
+                let launch = fighter.motion.act(
+                    &self.arena,
+                    intent,
+                    footing,
+                    fighter.hook.is_some(),
+                    boosted.then_some(thrust),
+                );
+                if let Some(robot) = self.mechanics.robot(id) {
+                    let commanded = if playing {
+                        fighter.intent.motors
+                    } else {
+                        crate::bindings::Motors::REST
+                    };
+                    let commanded = match aim_points[slot] {
+                        Some(point) => {
+                            let hitboxes = fighter.hitboxes();
+                            commanded.resolved(|part| {
+                                let (angle, limits) = self.mechanics.joint(id, part)?;
+                                aim::track(&fighter.build, &hitboxes, part, angle, limits, point)
+                                    .map(crate::mechanics::Command::Angle)
+                            })
+                        }
+                        None => commanded,
+                    };
+                    let parts = &fighter.parts;
+                    let carried =
+                        crate::mechanics::load(&fighter.build, |index| parts.attached(index));
+                    let pool = fighter.pool();
+                    let (controls, stalled) = power_own(
+                        (pool, &mut fighter.energy, &mut fighter.fuel),
+                        carried,
+                        &robot.layout,
+                        commanded.controls(&robot.layout),
+                    );
+                    fighter.flow.stalled = stalled;
+                    motors[slot] = Some(controls);
+                }
+                // A thruster jump is the tick's next request; a pad's throw costs nothing.
+                let mut moves_now = launch.moves;
+                if let Some(velocity) = launch.velocity {
+                    let thrusted = !launch.moves.launched;
+                    if !thrusted
+                        || energy::spend(&mut fighter.energy, pickups::THRUSTER_JUMP_ENERGY)
+                    {
+                        let spin = self
+                            .mechanics
+                            .root_motion(slot)
+                            .map_or([0.0; 3], |root| root.angular_velocity);
+                        self.mechanics.drive(id, per_second(velocity), spin)?;
+                        if thrusted {
+                            spend_module(fighter, &mut self.events);
+                        }
+                    } else {
+                        // The motors left too little for the thrusters: no jump.
+                        moves_now = crate::player::Moves::default();
+                    }
+                }
+                if fighter.slot == 0 {
+                    moves = moves_now;
+                }
+                continue;
+            }
+            // A robot with a connected leg: the interim movement drive carries it, jumps it and
+            // faces it toward the aim.
             let intent = if playing && fighter.parts.mobile(&fighter.build) {
                 fighter.intent
             } else {
@@ -1613,10 +1750,6 @@ impl Session {
                     pitch: fighter.intent.pitch,
                     ..Intent::IDLE
                 }
-            };
-            let intent = Intent {
-                jump: intent.jump && legged,
-                ..intent
             };
             let hooked = fighter.hook.is_some();
             let footing = Footing {
@@ -1696,23 +1829,9 @@ impl Session {
             } else {
                 velocity
             };
-            // A rigid wheel/track cannot lift itself over a curb by invoking the leg step-up.
-            let velocity = if legged {
-                step_up(&self.world, intent, stance.feet(), velocity)
-            } else {
-                velocity
-            };
+            let velocity = step_up(&self.world, intent, stance.feet(), velocity);
             let velocity = per_second(velocity);
-            // Aim never acts as a steering motor for wheels, tracks or a stationary chassis.
-            // Until their motor/contact locomotion replaces the interim drive (Q2.i74.1),
-            // retain their real angular momentum instead of injecting camera-driven spin.
-            let angular_velocity = if legged {
-                steer(origin.orientation, intent.yaw)
-            } else {
-                self.mechanics
-                    .root_motion(slot)
-                    .map_or([0.0; 3], |root| root.angular_velocity)
-            };
+            let angular_velocity = steer(origin.orientation, intent.yaw);
             self.mechanics.drive(id, velocity, angular_velocity)?;
             if moved.jumped
                 && boosted
@@ -1998,6 +2117,7 @@ impl Session {
                     center,
                     eye: alive.then(|| whole(fighter.eye())),
                     chassis,
+                    heading: (alive && !fighter.connected_leg()).then(|| fighter.heading()),
                     armed: Weapon::ALL.map(|weapon| fighter.parts.armed(&fighter.build, weapon)),
                 }
             })

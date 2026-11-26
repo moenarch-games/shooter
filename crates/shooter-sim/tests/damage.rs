@@ -395,7 +395,9 @@ fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_t
     // its chassis and can no longer walk, jump or turn itself.
     assert!(session.mechanics.robot(1).unwrap().lost != 0);
     let standing = session.fighters[1].center();
-    for _ in 0..30 {
+    // Its fall settles (it tumbles onto its chassis on its own since shooter#58: no drive holds
+    // a legless robot).
+    for _ in 0..120 {
         step(&mut session, Intent::IDLE, facing(32_768));
     }
     let before = session.fighters[1].center();
@@ -425,7 +427,7 @@ fn losing_the_legs_leaves_the_robot_alive_and_immobile_and_the_root_chassis_is_t
     };
     let mut killed = false;
     let mut root_hits = 0;
-    for _ in 0..12 {
+    for _ in 0..24 {
         let events = shoot(&mut session, Weapon::RailGun, 32_768, chest);
         if struck(&events)
             .iter()

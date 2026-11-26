@@ -202,6 +202,8 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   mapping, and the drive stands pending Q2.i74.1). Both
   clients draw every part where those bodies are (the legs' hip and knee, the wheels' and tracks'
   roll and the joints' turn included; shooter#54), not from the kit's leg clips.
+  Since shooter#58 (D2.i74.1) the drive carries only robots with a connected leg: a robot on
+  wheels or tracks alone moves on its own actuators, with its own friction.
 - **D2.i70.6** (owner, 2026-11-13; shooter#70; supersedes D2.i46.10): Valid beta builds include
   humanoids and other bipeds, four-leg robo-dogs on built-in quadruped walking presets, wheels and
   tracks, stationary platforms and grappling-only machines, all from the same part types and rules.
@@ -239,6 +241,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   movement keys; the same keys stride its legs and roll its wheels through the preset, which
   under the drive (frictionless bodies) shows rather than moves, while the joints answer the
   layout alone. Removing the drive is Q2.i74.1.
+  Since shooter#58 (D2.i74.1) the bindings carry a robot on wheels or tracks alone: its layout's
+  commands roll and turn it and nothing else does; robots with a connected leg stay under the
+  drive.
 - **D2.i70.8** (owner, 2026-11-13; shooter#70; refines D2.i46.6): Armor is individual plates with
   real hitboxes, and penetration is weapon-specific, so a hit may reach components behind a plate.
   A part works fully until its health reaches zero (no gradual degradation); at zero it is
@@ -616,6 +621,8 @@ whether resupply locks movement or firing (Q2.i123.3).
   drive (Q2.i74.1, proposed with shooter#74): whatever replaces the drive must derive the jump from
   the build's legs or jump modules, not grant it to every robot, and a jump module's thrust is
   the part's own force, not a fake chassis force (D2.i70.7).
+  Since shooter#58 (D2.i74.1) a robot on wheels or tracks alone jumps only with the thruster
+  module (its jump press does nothing without it); legged robots keep the drive's jump.
 - **D2.i123.10** (owner, 2026-11-17; shooter#123, decision 10, C): Every robot can trigger a
   self-destruct with a clear warning. Its blast depends on the connected components and the
   volatile resources left (fuel, ammunition, dedicated explosive modules), resolved through the
@@ -628,6 +635,47 @@ whether resupply locks movement or firing (Q2.i123.3).
   authority. Owner: shooter#126. The builder must also make socket snapping reliable and part
   rotation effective about all three axes (decided); how the rotation is presented is open
   (Q2.i123.1). Owner: shooter#124, on shooter#57's workbench (D2.i70.11).
+- **D2.i74.1** (owner, 2026-11-17; shooter#74, option D; answers Q2.i74.1; owner of the
+  behaviour shooter#58, actuator mechanics shooter#73, bindings shooter#74): Minimal physical
+  balance assistance in the leg modules plus retuned default loadouts, replacing the interim
+  movement drive (D2.i70.5) as the real locomotion becomes viable. A deterministic leg or gait
+  controller may keep a robot upright by commanding only the leg module's own joints and
+  actuators: no hidden chassis forces, no arbitrary forward thrust and no perfect recovery for
+  every unconventional build. Default footprints, mass distribution, motors and movement tuning
+  may be retuned as needed; bipeds, quadrupeds, wheels and tracks each move through their actual
+  mechanisms, and poor or asymmetric builds may stay hard to control. A robot with only one
+  functioning leg may travel by hopping forward, driven by that leg's actuation in response to
+  held movement input and subject to contact, orientation, load, power and damage; this grants
+  no jump to wheel/track-only robots. The direct-binding, no-unskilled-automation and
+  deterministic native, browser, server and replay contracts stay (D2.i70.6, D2.i70.7).
+  Component-dependent jumping (D2.i123.9) applies: working legs may jump, wheels and tracks
+  alone do not, dedicated jump mechanisms (the thruster module among them) may; arena jump pads
+  stay world devices and the grapple a module.
+  **Shipped in part (shooter#58):** *Wheels and tracks:* a robot without a connected leg moves
+  only on its own actuators in the match: no drive carries or turns it, its bodies keep their
+  own friction, W and S roll its wheels and tracks and A and D turn it differentially through
+  the preset (D2.i70.7), the camera turns nothing, its locomotion pays by its commands
+  (`mechanics::draw`; a refused wheel or track brakes, so depletion stops it), a jump press
+  fires the thruster module if it carries one and does nothing otherwise, and the arena's pads
+  throw it. Bots on wheels or tracks alone steer their chassis themselves (`bots::steer`:
+  turn toward where they go, roll once within 45°, fire their chassis' guns within 10°), and
+  scripts can too; a client predicts such a robot and a replay continues it bit for bit
+  (`tests/locomotion.rs`). *Ground clearance* (shooter#58's track note), the simplest option: a
+  track's road wheels reach 4 units past its cuboid (`mechanics::TRACK_CLEARANCE`), so a track
+  mounted level with its hull's bottom holds the hull off flat ground and drives it (the
+  clients stand a tracked robot on them; the kit's drawn road wheels are 4 cm smaller). *Drive
+  retune*, provisional (Q2.i123.2): a wheel's top rate 20 rad/s (about 3.6 m/s), a track's
+  25 rad/s (about 3.5 m/s) and 60 N·m; legs unchanged. **Not yet**: legs. A robot with a
+  connected leg stays on the interim movement drive (D2.i70.5, unchanged: walk, sprint, slide,
+  its jump and air jump, step-up, facing the aim): the bounded fallback until legs balance and
+  walk on their own servos in the match. Measured on physics-engine at the match's 18 m/s²
+  without the drive (shooter#58's experiments, kept off `main`): a leg module given an ankle,
+  40 × 40 cm feet and a flat-foot gait whose assist sets each foot under the centre of mass and
+  catches the robot's speed with the swinging foot keeps four-legged medium-chassis loadouts
+  upright walking straight at about 1 m/s; they still topple turning on the spot, backing up,
+  leaping and on kerbs, bipeds fall within about a second of walking, and eleven of twelve bots
+  fell within 30 s on the yard. So the leg balance assist, the leg jump and the one-leg hop,
+  retuned (four-legged) default loadouts and retiring the drive for legs remain shooter#58's.
 
 ## 3. Platforms
 
@@ -886,6 +934,7 @@ whether resupply locks movement or firing (Q2.i123.3).
   its own; named loadouts on four legs, wheels or tracks; the drive kept for legs only; or
   movement stats derived from the actuators' commands. Until decided the drive stands and the
   layouts drive the actuators under it.
+  Answered 2026-11-17 by D2.i74.1 (option D: a leg balance assist plus retuned loadouts).
 - **Q2.i60.1**: Arena destruction balance: which placeables of each map break, their health, what
   damages them and how much, and whether a broken one ever comes back within a round (D2.i46.11;
   shooter#60 leaves pieces and thresholds to map and content balance).
@@ -918,6 +967,9 @@ whether resupply locks movement or firing (Q2.i123.3).
   chassis and 1 on a combustion one; a combustion drive burns as much fuel a tick as an electric
   one draws electricity; the flamethrower burns 0.5 fuel a tick (its former electricity cost);
   the engine is 20 × 40 × 20 cm, 1 kg, 5 points and 60 health; the combustion chassis copy the
-  electric ones' sizes, mass, points and health.
+  electric ones' sizes, mass, points and health. Provisional (shooter#58, D2.i74.1): a wheel's top
+  rate 20 rad/s (was 12; about 3.6 m/s on its 18 cm sphere), a track's 25 rad/s and 60 N·m (were
+  12 rad/s and 40 N·m; about 3.5 m/s on road wheels of 14 cm with the 4 cm clearance), legs
+  unchanged.
 - **Q2.i123.3**: Whether holding a resupply interaction locks the robot's ordinary movement or
   firing (D2.i123.6). Not prescribed until assessed in shooter#129.

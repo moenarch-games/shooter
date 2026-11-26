@@ -60,12 +60,13 @@
 //! rebuilds the world from it, so the host, a predicting client and a replay hold the same world.
 //! A part shot off leaves the bodies ([`Layout::connected`], [`Mechanics::sever`]): it no longer
 //! weighs, touches or drives anything, and the bodies that stay keep their pose and motion
-//! ([`crate::physics::articulated::rebase`]). The match's movement drive ([`Mechanics::drive`])
-//! sets the whole robot's velocity and turns it (an interim chassis drive: the bindings do not
-//! carry a robot yet, see [`crate::bindings`]); its actuators take the commands its person's
-//! control layout resolved ([`crate::bindings::Motors::controls`]), its bodies slide frictionless
-//! over the arena (the drive is what carries it) and its legs bend only within their gaits'
-//! range ([`Mechanics::for_match`]).
+//! ([`crate::physics::articulated::rebase`]). Its actuators take the commands its person's control
+//! layout resolved ([`crate::bindings::Motors::controls`]). A robot on wheels or tracks alone
+//! rolls and turns on them with its own friction (shooter#58); the match's interim movement drive
+//! ([`Mechanics::drive`]) sets the velocity of a robot with a connected leg and turns it (the
+//! bounded fallback until legs walk on their own servos), its bodies slide frictionless over the
+//! arena (the drive is what carries it) and its legs bend only within their gaits' range
+//! ([`Mechanics::for_match`]).
 //!
 //! **Debris** (shooter#75, Atlas D2.i70.10). In the match a part carried away whole (its parent
 //! broke) and at least [`DEBRIS_MIN_MASS_KG`] heavy becomes a body of its own where its robot
@@ -120,6 +121,9 @@ const FOOT: [f32; 3] = [9.0, 14.0, 3.0];
 /// A wheel's sphere is this much (units) inside its cell footprint, so neighbouring wheels do
 /// not rub.
 const WHEEL_INSET: f32 = 2.0;
+/// How far (units) a track's road wheels reach past its cuboid (shooter#58): a track mounted
+/// level with its hull's bottom holds the hull this far off flat ground.
+pub const TRACK_CLEARANCE: f32 = 4.0;
 /// Spawned robots start this far (units) above the ground.
 const SPAWN_GAP: f32 = 0.5;
 
@@ -722,8 +726,12 @@ impl Layout {
                             joint(&mut layout, parent, body, centre, axis_z, None);
                         }
                         Locomotion::Track => {
-                            let radius = x.min(z) / 2.0;
-                            for along in [radius, y - radius] {
+                            // Its road wheels reach a little past its cuboid, so a track
+                            // mounted level with its hull's bottom holds the hull off the
+                            // ground and drives it (shooter#58's ground clearance).
+                            let inset = x.min(z) / 2.0;
+                            let radius = inset + TRACK_CLEARANCE;
+                            for along in [inset, y - inset] {
                                 let centre = frame.point([x / 2.0, along, z / 2.0]);
                                 let road = Child {
                                     shape: Shape::Sphere(radius),
@@ -1332,11 +1340,12 @@ pub struct Mechanics {
     /// it pays the motors first in the tick and passes a refused one as idle, and runs the
     /// generators after every request.
     pub metered: bool,
-    /// The match's friction for every robot body, if not their own (and its legs' narrower
-    /// limits): the movement drive ([`Mechanics::drive`]) is what carries a robot over the ground,
-    /// so its feet and wheels slide where it drives them instead of dragging it over, and it
-    /// slides along walls as the capsule did (Atlas D2.3's fast movement on mechanical robots,
-    /// until the robots walk and roll on their actuators alone: Atlas D2.i70.5).
+    /// The match's friction for the bodies of every robot with a connected leg, if not their own
+    /// (and its legs' narrower limits): the interim movement drive ([`Mechanics::drive`]) is what
+    /// carries such a robot over the ground, so its feet slide where it drives them instead of
+    /// dragging it over, and it slides along walls as the capsule did (Atlas D2.3's fast movement
+    /// on mechanical robots: the bounded fallback until legs walk on their own servos, shooter#58).
+    /// A robot on wheels or tracks alone keeps its own friction and rolls on its actuators.
     traction: Option<f32>,
     /// The physical debris, in the order it came off; motions as of the last step or rebuild.
     debris: Vec<DebrisState>,
@@ -1444,9 +1453,10 @@ impl Mechanics {
         rebuilt
     }
 
-    /// The match's robots ([`crate::session`]): under `gravity` (m/s²), their resources
-    /// metered by the match, every body frictionless (the movement drive carries them) and
-    /// their legs bending only within the gait presets' range.
+    /// The match's robots ([`crate::session`]): under `gravity` (m/s²), their resources metered
+    /// by the match; a robot with a connected leg frictionless (the interim movement drive carries
+    /// it) with its legs bending only within the gait presets' range, one on wheels or tracks
+    /// alone rolling on its own (shooter#58).
     ///
     /// # Errors
     ///
@@ -1960,7 +1970,9 @@ impl Mechanics {
     fn admit_all(&mut self, state: &State) -> Result<(), PhysicsError> {
         let traction = self.traction;
         for robot in &state.robots {
-            if robot.layout().bodies.len() != robot.bodies.len() {
+            let layout = robot.layout();
+            let legged = layout.legs().next().is_some();
+            if layout.bodies.len() != robot.bodies.len() {
                 return Err(crate::physics::error(
                     "a robot's bodies do not match its build",
                 ));
@@ -1974,7 +1986,7 @@ impl Mechanics {
             }
             self.admit(robot, |world, id, body, index| {
                 let mut spec = spec(id, body);
-                if let Some(friction) = traction {
+                if let Some(friction) = traction.filter(|_| legged) {
                     spec.friction = friction;
                 }
                 world.restore_body(spec, robot.bodies[index])

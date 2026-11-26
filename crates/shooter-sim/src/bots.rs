@@ -1,7 +1,9 @@
 //! Bots: simple, beatable and deterministic. A bot walks between its arena's spawn points and
 //! waypoints ([`Arena::bot_points`]), looks for the nearest fighter it can see, turns toward it
 //! at a limited rate, waits a reaction delay, then fires with an aim error it re-rolls every few
-//! hundred milliseconds, strafing as it does.
+//! hundred milliseconds, strafing as it does. A bot on wheels or tracks alone (shooter#58) cannot
+//! strafe or jump: it steers its chassis toward where it goes and at its target with its own
+//! locomotion ([`steer`]) and fires its chassis' guns once they face it.
 //! It burns anyone within a few metres with the flamethrower, picks the rifle (even slots) or the
 //! shotgun (odd slots) up close, rockets (even) or the laser (odd) at mid range and the rail gun
 //! far off, and rushes in to swing the energy blade when someone comes within a few metres. It
@@ -62,6 +64,10 @@ pub struct Sight {
     pub center: Option<Vec3i>,
     pub eye: Option<Vec3i>,
     pub chassis: Option<Vec3i>,
+    /// Which way its chassis faces (binary yaw) when it steers it itself, on wheels or tracks
+    /// alone ([`crate::session::Fighter::heading`], shooter#58); `None` when the interim movement
+    /// drive faces it toward its aim (a robot with a connected leg) or it is dead.
+    pub heading: Option<u16>,
     pub armed: [bool; 8],
 }
 
@@ -190,8 +196,8 @@ impl Bot {
             .target
             .and_then(|target| sights[target].chassis.or(sights[target].center))
         {
-            Some(target) => self.fight(me, (eye, target), world, copies, sights[me].armed, tick),
-            None => self.wander(center, arena),
+            Some(target) => self.fight(me, (eye, target), world, copies, sights[me], tick),
+            None => self.wander(center, sights[me].heading, arena),
         };
         // Stuck against something while walking (within a few centimetres of where it last got
         // stuck: a robot jostles against a wall): hop and head elsewhere.
@@ -229,10 +235,10 @@ impl Bot {
         (eye, target): (Vec3i, Vec3i),
         world: &World,
         copies: &[Instance],
-        armed: [bool; 8],
+        own: Sight,
         tick: u32,
     ) -> Intent {
-        let armed = |weapon: Weapon| armed[usize::from(weapon.index())];
+        let armed = |weapon: Weapon| own.armed[usize::from(weapon.index())];
         let (dx, dy, dz) = (target.x - eye.x, target.y - eye.y, target.z - eye.z);
         let run = i32::try_from(trig::xz_length(dx, dz)).unwrap_or(i32::MAX);
         let distance = i64::from(run).max(i64::from(dy.abs()));
@@ -282,20 +288,31 @@ impl Bot {
             self.strafe = if self.rng.below(2) == 0 { -1 } else { 1 };
             self.strafe_until = tick + 40 + self.rng.below(60);
         }
-        let on_target = turn(self.yaw, yaw).abs() < FIRE_CONE;
+        let range = if !(RUSH_UNITS..=CLOSE_IN_UNITS).contains(&distance) {
+            1
+        } else if distance < BACK_OFF_UNITS {
+            -1
+        } else {
+            0
+        };
+        // On wheels or tracks alone it turns its chassis to the target with its own locomotion
+        // (its chassis' guns fire along it) and cannot strafe or jump (shooter#58); the interim
+        // movement drive faces a legged robot toward its aim, and it strafes and hops.
+        let (forward, strafe, jump, facing) = match own.heading {
+            Some(heading) => {
+                let (forward, side) = steer(heading, yaw, range);
+                (forward, side, false, turn(heading, yaw).abs() < GUN_CONE)
+            }
+            None => (range, self.strafe, self.rng.below(90) == 0, true),
+        };
+        let on_target = turn(self.yaw, yaw).abs() < FIRE_CONE && facing;
         let ready = on_target && tick >= self.spotted_at + REACTION_TICKS;
         Intent {
-            forward: if !(RUSH_UNITS..=CLOSE_IN_UNITS).contains(&distance) {
-                1
-            } else if distance < BACK_OFF_UNITS {
-                -1
-            } else {
-                0
-            },
-            strafe: self.strafe,
+            forward,
+            strafe,
             yaw: self.yaw,
             pitch: self.pitch,
-            jump: self.rng.below(90) == 0,
+            jump,
             sprint: false,
             crouch: false,
             // Every copy of the gun it picks, as one request through the same per-copy triggers a
@@ -325,7 +342,7 @@ impl Bot {
         }
     }
 
-    fn wander(&mut self, center: Vec3i, arena: &Arena) -> Intent {
+    fn wander(&mut self, center: Vec3i, heading: Option<u16>, arena: &Arena) -> Intent {
         let points = arena.bot_points();
         let feet = Vec3i::new(
             center.x,
@@ -361,12 +378,42 @@ impl Bot {
         let point = points[self.waypoint.unwrap_or(0)];
         let yaw = trig::yaw_from_vector(point.x - feet.x, point.z - feet.z).unwrap_or(self.yaw);
         self.face(yaw, 0);
+        // On wheels or tracks alone it steers its chassis there itself (shooter#58).
+        let (forward, strafe) = heading.map_or((1, 0), |heading| steer(heading, yaw, 1));
         Intent {
-            forward: 1,
+            forward,
+            strafe,
             yaw: self.yaw,
             pitch: self.pitch,
-            sprint: true,
+            sprint: heading.is_none(),
             ..Intent::IDLE
         }
     }
+}
+
+/// Off by more than this (binary yaw, about 11°) a chassis turns toward where it means to go...
+pub const STEER_CONE: i32 = 2_048;
+/// ...and rolls only while within this (45°) of it.
+pub const ROLL_CONE: i32 = 8_192;
+/// A chassis' guns fire only while it faces within this (10°) of its aim
+/// ([`crate::aim::CONVERGENCE_COS`]).
+pub const GUN_CONE: i32 = 1_820;
+
+/// The movement keys (forward, then turn: −1 the left key, 1 the right one) that steer a
+/// chassis facing `heading` toward `toward` (binary yaws), rolling `forward` (1 ahead, −1 back,
+/// 0 turning on the spot) through the build's preset (shooter#58: W and S roll the wheels and
+/// tracks, A and D turn it differentially; nothing turns such a chassis toward the camera). Bots
+/// and scripts steer with it; a person steers with the keys.
+#[must_use]
+pub const fn steer(heading: u16, toward: u16, forward: i8) -> (i8, i8) {
+    let off = turn(heading, toward);
+    let side = if off > STEER_CONE {
+        -1
+    } else if off < -STEER_CONE {
+        1
+    } else {
+        0
+    };
+    let roll = if off.abs() < ROLL_CONE { forward } else { 0 };
+    (roll, side)
 }

@@ -112,11 +112,11 @@ fn an_action_group_drives_every_motor_in_it_each_its_own_way() {
             other => panic!("{part:?}: {other:?}"),
         })
         .collect();
-    // Top rate 12 rad/s.
+    // Top rate 20 rad/s (shooter#58).
     assert_eq!(rates[0], rates[1]);
     assert_eq!(rates[2], rates[3]);
     assert_eq!(rates[0], -rates[2]);
-    assert_eq!(rates[0].abs(), 12_000);
+    assert_eq!(rates[0].abs(), 20_000);
     // D (60 %) turns one side forward and the other back: every wheel the same way.
     let motors = preset.resolve(&car, &mut BindingState::default(), held("KeyD"));
     let turning: Vec<Option<Command>> = WHEELS.iter().map(|part| motors.get(*part)).collect();
@@ -125,7 +125,7 @@ fn an_action_group_drives_every_motor_in_it_each_its_own_way() {
         "{turning:?}"
     );
     assert_eq!(
-        turning[0].map(|c| matches!(c, Command::Rate(r) if r.abs() == 7_200)),
+        turning[0].map(|c| matches!(c, Command::Rate(r) if r.abs() == 12_000)),
         Some(true)
     );
     // W and D together sum per wheel: one side at full, the other at 40 %, clamped to the top.
@@ -145,7 +145,7 @@ fn an_action_group_drives_every_motor_in_it_each_its_own_way() {
         })
         .collect();
     assert!(
-        magnitudes.contains(&12_000) && magnitudes.contains(&4_800),
+        magnitudes.contains(&20_000) && magnitudes.contains(&8_000),
         "{magnitudes:?}"
     );
 }
@@ -307,7 +307,7 @@ fn drive(
 #[test]
 fn the_presets_drive_wheels_and_legs_as_mounted_on_flat_ground_and_a_slope() {
     let w = held("KeyW");
-    // Wheels: about 2 m/s ahead, upright; D turns it on the spot.
+    // Wheels: about 3.6 m/s ahead (shooter#58), upright; D turns it on the spot.
     let (start, end, up) = drive(&floor(), fixtures::car(), w, 300);
     assert!(
         end[0] - start[0] > 900.0 && (end[2] - start[2]).abs() < 10.0,
@@ -319,8 +319,8 @@ fn the_presets_drive_wheels_and_legs_as_mounted_on_flat_ground_and_a_slope() {
         libm::hypotf(end[0] - start[0], end[2] - start[2]) < 5.0,
         "{end:?}"
     );
-    // Up a 1:10 slope that starts 40 cm ahead.
-    let (start, end, up) = drive(&slope(40, 1_600, 160), fixtures::car(), w, 400);
+    // Up a 1:10 slope that starts 40 cm ahead (4 s: it is 16 m long).
+    let (start, end, up) = drive(&slope(40, 1_600, 160), fixtures::car(), w, 240);
     assert!(end[1] - start[1] > 80.0, "{end:?}");
     assert!(up > 0.95, "{up}");
 
