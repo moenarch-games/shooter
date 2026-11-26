@@ -560,8 +560,9 @@ whether resupply locks movement or firing (Q2.i123.3).
   spent), no swing or hook, a walk that does not start (the robot stands, its legs at rest), a
   joint off for the tick, a repair tick without work. Out of fuel the stored electricity still
   walks and fires; out of electricity the generator still burns fuel and restarts them; with
-  neither the robot stands, aims and lives. Self-destruct (shooter#131) is not built: a robot
-  whose tank or generator is shot off fights on what it holds and then stands until it dies.
+  neither the robot stands, aims and lives. A robot whose tank or generator is shot off fights
+  on what it holds and then stands until it dies or, since shooter#131, self-destructs
+  (D2.i123.10: stranded, it may still arm it).
 - **D2.i123.5** (owner, 2026-11-17; shooter#123, decision 5, B and C; supersedes the
   weapon-cycle-only arsenal of shooter#92 in D2.i46.8): Any mounted weapon may be bound directly
   to a key and optionally included in player-defined firing groups, and groups may fire
@@ -648,6 +649,37 @@ whether resupply locks movement or firing (Q2.i123.3).
   volatile resources left (fuel, ammunition, dedicated explosive modules), resolved through the
   existing authoritative damage, respawn and replay systems (D2.i70.8; no separate explosion or
   chain-reaction simulator). Blast damage and balance are open (Q2.i123.2). Owner: shooter#131.
+  **Shipped (shooter#131, `shooter_sim::destruct`):** *Arming and cancelling:* an input action
+  (`robot.selfDestruct`, Backspace by default, rebindable through the client's action catalog;
+  the touch bar's Destruct button) is a press sent once like a repair order: a living robot's
+  press while the round is played arms a 3 s host countdown, another press during it cancels it.
+  Nothing else is asked: a robot stranded without electricity, fuel or locomotion, or in the air,
+  arms and goes off alike. Death cancels it (a robot destroyed during the countdown does not go
+  off: the counterplay), and so does the round's end; a dead robot or one between rounds cannot
+  arm. Snapshots carry each fighter's countdown, the arm and cancel events and the blast (wire
+  31, replay format 24); a predicting client resumes the host's countdown and replays reproduce
+  it. *The blast:* when the countdown ends the robot dies at once, its own kill, and blows up at
+  its centre with what it still carries: the fuel in its connected tanks and the charge its
+  connected batteries hold (their share of the pool; not the root chassis' baseline). A tank or
+  battery lost earlier took its contents with it, a battery destroyed earlier already blasted
+  (the existing battery blast) and adds nothing, and the robot's own death sets off no battery
+  blast, so nothing counts twice; an empty robot only dies. There is no explosive module and no
+  ammunition (shooter#129's open question), so fuel and battery charge are the only volatile
+  contents. It resolves through the existing part damage: every other living robot's connected
+  parts in reach take the linear falloff to their nearest point unless the arena's geometry
+  stands between (cover shelters), batteries it destroys blast in turn, damageable placeables in
+  reach and dummies in sight take it too; it pushes nothing. Simultaneous self-destructs all go
+  off: every robot whose countdown ends dies first, then each blast resolves in slot order.
+  *Scoring:* the robot's own death is a suicide (a frag lost, as every self-kill), each robot its
+  blast kills a frag for it, so taking one opponent along scores nothing net; respawn and Edit
+  Robot between lives are unchanged. Bots never self-destruct. *Telegraph:* everyone sees a red
+  warning light pulsing on the robot (faster in the last second) and hears a warning tone where
+  it was armed; the owner's HUD shows a red banner with the seconds left, the blast its contents
+  would make now and how to cancel; the blast is a fireball as large as its reach with the
+  rocket's boom (generated tones until asset-tooling provides sounds). The scripted practice
+  match arms, cancels and sets one off (`scenarios::scripted_intent`), so the cross-build hashes
+  and replays cover it. Native captures only (`docs/captures/131`: the banner, the warning light,
+  the blast); the browser build is compiled, not run. Numbers in Q2.i123.2.
 - **D2.i123.11** (owner, 2026-11-17; shooter#123, decision 11, B; extends D2.i70.1): Mount rails,
   adapters and structural extensions are ordinary parts on the universal socket tree that expose
   further sockets and hardpoints, with mass, health, points and detachment like any part; precise
@@ -990,6 +1022,10 @@ whether resupply locks movement or firing (Q2.i123.3).
   electric ones' sizes, mass, points and health. Provisional (shooter#58, D2.i74.1): a wheel's top
   rate 20 rad/s (was 12; about 3.6 m/s on its 18 cm sphere), a track's 25 rad/s and 60 N·m (were
   12 rad/s and 40 N·m; about 3.5 m/s on road wheels of 14 cm with the 4 cm clearance), legs
-  unchanged.
+  unchanged. Provisional (shooter#131, D2.i123.10): the self-destruct counts down 3 s
+  (`destruct::COUNTDOWN_TICKS`); its blast deals 1 a 10 fuel in the connected tanks plus 1 a
+  unit of charge in the connected batteries (a full tank 100, a full battery 60), at most 300,
+  at its centre, falling off linearly to nothing at 1.5 m plus 1 cm a point of damage (at most
+  4.5 m; a full standard build 100 within 2.5 m, a full heavy 160 within 3.1 m), no knockback.
 - **Q2.i123.3**: Whether holding a resupply interaction locks the robot's ordinary movement or
   firing (D2.i123.6). Not prescribed until assessed in shooter#129.

@@ -1,6 +1,7 @@
 //! Weapon effects as render-engine lights and particles: muzzle flashes, beam trails, impact
 //! sparks, blade strikes, the laser's beam, flames and their ignition, shotgun pellet tracers,
-//! rocket exhaust and explosions. The simulation's [`Event`]s start them;
+//! rocket exhaust and explosions, and a self-destruct's warning light and blast (shooter#131).
+//! The simulation's [`Event`]s start them;
 //! they live on their own clock (presentation only, never fed back into the simulation). A
 //! ranged shot is drawn from where the simulation fired it: its weapon's authoritative muzzle
 //! ([`shooter_sim::aim`]), so its flash, beam, pellets and rocket start where its hits are
@@ -19,10 +20,13 @@ use render_engine::particles::{
 };
 use render_engine::scene::PointLight;
 use shooter_sim::wire::{PelletState, RocketState};
-use shooter_sim::{Event, Weapon};
+use shooter_sim::{Event, TICK_HZ, Weapon};
 
 /// Rockets trail exhaust from this many ticks after launch (about 1.6 m out).
 const EXHAUST_AFTER_TICKS: u32 = 4;
+
+/// A self-destruct's warning colour (shooter#131): a hot red.
+const WARNING: Vec3 = Vec3::new(1.0, 0.08, 0.04);
 
 /// A weapon's energy colour (linear, roughly unit brightness).
 #[must_use]
@@ -504,7 +508,33 @@ impl Effects {
                     world.burst(self.impact, 60, facing(at, Vec3::Y));
                     self.flash(at, Vec3::new(1.0, 0.55, 0.2), 3_000_000.0, 14.0, 0.4);
                 }
-                Event::Damaged { .. }
+                // A self-destruct (shooter#131): a fireball as large as its reach, or a puff of
+                // smoke and a spark when it carried nothing volatile.
+                Event::Detonated {
+                    at, damage, radius, ..
+                } => {
+                    let at = units(at);
+                    #[allow(clippy::cast_precision_loss)]
+                    let reach = radius as f32 * METRES_PER_UNIT;
+                    if damage > 0 {
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let count = (60.0 + 60.0 * reach) as u32;
+                        world.burst(self.fireball, count, Mat4::from_translation(at));
+                        world.burst(self.impact, count / 2, facing(at, Vec3::Y));
+                        self.flash(at, Vec3::new(1.0, 0.4, 0.15), 4_000_000.0, 6.0 * reach, 0.6);
+                    } else {
+                        world.burst(self.impact, 30, facing(at, Vec3::Y));
+                        self.flash(at, Vec3::new(1.0, 0.3, 0.2), 300_000.0, 4.0, 0.2);
+                    }
+                }
+                // The countdown's own light is [`Effects::lights`]; arming flashes once.
+                Event::Destruct {
+                    at, armed: true, ..
+                } => {
+                    self.flash(units(at), WARNING, 600_000.0, 5.0, 0.25);
+                }
+                Event::Destruct { armed: false, .. }
+                | Event::Damaged { .. }
                 | Event::Hit { .. }
                 | Event::Killed { .. }
                 | Event::Spawned { .. }
@@ -557,8 +587,15 @@ impl Effects {
     }
 
     /// Ages the flashes by `seconds` and returns the lights to draw this frame, with one light
-    /// riding on each rocket (positions in metres).
-    pub fn lights(&mut self, seconds: f32, rockets: &[Vec3]) -> Vec<PointLight> {
+    /// riding on each rocket and a red warning light pulsing over each robot whose self-destruct
+    /// counts down (shooter#131: its centre in metres and the ticks left; twice a second, four
+    /// times in the last second) (positions in metres).
+    pub fn lights(
+        &mut self,
+        seconds: f32,
+        rockets: &[Vec3],
+        warnings: &[(Vec3, u32)],
+    ) -> Vec<PointLight> {
         for flash in &mut self.flashes {
             flash.age += seconds;
         }
@@ -580,6 +617,15 @@ impl Effects {
                     .iter()
                     .map(|position| (*position, rocket_color, 120_000.0, 5.0)),
             )
+            .chain(warnings.iter().filter_map(|&(center, ticks)| {
+                let period = if ticks < u32::from(TICK_HZ) { 15 } else { 30 };
+                (ticks % period < period / 2).then_some((
+                    center + Vec3::Y * 0.9,
+                    WARNING,
+                    900_000.0,
+                    6.0,
+                ))
+            }))
             .map(|(position, color, intensity, range)| PointLight {
                 position,
                 color,

@@ -860,6 +860,10 @@ pub fn scripted_intent(index: u8, tick: u32) -> Intent {
         },
         edit: false,
         repair: None,
+        // The self-destruct (shooter#131): armed and cancelled half a second later, then armed
+        // again 4.5 s after that to go off 3 s on, once a minute (person 0 from 20 s into the
+        // match, each further person 10 s earlier; a press while dead is refused).
+        destruct: matches!((tick + 600 * person) % 3600, 1200 | 1230 | 1500),
         // A weapon group: the parts 7 to 12 asked to fire together for 0.75 s every 4 s
         // (shooter#127; the twin rail's two rail guns at once, the rocket pod staggered by its
         // salvo limit, refused where a part is no gun).

@@ -6,7 +6,8 @@
 //! [`crate::damage`]) and the module each carries, the rockets, the shotgun pellets, the module
 //! pads, the modules dropped at deaths, the arena placeables' health ([`crate::scenery`]: the
 //! damaged ones, by stable ID) and the tick's events), each fighter's field repair under way
-//! and the parts it may repair now ([`crate::repair`]), and the physical debris with its exact
+//! and the parts it may repair now ([`crate::repair`]), each fighter's self-destruct countdown
+//! ([`crate::destruct`]), and the physical debris with its exact
 //! motion ([`crate::mechanics::DebrisState`]). Robot builds travel as raw codes and are
 //! decoded
 //! through [`crate::robot::Catalog::validate`], so a tampered build is rejected, not stored; a
@@ -41,6 +42,8 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::{Instance, Select, Triggers, Weapon};
 use std::fmt;
 
+/// 31: an input may carry a self-destruct press and snapshots each fighter's self-destruct
+/// countdown and the `Destruct` and `Detonated` events (shooter#131).
 /// 30: a build's pitched or rolled (or finely turned) parts are seated on their socket's face
 /// and reserve the cells they lie over (shooter#124): the same bytes mean other rules, so older
 /// peers are refused.
@@ -60,7 +63,7 @@ use std::fmt;
 /// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
 /// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
 /// the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 30;
+pub const WIRE_VERSION: u8 = 31;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -149,6 +152,9 @@ pub struct FighterState {
     /// The parts it may start a repair on now (bits by index, [`Fighter::repairable`]): what
     /// its repair menu lists.
     pub repairable: u32,
+    /// While its self-destruct counts down ([`crate::destruct`]): the ticks until it goes off
+    /// (0: on the next tick). What every client shows and a predicting client resumes.
+    pub destruct_in: Option<u32>,
 }
 
 impl FighterState {
@@ -283,6 +289,9 @@ fn state_of(session: &Session, robots: &[RobotState], fighter: &Fighter) -> Opti
         parts: fighter.parts,
         repair: fighter.repair,
         repairable: fighter.repairable(),
+        destruct_in: fighter
+            .destruct
+            .map(|at| at.saturating_sub(session.ticks())),
     })
 }
 
@@ -675,6 +684,7 @@ const FIRE: u8 = 8;
 const MELEE: u8 = 16;
 const EDIT: u8 = 32;
 const GRAPPLE: u8 = 64;
+const DESTRUCT: u8 = 128;
 
 /// A person's command as the host decoded it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -712,6 +722,7 @@ pub fn encode_input(
         (intent.melee, MELEE),
         (intent.edit, EDIT),
         (intent.grapple, GRAPPLE),
+        (intent.destruct, DESTRUCT),
     ]
     .iter()
     .filter(|(held, _)| *held)
@@ -782,6 +793,7 @@ pub fn decode_input(bytes: &[u8]) -> Result<Command, WireError> {
         melee: flags & MELEE != 0,
         edit: flags & EDIT != 0,
         grapple: flags & GRAPPLE != 0,
+        destruct: flags & DESTRUCT != 0,
         select,
         repair,
         motors,
@@ -924,6 +936,24 @@ fn encode_event(out: &mut Out, event: &Event) {
             out.u8(from);
             out.carried(carried);
         }
+        Event::Destruct { slot, armed, at } => {
+            out.u8(14);
+            out.u8(slot);
+            out.u8(u8::from(armed));
+            out.vec3(at);
+        }
+        Event::Detonated {
+            slot,
+            at,
+            damage,
+            radius,
+        } => {
+            out.u8(15);
+            out.u8(slot);
+            out.vec3(at);
+            out.i32(damage);
+            out.i32(radius);
+        }
     }
 }
 
@@ -1003,6 +1033,17 @@ fn decode_event(input: &mut In<'_>) -> Result<Event, WireError> {
             slot: input.u8()?,
             from: input.u8()?,
             carried: input.carried()?,
+        },
+        14 => Event::Destruct {
+            slot: input.u8()?,
+            armed: input.u8()? != 0,
+            at: input.vec3()?,
+        },
+        15 => Event::Detonated {
+            slot: input.u8()?,
+            at: input.vec3()?,
+            damage: input.i32()?,
+            radius: input.i32()?,
         },
         _ => return Err(WireError::Malformed("unknown event")),
     })
@@ -1096,6 +1137,12 @@ pub fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
             None => out.u8(0),
         }
         out.u32(fighter.repairable);
+        out.u16(
+            fighter
+                .destruct_in
+                .and_then(|ticks| u16::try_from(ticks).ok())
+                .map_or(u16::MAX, |ticks| ticks.min(u16::MAX - 1)),
+        );
         match &fighter.robot {
             Some(robot) => {
                 out.u8(1);
@@ -1211,6 +1258,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
                 parts: PartDamage::default(),
                 repair: None,
                 repairable: 0,
+                destruct_in: None,
                 robot: None,
             };
             fighter.configured = match input.u8()? {
@@ -1263,6 +1311,13 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, WireError> {
             if fighter.repairable & !fighter.parts.everything() != 0 {
                 return Err(WireError::Malformed("a repairable part the build lacks"));
             }
+            fighter.destruct_in = match input.u16()? {
+                u16::MAX => None,
+                ticks if u32::from(ticks) < crate::destruct::COUNTDOWN_TICKS => {
+                    Some(u32::from(ticks))
+                }
+                _ => return Err(WireError::Malformed("a self-destruct countdown too long")),
+            };
             fighter.robot = match input.u8()? {
                 0 => None,
                 1 => Some(input.robot(fighter.slot, fighter.build)?),

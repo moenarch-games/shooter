@@ -965,6 +965,7 @@ fn inputs_and_snapshots_round_trip() {
         repair: Some(shooter_sim::repair::Order::Start(
             shooter_sim::robot::PartId(5),
         )),
+        destruct: true,
         motors: {
             let mut motors = shooter_sim::bindings::Motors::REST;
             motors.gait = shooter_sim::mechanics::GaitChoice::Unison;

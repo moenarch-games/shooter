@@ -310,6 +310,9 @@ pub mod online {
         /// Its field repair (the host may refuse an order, or pause it for a hit the
         /// prediction cannot see).
         repair: Option<Repair>,
+        /// Its self-destruct countdown's ticks left (the host may refuse a press the prediction
+        /// took, shooter#131).
+        destruct: Option<u32>,
     }
 
     pub struct Online {
@@ -549,6 +552,12 @@ pub mod online {
         fn repair(&self) -> Option<Repair> {
             self.live()?.local().repair
         }
+        /// The predicted self-destruct countdown: the ticks left (shooter#131).
+        fn destruct(&self) -> Option<u32> {
+            let predictor = self.live()?;
+            let at = predictor.local().destruct?;
+            Some(at.saturating_sub(predictor.ticks()))
+        }
 
         pub fn hook(&self) -> Option<[f32; 3]> {
             self.live()?.local().hook.map(|hook| hook.anchor_units())
@@ -608,6 +617,8 @@ pub mod online {
                 predictor.fighters[0]
                     .arsenal
                     .resume_grapple(tick, me.grapple_in);
+                // And its self-destruct countdown (shooter#131).
+                predictor.fighters[0].destruct = me.destruct_in.map(|left| tick + left);
                 Ok::<(), String>(())
             };
             if !self.predicting {
@@ -639,7 +650,8 @@ pub mod online {
                 || acked.energy != [me.energy, me.fuel]
                 || acked.held != me.held
                 || acked.tubes != me.tubes
-                || acked.repair != me.repair;
+                || acked.repair != me.repair
+                || acked.destruct != me.destruct_in;
             if off {
                 place(self.predictor_mut()?)?;
                 let replay: Vec<Pending> = self.pending.drain(..).collect();
@@ -654,6 +666,7 @@ pub mod online {
                         pending.tubes,
                     ) = self.state();
                     pending.repair = self.repair();
+                    pending.destruct = self.destruct();
                     self.pending.push_back(pending);
                 }
             }
@@ -749,6 +762,7 @@ pub mod online {
                         held,
                         tubes,
                         repair: self.repair(),
+                        destruct: self.destruct(),
                     });
                     while self.pending.len() > 120 {
                         self.pending.pop_front();
