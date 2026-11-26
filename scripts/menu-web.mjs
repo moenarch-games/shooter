@@ -2,7 +2,9 @@
 // opens the page with no query (the main menu) in headless Chromium at 1280x720 on WebGPU and
 // drives it with the mouse as a person would: Practice on each of its three arenas, a fighter
 // count chosen and the match started, Leave back to the menu, Play Online's bot match and back,
-// the Robot Workshop and its Back, and Settings with the developer connection. Every step checks
+// the Robot Workshop and its Back, the Workshop's active build (shooter#155: a loadout saved as
+// SCOUT, made active with Done, an edit dropped with Back, still active after a reload and played
+// by a practice match), and Settings with the developer connection. Every step checks
 // what the page's readout (`window.shooterMenu`: the menu's page, its choice and where its items
 // are, or the match's map, fighters and label) says against what the step should do, and
 // screenshots the page into OUT. Nothing connects anywhere: the page makes no network request
@@ -224,6 +226,71 @@ try {
     await page.mouse.up();
   }
   state = await until((s) => s.screen === "Main", "Back from the Workshop is the menu");
+
+  // 6b. The Workshop's active build (shooter#155): the marksman loadout saved as SCOUT and made
+  // active with Done, an edit dropped with Back, and after a reload (a restart) the menu and a
+  // practice match still play it.
+  const clickBench = async (bench, name) => {
+    const target = bench.targets.find((item) => item.name === name);
+    check(target, `${name} is on the builder`, bench);
+    const ratio = await page.evaluate(() => devicePixelRatio);
+    await page.mouse.move(target.at[0] / ratio, target.at[1] / ratio, { steps: 3 });
+    await page.mouse.down();
+    await page.mouse.up();
+  };
+  await click(state, "Workshop");
+  bench = await until((s) => s.sockets?.length > 0 && !s.ready, "the Workshop opens again", builder);
+  await clickBench(bench, "Loadout(3)");
+  bench = await until((s) => s.parts > 0 && s.valid && s.build !== bench.build, "the marksman loadout is on the bench", builder);
+  const scout = bench.build;
+  await page.evaluate(() => document.querySelector("canvas")?.focus());
+  await page.keyboard.press("KeyB");
+  for (const key of ["KeyS", "KeyC", "KeyO", "KeyU", "KeyT", "Enter"]) await page.keyboard.press(key);
+  bench = await until((s) => s.notice === "saved SCOUT", "it is saved as SCOUT", builder);
+  await settle();
+  await shoot("workshop-saved");
+  await page.keyboard.press("Escape");
+  bench = await builder();
+  await clickBench(bench, "Ready");
+  state = await until(
+    (s) => s.screen === "Main" && /^Your robot: SCOUT/.test(s.robot ?? ""),
+    "Done makes SCOUT the active build and returns to the menu",
+  );
+  check(
+    (await page.evaluate(() => localStorage.getItem("shooter.active")))?.startsWith("53484244"),
+    "the active build is kept in the page's storage",
+  );
+  await click(state, "Workshop");
+  bench = await until((s) => s.sockets?.length > 0 && s.build === scout, "the Workshop opens on SCOUT", builder);
+  await clickBench(bench, "Loadout(1)");
+  bench = await until((s) => s.build !== scout, "another loadout is on the bench", builder);
+  await clickBench(bench, "Back");
+  state = await until(
+    (s) => s.screen === "Main" && /^Your robot: SCOUT/.test(s.robot ?? ""),
+    "Back drops the edit, SCOUT stays active",
+  );
+  await page.reload({ waitUntil: "load" });
+  state = await until(
+    (s) => s.screen === "Main" && /^Your robot: SCOUT/.test(s.robot ?? ""),
+    "after a reload the menu still plays SCOUT",
+  );
+  await page.waitForTimeout(2_500);
+  await settle();
+  await shoot("menu-active-build");
+  await click(state, "Practice");
+  state = await until((s) => s.screen === "Practice", "Practice opens");
+  await click(state, "Map:proving-cell");
+  state = await until((s) => s.map === "proving-cell", "the proving cell is chosen");
+  await click(state, "Start");
+  state = await until(
+    (s) => s.screen === "Match" && s.map === "proving-cell" && s.inProcess && s.build === scout,
+    "the practice match plays SCOUT, in the page",
+  );
+  await page.waitForTimeout(2_000);
+  await shoot("practice-active-build");
+  state = await until((s) => s.targets.some((t) => t.name === "Leave"), "the match offers Leave");
+  await click(state, "Leave");
+  state = await until((s) => s.screen === "Main", "Leave returns to the main menu");
 
   // 7. Settings: the developer connection only under Advanced.
   await click(state, "Settings");

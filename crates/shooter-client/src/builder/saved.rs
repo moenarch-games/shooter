@@ -18,8 +18,9 @@
 //! ([`LoadError`]), and the bench keeps its build.
 
 use super::BENCH;
+use crate::prefs::PrefStore;
 use shooter_sim::bindings::{BindingError, Bindings};
-use shooter_sim::robot::{Assembly, AssemblyError};
+use shooter_sim::robot::{Assembly, AssemblyError, BETA};
 use shooter_sim::wire::{WireError, decode_bindings, decode_build, encode_bindings, encode_build};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -443,6 +444,36 @@ pub fn platform() -> Rc<dyn SavedBuilds> {
     }
 }
 
+/// The preference key the active build is kept under ([`read_active`]).
+pub const ACTIVE: &str = "active";
+
+/// The active build (shooter#155): the one the menu's matches play, readied last (the
+/// Workshop's Done, a match's Ready), kept across restarts with the person's preferences
+/// ([`crate::prefs`]: natively the config directory's `shooter/active`, in the browser
+/// `localStorage`'s `shooter.active`) as a save in this module's envelope, named after the save
+/// it was readied as (empty: one never saved, or edited since). None if nothing was readied
+/// yet; else the build and layout, or why they no longer play: a save that does not open, or a
+/// build the beta catalog now refuses in full (the build points too, unlike a save for the
+/// bench). The store is left as it is either way: only the next Ready replaces it.
+#[must_use]
+pub fn read_active(store: &dyn PrefStore) -> Option<Result<SavedBuild, LoadError>> {
+    let text = store.read(ACTIVE)?;
+    Some(decode(&text).and_then(|saved| {
+        BETA.validate(&saved.build.candidate())
+            .map_err(LoadError::Build)?;
+        Ok(saved)
+    }))
+}
+
+/// Keeps `active` as the active build ([`read_active`]).
+///
+/// # Errors
+///
+/// If the store cannot be written.
+pub fn write_active(store: &dyn PrefStore, active: &SavedBuild) -> Result<(), String> {
+    store.write(ACTIVE, Some(&encode(active)))
+}
+
 /// A second press that a save or a delete waits for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Confirm {
@@ -586,6 +617,25 @@ impl Shelf {
         self.selected = None;
         self.refresh()?;
         Ok(format!("deleted {name}"))
+    }
+
+    /// The name of a save holding exactly `build` and `layout`: the typed or selected one if it
+    /// does, else the first listed that does. None if no save does (or the store cannot be read).
+    #[must_use]
+    pub fn saved_as(&self, build: &Assembly, layout: Option<&Bindings>) -> Option<String> {
+        let names = self.store.names().ok()?;
+        let holds = |name: &String| {
+            self.store
+                .read(name)
+                .ok()
+                .flatten()
+                .and_then(|text| decode(&text).ok())
+                .is_some_and(|saved| saved.build == *build && saved.layout.as_ref() == layout)
+        };
+        let preferred = sanitise(&self.name).or_else(|| self.selected_name());
+        preferred
+            .filter(|name| names.contains(name) && holds(name))
+            .or_else(|| names.into_iter().find(holds))
     }
 }
 
@@ -829,5 +879,92 @@ mod tests {
         assert!(matches!(full.load(), Err(LoadError::Malformed(_))));
         full.delete().unwrap();
         assert!(full.delete().unwrap_err().contains("blocked"));
+    }
+}
+
+#[cfg(test)]
+mod active {
+    use super::*;
+    use crate::prefs::MemoryPrefs;
+    use shooter_sim::robot::{HEAVY, MECHANIC, STANDARD};
+
+    /// The active build comes back after a restart (a new store on the same directory), named
+    /// after its save, with its layout; nothing readied yet is none.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_active_build_survives_a_restart() {
+        use crate::prefs::FilePrefs;
+        let dir = std::env::temp_dir().join(format!("shooter-active-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = FilePrefs { dir: dir.clone() };
+        assert_eq!(read_active(&store), None);
+        let active = SavedBuild {
+            name: "SCOUT".to_owned(),
+            build: MECHANIC,
+            layout: Some(Bindings::preset_of(&MECHANIC)),
+        };
+        write_active(&store, &active).unwrap();
+        let restarted = FilePrefs { dir: dir.clone() };
+        assert_eq!(read_active(&restarted), Some(Ok(active)));
+        assert!(dir.join(ACTIVE).is_file());
+        // One never saved under a name.
+        let unnamed = SavedBuild {
+            name: String::new(),
+            build: HEAVY,
+            layout: None,
+        };
+        write_active(&restarted, &unnamed).unwrap();
+        assert_eq!(read_active(&store), Some(Ok(unnamed)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A stored active build that no longer plays (damaged, of another format, over the build
+    /// points) is refused with its reason and left where it is.
+    #[test]
+    fn an_active_build_that_no_longer_plays_is_refused_and_kept() {
+        let store = MemoryPrefs::default();
+        store.write(ACTIVE, Some("not a save")).unwrap();
+        assert_eq!(read_active(&store), Some(Err(LoadError::NotASave)));
+        let over = SavedBuild {
+            name: "BIG".to_owned(),
+            build: crate::builder::over_budget(),
+            layout: None,
+        };
+        // It opens on the bench, but does not play.
+        assert_eq!(
+            decode(&encode(&over)).map(|saved| saved.build),
+            Ok(over.build)
+        );
+        write_active(&store, &over).unwrap();
+        assert!(matches!(
+            read_active(&store),
+            Some(Err(LoadError::Build(AssemblyError::OverBudget { .. })))
+        ));
+        assert_eq!(store.read(ACTIVE), Some(encode(&over)));
+    }
+
+    /// The name an active build is readied as: the typed or selected save holding it exactly,
+    /// else any that does, else none (edited since, or never saved).
+    #[test]
+    fn a_readied_build_is_named_after_the_save_holding_it() {
+        let mut shelf = Shelf::new(Rc::new(MemoryBuilds::default()));
+        assert_eq!(shelf.saved_as(&STANDARD, None), None);
+        shelf.name = "FIRST".to_owned();
+        shelf.save(HEAVY, None).unwrap();
+        shelf.name = "SECOND".to_owned();
+        shelf.save(HEAVY, None).unwrap();
+        shelf.name = "OTHER".to_owned();
+        shelf.save(MECHANIC, None).unwrap();
+        assert_eq!(shelf.saved_as(&MECHANIC, None).as_deref(), Some("OTHER"));
+        // The typed name first, then the first listed.
+        shelf.name = "SECOND".to_owned();
+        assert_eq!(shelf.saved_as(&HEAVY, None).as_deref(), Some("SECOND"));
+        shelf.name.clear();
+        shelf.selected = None;
+        assert_eq!(shelf.saved_as(&HEAVY, None).as_deref(), Some("FIRST"));
+        // Another layout or build is not that save.
+        let layout = Bindings::preset_of(&HEAVY);
+        assert_eq!(shelf.saved_as(&HEAVY, Some(&layout)), None);
+        assert_eq!(shelf.saved_as(&STANDARD, None), None);
     }
 }

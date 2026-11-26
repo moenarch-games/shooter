@@ -4,7 +4,9 @@
 //! directory's `shooter/` (`$XDG_CONFIG_HOME`, else `~/.config`, or `%APPDATA%`; the name in
 //! `shooter/name`, as `--name` has always remembered it), in the browser the page's
 //! `localStorage` under `shooter.<key>` (the name in `shooter.name`, as the page has always kept
-//! it). A store that cannot be read or written only loses the memory: the defaults play.
+//! it). The active build (shooter#155) is kept here too, under `active`
+//! ([`crate::builder::saved::read_active`]). A store that cannot be read or written only loses the
+//! memory: the defaults play.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

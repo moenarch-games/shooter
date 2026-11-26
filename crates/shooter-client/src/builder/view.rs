@@ -22,7 +22,9 @@
 //! its socket's normal, pitch and roll axes by the step (G changes it: a quarter turn, an eighth,
 //! about a degree; Shift turns back, Ctrl a degree whatever the step); M changes a weapon's mod,
 //! Delete removes the selected part and what hangs from it, Z undoes and Shift+Z or Y redoes,
-//! Escape cancels a drag, drops what is in hand or deselects, Enter is Ready.
+//! Escape cancels a drag, drops what is in hand or deselects, Enter is Ready. In the Workshop
+//! (shooter#155) Ready is Done, which makes the build active, and Escape with nothing to let go of
+//! is Back; the key help says so.
 //!
 //! **Saved builds** (shooter#140). B (or BUILDS) opens the builds panel in the inspector's place
 //! ([`super::saved`]): letters, digits, `-` and Space type the name, Backspace erases, Enter or
@@ -75,8 +77,9 @@ pub enum Stage {
     Setup,
     /// The robot is dead and its respawn suspended until Ready (Atlas D2.i70.11).
     BetweenLives,
-    /// The main menu's Robot Workshop (shooter#154): no match. Ready (Done) keeps the build for
-    /// the next match, Back returns to the menu without it.
+    /// The main menu's Robot Workshop (shooter#154): no match. Ready (Done) makes the build the
+    /// active one the menu's matches play, kept across restarts (shooter#155); Back returns to
+    /// the menu without it.
     Workshop,
 }
 
@@ -218,6 +221,16 @@ const HELP: [&str; 7] = [
     "WHEEL: ZOOM",
     "ESC: CANCEL, DROP",
     "ENTER: READY",
+];
+/// The Workshop's (shooter#155): Enter is Done, and Escape with nothing to let go of is Back.
+const WORKSHOP_HELP: [&str; 7] = [
+    "SHIFT+KEY: TURN BACK",
+    "CTRL+KEY: 1 DEGREE",
+    "Z UNDO, Y REDO",
+    "RIGHT DRAG: VIEW",
+    "WHEEL: ZOOM",
+    "ESC: CANCEL, DROP, BACK",
+    "ENTER: DONE",
 ];
 #[allow(clippy::cast_precision_loss)]
 const HELP_HEIGHT: f32 = HELP.len() as f32 * LINE + 8.0;
@@ -1807,7 +1820,11 @@ impl Builder {
             button(painter, rect, label, hovered == Some(target), false);
         }
         let help_y = panel.y + panel.height - HELP_HEIGHT;
-        for (index, help) in HELP.iter().enumerate() {
+        let help = match self.stage {
+            Stage::Setup | Stage::BetweenLives => &HELP,
+            Stage::Workshop => &WORKSHOP_HELP,
+        };
+        for (index, help) in help.iter().enumerate() {
             #[allow(clippy::cast_precision_loss)]
             painter.text(
                 x,
@@ -2077,7 +2094,7 @@ impl Builder {
         let stage = match self.stage {
             Stage::Setup => "BEFORE THE MATCH",
             Stage::BetweenLives => "DESTROYED: RESPAWN WAITS FOR READY",
-            Stage::Workshop => "ROBOT WORKSHOP: DONE PLAYS THIS BUILD NEXT",
+            Stage::Workshop => "ROBOT WORKSHOP: DONE MAKES THIS BUILD ACTIVE",
         };
         painter.text(text_x, bar.y + 10.0, SMALL, stage, srgb(MUTED, 1.0));
         let (verdict, colour) = match self.bench.check() {
@@ -2465,6 +2482,24 @@ mod tests {
         let mut setup = drawn(Stage::Setup);
         assert!(!setup.layout().back);
         assert_eq!(setup.key(KeyCode::Escape), None);
+    }
+
+    /// An invalid build in the Workshop (shooter#155) is never Done, so it cannot become the
+    /// active build, and Back still returns to the menu; the help says what Enter and Escape do
+    /// there.
+    #[test]
+    fn an_invalid_workshop_build_is_not_done_and_back_still_works() {
+        let mut builder = drawn(Stage::Workshop);
+        builder.bench.load(crate::builder::over_budget());
+        assert!(!builder.can_ready());
+        assert_eq!(builder.key(KeyCode::Enter), None);
+        assert_eq!(builder.act(Target::Ready), None);
+        assert_eq!(builder.ready, None);
+        assert_eq!(builder.key(KeyCode::Escape), Some(Action::Back));
+        assert_eq!(builder.act(Target::Back), Some(Action::Back));
+        assert!(WORKSHOP_HELP.contains(&"ENTER: DONE"));
+        assert!(!WORKSHOP_HELP.iter().any(|line| line.contains("READY")));
+        assert!(HELP.contains(&"ENTER: READY"));
     }
 
     #[test]
