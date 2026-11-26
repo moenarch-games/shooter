@@ -15,7 +15,7 @@ use crate::robot::parts::{
 };
 use crate::robot::{
     Assembly, BETA, Candidate, Face, MINI_TANK, Orientation, PartId, PartType, ROBO_DOG, ROVER,
-    RawMount, RawPart,
+    RawMount, RawPart, STEER_CAR,
 };
 
 const QUARTER: u16 = Orientation::QUARTER;
@@ -284,6 +284,33 @@ pub fn armed_tank() -> Assembly {
         on(7, &FUEL_TANK, 0, &CHASSIS_L, Face::PosZ, 1, 0),
         on(8, &GENERATOR, 7, &FUEL_TANK, Face::PosZ, 0, 0),
     ])
+}
+
+/// The steer-car's servos and steered wheels moved onto its front (shooter#170): the same parts,
+/// its front wheels steering ahead of its fixed rear ones (each leading its kingpin by 10 cm,
+/// which is why the shipped steer-car steers its rear wheels instead).
+#[must_use]
+pub fn front_steer() -> Assembly {
+    let mut parts = STEER_CAR.candidate().parts;
+    for part in &mut parts {
+        let (kind, face, u, v, yaw) = match part.id {
+            2 => (&WHEEL, Face::PosY, 0, 0, 2 * QUARTER),
+            3 => (&HINGE, Face::PosY, 0, 1, 0),
+            4 => (&WHEEL, Face::NegY, 0, 0, 2 * QUARTER),
+            5 => (&HINGE, Face::NegY, 1, 0, QUARTER),
+            9 => {
+                part.mount.as_mut().expect("a mounted wheel").yaw = QUARTER;
+                continue;
+            }
+            10 => {
+                part.mount.as_mut().expect("a mounted wheel").yaw = 2 * QUARTER;
+                continue;
+            }
+            _ => continue,
+        };
+        *part = yawed(on(part.id, kind, 0, &CHASSIS_L, face, u, v), yaw);
+    }
+    valid(parts)
 }
 
 /// The floor and a ramp rising toward +X from `start` units ahead of the origin, `length`

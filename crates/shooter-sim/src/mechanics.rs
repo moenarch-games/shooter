@@ -608,6 +608,15 @@ pub struct HingePlan {
     pub limits: Option<[f32; 2]>,
 }
 
+/// A steering motor ([`Layout::steering_joints`]): its actuator and hinge, and whether the
+/// wheels it turns are behind the line it steers about (rear steering).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Steering<'a> {
+    pub actuator: &'a ActuatorPlan,
+    pub hinge: &'a HingePlan,
+    pub rear: bool,
+}
+
 /// Which body and child carry a piece of a part: a part's box, a wheel, a road wheel, a thigh,
 /// a shin or a foot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -688,7 +697,6 @@ impl Layout {
         for part in parts {
             if let Some(joint) = group(part)
                 && !groups.contains(&Some(joint))
-                && !matches!(part_type(part).kind, Kind::Locomotion(_))
             {
                 groups.push(Some(joint));
             }
@@ -854,11 +862,37 @@ impl Layout {
                     });
                 }
                 _ => {
-                    let body = body_of(part);
-                    let half = [x / 2.0, y / 2.0, z / 2.0];
+                    // A joint carrying only locomotion (a wheel on a steering hinge, shooter#170)
+                    // has no rigid part on its top face to turn: the joint itself is what turns,
+                    // its whole mass the carrier its locomotion hangs from (nothing
+                    // added). Half of an 8 kg hinge between a 150 kg chassis and a 20 kg wheel
+                    // let the wheel fold under the chassis at the match's gravity; whole, it
+                    // holds (the solver's mass ratio).
+                    let carries_only_locomotion = groups.contains(&Some(part.id))
+                        && !parts.iter().any(|child| {
+                            group(child) == Some(part.id)
+                                && !matches!(part_type(child).kind, Kind::Locomotion(_))
+                        });
+                    let body = if carries_only_locomotion {
+                        groups
+                            .iter()
+                            .position(|key| *key == Some(part.id))
+                            .expect("a carrying joint's group is a body")
+                    } else {
+                        body_of(part)
+                    };
+                    // Its collider then is its output flange, the outer eighth of its cuboid, so
+                    // turning it never swings its housing's corners into its neighbours (the
+                    // rest of it sits against its parent).
+                    let (half, centre) = if carries_only_locomotion {
+                        let flange = z / 16.0;
+                        ([x / 2.0, y / 2.0, flange], [x / 2.0, y / 2.0, z - flange])
+                    } else {
+                        ([x / 2.0, y / 2.0, z / 2.0], [x / 2.0, y / 2.0, z / 2.0])
+                    };
                     layout.bodies[body].children.push(Child {
                         shape: Shape::Box(half),
-                        position: frame.point(half),
+                        position: frame.point(centre),
                         orientation: frame.rotation.quaternion(),
                         mass,
                     });
@@ -909,6 +943,88 @@ impl Layout {
             .map(|part| part.id)
             .collect();
         layout
+    }
+
+    /// The wheel axles (hinges) a joint's output carries, as far down its subtree as they go.
+    fn axles_under(&self, joint: &HingePlan) -> impl Iterator<Item = &HingePlan> {
+        self.actuators
+            .iter()
+            .filter(|actuator| actuator.kind == Actuator::Locomotion(Locomotion::Wheel))
+            .filter_map(|wheel| self.hinges.get(*wheel.hinges.first()?))
+            .filter(move |axle| {
+                let mut body = axle.a;
+                loop {
+                    if body == joint.b {
+                        return true;
+                    }
+                    match self.hinges.iter().find(|hinge| hinge.b == body) {
+                        Some(parent) if body != 0 => body = parent.a,
+                        _ => return false,
+                    }
+                }
+            })
+    }
+
+    /// The steering motors (shooter#170), in part-ID order: joints turning about the robot's
+    /// vertical that carry a wheel with a level axle, so turning them changes which way the
+    /// wheel rolls rather than its speed or a weapon's aim. Each with whether its wheels are
+    /// behind the line it steers about (rear steering: they turn the robot the other way), that
+    /// line being the robot's other wheels' and tracks' axles (their mean, front to back), or
+    /// every steered wheel's when it has no other.
+    #[must_use]
+    pub fn steering_joints(&self) -> Vec<Steering<'_>> {
+        let steering: Vec<(&ActuatorPlan, &HingePlan, f32)> = self
+            .actuators
+            .iter()
+            .filter(|actuator| matches!(actuator.kind, Actuator::Joint(_)))
+            .filter_map(|actuator| {
+                let joint = self.hinges.get(*actuator.hinges.first()?)?;
+                if joint.axis[1].abs() < 0.9 {
+                    return None;
+                }
+                let along: Vec<f32> = self
+                    .axles_under(joint)
+                    .filter(|axle| axle.axis[1].abs() <= 0.1)
+                    .map(|axle| axle.anchor[0])
+                    .collect();
+                #[allow(clippy::cast_precision_loss)]
+                let mean = along.iter().sum::<f32>() / along.len().max(1) as f32;
+                (!along.is_empty()).then_some((actuator, joint, mean))
+            })
+            .collect();
+        let steered: Vec<&HingePlan> = steering
+            .iter()
+            .flat_map(|(_, joint, _)| self.axles_under(joint))
+            .collect();
+        let fixed: Vec<f32> = self
+            .actuators
+            .iter()
+            .filter(|actuator| {
+                matches!(
+                    actuator.kind,
+                    Actuator::Locomotion(Locomotion::Wheel | Locomotion::Track)
+                )
+            })
+            .flat_map(|actuator| actuator.hinges.iter())
+            .filter_map(|&at| self.hinges.get(at))
+            .filter(|axle| !steered.iter().any(|steered| std::ptr::eq(*steered, *axle)))
+            .map(|axle| axle.anchor[0])
+            .collect();
+        let line: Vec<f32> = if fixed.is_empty() {
+            steering.iter().map(|(_, _, along)| *along).collect()
+        } else {
+            fixed
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let line = line.iter().sum::<f32>() / line.len().max(1) as f32;
+        steering
+            .into_iter()
+            .map(|(actuator, hinge, along)| Steering {
+                actuator,
+                hinge,
+                rear: along < line,
+            })
+            .collect()
     }
 
     /// The legs' gait preset the build suggests: two legs walk as a biped, four as a quadruped,

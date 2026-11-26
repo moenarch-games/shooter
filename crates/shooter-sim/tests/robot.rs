@@ -881,7 +881,7 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
             .weapons(&build)
             .map(|instance| instance.weapon)
             .collect();
-        let expected = if matches!(name, "robo-dog" | "rover" | "mini-tank") {
+        let expected = if matches!(name, "robo-dog" | "rover" | "mini-tank" | "steer-car") {
             1
         } else {
             4
@@ -1066,7 +1066,7 @@ fn every_loadout_weapon_faces_the_aim_from_the_chassis() {
             // In front of the chassis, not inside it.
             assert!(placement.centre[0] > 0.0, "{name}: {:?}", part.id);
         }
-        let expected = if matches!(name, "robo-dog" | "rover" | "mini-tank") {
+        let expected = if matches!(name, "robo-dog" | "rover" | "mini-tank" | "steer-car") {
             1
         } else {
             4

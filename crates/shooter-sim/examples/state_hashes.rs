@@ -2,7 +2,8 @@
 //! (practice rules on seed 1, the local fighter played by the replays' scripted person 0). One
 //! line per map and tick: the map, the tick, then hashes of the whole snapshot, its fighters,
 //! rockets, pellets, debris and scenery; then the same match with every fighter an armed car on
-//! its own wheels (`MAP+wheels`, shooter#58). Native and `wasm32` builds must print the same lines
+//! its own wheels (`MAP+wheels`, shooter#58), and with every fighter the steer-car steering on its
+//! servos (`MAP+steered`, shooter#170). Native and `wasm32` builds must print the same lines
 //! (`scripts/cross-build-hashes.sh`, shooter#120).
 //!
 //! `cargo run -p shooter-sim --example state_hashes -- [MAP|all] [TICKS] [DUMP_TICK]`: every
@@ -36,24 +37,27 @@ fn main() {
     let dump: Option<u32> = args
         .next()
         .map(|tick| tick.parse().expect("a tick to dump"));
-    // Each map twice: the practice match as the clients play it, then with every fighter an
-    // armed car rolling on its own wheels (shooter#58), printed as `MAP+wheels`.
-    for (map, wheels) in maps.iter().flat_map(|map| [(*map, false), (*map, true)]) {
+    // Each map three times: the practice match as the clients play it, then with every fighter
+    // an armed car rolling on its own wheels (shooter#58), printed as `MAP+wheels`, then with
+    // every fighter a steer-car steering on its servos (shooter#170), printed as `MAP+steered`.
+    let builds = [
+        ("", None),
+        ("+wheels", Some(fixtures::armed_car())),
+        ("+steered", Some(shooter_sim::robot::STEER_CAR)),
+    ];
+    for (map, (suffix, build)) in maps
+        .iter()
+        .flat_map(|map| builds.iter().map(move |build| (*map, *build)))
+    {
         let mut session =
             Session::on_map(map, Rules::practice(PRACTICE_SEED)).expect("the map builds");
-        if wheels {
+        if let Some(build) = build {
             for slot in 0..session.fighters.len() {
                 let slot = u8::try_from(slot).expect("a slot");
-                session
-                    .rebuild(slot, fixtures::armed_car())
-                    .expect("the car builds");
+                session.rebuild(slot, build).expect("the build builds");
             }
         }
-        let label = if wheels {
-            format!("{map}+wheels")
-        } else {
-            map.to_string()
-        };
+        let label = format!("{map}{suffix}");
         for tick in 0..ticks {
             session
                 .tick(scripted_intent(0, tick))

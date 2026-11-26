@@ -145,7 +145,8 @@ in, built from asset-tooling's arena kit; two interim greybox maps stay:
   out and none holds a wheeled or tracked robot (shooter#152's playtests,
   `crates/shooter-sim/tests/assembly_works.rs`). Tracks reach the bridge by either ramp, and
   wheels (since shooter#174) by the loading ramp; by the mezzanine a car climbs onto the deck
-  but does not yet make its turn onto the bridge (a skid steer turns slowly, shooter#170). Its
+  but does not yet make its turn onto the bridge (a skid steer turns slowly; the steer-car on
+  its steering servos, shooter#170, does not make it either). Its
   low cover, barriers and crates are destruction candidates that break (shooter#60,
   below) and four repair anchors (under the mezzanines and in the bays) are data for shooter#61.
   The kit has no assembly machinery or crane props yet (asset-tooling#838). Plan, views and
@@ -204,8 +205,9 @@ in, built from asset-tooling's arena kit; two interim greybox maps stay:
   hull top is an unanswered perch. All spawn points are on the ground, none is in sight of
   another, and those in the corridor face their ways out (shooter#153's playtests,
   `crates/shooter-sim/tests/drydock.rs`). Tracks climb onto both ships and the cutter's bridge;
-  wheels (since shooter#174) climb the gantries' ramps and the bridge's, but do not yet steer
-  across onto the cutter's prow step (a skid steer turns slowly, shooter#170). Its low cover, floor
+  wheels (since shooter#174) climb the gantries' ramps and the bridge's, but the rover does not
+  steer across onto the cutter's prow step (a skid steer turns slowly); the steer-car (shooter#170)
+  gets 2 m up at the step's height but not up the prow's ramp onto the foredeck. Its low cover, floor
   barriers, the gantries' cover and crates are destruction candidates for shooter#60 and four
   repair anchors (under the gantries and in the outer lanes) are data for shooter#61. Views and
   frames: [docs/captures/55](docs/captures/55), polished layout
@@ -514,10 +516,12 @@ directly started match (`--connect` / `--map`, `?connect=` / `?map=`) opens on i
 marked; the part catalogue (every part and weapon with its build points, each chassis size once
 under a power switch that makes the robot electric or combustion, its root swapped in place, #130)
 and the named loadouts to start from (two to a row) are on the left, including `robo-dog`
-(four legs, shotgun), `rover` (four wheels, rifle) and `mini-tank` (two tracks, rail gun).
+(four legs, shotgun), `rover` (four wheels, rifle), `mini-tank` (two tracks, rail gun)
+and `steer-car` (four wheels, the rear two on hinge servos, rifle).
 The dog uses the interim leg drive; the rover and mini-tank steer differentially on their own
 actuators (#169, [captures](docs/captures/169/): each in the Workshop, made active and in a
-practice match, from `menu_views`). The component inspector is on
+practice match, from `menu_views`); the steer-car steers its rear wheels on its servos (#170,
+below). The component inspector is on
 the right (the selected part, or the part in hand: cells, mass, health, points, electricity or fuel
 stored, a chassis' drive, what a generator makes at the robot's rate, motor, the electricity or fuel
 a shot costs, its turn in degrees and its mod), and the budget along the bottom: build points and
@@ -748,7 +752,17 @@ ordinary layout suggested from what is mounted where and correcting nothing: W s
 forward and S back, D and A turn the legs differentially; W rolls each wheel and track the way its
 axle rolls it ahead (a wheel on the front or back rolls the robot sideways: its mounting says
 so), A and D differentially; the mouse's horizontal offset turns every rotor and its vertical
-offset every hinge, so two joint axes aim a turret. A binding may instead fire guns (#127): one
+offset every hinge, so two joint axes aim a turret. **Steering motors** (#170): a hinge or rotor
+turning about the robot's vertical that carries a wheel with a level axle steers it, and the
+preset finds it from what it carries, not from a vehicle class: A and D hold such servos at
+15 % of a quarter turn (about 13.5°, provisional) the way that turns the rolling robot left or
+right (wheels ahead of its other axles into the turn, wheels behind them out of it), back to
+straight on release, and no longer turn its wheels differentially (tracks still do); standing,
+D turns the servos and not the robot, and in reverse the nose swings the other way, as a car's.
+The mouse offset and the precision aim leave steering servos alone; a person's own layout may
+still bind them, at any strength, within the hinge's quarter turn. A steering servo shot off
+takes its wheel with it and the other servos still steer; with none left A and D turn the
+wheels differentially again. A binding may instead fire guns (#127): one
 gun is a direct weapon button, several a weapon group (keys and mouse buttons only, held or
 toggled; the blade and the grapple stay on their own keys); the preset's is every gun on the
 middle mouse button. A binding may also make joints **track the aim** (#132, keys and mouse
@@ -802,7 +816,13 @@ parts one compound body with each part's mass where it is mounted, and a separat
 motorised joint for what sits on a hinge (a servo within a quarter turn either way) or a rotor
 (a continuous motor), for each wheel (a sphere: physics-engine has no cylinders), each of a
 track's two road wheels and each leg (one self-contained module: a thigh on a hip servo and a
-shin with a flat foot on a knee servo). Each tick a robot's actuators take one command each (a
+shin with a flat foot on a knee servo). A joint that carries only locomotion (a wheel on a
+steering hinge, #170) turns as a whole: its mass rides on its output, the body the wheel hangs
+from, and its collider is its output flange (the outer eighth of its cuboid), so turning it
+never swings its housing into a neighbouring wheel. Half of an 8 kg hinge there, between a
+150 kg chassis and a 20 kg wheel, let the wheel fold under the chassis at the match's gravity
+(the solver's mass ratio); the hinge's servo gives 150 N·m (provisional; at 40 N·m a steered
+wheel's tyre turned it off its angle). Each tick a robot's actuators take one command each (a
 rate, an angle, a leg's stride or idle) and ask the robot's electricity for their work, first
 come, first served in part-ID order: the part's rated draw scaled by how hard the command drives
 it (a stride's length, a rate against the top rate, a servo's angle off centre) and, for
@@ -931,8 +951,15 @@ forward, and a shotgun: 297 kg, 92 points; its legs, like every leg, still ride 
 movement drive), `rover` (four wheels and the energy rifle: the armed car every map's wheeled
 playtests run, 254 kg, 77 points) and `mini-tank` (two tracks flat along its sides and the rail
 gun: 277 kg, 87 points); the rover's wheels and the tank's tracks drive it on their own actuators
-and turn it differentially (no steered axles). The builder's "start from" list loads
-them too. The HUD shows the held
+and turn it differentially. A fourth, `steer-car` (#170: 270 kg, 87 points), is the rover with
+its rear wheels on two hinge servos turning about the vertical: W and S roll all four wheels,
+A and D turn the servos. Its rear wheels steer because on this chassis they trail their
+kingpins by 10 cm, as a caster's do; front wheels on the same servos lead theirs and fold
+sideways in a turn (or, moved back, rub the rear wheels). Rolling, it turns about five times
+as fast as the rover (in 2 s at full speed about 135° to the rover's 24°); backing up at full
+speed its rear wheels lead their kingpins and it hardly turns, so it steers in reverse from low
+speed. Its bots roll ahead to turn (steered wheels turn a chassis only while they roll). The
+builder's "start from" list loads them too. The HUD shows the held
 weapon's mod and the status line every equipped one.
 
 **Module pickups.** A few powerful modules lie on pads at contested points of a map, placed in

@@ -725,7 +725,21 @@ whether resupply locks movement or firing (Q2.i123.3).
   25 rad/s (about 3.5 m/s) and 60 N·m; legs unchanged. *Ramps* (shooter#174): a wheel's motor
   gives 60 N·m too and its tyre grips the arena at 1.0 (Q2.i70.1), so wheels as well as tracks
   climb the arena kit's 1:4 ramps on every kit-built map, on physics-engine and on the Rapier
-  oracle (`tests/physics_ab.rs`); no ramp or chassis force does it. **Not yet**: legs. A robot with a
+  oracle (`tests/physics_ab.rs`); no ramp or chassis force does it. *Steering motors*
+  (shooter#170): a joint turning about the robot's vertical that carries a wheel with a level
+  axle steers it (`mechanics::Layout::steering_joints`, found from what the joint carries, no
+  vehicle class); the preset's A and D hold such servos at 15 % of a quarter turn
+  (`bindings::STEER`, provisional) the way that turns the rolling robot (wheels ahead of its
+  other axles into the turn, behind them out of it), back to straight on release, and drop the
+  differential for its wheels (tracks keep it); the mouse and the precision aim leave them alone,
+  W and S roll the wheels, and nothing turns the chassis but the wheels' contacts. Fixed wheels
+  and tracks keep the differential. A joint carrying only locomotion turns as a whole, its mass
+  on its output and its collider its output flange (half its mass there let the wheel fold at
+  the match's gravity). The `steer-car` loadout steers its rear wheels (front ones lead their
+  kingpins on this chassis and fold); its bots roll ahead to turn (`bots::steered`); a client
+  predicts it and a replay continues it bit for bit, and the Rapier oracle agrees on its first
+  0.75 s of a turn. By the works' mezzanine it still does not make the turn onto the bridge,
+  and on the drydock it reaches the prow step's level but not the foredeck. **Not yet**: legs. A robot with a
   connected leg stays on the interim movement drive (D2.i70.5, unchanged: walk, sprint, slide,
   its jump and air jump, step-up, facing the aim): the bounded fallback until legs balance and
   walk on their own servos in the match. Measured on physics-engine at the match's 18 m/s²
@@ -910,7 +924,8 @@ whether resupply locks movement or firing (Q2.i123.3).
   mechanics fixtures' geometry: `robo-dog` (four legs, a shotgun; its legs on the interim drive
   like every leg), `rover` (four wheels, the energy rifle: the armed car) and `mini-tank` (two
   flat tracks, the rail gun), each with its own fuel tank and generator; wheels and tracks drive
-  and turn them on their own actuators (D2.i74.1). Motor-steered axles are separate (shooter#170).
+  and turn them on their own actuators (D2.i74.1). Since shooter#170 a fourth, `steer-car` (the
+  rover with its rear wheels on two hinge servos), steers through the servos (D2.i74.1).
   Attachment rules answered by D2.i70.1 and D2.i70.2, cooling superseded by D2.i70.4; the numbers
   remain open as Q2.i70.1 and Q2.i70.2. The defaults above stay shipped until migrated
   (D2.i70.12). The sockets, hardpoints and load budget were migrated by shooter#71; the power and
@@ -1246,5 +1261,11 @@ whether resupply locks movement or firing (Q2.i123.3).
   unit of charge in the connected batteries (a full tank 100, a full battery 60), at most 300,
   at its centre, falling off linearly to nothing at 1.5 m plus 1 cm a point of damage (at most
   4.5 m; a full standard build 100 within 2.5 m, a full heavy 160 within 3.1 m), no knockback.
+  Provisional (shooter#170): the hinge servo gives 150 N·m (was 40; at 40 a steered wheel's tyre
+  under the match's gravity turned it off its angle and folded the leading wheels in reverse);
+  the presets steer at 15 % of a quarter turn, about 13.5° (`bindings::STEER`; at 30° the
+  steer-car's 40 cm wheelbase pulled about the match's gravity sideways at its top speed); a
+  joint carrying only locomotion keeps its whole mass on its output and collides as its outer
+  eighth.
 - **Q2.i123.3**: Whether holding a resupply interaction locks the robot's ordinary movement or
   firing (D2.i123.6). Not prescribed until assessed in shooter#129.

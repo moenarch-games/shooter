@@ -18,7 +18,7 @@ use shooter_sim::maps::MapId;
 use shooter_sim::mechanics::fixtures;
 use shooter_sim::physics::Vec3i;
 
-const ALL: [Drive; 3] = [Drive::Legs, Drive::Wheels, Drive::Tracks];
+const ALL: [Drive; 4] = [Drive::Legs, Drive::Wheels, Drive::Steered, Drive::Tracks];
 
 /// `fighters` bots on `drive` for `seconds` on the proving cell, seeded `seed`.
 fn playtest(fighters: u8, drive: Drive, seed: u64, seconds: u32) -> Playtest {
@@ -114,7 +114,8 @@ fn playtest_report() {
 /// onto the stage (the rail capacitor's) and up the north gallery's ramp onto its deck (the
 /// thrusters'); no contested place needs legs, a jump or the grapple. Wheels since shooter#174
 /// (before it the car, armed or bare, got about half a metre up the kit's 1:4 ramps and rolled
-/// back): the armed tank, the armed car and the bare car all drive up both.
+/// back): the armed tank, the armed car and the bare car all drive up both, and so does the
+/// steer-car on its steering servos (shooter#170).
 #[test]
 fn wheels_and_tracks_drive_onto_the_stage_and_the_gallery() {
     use shooter_sim::proving_cell::{DECK_TOP, STAGE_TOP};
@@ -127,6 +128,7 @@ fn wheels_and_tracks_drive_onto_the_stage_and_the_gallery() {
         fixtures::armed_tank(),
         fixtures::armed_car(),
         fixtures::car(),
+        shooter_sim::robot::STEER_CAR,
     ] {
         let (at, _) = drive_route(
             Arena::proving_cell(),

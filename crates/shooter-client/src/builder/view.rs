@@ -2421,7 +2421,7 @@ mod tests {
         // The loadouts, two a row, end above the bar.
         let last = rows.last().unwrap().0;
         assert!(last.y + last.height <= builder.layout().bar.y - 8.0);
-        for name in ["robo-dog", "rover", "mini-tank"] {
+        for name in ["robo-dog", "rover", "mini-tank", "steer-car"] {
             let index = LOADOUTS.iter().position(|(key, _)| *key == name).unwrap();
             assert!(
                 rows.iter()

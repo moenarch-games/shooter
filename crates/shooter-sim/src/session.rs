@@ -2260,6 +2260,15 @@ impl Session {
                             fighter.parts.instances(&fighter.build).collect();
                         fighter.intent =
                             bot.think(slot, &sights, &self.world, &self.arena, &copies, tick);
+                        // Steering servos turn the chassis only while it rolls (shooter#170).
+                        if self
+                            .mechanics
+                            .robot(fighter.slot)
+                            .is_some_and(|robot| !robot.layout.steering_joints().is_empty())
+                        {
+                            (fighter.intent.forward, fighter.intent.strafe) =
+                                crate::bots::steered(fighter.intent.forward, fighter.intent.strafe);
+                        }
                         // Its robot's actuators through its build's preset layout, from the
                         // keys its movement would press: the same commands a person's layout
                         // sends ([`crate::bindings`]).

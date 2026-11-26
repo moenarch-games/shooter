@@ -18,7 +18,13 @@ use shooter_sim::maps::MapId;
 use shooter_sim::mechanics::fixtures;
 use shooter_sim::physics::Vec3i;
 
-const ALL: [Drive; 4] = [Drive::Legs, Drive::Wheels, Drive::Tracks, Drive::Mixed];
+const ALL: [Drive; 5] = [
+    Drive::Legs,
+    Drive::Wheels,
+    Drive::Steered,
+    Drive::Tracks,
+    Drive::Mixed,
+];
 
 /// `fighters` bots on `drive` for `seconds` on the dock, seeded `seed`.
 fn playtest(fighters: u8, drive: Drive, seed: u64, seconds: u32) -> Playtest {
@@ -192,8 +198,10 @@ fn skirmishes_and_full_matches_find_fights_without_spawn_traps() {
 /// the bridge's fore ramp onto the 6 m bridge. No hull top needs legs, a jump, a pad or the
 /// grapple. Wheels climb the kit's 1:4 ramps too since shooter#174 (before it the car got about
 /// half a metre up and rolled back): the armed car drives up the gantry's 16 m bow ramp onto its
-/// 4 m deck and from the foredeck up the fore ramp onto the bridge. (Across onto the prow step it
-/// does not yet steer: a skid-steered chassis turns slowly, shooter#170.)
+/// 4 m deck and from the foredeck up the fore ramp onto the bridge, the latter as the steer-car
+/// does on its steering servos (shooter#170). (From the gantry across onto the prow step the car
+/// does not steer: its skid steer turns slowly and it ends on the floor. The steer-car gets 2 m
+/// up, at the prow step's height, but not up the prow's ramp onto the foredeck.)
 #[test]
 fn wheels_and_tracks_drive_onto_the_cutter() {
     use shooter_sim::drydock::{FOREDECK_TOP, GANTRY_TOP, GANTRY_X, PROW_TOP, SHIP_X, STERN_TOP};
@@ -218,7 +226,11 @@ fn wheels_and_tracks_drive_onto_the_cutter() {
         Vec3i::new(cutter, FOREDECK_TOP, 500),
         Vec3i::new(cutter, STERN_TOP, -800),
     ];
-    for build in [fixtures::armed_tank(), fixtures::armed_car()] {
+    for build in [
+        fixtures::armed_tank(),
+        fixtures::armed_car(),
+        shooter_sim::robot::STEER_CAR,
+    ] {
         let (at, _) = drive_route(
             Arena::drydock(),
             build,

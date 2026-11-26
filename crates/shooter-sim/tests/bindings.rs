@@ -152,6 +152,205 @@ fn an_action_group_drives_every_motor_in_it_each_its_own_way() {
     );
 }
 
+/// The steer-car's servos and wheels (shooter#170).
+const STEER_LEFT: PartId = PartId(3);
+const STEER_RIGHT: PartId = PartId(5);
+const STEER_WHEELS: [PartId; 4] = [PartId(2), PartId(4), PartId(9), PartId(10)];
+
+/// The steering motors a preset finds: joints turning about the vertical that carry wheels,
+/// rear or front as the wheels sit against the robot's other axles; never a turret's joints,
+/// a wheel's own axle or a robot without them.
+#[test]
+fn steering_motors_are_the_joints_that_turn_wheels_about_the_vertical() {
+    use shooter_sim::robot::STEER_CAR;
+
+    let steering = |build: &Assembly| -> Vec<(PartId, bool)> {
+        Layout::of(build)
+            .steering_joints()
+            .iter()
+            .map(|steering| (steering.actuator.part, steering.rear))
+            .collect()
+    };
+    assert_eq!(
+        steering(&STEER_CAR),
+        [(STEER_LEFT, true), (STEER_RIGHT, true)]
+    );
+    assert_eq!(
+        steering(&fixtures::front_steer()),
+        [(STEER_LEFT, false), (STEER_RIGHT, false)]
+    );
+    for build in [
+        fixtures::car(),
+        fixtures::armed_car(),
+        fixtures::flat_tank(),
+        fixtures::paired_turret(),
+        fixtures::turret(),
+        STANDARD,
+    ] {
+        assert!(steering(&build).is_empty(), "{build:?}");
+    }
+    // A servo that has lost its wheel carries nothing and steers nothing; the other still does.
+    let lost_wheel = Layout::connected(&STEER_CAR, 1 << 9);
+    let left: Vec<PartId> = lost_wheel
+        .steering_joints()
+        .iter()
+        .map(|steering| steering.actuator.part)
+        .collect();
+    assert_eq!(left, [STEER_RIGHT]);
+}
+
+/// A and D hold the steering servos (rear ones turned away from the turn, front ones into it)
+/// and return them to straight ahead on release; W and S roll every wheel alike whichever way
+/// it steers; the mouse and the precision aim leave the servos alone.
+#[test]
+fn wheel_steering_uses_the_motors_not_the_turret_or_differential_drive() {
+    use shooter_sim::robot::STEER_CAR;
+
+    // The preset's 15 % of a quarter turn (about 13.5°).
+    for (build, right_angle) in [(STEER_CAR, 2_457), (fixtures::front_steer(), -2_457)] {
+        let robot = Layout::of(&build);
+        let preset = Bindings::preset(&robot);
+        preset.check(&robot).unwrap();
+        let resolve = |pressed| preset.resolve(&robot, &mut BindingState::default(), pressed);
+        let straight = resolve(Pressed::wasd(1, 0));
+        let right = resolve(Pressed::wasd(1, 1));
+        let left = resolve(Pressed::wasd(1, -1));
+        let back_right = resolve(Pressed::wasd(-1, 1));
+        let still_right = resolve(Pressed::wasd(0, 1));
+        let aim = resolve(Pressed {
+            buttons: u8::MAX,
+            mouse: [20, -10],
+            ..Pressed::default()
+        });
+        for part in [STEER_LEFT, STEER_RIGHT] {
+            assert_eq!(straight.get(part), Some(Command::Angle(0)));
+            assert_eq!(aim.get(part), Some(Command::Angle(0)));
+            assert_eq!(right.get(part), Some(Command::Angle(right_angle)));
+            assert_eq!(back_right.get(part), Some(Command::Angle(right_angle)));
+            assert_eq!(still_right.get(part), Some(Command::Angle(right_angle)));
+            assert_eq!(left.get(part), Some(Command::Angle(-right_angle)));
+        }
+        for part in STEER_WHEELS {
+            assert!(
+                matches!(straight.get(part), Some(Command::Rate(rate)) if rate.abs() == 20_000)
+            );
+            assert_eq!(straight.get(part), right.get(part));
+            assert_eq!(straight.get(part), left.get(part));
+            // Standing, D turns no wheel: only the servos.
+            assert_eq!(still_right.get(part), Some(Command::Rate(0)));
+        }
+    }
+    // Drive the actual articulated parts, not just a binding fixture: the rear servos turn
+    // their wheels out of the turn.
+    let robot = Layout::of(&STEER_CAR);
+    let right =
+        Bindings::preset(&robot).resolve(&robot, &mut BindingState::default(), Pressed::wasd(1, 1));
+    let mut world = Mechanics::new(&floor()).unwrap();
+    world.spawn(STEER_CAR, [0.0, 0.0, 0.0], 0).unwrap();
+    for _ in 0..180 {
+        world.step(&[right.controls(&robot)]).unwrap();
+    }
+    for part in [STEER_LEFT, STEER_RIGHT] {
+        assert!(world.joint(0, part).unwrap().0 > 0.1, "{part:?}");
+    }
+}
+
+/// A person's own layout may bind one steering servo directly, at any strength, beside the
+/// preset: the host takes it, and the servo (standing) turns its wheel to the hinge's limit (a
+/// quarter turn) and no further, the other servo staying straight.
+#[test]
+fn a_custom_binding_steers_one_servo_within_its_limits() {
+    use shooter_sim::robot::STEER_CAR;
+
+    let robot = Layout::of(&STEER_CAR);
+    let mut custom = Bindings::preset(&robot);
+    custom.bindings.push(binding(
+        source("KeyJ"),
+        Mode::Hold,
+        Output::Angle,
+        &[(STEER_LEFT, false)],
+    ));
+    custom.check(&robot).unwrap();
+    let commands = custom.resolve(&robot, &mut BindingState::default(), held("KeyJ"));
+    assert_eq!(commands.get(STEER_LEFT), Some(Command::Angle(16_384)));
+    assert_eq!(commands.get(STEER_RIGHT), Some(Command::Angle(0)));
+    let mut world = Mechanics::new(&floor()).unwrap();
+    world.spawn(STEER_CAR, [0.0, 0.0, 0.0], 0).unwrap();
+    for _ in 0..240 {
+        world.step(&[commands.controls(&robot)]).unwrap();
+    }
+    let (angle, limits) = world.joint(0, STEER_LEFT).unwrap();
+    let [low, high] = limits.unwrap();
+    assert!(
+        angle > 1.0 && angle <= high + 0.02 && angle >= low,
+        "{angle}"
+    );
+    assert!(world.joint(0, STEER_RIGHT).unwrap().0.abs() < 0.1);
+}
+
+/// A steering servo shot off takes its wheel with it: the other servo still steers and every
+/// wheel left still rolls alike. With both off, the car is a two-wheeled robot whose A and D
+/// turn its wheels differentially again.
+#[test]
+fn severed_steering_leaves_the_other_servo_or_differential_drive() {
+    use shooter_sim::robot::STEER_CAR;
+
+    let mut world = Mechanics::new(&floor()).unwrap();
+    world.spawn(STEER_CAR, [0.0, 0.0, 0.0], 0).unwrap();
+    let right = |world: &Mechanics| {
+        let robot = world.robot(0).unwrap().layout.clone();
+        let commands = Bindings::preset(&robot).resolve(
+            &robot,
+            &mut BindingState::default(),
+            Pressed::wasd(1, 1),
+        );
+        (robot, commands)
+    };
+    // Only a steered wheel (10): its servo carries nothing and steers nothing (it stays on
+    // the chassis), the other servo still steers.
+    let mut lost_wheel = Mechanics::new(&floor()).unwrap();
+    lost_wheel.spawn(STEER_CAR, [0.0, 0.0, 0.0], 0).unwrap();
+    assert!(lost_wheel.sever(0, 1 << 10).unwrap());
+    let (robot, commands) = right(&lost_wheel);
+    assert_eq!(commands.get(STEER_RIGHT), None);
+    assert_eq!(commands.get(STEER_LEFT), Some(Command::Angle(2_457)));
+    for _ in 0..30 {
+        lost_wheel.step(&[commands.controls(&robot)]).unwrap();
+    }
+    // The left servo (index 3) and with it its wheel (9; the damage model loses a subtree whole).
+    assert!(world.sever(0, (1 << 3) | (1 << 9)).unwrap());
+    let (robot, commands) = right(&world);
+    assert_eq!(commands.get(STEER_LEFT), None);
+    assert_eq!(commands.get(PartId(9)), None);
+    assert_eq!(commands.get(STEER_RIGHT), Some(Command::Angle(2_457)));
+    let rates: Vec<i16> = [PartId(2), PartId(4), PartId(10)]
+        .into_iter()
+        .map(|part| match commands.get(part) {
+            Some(Command::Rate(rate)) => rate.abs(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert!(rates.iter().all(|rate| *rate == rates[0]), "{rates:?}");
+    for _ in 0..90 {
+        world.step(&[commands.controls(&robot)]).unwrap();
+    }
+    assert!(world.joint(0, STEER_RIGHT).unwrap().0 > 0.1);
+    // The right one too: no steering left, D turns the front wheels differentially.
+    assert!(world.sever(0, (1 << 5) | (1 << 10)).unwrap());
+    let (robot, commands) = right(&world);
+    assert!(robot.steering_joints().is_empty());
+    assert_ne!(
+        commands.get(PartId(2)),
+        commands.get(PartId(4)).map(|command| match command {
+            Command::Rate(rate) => Command::Rate(-rate),
+            other => other,
+        })
+    );
+    for _ in 0..30 {
+        world.step(&[commands.controls(&robot)]).unwrap();
+    }
+}
+
 #[test]
 fn inversion_flips_a_binding_and_a_part_flips_its_own_share() {
     let robot = Layout::of(&STANDARD);
