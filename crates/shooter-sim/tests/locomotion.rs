@@ -269,6 +269,12 @@ fn a_client_predicts_a_wheeled_robot_exactly() {
 /// Every fighter on `map` an armed car: the bots steer their cars themselves, cover ground and
 /// shoot, and the match replays exactly from its seed.
 fn wheeled_bots_play_on(map: MapId) {
+    bots_play_as(map, fixtures::armed_car(), 45);
+}
+
+/// Every fighter on `map` playing `build` for `seconds`: the bots move it themselves, cover
+/// ground and shoot, and the match replays exactly from its seed.
+fn bots_play_as(map: MapId, build: Assembly, seconds: usize) {
     let play = || {
         let rules = Rules {
             frag_limit: 0,
@@ -277,12 +283,12 @@ fn wheeled_bots_play_on(map: MapId) {
         let mut session = Session::on_map(map, rules).unwrap();
         for slot in 0..session.fighters.len() {
             let slot = u8::try_from(slot).unwrap();
-            session.rebuild(slot, fixtures::armed_car()).unwrap();
+            session.rebuild(slot, build).unwrap();
         }
         let starts: Vec<[f32; 3]> = session.fighters.iter().map(|f| f.feet()).collect();
         let mut farthest = vec![0.0f32; starts.len()];
         let (mut shots, mut bytes) = (0, Vec::new());
-        for _ in 0..45 * 60 {
+        for _ in 0..seconds * 60 {
             session.step().unwrap();
             shots += session
                 .events
@@ -324,6 +330,71 @@ fn wheeled_bots_play_and_replay_on_the_proving_cell() {
 #[test]
 fn wheeled_bots_play_and_replay_on_the_drydock() {
     wheeled_bots_play_on(MapId::Drydock);
+}
+
+/// The Workshop's robo-dog, rover and mini-tank (shooter#169) play as built: each settles on
+/// its own locomotion (the dog's legs on the interim drive, the rover's wheels and the tank's
+/// tracks on their own actuators), W carries it forward, and its one gun fires on the primary
+/// trigger without a weapon being chosen first.
+#[test]
+fn the_workshop_presets_drive_and_fire() {
+    use shooter_sim::Weapon;
+    use shooter_sim::robot::loadout;
+
+    // The rover is the armed car every map's wheeled playtests run.
+    assert_eq!(loadout("rover"), Some(fixtures::armed_car()));
+    for (name, gun) in [
+        ("robo-dog", Weapon::Shotgun),
+        ("rover", Weapon::EnergyRifle),
+        ("mini-tank", Weapon::RailGun),
+    ] {
+        let mut session = solo(loadout(name).unwrap());
+        settle(&mut session);
+        assert!(session.local().alive(), "{name}");
+        let (start, heading) = (session.local().feet(), session.local().heading());
+        for _ in 0..120 {
+            drive(
+                &mut session,
+                Intent {
+                    forward: 1,
+                    yaw: heading,
+                    ..Intent::IDLE
+                },
+            );
+        }
+        let moved = across(start, session.local().feet());
+        assert!(moved > 300.0, "{name}: {moved}");
+        let mut shots = 0;
+        for _ in 0..180 {
+            let yaw = session.local().heading();
+            drive(
+                &mut session,
+                Intent {
+                    fire: true,
+                    yaw,
+                    ..Intent::IDLE
+                },
+            );
+            shots += session
+                .events
+                .iter()
+                .filter(
+                    |event| matches!(event, Event::Fired { slot: 0, weapon, .. } if *weapon == gun),
+                )
+                .count();
+        }
+        assert!(shots >= 2, "{name}: {shots} shots of {gun:?}");
+    }
+}
+
+/// Bots play the robo-dog and the mini-tank as they play the armed car (the rover) on every
+/// map: they cover ground and shoot, and the match replays exactly.
+#[test]
+fn bots_play_the_dog_and_the_mini_tank_on_the_yard() {
+    for name in ["robo-dog", "mini-tank"] {
+        let build = shooter_sim::robot::loadout(name).unwrap();
+        bots_play_as(MapId::GreyboxYard, build, 30);
+    }
 }
 
 #[test]

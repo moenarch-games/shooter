@@ -516,7 +516,8 @@ under a power switch that makes the robot electric or combustion, its root swapp
 and the named loadouts to start from (two to a row) are on the left, including `robo-dog`
 (four legs, shotgun), `rover` (four wheels, rifle) and `mini-tank` (two tracks, rail gun).
 The dog uses the interim leg drive; the rover and mini-tank steer differentially on their own
-actuators. The component inspector is on
+actuators (#169, [captures](docs/captures/169/): each in the Workshop, made active and in a
+practice match, from `menu_views`). The component inspector is on
 the right (the selected part, or the part in hand: cells, mass, health, points, electricity or fuel
 stored, a chassis' drive, what a generator makes at the robot's rate, motor, the electricity or fuel
 a shot costs, its turn in degrees and its mod), and the budget along the bottom: build points and
@@ -923,7 +924,14 @@ the same tank, and a battery on its back stores the electricity its energy rifle
 use, **Powertrains**),
 each of these seven a two-legged component tree with a sensor, a fuel tank and a generator
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
-shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads
+shot at the upper half of the chassis meets a weapon first. Three more stand on other locomotion
+(#169), each on the large chassis with a sensor, a fuel tank and a generator on its roof and one
+gun on its front: `robo-dog` (the mechanics fixture's four legs, two of them under beams reaching
+forward, and a shotgun: 297 kg, 92 points; its legs, like every leg, still ride the interim
+movement drive), `rover` (four wheels and the energy rifle: the armed car every map's wheeled
+playtests run, 254 kg, 77 points) and `mini-tank` (two tracks flat along its sides and the rail
+gun: 277 kg, 87 points); the rover's wheels and the tank's tracks drive it on their own actuators
+and turn it differentially (no steered axles). The builder's "start from" list loads
 them too. The HUD shows the held
 weapon's mod and the status line every equipped one.
 
