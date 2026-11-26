@@ -10,8 +10,7 @@
 use super::{Command, Controls};
 use crate::physics::{BodyId, RigidBody, Vec3i};
 use crate::robot::parts::{
-    BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_S, ENERGY_RIFLE, HINGE, LEG, ROTOR, SENSOR, TRACK,
-    WHEEL,
+    BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_S, ENERGY_RIFLE, HINGE, LEG, ROTOR, SENSOR, TRACK, WHEEL,
 };
 use crate::robot::{
     Assembly, BETA, Candidate, Face, MINI_TANK, Orientation, PartId, PartType, ROBO_DOG, ROVER,
