@@ -145,7 +145,7 @@ fn the_catalog_is_consistent_and_its_sockets_number_each_cell_once() {
     let chassis: Vec<(&str, [u8; 3], u16)> = BETA
         .parts
         .iter()
-        .filter(|part| part.kind == Kind::Chassis)
+        .filter(|part| matches!(part.kind, Kind::Chassis(_)))
         .map(|part| (part.key, part.cells, part.socket_count()))
         .collect();
     assert_eq!(
@@ -154,6 +154,9 @@ fn the_catalog_is_consistent_and_its_sockets_number_each_cell_once() {
             ("robot.chassis.20x40x80", [1, 2, 4], 28),
             ("robot.chassis.40x40x80", [2, 2, 4], 40),
             ("robot.chassis.40x60x80", [2, 3, 4], 52),
+            ("robot.chassis.combustion.20x40x80", [1, 2, 4], 28),
+            ("robot.chassis.combustion.40x40x80", [2, 2, 4], 40),
+            ("robot.chassis.combustion.40x60x80", [2, 3, 4], 52),
         ]
     );
     // Faces without sockets have none; a joint has one, on its moving side.
@@ -866,9 +869,12 @@ fn the_named_loadouts_are_trees_with_their_mods_on_their_weapons() {
         assert_eq!(BETA.validate(&build.candidate()), Ok(build), "{name}");
         assert_eq!(loadout(name), Some(build));
         let budget = BETA.budget(&build);
-        // Each recharges from its own tank and generator (shooter#128).
-        assert!(budget.capacity >= 100, "{name}");
+        // Each recharges from its own tank and generator (shooter#128), and its powertrain
+        // supplies every consumer it mounts (shooter#130): the combustion stoker stores its
+        // electricity in a battery.
+        assert!(budget.capacity >= 60, "{name}");
         assert_eq!((budget.fuel, budget.burn), (1_000, 12), "{name}");
+        assert_eq!(BETA.notices(&build), [], "{name}");
         assert!(budget.points <= budget.build_points);
         // Four weapons each.
         let weapons: Vec<Weapon> = BETA

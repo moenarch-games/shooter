@@ -22,8 +22,18 @@
 //! or continuous tick ([`crate::robot::Tuning::energy`], its weapon mod and any carried module
 //! included), a thruster jump ([`crate::pickups`]), a repair tick ([`crate::repair`]) and the
 //! motors' work ([`crate::mechanics::draw`]: by activity and load, nothing at rest). Every
-//! consumer today runs on electricity; fuel only feeds the generators. A request is granted
-//! whole or not at all: an amount never goes negative and nothing is paid twice. A refused
+//! consumer asks its own resource ([`Resource`], [`pay`]).
+//!
+//! **Powertrains** (D2.i123.3, shooter#130): the root chassis' [`crate::robot::Power`] is the
+//! robot's. An electric root stores the baseline electricity and its locomotion draws
+//! electricity; a combustion root stores nothing, and its locomotion burns fuel through a
+//! connected engine ([`crate::robot::Kind::Engine`], [`Pool::drive`]) or, without one, cannot
+//! walk. The flamethrower burns fuel ([`crate::weapons::Weapon::resource`]); every other weapon,
+//! the joints, repairs and the thruster jump draw electricity. The generator is the only
+//! converter, at its chassis' rate ([`Pool::electricity_per_fuel`]: an electric chassis
+//! recharges twice as fast). A hybrid is just a build with both stores: an electric robot's
+//! flamethrower needs a tank, a combustion robot's electrical consumers a battery and a
+//! generator. A request is granted whole or not at all: an amount never goes negative and nothing is paid twice. A refused
 //! request simply does not happen (no shot, no cooldown spent, a plain jump instead of a boosted
 //! one, a motor that stays limp, a walk that does not start): only the consumer that was refused
 //! stops (D2.i123.4); there is no zero-energy death or limp mode.
@@ -41,16 +51,28 @@
 
 use crate::TICK_HZ;
 use crate::damage::PartDamage;
-use crate::robot::{Assembly, BETA, capacity};
+use crate::robot::{Assembly, BETA, Kind, Power, capacity};
 
 /// Milli-units in one unit: the fixed point of amounts and costs.
 pub const MILLI: u32 = 1_000;
 
-/// The electricity a generator makes from one unit of fuel (provisional, Atlas Q2.i70.1).
+/// The electricity a generator on an electric chassis makes from one unit of fuel
+/// (provisional, Atlas Q2.i70.1, Q2.i123.2).
 pub const ELECTRICITY_PER_FUEL: u32 = 2;
+/// The electricity a generator on a combustion chassis makes from one unit of fuel: half the
+/// electric chassis' rate, so electric builds recharge faster (provisional, Atlas Q2.i123.2).
+pub const COMBUSTION_ELECTRICITY_PER_FUEL: u32 = 1;
+
+/// The two resources a robot stores (D2.i123.3).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Resource {
+    Electricity,
+    Fuel,
+}
 
 /// A robot's pools: how much electricity and fuel it can store and how much fuel its generators
-/// may burn, from its build.
+/// may burn, from its build, and its powertrain: its root chassis' power and whether an engine is
+/// connected.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub struct Pool {
     /// Electricity storage, milli-units.
@@ -59,6 +81,10 @@ pub struct Pool {
     pub fuel: u32,
     /// Fuel the generators burn a tick at most, milli-units.
     pub burn: u32,
+    /// Its root chassis' native power ([`Power`]).
+    pub power: Power,
+    /// An engine is connected ([`Kind::Engine`]).
+    pub engine: bool,
 }
 
 /// What a robot's resources did in one tick: a report for the HUD, not state.
@@ -66,11 +92,15 @@ pub struct Pool {
 pub struct Flow {
     /// Electricity granted to its consumers, milli-units.
     pub used: u32,
+    /// Fuel granted to its consumers (a combustion drive, the flamethrower), milli-units; the
+    /// generators' is [`Flow::burned`].
+    pub fueled: u32,
     /// Electricity its generators made, milli-units.
     pub made: u32,
     /// Fuel its generators burned, milli-units.
     pub burned: u32,
-    /// The locomotion was refused the electricity to walk.
+    /// The locomotion was refused what it walks on: electricity, or fuel or an engine
+    /// ([`Pool::drive`]).
     pub stalled: bool,
 }
 
@@ -79,7 +109,23 @@ impl Pool {
     #[must_use]
     pub fn of(build: &Assembly) -> Self {
         let budget = BETA.budget(build);
-        Self::from_units(budget.capacity, budget.fuel, budget.burn)
+        Self {
+            power: budget.power,
+            engine: budget.engines > 0,
+            ..Self::from_units(budget.capacity, budget.fuel, budget.burn)
+        }
+    }
+
+    /// What its locomotion runs on (D2.i123.3): electricity on an electric chassis; fuel on a
+    /// combustion chassis while an engine is connected; nothing on a combustion chassis without
+    /// one (it cannot walk).
+    #[must_use]
+    pub const fn drive(self) -> Option<Resource> {
+        match self.power {
+            Power::Electric => Some(Resource::Electricity),
+            Power::Combustion if self.engine => Some(Resource::Fuel),
+            Power::Combustion => None,
+        }
     }
 
     /// The pools of `build`'s parts still connected ([`crate::damage`]): a lost battery's or
@@ -93,20 +139,29 @@ impl Pool {
     /// The pools of `build`'s parts that are `attached` (by index).
     #[must_use]
     pub fn connected(build: &Assembly, attached: impl Fn(usize) -> bool) -> Self {
-        let (stored, fuel, burn) = build
+        let (mut stored, mut fuel, mut burn) = (0, 0, 0);
+        let (mut power, mut engine) = (Power::default(), false);
+        for (part, kind) in build
             .parts()
             .iter()
             .enumerate()
             .filter(|(index, _)| attached(*index))
             .filter_map(|(_, part)| Some((part, BETA.part_type(part.kind)?)))
-            .fold((0, 0, 0), |(stored, fuel, burn), (part, kind)| {
-                (
-                    stored + u32::from(capacity(part, kind)),
-                    fuel + u32::from(kind.fuel),
-                    burn + u32::from(kind.burn),
-                )
-            });
-        Self::from_units(stored, fuel, burn)
+        {
+            stored += u32::from(capacity(part, kind));
+            fuel += u32::from(kind.fuel);
+            burn += u32::from(kind.burn);
+            match kind.kind {
+                Kind::Chassis(native) if part.mount.is_none() => power = native,
+                Kind::Engine => engine = true,
+                _ => {}
+            }
+        }
+        Self {
+            power,
+            engine,
+            ..Self::from_units(stored, fuel, burn)
+        }
     }
 
     fn from_units(capacity: u32, fuel: u32, burn: u32) -> Self {
@@ -114,6 +169,8 @@ impl Pool {
             capacity: capacity * MILLI,
             fuel: fuel * MILLI,
             burn: burn * MILLI / u32::from(TICK_HZ),
+            power: Power::Electric,
+            engine: false,
         }
     }
 
@@ -132,16 +189,39 @@ impl Pool {
         shrink(self.fuel, smaller.fuel, fuel)
     }
 
+    /// The electricity its generators make from one unit of fuel: its root chassis' rate
+    /// ([`ELECTRICITY_PER_FUEL`] electric, [`COMBUSTION_ELECTRICITY_PER_FUEL`] combustion).
+    #[must_use]
+    pub const fn electricity_per_fuel(self) -> u32 {
+        match self.power {
+            Power::Electric => ELECTRICITY_PER_FUEL,
+            Power::Combustion => COMBUSTION_ELECTRICITY_PER_FUEL,
+        }
+    }
+
     /// One tick of the generators: they burn fuel for the electricity storage's room, at most
-    /// their burn a tick and never more fuel than there is, and make [`ELECTRICITY_PER_FUEL`]
-    /// times as much electricity. What they burned and made.
+    /// their burn a tick and never more fuel than there is, and make
+    /// [`Pool::electricity_per_fuel`] times as much electricity. What they burned and made.
     pub fn generate(self, charge: &mut u32, fuel: &mut u32) -> (u32, u32) {
+        let rate = self.electricity_per_fuel();
         let room = self.capacity.saturating_sub(*charge);
-        let burned = self.burn.min(*fuel).min(room / ELECTRICITY_PER_FUEL);
-        let made = burned * ELECTRICITY_PER_FUEL;
+        let burned = self.burn.min(*fuel).min(room / rate);
+        let made = burned * rate;
         *fuel -= burned;
         *charge += made;
         (burned, made)
+    }
+}
+
+/// Grants a request for `cost` milli-units of `resource` (from `charge` for electricity, from
+/// `fuel` for fuel) whole, or refuses it and leaves both as they were ([`spend`]). A request for
+/// no resource (`None`: a combustion drive without an engine) is granted only when it costs
+/// nothing. Whether it was granted.
+pub fn pay(resource: Option<Resource>, charge: &mut u32, fuel: &mut u32, cost: u32) -> bool {
+    match resource {
+        Some(Resource::Electricity) => spend(charge, cost),
+        Some(Resource::Fuel) => spend(fuel, cost),
+        None => cost == 0,
     }
 }
 

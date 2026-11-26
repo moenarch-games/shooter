@@ -41,7 +41,9 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::{Instance, Select, Triggers, Weapon};
 use std::fmt;
 
-/// 26: snapshots carry each fighter's fuel beside its electricity, and a robot's state both
+/// 27: builds may name the combustion chassis (codes 4 to 6) and the engine (36), and the
+/// flamethrower and a combustion drive burn fuel (shooter#130): the same bytes mean other
+/// rules, so older peers are refused. 26: snapshots carry each fighter's fuel beside its electricity, and a robot's state both
 /// (shooter#128); 25: an input's actuator command may tell a joint to track the camera's
 /// target, for the host to resolve (shooter#132, [`MechCommand::Track`]), and a layout's
 /// binding may track; 24: inputs carry per-copy fire requests (shooter#127, [`Triggers`]: the guns the person's
@@ -53,7 +55,7 @@ use std::fmt;
 /// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
 /// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
 /// the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 26;
+pub const WIRE_VERSION: u8 = 27;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;

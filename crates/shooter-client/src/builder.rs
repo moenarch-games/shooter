@@ -36,7 +36,8 @@ pub mod view;
 use shooter_sim::Weapon;
 use shooter_sim::robot::{
     Assembly, AssemblyError, BETA, Budget, Candidate, Catalog, Joint, Kind, Locomotion, MAX_PARTS,
-    ModId, Mount, Orientation, Part, PartId, PartType, PartTypeId, RawMount, RawPart, SocketId,
+    ModId, Mount, Orientation, Part, PartId, PartType, PartTypeId, Power, RawMount, RawPart,
+    SocketId,
 };
 use std::fmt;
 
@@ -343,6 +344,35 @@ impl Workbench {
         self.commit(build, None);
     }
 
+    /// The root chassis' native power (shooter#130).
+    #[must_use]
+    pub fn power(&self) -> Power {
+        BETA.budget(&self.draft).power
+    }
+
+    /// The build on a root chassis of `power` (the same size; every part stays where it is),
+    /// and a chassis in hand swapped likewise: one edit, undone as one.
+    ///
+    /// # Errors
+    ///
+    /// If the build has no chassis root (it always has).
+    pub fn set_power(&mut self, power: Power) -> Result<(), Refusal> {
+        self.hand = self.hand.map(|hand| with_power(hand, power));
+        if self.power() == power {
+            return Ok(());
+        }
+        let mut candidate = self.draft.candidate();
+        let root = candidate
+            .parts
+            .iter_mut()
+            .find(|part| part.mount.is_none())
+            .ok_or(Refusal::Nothing)?;
+        root.kind = with_power(PartTypeId(root.kind), power).0;
+        let draft = BENCH.validate(&candidate)?;
+        self.commit(draft, self.selected);
+        Ok(())
+    }
+
     /// Starts a new robot: `chassis` alone, as its root.
     ///
     /// # Errors
@@ -588,12 +618,33 @@ pub fn degrees(angle: u16) -> i32 {
     (signed * 360 + signed.signum() * 32_768) / 65_536
 }
 
+/// The chassis of `power` the size of chassis `kind` (shooter#130); any other part type stays
+/// itself.
+#[must_use]
+pub fn with_power(kind: PartTypeId, power: Power) -> PartTypeId {
+    let Some(chassis) = BETA.part_type(kind) else {
+        return kind;
+    };
+    if !matches!(chassis.kind, Kind::Chassis(_)) {
+        return kind;
+    }
+    BETA.parts
+        .iter()
+        .find(|part| part.kind == Kind::Chassis(power) && part.cells == chassis.cells)
+        .map_or(kind, |part| part.id)
+}
+
 /// A part type's name in the catalogue.
 #[must_use]
 pub fn part_name(kind: &PartType) -> String {
     match kind.kind {
-        Kind::Chassis => format!(
-            "Chassis {}x{}x{}",
+        // A combustion chassis (shooter#130) is the fuel chassis, short enough for a row.
+        Kind::Chassis(power) => format!(
+            "{} {}x{}x{}",
+            match power {
+                Power::Electric => "Chassis",
+                Power::Combustion => "Fuel chassis",
+            },
             u16::from(kind.cells[0]) * 20,
             u16::from(kind.cells[1]) * 20,
             u16::from(kind.cells[2]) * 20
@@ -606,6 +657,7 @@ pub fn part_name(kind: &PartType) -> String {
         Kind::Battery => "Battery".to_owned(),
         Kind::FuelTank => "Fuel tank".to_owned(),
         Kind::Generator => "Generator".to_owned(),
+        Kind::Engine => "Engine".to_owned(),
         Kind::Sensor => "Sensor".to_owned(),
         Kind::Repair => "Repair module".to_owned(),
         Kind::Locomotion(Locomotion::Leg) => "Leg".to_owned(),

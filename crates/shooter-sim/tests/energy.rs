@@ -163,6 +163,7 @@ fn storage_and_generation_come_from_the_parts_and_a_life_starts_full() {
             capacity: 100 * MILLI,
             fuel: 1_000 * MILLI,
             burn: 200,
+            ..Pool::default()
         }
     );
     assert_eq!(Pool::of(&HEAVY).capacity, 160 * MILLI, "a battery stores");
@@ -174,6 +175,7 @@ fn storage_and_generation_come_from_the_parts_and_a_life_starts_full() {
             capacity: 100 * MILLI,
             fuel: 0,
             burn: 0,
+            ..Pool::default()
         }
     );
 

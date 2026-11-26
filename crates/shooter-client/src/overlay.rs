@@ -25,7 +25,7 @@
 
 use crate::ui::{self, CAP_HEIGHT, Item};
 use render_engine::glam::{Vec2, Vec4};
-use shooter_sim::energy::{Flow, MILLI};
+use shooter_sim::energy::{Flow, MILLI, Resource};
 use shooter_sim::robot::{BETA, ModId};
 use shooter_sim::session::Fighter;
 use shooter_sim::{Assembly, Instance, TICK_HZ, Weapon};
@@ -290,13 +290,14 @@ impl Mounted {
         (of > 1).then(|| format!("{number}/{of}"))
     }
 
-    /// How ready it is to fire with `energy` in the pool: lost, short of energy, recovering
-    /// (with the share of its refire already over) or ready.
+    /// How ready it is to fire with what `vitals` holds of its resource (the flamethrower's
+    /// fuel, the rest's electricity, shooter#130): lost, short of it, recovering (with the share
+    /// of its refire already over) or ready.
     #[must_use]
-    pub fn readiness(&self, energy: u32) -> Readiness {
+    pub fn readiness(&self, vitals: &Vitals) -> Readiness {
         if !self.armed {
             Readiness::Lost
-        } else if energy < self.cost {
+        } else if vitals.stock(self.instance.weapon.resource()) < self.cost {
             Readiness::LowEnergy
         } else if self.cooldown > 0 {
             #[allow(clippy::cast_precision_loss)]
@@ -340,6 +341,9 @@ pub struct Vitals {
     pub fuel_capacity: u32,
     /// The fuel its connected generators may burn a tick (none: nothing recharges it).
     pub burn: u32,
+    /// What its locomotion runs on (shooter#130): electricity, fuel through an engine, or
+    /// nothing (a combustion chassis without an engine).
+    pub drive: Option<Resource>,
     /// What its resources did in the last tick: used, made, burned, a refused walk.
     pub flow: Flow,
     pub chassis: u16,
@@ -385,10 +389,32 @@ impl Vitals {
             fuel: fighter.fuel,
             fuel_capacity: fighter.pool().fuel,
             burn: fighter.pool().burn,
+            drive: fighter.pool().drive(),
             flow: fighter.flow,
             chassis: fighter.chassis_health(),
             chassis_whole: shooter_sim::damage::PartDamage::fresh(build).chassis_health(build),
         }
+    }
+
+    /// What it holds of `resource` (milli-units).
+    #[must_use]
+    pub const fn stock(&self, resource: Resource) -> u32 {
+        match resource {
+            Resource::Electricity => self.energy,
+            Resource::Fuel => self.fuel,
+        }
+    }
+
+    /// The resource the held weapon runs on.
+    #[must_use]
+    pub const fn resource(&self) -> Resource {
+        self.held.weapon.resource()
+    }
+
+    /// Whether it holds less of the held weapon's resource than an activation costs.
+    #[must_use]
+    pub const fn short(&self) -> bool {
+        self.stock(self.resource()) < self.cost
     }
 
     /// The held copy as listed, if the build mounts it.
@@ -449,7 +475,8 @@ impl Rates {
         let step = (seconds / RATE_SECONDS).clamp(0.0, 1.0);
         self.used += (per_second(flow.used) - self.used) * step;
         self.made += (per_second(flow.made) - self.made) * step;
-        self.burned += (per_second(flow.burned) - self.burned) * step;
+        // Every fuel the tick burned: the generators', an engine's and a flamethrower's.
+        self.burned += (per_second(flow.burned + flow.fueled) - self.burned) * step;
     }
 }
 
@@ -537,7 +564,7 @@ impl Overlay {
     /// and a line with its mod and what keeps it from firing (nothing when it is ready).
     fn held_weapon(&self, painter: &mut Painter, vitals: &Vitals, right: f32) {
         let armed = vitals.armed();
-        let short = vitals.energy < vitals.cost;
+        let short = vitals.short();
         painter.label_right(
             right,
             NAME_TOP,
@@ -668,7 +695,7 @@ fn chips(painter: &mut Painter, vitals: &Vitals, right: f32, flash: f32) {
             );
         }
         let (bar_x, bar_y, bar_width) = (x + 8.0, y + CHIP_HEIGHT - 5.0, width - 16.0);
-        match mounted.readiness(vitals.energy) {
+        match mounted.readiness(vitals) {
             Readiness::Lost => {}
             Readiness::LowEnergy => {
                 painter.pill(bar_x, bar_y, bar_width, 2.0, 1.0, (track(), srgb(RED, 0.9)));
@@ -867,6 +894,10 @@ fn entry_line(painter: &mut Painter, x: f32, width: f32, y: f32, entry: &Entry, 
 pub enum Shortage {
     /// The locomotion was refused the electricity to walk.
     DriveStalled,
+    /// A combustion drive was refused the fuel to walk (shooter#130).
+    DriveNoFuel,
+    /// A combustion chassis has no engine connected: it cannot walk (shooter#130).
+    NoEngine,
     /// No generator is connected: nothing recharges the electricity.
     NoGenerator,
     /// The generators have no fuel left to burn.
@@ -879,6 +910,8 @@ impl Shortage {
     pub const fn label(self) -> &'static str {
         match self {
             Self::DriveStalled => "drive: no power",
+            Self::DriveNoFuel => "drive: no fuel",
+            Self::NoEngine => "drive: no engine",
             Self::NoGenerator => "no generator",
             Self::NoFuel => "generator: no fuel",
         }
@@ -886,20 +919,25 @@ impl Shortage {
 }
 
 impl Vitals {
-    /// What stops the electricity's consumers: a refused walk.
+    /// What stops the electricity's consumers: an electric drive's refused walk.
     #[must_use]
     pub const fn power_shortage(&self) -> Option<Shortage> {
-        if self.flow.stalled {
+        if self.flow.stalled && matches!(self.drive, Some(Resource::Electricity)) {
             Some(Shortage::DriveStalled)
         } else {
             None
         }
     }
 
-    /// What stops the recharge: no generator connected, or no fuel for it.
+    /// What stops the fuel's consumers or the recharge: a combustion drive's refused walk (no
+    /// engine, or no fuel), else no generator connected, or no fuel for it.
     #[must_use]
     pub const fn fuel_shortage(&self) -> Option<Shortage> {
-        if self.burn == 0 {
+        if self.flow.stalled && self.drive.is_none() {
+            Some(Shortage::NoEngine)
+        } else if self.flow.stalled && matches!(self.drive, Some(Resource::Fuel)) {
+            Some(Shortage::DriveNoFuel)
+        } else if self.burn == 0 {
             Some(Shortage::NoGenerator)
         } else if self.fuel == 0 {
             Some(Shortage::NoFuel)
@@ -994,7 +1032,7 @@ fn bars(painter: &mut Painter, vitals: &Vitals, rates: Rates, x: f32) {
         vitals.cost
     };
     let cost = share(shot.min(vitals.energy), vitals.capacity);
-    let energy_track = if vitals.energy < vitals.cost {
+    let energy_track = if vitals.short() && vitals.resource() == Resource::Electricity {
         srgb(RED, 0.55)
     } else {
         track()
@@ -1125,7 +1163,7 @@ mod tests {
             .carried
             .iter()
             .filter(|mounted| mounted.instance.weapon == Weapon::RailGun)
-            .map(|mounted| mounted.readiness(vitals.energy))
+            .map(|mounted| mounted.readiness(&vitals))
             .collect();
         assert!(
             rails
@@ -1141,7 +1179,7 @@ mod tests {
                 .carried
                 .iter()
                 .filter(|mounted| mounted.instance.weapon == Weapon::RailGun)
-                .all(|mounted| mounted.readiness(vitals.energy) == Readiness::LowEnergy)
+                .all(|mounted| mounted.readiness(&vitals) == Readiness::LowEnergy)
         );
 
         let mut session = Session::new(shooter_sim::Arena::greybox()).unwrap();
@@ -1153,7 +1191,7 @@ mod tests {
         let pods: Vec<(u32, Readiness)> = vitals
             .carried
             .iter()
-            .map(|mounted| (mounted.cooldown, mounted.readiness(vitals.energy)))
+            .map(|mounted| (mounted.cooldown, mounted.readiness(&vitals)))
             .collect();
         let spacing = Weapon::RocketLauncher.salvo().unwrap().spacing;
         // The first launched; the others wait for the family, not their own refire.
@@ -1208,6 +1246,7 @@ mod tests {
         let mut rates = Rates::default();
         let flow = Flow {
             used: 92,
+            fueled: 0,
             made: 400,
             burned: 200,
             stalled: false,
@@ -1246,6 +1285,66 @@ mod tests {
         session.rebuild(0, BETA.validate(&bare).unwrap()).unwrap();
         let bare = Vitals::of(session.local(), session.ticks());
         assert_eq!(bare.fuel_shortage(), Some(Shortage::NoGenerator));
+    }
+
+    /// A combustion robot on the HUD (shooter#130): its drive's refusal on the fuel row (no
+    /// fuel, or no engine), its flamethrower's readiness by the fuel it holds and its rifle's by
+    /// the electricity.
+    #[test]
+    fn the_hud_reads_a_combustion_drive_and_each_weapon_by_its_resource() {
+        use shooter_sim::energy::Resource;
+        use shooter_sim::robot::{BETA, STOKER};
+        let walk = shooter_sim::Intent {
+            forward: 1,
+            ..shooter_sim::Intent::IDLE
+        };
+        let mut session = Session::new(shooter_sim::Arena::greybox()).unwrap();
+        session.rebuild(0, STOKER).unwrap();
+        for _ in 0..30 {
+            session.tick(shooter_sim::Intent::IDLE).unwrap();
+        }
+        let fighter = &mut session.fighters[0];
+        fighter.fuel = 0;
+        fighter.energy = fighter.pool().capacity;
+        session.tick(walk).unwrap();
+        let dry = Vitals::of(session.local(), session.ticks());
+        assert_eq!(dry.drive, Some(Resource::Fuel));
+        assert_eq!(
+            (dry.power_shortage(), dry.fuel_shortage()),
+            (None, Some(Shortage::DriveNoFuel))
+        );
+        let readiness = |vitals: &Vitals, weapon: Weapon| {
+            vitals
+                .carried
+                .iter()
+                .find(|mounted| mounted.instance.weapon == weapon)
+                .unwrap()
+                .readiness(vitals)
+        };
+        assert_eq!(
+            readiness(&dry, Weapon::Flamethrower),
+            Readiness::LowEnergy,
+            "no fuel, no flame"
+        );
+        assert_ne!(readiness(&dry, Weapon::EnergyRifle), Readiness::LowEnergy);
+        assert!(
+            !Overlay::default()
+                .draw(Some(&dry), 1280, 720, 0.016)
+                .is_empty()
+        );
+
+        // Without its engine it never walks.
+        let mut candidate = STOKER.candidate();
+        candidate.parts.retain(|part| part.id != 22);
+        session
+            .rebuild(0, BETA.validate(&candidate).unwrap())
+            .unwrap();
+        session.fighters[0].fuel = session.fighters[0].pool().fuel;
+        session.tick(walk).unwrap();
+        let stuck = Vitals::of(session.local(), session.ticks());
+        assert_eq!(stuck.drive, None);
+        assert_eq!(stuck.fuel_shortage(), Some(Shortage::NoEngine));
+        assert_eq!(Shortage::NoEngine.label(), "drive: no engine");
     }
 
     /// Precision aim's scope (shooter#132): nothing while out; in, it shades round a square
