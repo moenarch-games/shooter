@@ -16,8 +16,10 @@ pub mod gfx;
 pub mod gpu;
 pub mod hud;
 pub mod interpolation;
+pub mod menu;
 pub mod net;
 pub mod overlay;
+pub mod prefs;
 pub mod repair_menu;
 pub mod robots;
 pub mod scene;
@@ -26,24 +28,27 @@ pub mod ui;
 
 use shooter_sim::MapId;
 
-/// The match to play: natively `--connect <url> [--cert <pem>] [--name <name>]` joins a hosted
-/// deathmatch (the certificate is a development host's self-signed one; the name is remembered
-/// in the config directory for later runs, [`remembered_name`]); in the browser the page's
-/// `?connect=<url>[&certHash=<sha-256 hex>][&name=<name>]` does (the page remembers the name).
-/// Anything else is offline practice against bots on `map`. Online, the host picks the map.
-/// Either way `--loadout <name>` (`?loadout=<name>`) is the build the builder before the match
-/// starts from ([`loadout`]), returned beside the game.
+/// The match the command line or the page's query starts directly, if it asks for one:
+/// natively `--connect <url> [--cert <pem>] [--name <name>]` joins a hosted deathmatch (the
+/// certificate is a development host's self-signed one; the name is remembered for later runs,
+/// [`remembered_name`]); in the browser the page's `?connect=<url>[&certHash=<sha-256
+/// hex>][&name=<name>]` does (else the name from Settings). Online, the host picks the map.
+/// Otherwise `--map <id>` (`?map=<id>`) is offline practice against bots on `map` (the greybox
+/// test maps' way in). With neither, none: the main menu opens (shooter#154). Either way
+/// `--loadout <name>` (`?loadout=<name>`) is the build to play ([`loadout`]: the builder before
+/// a direct match starts from it, the menu's matches play it), returned beside the game.
 fn game(
     #[cfg(not(target_arch = "wasm32"))] args: Args,
-    map: MapId,
-) -> (game::Game, Option<shooter_sim::Assembly>) {
+    map: Option<MapId>,
+) -> (Option<game::Game>, Option<shooter_sim::Assembly>) {
     #[cfg(not(target_arch = "wasm32"))]
     let (url, trust, name) = (args.connect, args.cert, remembered_name(args.name));
     #[cfg(target_arch = "wasm32")]
     let (url, trust, name) = {
         let query = web::query("connect");
         let hash = web::query("certHash");
-        let name = web::query("name");
+        let name =
+            web::query("name").or_else(|| prefs::Prefs::load(prefs::platform().as_ref()).name);
         match hash.as_deref().map(parse_hash) {
             Some(None) => {
                 fail("certHash is not a SHA-256 in hex");
@@ -57,12 +62,12 @@ fn game(
     #[cfg(target_arch = "wasm32")]
     let requested = web::query("loadout");
     let game = match url {
-        Some(url) => game::Game::Online(Box::new(game::online::Online::connect(
+        Some(url) => Some(game::Game::Online(Box::new(game::online::Online::connect(
             url,
             trust,
             name.as_deref(),
-        ))),
-        None => game::Game::practice(map),
+        )))),
+        None => map.map(game::Game::practice),
     };
     match loadout(requested.as_deref()) {
         Ok(build) => (game, build),
@@ -288,40 +293,20 @@ impl FrameStats {
     }
 }
 
-/// The player name file: `shooter/name` in `$XDG_CONFIG_HOME` (else `~/.config`, or
-/// `%APPDATA%` on Windows).
-#[cfg(not(target_arch = "wasm32"))]
-fn name_file() -> Option<std::path::PathBuf> {
-    let env = |key| std::env::var_os(key).filter(|value| !value.is_empty());
-    let config = env("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| env("HOME").map(|home| std::path::Path::new(&home).join(".config")))
-        .or_else(|| env("APPDATA").map(std::path::PathBuf::from))?;
-    Some(config.join("shooter").join("name"))
-}
-
-/// The name to play under: `given` (`--name`, then remembered for later runs) else the one
-/// remembered last time. A file that cannot be read or written only loses the memory.
+/// The name to play under: `given` (`--name`, then remembered for later runs, as Settings'
+/// name, [`prefs`]) else the one remembered. A store that cannot be read or written only loses
+/// the memory.
 #[cfg(not(target_arch = "wasm32"))]
 fn remembered_name(given: Option<String>) -> Option<String> {
-    let file = name_file();
-    let given = given.and_then(|name| shooter_sim::names::sanitize(&name));
-    match (given, file) {
-        (Some(name), Some(file)) => {
-            let saved = file
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::write(&file, &name));
-            if let Err(error) = saved {
-                log(&format!("could not remember the name: {error}"));
-            }
-            Some(name)
+    let store = prefs::platform();
+    let mut remembered = prefs::Prefs::load(store.as_ref());
+    if let Some(name) = given.and_then(|name| shooter_sim::names::sanitize(&name)) {
+        remembered.name = Some(name);
+        if let Err(error) = remembered.save(store.as_ref()) {
+            log(&format!("could not remember the name: {error}"));
         }
-        (given, None) => given,
-        (None, Some(file)) => std::fs::read_to_string(file)
-            .ok()
-            .and_then(|name| shooter_sim::names::sanitize(&name)),
     }
+    remembered.name
 }
 
 /// A SHA-256 written in hex, colons allowed (as `openssl x509 -fingerprint -sha256` prints it).
@@ -404,21 +389,26 @@ pub fn run() {
     };
     #[cfg(target_arch = "wasm32")]
     let (game, build) = match profile {
-        Some(_) if stage.is_some() => (game::Game::staged(map), None),
-        Some(_) => (game::Game::practice(map), None),
-        None => game(map),
+        Some(_) if stage.is_some() => (Some(game::Game::staged(map)), None),
+        Some(_) => (Some(game::Game::practice(map)), None),
+        None => game(requested.is_some().then_some(map)),
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let (game, build) = game(args, map);
-    let app = app::App::new(event_loop.create_proxy(), game);
-    // The match starts at the builder (shooter#57), on the requested loadout.
+    let (game, build) = game(args, requested.is_some().then_some(map));
+    // A direct start (a hosted match, or practice on a requested map) opens the builder before
+    // the match (shooter#57) on the requested loadout; otherwise the main menu (shooter#154),
+    // whose matches play it.
+    let direct = game.is_some();
+    let build = build.unwrap_or_default();
+    let app = app::App::new(event_loop.create_proxy(), game).with_active(build);
     #[cfg(target_arch = "wasm32")]
     let app = match profile {
         Some(frames) => app.profiled(frames).staged(stage),
-        None => app.with_builder(build.unwrap_or_default()),
+        None if direct => app.with_builder(build),
+        None => app,
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let app = app.with_builder(build.unwrap_or_default());
+    let app = if direct { app.with_builder(build) } else { app };
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut app = app;
@@ -513,6 +503,43 @@ pub(crate) mod web {
         } else {
             body.remove_attribute("data-builder")
         };
+    }
+
+    /// Marks the page's body while the main menu or the Workshop is open (`data-menu`, no
+    /// match): the page hides its click-to-play overlay, HUD and touch controls (shooter#154).
+    pub fn show_menu(open: bool) {
+        let Some(body) = document().and_then(|document| document.body()) else {
+            return;
+        };
+        let _ = if open {
+            body.set_attribute("data-menu", "")
+        } else {
+            body.remove_attribute("data-menu")
+        };
+    }
+
+    /// `window.shooterMenu = <json>`: what the menu, or the match or Workshop started from it,
+    /// shows ([`crate::menu::Menu::readout`]), for scripted checks of the page (shooter#154).
+    pub fn publish_menu(json: &str) {
+        if let (Some(window), Ok(value)) = (web_sys::window(), js_sys::JSON::parse(json)) {
+            let _ = js_sys::Reflect::set(&window, &"shooterMenu".into(), &value);
+        }
+    }
+
+    /// The page's click-to-play line (`#mode`): what the match is.
+    pub fn set_mode(text: &str) {
+        if let Some(element) = document().and_then(|document| document.get_element_by_id("mode")) {
+            element.set_text_content(Some(text));
+        }
+    }
+
+    /// The page's prompt asking `question`, filled with `current`: what the person typed, or
+    /// none if they cancelled (a phone's keyboard types into it too).
+    pub fn prompt(question: &str, current: &str) -> Option<String> {
+        web_sys::window()?
+            .prompt_with_message_and_default(question, current)
+            .ok()
+            .flatten()
     }
 
     /// `window.shooterBuilder = <json>`: what the open builder shows

@@ -327,8 +327,9 @@ today and which issue migrates it. Each capability has one owning issue (D5.i70.
   (2026-11-14, A). Owner: shooter#57.
   Ships since shooter#57 (`shooter_client::builder`), with the simplest options for what was
   open (the gestures and the plumbing, the owner's to revisit): both clients open on the builder
-  before the match, nothing playing and online nothing connecting until Ready; a robot that has
-  applied no input since its person joined is still being set up, so a build configured then
+  before the match (since shooter#154, D2.i154.1, only a directly started match; the menu opens
+  it as the Robot Workshop), nothing playing and online nothing connecting until Ready; a robot
+  that has applied no input since its person joined is still being set up, so a build configured then
   applies at once (`Session::configure`), every later one at the next spawn. Parts are dragged
   from the catalogue onto a socket, or clicked and then placed on sockets; R, T and F turn a part
   an eighth of a turn about its socket's axes (Shift back, Ctrl about a degree), M cycles a
@@ -728,6 +729,42 @@ whether resupply locks movement or firing (Q2.i123.3).
   leaping and on kerbs, bipeds fall within about a second of walking, and eleven of twelve bots
   fell within 30 s on the yard. So the leg balance assist, the leg jump and the one-leg hop,
   retuned (four-legged) default loadouts and retiring the drive for legs remain shooter#58's.
+- **D2.i154.1** (owner, 2026-11-25; shooter#154; tracks shooter#45 and #63): Replace the
+  developer-style, server-address-first startup with a game main menu, native and in the browser
+  with the same choices: Play Online, Practice, Robot Workshop, Private Match and Settings, in a
+  clean sci-fi look over real rendered arena and robot art. **Temporary bot behaviour (owner
+  approved):** for now Play Online starts at once an in-process deathmatch against bots, with a
+  valid saved or default robot and no server entry or builder before playing, and says it is an
+  offline bot match; it claims no connection to a public host. No public host, matchmaking,
+  account or private-room service comes with it; real online routing stays a separate
+  capability. **Player-facing maps and defaults:** Play Online plays the assembly works with 12
+  fighters (the person and 11 bots); Practice offers the proving cell (2 to 6 fighters), the
+  assembly works (4 to 12) and the drydock (8 to 12), capacity and identity from
+  `shooter_sim::maps` (Q2.i46.5's provisional ranges, bounded by spawn points), the count
+  including the person, starting at 6, 12 and 12; the greybox maps stay development and test
+  fixtures (the command line and page query still reach them). The Robot Workshop opens the
+  existing builder without a match (its full navigation is shooter#155); Private Match is shown
+  as not available until its flow exists; Settings hold normal settings and put a manual server
+  URL and certificate only under an advanced developer connection. Returning from a match or the
+  Workshop keeps saved builds and preferences; the command-line and query entry points that
+  start something directly keep doing so without the menu.
+  Ships since shooter#154 (`shooter_client::menu`, with the simplest options for what was open,
+  the owner's to revisit): the menu is drawn with the client's UI over either renderer, over a
+  live view of the assembly works with the person's robot standing on its floor (in Practice the
+  chosen arena from above), a tap acting as a click; the map previews are renders of the real
+  arenas with the arena kit, checked in as PNGs (`--example arena_views -- <map> <dir>
+  thumbnail`); the robot a menu match plays is the last one readied (the Workshop's Done or a
+  Ready) else `--loadout` / `?loadout=` else the standard build, one the beta catalog refuses
+  falling back to the standard build, kept for the session (persisting an active build is
+  shooter#155's); Settings hold the name played under online and the look sensitivity (files in
+  the config directory natively, `localStorage` in the browser, the name under the keys `--name`
+  and the page always used), and under Advanced a match URL and a development host's certificate
+  (natively its PEM file, in the browser its SHA-256; typed in place natively, into the page's
+  prompts in the browser, which a phone's keyboard can type into), whose Connect joins with the
+  existing online client; while the pointer is free a match shows Leave match, back to the menu
+  (an online match's connection ends). `--connect` / `?connect=` and `--map` / `?map=` start
+  directly on the builder before the match as before, and the profile runs (`--frames`,
+  `?frames=`) stay scripted and menu-free.
 
 ## 3. Platforms
 

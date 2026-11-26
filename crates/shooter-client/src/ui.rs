@@ -1,5 +1,5 @@
-//! The drawn UI's primitives (the HUD, the builder, the death prompt): rounded rectangles and text
-//! in a real font, as items in frame pixels, turned into overlay quads ([`Atlas::quads`]) that
+//! The drawn UI's primitives (the HUD, the builder, the death prompt, the main menu): rounded
+//! rectangles, text in a real font and whole textures (the menu's map previews), as items in frame pixels, turned into overlay quads ([`Atlas::quads`]) that
 //! either renderer draws over the frame (render-engine's `Scene::overlay`, the lite renderer's
 //! overlay on WebGL 2), natively and in the browser.
 //!
@@ -50,6 +50,15 @@ pub enum Item {
         size: f32,
         color: Vec4,
     },
+    /// A whole texture of the frame's world (a map's preview, [`crate::menu`]) stretched over
+    /// the rectangle, tinted by `color`, its corners rounded to `radius` pixels.
+    Image {
+        position: Vec2,
+        size: Vec2,
+        radius: f32,
+        texture: TextureId,
+        color: Vec4,
+    },
 }
 
 impl Item {
@@ -57,7 +66,9 @@ impl Item {
     #[must_use]
     pub fn bounds(&self) -> (Vec2, Vec2) {
         match *self {
-            Self::Rect { position, size, .. } => (position, position + size),
+            Self::Rect { position, size, .. } | Self::Image { position, size, .. } => {
+                (position, position + size)
+            }
             Self::Glyph {
                 pen,
                 character,
@@ -226,6 +237,23 @@ impl Atlas {
                     color,
                     corner_radius: radius,
                     image: None,
+                }),
+                Item::Image {
+                    position,
+                    size,
+                    radius,
+                    texture,
+                    color,
+                } => quads.push(OverlayQuad {
+                    position,
+                    size,
+                    color,
+                    corner_radius: radius,
+                    image: Some(OverlayImage {
+                        texture,
+                        uv_min: Vec2::ZERO,
+                        uv_max: Vec2::ONE,
+                    }),
                 }),
                 Item::Glyph {
                     pen,

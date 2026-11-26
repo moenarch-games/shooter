@@ -7,19 +7,23 @@ demanding consumer: every gap or regression it finds is filed on the crate that 
 Product intent lives in the [Decision Atlas](docs/decisions/atlas.md). The owner has set a beta
 direction (Atlas D1.i46.1, D2.i46.\*, tracker #45): a third-person arena shooter with modular
 robots, about 12 slots and three arenas. The third-person camera, the robot build schema and
-the 12 slots are in, the robot builder opens before the match and between lives, the fighters
+the 12 slots are in, both clients open on a main menu (#154), the robot builder opens from it
+(the Robot Workshop), before a directly started match and between lives, the fighters
 are drawn as their robot builds from asset-tooling's robot,
 weapons and locomotion kits, and the medium and small arenas are built from its arena kit; the
 rest is not implemented yet. Everything below describes what works today: a third-person,
-12-slot deathmatch on the 76 m greybox yard by default, the kit-built 56 m assembly works (the
-medium arena) and 32 m proving cell (the small arena) on request, and the 40 m greybox hall as
-the test fixture, every fighter a mechanical robot (its compound bodies on motorised joints)
+12-slot deathmatch on the kit-built 56 m assembly works (the medium arena, the menu's Play
+Online), 32 m proving cell (the small arena) and 80 m drydock (the large arena) from the main
+menu, the 76 m greybox yard (still the default of a host and of the profile runs) and the 40 m
+greybox hall as test fixtures, every fighter a mechanical robot (its compound bodies on motorised joints)
 carried by the fast-movement rules.
 
 ## What a player does
 
-Open the native client or the browser build on Pages and join a hosted deathmatch.
-Bots fill the empty slots. Move fast: sprint, slide, step up low ledges, double jump, jump pads,
+Open the native client or the browser build on Pages: the main menu's Play Online starts a
+deathmatch at once (for now against bots in your own client, labelled offline; no public host
+exists yet), Practice picks an arena and how many fight, and the Robot Workshop builds your
+robot. Bots fill the empty slots. Move fast: sprint, slide, step up low ledges, double jump, jump pads,
 rocket jumps, the grapple hook (a module your robot mounts) and air control. Fight with energy
 guns and melee weapons.
 
@@ -48,8 +52,42 @@ damage**): destroying its root chassis is the kill. Each fighter is drawn as its
 models**), its weapons and mods from asset-tooling's weapons kit; the sounds are placeholders
 until asset-tooling delivers them.
 
-**Practice offline.** The native client without arguments, and the browser build (Pages), run the
-same simulation in-process: you in slot 0 against eleven bots, no server needed.
+**Main menu** (`shooter_client::menu`, Atlas D2.i154.1, #154). The native client without
+arguments and the browser build (Pages) without a query open on a menu drawn with the client's
+own UI over a live view of the assembly works with your robot standing in it (either renderer;
+a tap is a click on a touch screen). Nothing connects anywhere from it unless you ask:
+
+- **Play Online** starts at once an in-process deathmatch on the assembly works with 12
+  fighters (you and eleven bots), labelled "bot match, offline for now" in the match and on the
+  page: the owner's temporary choice until there is a public host (2026-11-25).
+- **Practice** shows the three kit-built arenas, previewed by renders of the real arenas
+  (`crates/shooter-client/assets/maps`, `--example arena_views -- <map> <dir> thumbnail`) with
+  their size and capacity from `shooter_sim::maps`: the proving cell (2 to 6 fighters), the
+  assembly works (4 to 12) and the drydock (8 to 12), each starting at its most (6, 12, 12).
+  Pick one and the count (you included; never beyond the map's spawn points) and Start. The
+  greybox maps are test fixtures, not on the menu: `--map` / `?map=` still plays them.
+- **Robot Workshop** opens the robot builder (below) with no match: Done keeps the build (and
+  its control layout) for the menu's next match, Back (or Escape) leaves it as it was.
+- **Private Match** is shown, not available yet.
+- **Settings**: the name you play under online and the look sensitivity (mouse and the touch
+  look pad), kept natively in the config directory's `shooter/` and in the browser's
+  `localStorage`; under Advanced, the developer connection: a hosted match's URL and a
+  development host's certificate (natively its PEM file, in the browser its SHA-256), typed in
+  place natively and into the page's prompts in the browser, then Connect.
+
+A match started from the menu plays the robot you last readied (else `--loadout` /
+`?loadout=`, else the standard build; a build the beta catalog refuses falls back to the
+standard one). While the pointer is free (Escape, or ❚❚ on a touch screen) a Leave match button
+at the top returns to the menu, which keeps your build, saved builds and settings. The commands
+and queries that start something directly skip the menu as before: `--connect` / `?connect=`
+(a hosted match) and `--map` / `?map=` (practice on that map) open the builder before the match,
+and the profile runs (`--frames`, `?frames=`) stay scripted and menu-free.
+`cargo run -p shooter-client --release --example menu_views -- DIR` clicks through the menu
+offscreen with the kits (and, given `SHOOTER_MENU_CONNECT` and `SHOOTER_MENU_CERT`, its
+developer connection into a running host), checking what plays at each step;
+`node scripts/menu-web.mjs OUT` does the same in a browser (after `scripts/build-web.sh`;
+`SHOOTER_MENU_CONNECT` and `SHOOTER_MENU_CERTHASH` for the connection). Captures are in
+`docs/captures/154/`.
 
 **On a phone or tablet.** The Pages build plays on a touch screen with a WebGPU browser (current
 Chrome on Android, Safari on iOS 26), best in landscape: the page shows touch controls instead of
@@ -215,14 +253,14 @@ scripts/dev.sh web    # host + the browser build on http://localhost:8080 (print
 cargo run -p shooter-client --release -- --connect https://localhost:4433/shooter/matches/dm --cert target/dev-host/cert.pem
 ```
 
-**Join from the browser.** The page practises offline by default. `?connect=<match URL>` joins a
+**Join from the browser.** The page opens on the main menu. `?connect=<match URL>` joins a
 hosted deathmatch over the browser's WebTransport (game-server's `BrowserSession`), with
 `&certHash=<SHA-256 hex>` for a development host's self-signed certificate (colons allowed);
-the overlay's join fields fill these in, and "Practice offline" goes back. A host with a publicly
-trusted certificate needs no hash.
+the menu's Settings, under Advanced, join one the same way. A host with a publicly trusted
+certificate needs no hash.
 
-**Player names.** No accounts: `&name=<name>` in the browser (the join overlay's name field,
-remembered in the browser's `localStorage`) or `--name <name>` natively (remembered in
+**Player names.** No accounts: the menu's Settings, `&name=<name>` in the browser (remembered in
+the browser's `localStorage`) or `--name <name>` natively (remembered in
 `~/.config/shooter/name`, `$XDG_CONFIG_HOME`/`%APPDATA%` respected) names you on the
 scoreboard and kill feed. Names are up to 16 ASCII letters, digits, spaces, `-`, `_` and `.`;
 the host sanitizes whatever arrives (`shooter_sim::names`). Without one a person shows as
@@ -425,9 +463,10 @@ grapple module never, #104) and fires only what the build mounts (#92). The
 carries the laser and the flamethrower (#96); the tests' over-budget `ARMORY` build carries every
 weapon. You build your robot in the builder (below, **Robot builder**).
 
-**Robot builder** (`shooter_client::builder`, Atlas D2.i70.11, #57). Both clients open on a
-blueprint workbench before the match: nothing plays (and online nothing connects) until you press
-Ready. The robot stands in the middle, drawn from the kits as in the match, with its sockets
+**Robot builder** (`shooter_client::builder`, Atlas D2.i70.11, #57). A blueprint workbench: the
+main menu's Robot Workshop opens it with no match (Done and Back return to the menu, #154), and a
+directly started match (`--connect` / `--map`, `?connect=` / `?map=`) opens on it: nothing plays
+(and online nothing connects) until you press Ready. The robot stands in the middle, drawn from the kits as in the match, with its sockets
 marked; the part catalogue (every part and weapon with its build points, each chassis size once
 under a power switch that makes the robot electric or combustion, its root swapped in place, #130)
 and the named loadouts to start from (two to a row) are on the left, the component inspector on

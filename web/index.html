@@ -53,7 +53,8 @@
       body[data-touch][data-playing] #touch {
         display: block;
       }
-      body[data-builder] #touch {
+      body[data-builder] #touch,
+      body[data-menu] #touch {
         display: none;
       }
       #touch-look {
@@ -216,41 +217,6 @@
         font-size: 22px;
         letter-spacing: 0.04em;
       }
-      /* Joining a hosted match: a GET form, so it only sets ?connect=…&certHash=… and reloads. */
-      #join {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        justify-content: center;
-        margin-top: 18px;
-        pointer-events: auto;
-      }
-      #join input {
-        width: 21em;
-        padding: 6px 8px;
-        border: 1px solid rgb(255 255 255 / 25%);
-        border-radius: 4px;
-        background: rgb(16 19 26 / 85%);
-        color: inherit;
-        font: 13px ui-monospace, monospace;
-      }
-      #join input.name {
-        width: 10em;
-      }
-      #join button,
-      #join a {
-        padding: 6px 14px;
-        border: 0;
-        border-radius: 4px;
-        background: #3d6fd8;
-        color: #fff;
-        font: inherit;
-        text-decoration: none;
-        cursor: pointer;
-      }
-      #join a {
-        background: rgb(255 255 255 / 15%);
-      }
       #error {
         display: none;
         position: fixed;
@@ -262,9 +228,11 @@
       #error[data-shown] {
         display: block;
       }
-      /* The robot builder (drawn in the canvas) has the page while it is open. */
+      /* The robot builder and the main menu (drawn in the canvas) have the page while open. */
       body[data-builder] #overlay,
-      body[data-builder] #hud {
+      body[data-builder] #hud,
+      body[data-menu] #overlay,
+      body[data-menu] #hud {
         display: none;
       }
       /* The HUD text the drawn HUD (weapon panel, chassis and energy bars) does not draw yet. */
@@ -336,6 +304,7 @@
     </div>
     <div id="overlay">
       <div>
+        <!-- The client sets what the match is (crates/shooter-client/src/lib.rs, `web::set_mode`). -->
         <strong id="mode">Click to play: practice deathmatch against bots</strong><br />
         <span id="keys-help">
           WASD to move · mouse to look · Space to jump, again in the air to double jump · Shift to
@@ -353,37 +322,6 @@
           destroyed
         </span>
         <button id="touch-play" type="button">Tap to play</button>
-        <form id="join" method="get">
-          <input
-            name="name"
-            placeholder="Your name"
-            aria-label="Your name"
-            maxlength="16"
-            autocomplete="nickname"
-            spellcheck="false"
-            class="name"
-          />
-          <input
-            name="connect"
-            placeholder="https://host:4433/shooter/matches/dm"
-            aria-label="Hosted match URL"
-            required
-          />
-          <input
-            name="certHash"
-            placeholder="certificate SHA-256 (development host)"
-            aria-label="Certificate SHA-256, for a development host"
-          />
-          <select name="loadout" aria-label="Robot loadout">
-            <option value="">Build from the standard loadout</option>
-            <option value="heavy">Heavy (with a battery)</option>
-            <option value="skirmisher">Skirmisher (rapid-cycler rifle, efficiency coil)</option>
-            <option value="marksman">Marksman (long-barrel rifle, overcharged rail gun)</option>
-            <option value="pyro">Pyro (long-barrel laser, flamethrower)</option>
-          </select>
-          <button>Join match</button>
-          <a id="practice" href="?" hidden>Practice offline</a>
-        </form>
       </div>
     </div>
     <div id="touch">
@@ -410,40 +348,14 @@
     <div id="error"></div>
     <script type="module">
       const overlay = document.getElementById("overlay");
-      // ?connect=<match url>[&certHash=<sha-256>] joins a hosted match (the wasm reads it too).
+      // Without a query the client opens its main menu (drawn in the canvas; it marks the body
+      // data-menu meanwhile). ?connect=<match url>[&certHash=<sha-256>][&name=…] joins a hosted
+      // match and ?map=<id> practises on that map directly (the wasm reads them, and &loadout=…);
+      // the menu's Settings, under Advanced, join a hosted match too.
       const query = new URLSearchParams(location.search);
-      const join = document.getElementById("join");
-      join.connect.value = query.get("connect") ?? "";
-      join.certHash.value = query.get("certHash") ?? "";
-      // &loadout=<name> is the build the robot builder starts from (the wasm reads it).
-      join.loadout.value = query.get("loadout") ?? "";
-      // The player name (&name=…, the host sanitizes it) is remembered on this device only.
-      const NAME_KEY = "shooter.name";
-      const remembered = () => {
-        try {
-          return localStorage.getItem(NAME_KEY);
-        } catch {
-          return null;
-        }
-      };
-      const nameInput = join.elements.namedItem("name");
-      nameInput.value = query.get("name") ?? remembered() ?? "";
-      join.addEventListener("submit", () => {
-        const name = nameInput.value.trim();
-        try {
-          if (name) localStorage.setItem(NAME_KEY, name);
-          else localStorage.removeItem(NAME_KEY);
-        } catch {}
-        // An empty name stays out of the URL (the host shows "Player N").
-        nameInput.disabled = !name;
-        join.loadout.disabled = !join.loadout.value;
-      });
       if (query.get("connect")) {
         const host = URL.canParse(query.get("connect")) ? new URL(query.get("connect")).host : "?";
         document.getElementById("mode").textContent = `Click to play: online deathmatch at ${host}`;
-        const practice = document.getElementById("practice");
-        practice.hidden = false;
-        if (query.get("loadout")) practice.search = `?loadout=${encodeURIComponent(query.get("loadout"))}`;
       }
       // ?frames=<n> is the profile run: a scripted practice match, nobody to click.
       if (query.get("frames")) overlay.hidden = true;
@@ -549,10 +461,12 @@
         layer.addEventListener("pointerup", lift);
         layer.addEventListener("pointercancel", lift);
         layer.addEventListener("contextmenu", (event) => event.preventDefault());
-        // The builder takes the screen (between lives): nothing stays held under it.
+        // The builder takes the screen (between lives): nothing stays held under it. Back on the
+        // main menu the touch controls stop until the next match's Tap to play.
         new MutationObserver(() => {
-          if (document.body.hasAttribute("data-builder")) releaseAll();
-        }).observe(document.body, { attributes: true, attributeFilter: ["data-builder"] });
+          if (document.body.hasAttribute("data-menu") && touchState.on) stop();
+          else if (document.body.hasAttribute("data-builder")) releaseAll();
+        }).observe(document.body, { attributes: true, attributeFilter: ["data-builder", "data-menu"] });
         const start = () => {
           touchState.on = true;
           document.body.setAttribute("data-playing", "");
