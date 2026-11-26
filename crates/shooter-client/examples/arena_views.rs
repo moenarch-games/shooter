@@ -43,7 +43,9 @@ fn write_thumbnail(
 ) -> Result<(), String> {
     let eye = Vec3::new(0.62 * half, 0.78 * half, 0.92 * half);
     let target = Vec3::new(-0.08 * half, 0.0, -0.22 * half);
-    let mut scene = shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new());
+    let lighting = shooter_client::scene::Lighting::of(map);
+    let mut scene =
+        shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new(), &lighting);
     gpu.render(&mut scene, &[], 0)?;
     let (width, height, pixels) = gpu.read_frame()?;
     let (out_width, out_height) = (width / 2, height / 2);
@@ -264,7 +266,9 @@ fn main() -> Result<(), String> {
         });
     let shots = shots.chain(close);
     for (name, (eye, target)) in shots {
-        let mut scene = shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new());
+        let lighting = shooter_client::scene::Lighting::of(map);
+        let mut scene =
+            shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new(), &lighting);
         gpu.render(&mut scene, &[], 0)?;
         let (width, height, pixels) = gpu.read_frame()?;
         let path = out.join(format!("{name}.ppm"));

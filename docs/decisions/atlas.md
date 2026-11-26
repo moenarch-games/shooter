@@ -965,8 +965,8 @@ whether resupply locks movement or firing (Q2.i123.3).
   Capacity is unchanged (2 to 6 recommended, 12 spawn points). Open: wheels do not climb the
   kit's 1:4 ramps on any map (shooter#174; since it they climb both), and two wheeled or tracked bots rarely find each
   other (a skid-steered chassis turns in place slowly, shooter#170); resupply stations wait on
-  shooter#129; the proposed clean white and amber lighting waits on per-map lighting, which the
-  client does not have (one sun and ambient for every map). Captures in `docs/captures/151/`.
+  shooter#129. Its white and amber light came with per-map lighting (see below). Captures in
+  `docs/captures/151/`.
   Since shooter#152 the assembly works, the menu's flagship (D2.i154.1), is tuned the same way
   (`crates/shooter-sim/tests/assembly_works.rs`, on the harness the proving cell's playtests
   now share, `tests/playtest`: 4 and 12 fighters on the named legged loadouts, the armed car,
@@ -1006,8 +1006,8 @@ whether resupply locks movement or firing (Q2.i123.3).
   has no assembly machinery or crane props to make the works read as an assembly line
   (asset-tooling#838: a cradle, an arm, a conveyor, a crane head on the mast, a walkway
   railing; a ceiling-panel jib was rejected: at 8 m it sits in the tower pad's arc and the
-  grapple's reel path); resupply stations wait on shooter#129; the cool lighting waits on
-  per-map lighting; the owner's own playtest and visual review. Captures in
+  grapple's reel path); resupply stations wait on shooter#129; the cool lighting came with
+  per-map lighting (see below); the owner's own playtest and visual review. Captures in
   `docs/captures/152/`.
   Since shooter#55 the large arena
   is in: `drydock`, an 80 m repurposed spaceship shipyard (D2.i55.1) built from the same arena
@@ -1067,9 +1067,23 @@ whether resupply locks movement or firing (Q2.i123.3).
   (the profile run, a median of repeated runs: within their noise). Open: the kit has
   no spacecraft props (engine nozzles, a bridge canopy, a docking clamp, hull markings) to tell
   the ships apart beyond their silhouettes and to read as spacecraft (asset-tooling#839);
-  resupply stations wait on shooter#129; the proposed expansive shipyard lighting waits
-  on per-map lighting (the client has one sun and ambient for every map); the owner's own
+  resupply stations wait on shooter#129; the expansive shipyard light came with per-map
+  lighting (see below); the owner's own
   playtest and visual review. Captures in `docs/captures/153/`.
+  Per-map lighting (shooter#151, #152, #153; presentation only, nothing in the simulation):
+  each kit-built map has its own light (`shooter_client::scene::Lighting`, by map ID) in the
+  match, the menu's live view and the `arena_views` captures, on render-engine and the lite
+  renderer alike; the greybox maps keep the old one. The proving cell is a white key almost
+  straight down, a warm-white fill and an amber sky over the open roof; the assembly works a
+  blue-white sun, a steel-teal fill and sky and a thin cool haze past 20 m; the drydock a
+  strong warm sun at 43°, a high bright blue sky and an atmospheric haze past 40 m (a quarter
+  at most, about 6% at 80 m). Every sun comes from the north or the south, so the east and
+  west halves (the drydock's two ships) are lit alike, and the robots stay as readable as
+  before. The simplest options, the owner's to revisit: no fixed arena lamps (they would share
+  the lite renderer's 8 point lights with the weapons' flashes; the amber is the sky and the
+  fill), and render-engine's linear fog as the haze, which the lite renderer now draws too
+  (its other falloffs and sun glow it leaves out). Frame times unchanged (native 2.3-2.4 ms
+  on an RTX 3060 Ti). Captures in `docs/captures/lighting/`.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration

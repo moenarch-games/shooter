@@ -174,7 +174,7 @@ fn shoot(
         let shown = aside.is_none().then(|| reticle.clone());
         actors.update(&mut gpu.world, &[], &[], &[], shown);
         let (from, toward) = aside.unwrap_or((camera, forward));
-        let mut frame = scene::frame(from, toward, Vec::new());
+        let mut frame = scene::frame(from, toward, Vec::new(), &scene::Lighting::GREYBOX);
         let mut ui = Vec::new();
         if aside.is_none() {
             frame.camera.fov_y = precision.fov_y();

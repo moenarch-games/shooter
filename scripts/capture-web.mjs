@@ -15,7 +15,8 @@
 // WebGPU runs on the machine's GPU (Vulkan). SHOOTER_CAPTURE_SWIFTSHADER=1 uses the profile
 // lane's SwiftShader adapter (profiles/web-client.yaml) instead: it renders, but its frames
 // do not reach the page's screenshot (the canvas comes out blank), so it only checks the run.
-// See docs/foundation-data.md.
+// See docs/foundation-data.md. SHOOTER_CAPTURE_RENDERER=lite forces the WebGL 2 lite renderer
+// (&renderer=lite). Each line ends with the run's frame work times.
 import { createServer } from "node:http";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -75,10 +76,12 @@ try {
   for (const shot of shots) {
     const [map, frames, name = `browser-${map}-${frames}`, scene] = shot.split(":");
     const staged = scene ? `&scene=${scene}` : "";
+    const renderer = process.env.SHOOTER_CAPTURE_RENDERER;
+    const forced = renderer ? `&renderer=${renderer}` : "";
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
     const logs = [];
     page.on("console", (message) => logs.push(message.text()));
-    await page.goto(`http://127.0.0.1:${port}/?frames=${frames}&map=${map}${staged}`, {
+    await page.goto(`http://127.0.0.1:${port}/?frames=${frames}&map=${map}${staged}${forced}`, {
       waitUntil: "load",
     });
     const result = await page
@@ -99,7 +102,10 @@ try {
         return info ? `${info.vendor} ${info.architecture} ${info.description}`.trim() : "?";
       });
       const broken = result.broken?.length ? `, broken cover: ${result.broken.join(" ")}` : "";
-      console.log(`${file}: ${result.frames} frames on ${result.map}${broken} (${adapter})`);
+      const work = result.workMs
+        ? `, work ms mean ${result.workMs.mean} p95 ${result.workMs.p95}`
+        : "";
+      console.log(`${file}: ${result.frames} frames on ${result.map}${broken} (${adapter})${work}`);
     }
     await page.close();
   }

@@ -110,7 +110,8 @@ new. In the builder a finger is the left mouse button (tap Ready to start).
 **Without WebGPU.** The browser build draws with render-engine on WebGPU where the browser has
 it, and otherwise with the client's lite renderer on WebGL 2 (`shooter_client::gfx::lite`;
 render-engine has no WebGL 2 backend). The lite renderer draws the same arenas, robots, effects
-and HUD with the sun, ambient and point lights, but without shadows, normal maps or MSAA.
+and HUD with the sun, ambient, point lights and the maps' haze, but without shadows, normal maps or
+MSAA.
 `?renderer=lite` forces it in the browser, `SHOOTER_RENDERER=lite` natively (with
 `WGPU_BACKEND=gl` it runs on OpenGL under WebGL 2's limits, as in the browser). In the browser
 it scales the 3D scene's resolution to the frame rate (down to 0.3 of the window; the HUD is
