@@ -142,9 +142,10 @@ in, built from asset-tooling's arena kit; two interim greybox maps stay:
   charging bays in the side walls, the bay walls, the tower and the floor's 4 m pillars break
   the long lines; no spawn point is in sight of another, none is a dead end, each faces its way
   out and none holds a wheeled or tracked robot (shooter#152's playtests,
-  `crates/shooter-sim/tests/assembly_works.rs`). Tracks reach the bridge by either ramp; wheels
-  do not yet climb the kit's 1:4 ramps on any map (shooter#174) and keep to the floor and the
-  bays. Its low cover, barriers and crates are destruction candidates that break (shooter#60,
+  `crates/shooter-sim/tests/assembly_works.rs`). Tracks reach the bridge by either ramp, and
+  wheels (since shooter#174) by the loading ramp; by the mezzanine a car climbs onto the deck
+  but does not yet make its turn onto the bridge (a skid steer turns slowly, shooter#170). Its
+  low cover, barriers and crates are destruction candidates that break (shooter#60,
   below) and four repair anchors (under the mezzanines and in the bays) are data for shooter#61.
   The kit has no assembly machinery or crane props yet (asset-tooling#838). Plan, views and
   frames: [docs/captures/52](docs/captures/52), polished layout
@@ -165,8 +166,8 @@ in, built from asset-tooling's arena kit; two interim greybox maps stay:
   barrier and crates break up the floor. Nothing is far and fights are close; the booths have two
   doorways and the passages open along their length, so no fight is forced down a one-way
   corridor; no spawn point is in sight of another, and none holds a wheeled or tracked robot
-  (shooter#151's playtests, `crates/shooter-sim/tests/proving_cell.rs`). Tracks climb both ramps;
-  wheels do not yet climb the kit's 1:4 ramps on any map (shooter#174). Its low cover, open-floor
+  (shooter#151's playtests, `crates/shooter-sim/tests/proving_cell.rs`). Tracks and (since
+  shooter#174) wheels climb both ramps. Its low cover, open-floor
   barriers and crates are destruction candidates for shooter#60 (the blast screens stay, the
   spawn points behind them rely on them) and a repair anchor in each booth is data for
   shooter#61. Views and frames: [docs/captures/53](docs/captures/53), polished layout
@@ -202,7 +203,8 @@ in, built from asset-tooling's arena kit; two interim greybox maps stay:
   hull top is an unanswered perch. All spawn points are on the ground, none is in sight of
   another, and those in the corridor face their ways out (shooter#153's playtests,
   `crates/shooter-sim/tests/drydock.rs`). Tracks climb onto both ships and the cutter's bridge;
-  wheels do not yet climb the kit's 1:4 ramps on any map (shooter#174). Its low cover, floor
+  wheels (since shooter#174) climb the gantries' ramps and the bridge's, but do not yet steer
+  across onto the cutter's prow step (a skid steer turns slowly, shooter#170). Its low cover, floor
   barriers, the gantries' cover and crates are destruction candidates for shooter#60 and four
   repair anchors (under the gantries and in the outer lanes) are data for shooter#61. Views and
   frames: [docs/captures/55](docs/captures/55), polished layout
@@ -773,7 +775,9 @@ its wheels and tracks, A and D turn it differentially (a skid steer turns slowly
 the camera turns nothing, Space does nothing unless it carries the thruster module, and the
 jump pads still throw it; its locomotion pays by its commands, so with its electricity (or, on a
 combustion chassis, its fuel) gone it stops. A car tops out at about 3.6 m/s and a tank at about
-3.5 m/s (provisional); a track's road wheels reach 4 cm past its cuboid, so a track level with
+3.5 m/s (provisional). Both climb the arena kit's 1:4 ramps (#174): a wheel's motor gives 60 N·m,
+a track's, and its tyre grips the arena at 1.0 (provisional), tuned to the match's 18 m/s²
+gravity, under which a front wheel unloaded on a climb or a launch still grips; a track's road wheels reach 4 cm past its cuboid, so a track level with
 its hull's bottom holds the hull off the ground (the kit's drawn road wheels are 4 cm smaller).
 Bots on wheels or tracks steer their chassis themselves and fire their chassis' guns once they
 face their target. What it does not do yet: **legs.** A robot with a connected leg is still

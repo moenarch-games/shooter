@@ -589,6 +589,15 @@ fn per_second(velocity: Vec3i) -> [f32; 3] {
         .map(|axis| (axis * i32::from(crate::TICK_HZ)) as f32 / SUBUNITS_PER_UNIT as f32)
 }
 
+/// The match's gravity in m/s² ([`GRAVITY`], 18 m/s² down): what its robots' mechanics fall
+/// under ([`Mechanics::for_match`]), and what their motors are tuned for (Atlas Q2.i70.1; a
+/// mechanics world of its own falls at Earth's, [`Mechanics::new`]).
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn match_gravity() -> [f32; 3] {
+    per_second(GRAVITY).map(|axis| axis * f32::from(crate::TICK_HZ) / 100.0)
+}
+
 /// Subunits a tick of a velocity in units a second, rounded.
 #[allow(clippy::cast_possible_truncation)]
 fn per_tick(velocity: [f32; 3]) -> Vec3i {
@@ -1151,9 +1160,7 @@ impl Session {
             world.add_body(body.clone())?;
         }
         world.set_step_up(Some(STEP_UP));
-        #[allow(clippy::cast_precision_loss)]
-        let gravity = per_second(GRAVITY).map(|axis| axis * f32::from(crate::TICK_HZ) / 100.0);
-        let mechanics = Mechanics::for_match(&statics, gravity)?;
+        let mechanics = Mechanics::for_match(&statics, match_gravity())?;
         let fighters = (0..rules.slots)
             .map(|slot| {
                 let pilot = if rules.local && slot == 0 {

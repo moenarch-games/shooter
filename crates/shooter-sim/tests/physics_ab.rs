@@ -4,7 +4,8 @@
 //! (sprint, slide, double jump, a thruster-module jump, jump pad, slopes, a thin wall, a step, a rocket jump, a grapple,
 //! a shooting range, a close range for the shotgun, laser and flamethrower) on physics-engine and on the Rapier oracle
 //! (`shooter_sim::physics::using_backend`), and the mechanics fixtures (shooter#73: rolling,
-//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog), broken cover
+//! strafing, a stall, turrets, tipping, per-part hits, a walking robo-dog), the armed car up the
+//! proving cell's 1:4 ramps (shooter#174), broken cover
 //! (shooter#60: rays across it, a robot on its remains) and a fall's collision damage and debris
 //! (shooter#75) on both.
 //! Both must follow the same path within a few centimetres, agree on support at the end of every
@@ -12,6 +13,8 @@
 //! pellet sweeps are the backends' `cast_ray`, the flame their `overlap_box`).
 //!
 //! `cargo test -p shooter-sim --features physics-ab --test physics_ab`
+
+mod playtest;
 
 use shooter_sim::physics::{Backend, using_backend};
 use shooter_sim::robot::{ARMORY, MARKSMAN, SKIRMISHER};
@@ -467,6 +470,54 @@ fn the_proving_cell_routes_land_alike_on_the_rapier_oracle() {
     }
 }
 
+/// Wheels climb the arena kit's 1:4 ramps (shooter#174): on each backend the armed car, steered
+/// as the bots steer, drives up the proving cell's stage ramp onto its 2 m stage and up the
+/// gallery's ramp onto its 3 m deck (before shooter#174 it got about half a metre up and
+/// rolled back), ending within half a metre of where the other backend's ends.
+#[test]
+fn wheels_climb_the_proving_cell_ramps_on_both_backends() {
+    use shooter_sim::mechanics::fixtures;
+    use shooter_sim::physics::Vec3i;
+    use shooter_sim::proving_cell::{DECK_TOP, STAGE_TOP};
+    let routes = [
+        (
+            Vec3i::new(0, 0, -1_300),
+            vec![Vec3i::new(0, 0, -1_000), Vec3i::new(0, STAGE_TOP, -100)],
+            STAGE_TOP,
+            20,
+        ),
+        (
+            Vec3i::new(-1_400, 0, 150),
+            vec![
+                Vec3i::new(-1_400, 0, 0),
+                Vec3i::new(-1_400, DECK_TOP, -1_400),
+            ],
+            DECK_TOP,
+            30,
+        ),
+    ];
+    for (from, route, top, seconds) in routes {
+        let [engine, rapier] = [Backend::Engine, Backend::Rapier].map(|backend| {
+            using_backend(backend, || {
+                playtest::drive_route(
+                    Arena::proving_cell(),
+                    fixtures::armed_car(),
+                    from,
+                    &route,
+                    seconds,
+                )
+                .0
+            })
+        });
+        println!("up to {top}: engine {engine:?} rapier {rapier:?}");
+        for at in [engine, rapier] {
+            assert!(at[1] > (top - 30) as f32, "onto the {top} top: {at:?}");
+        }
+        let gap = libm::hypotf(engine[0] - rapier[0], engine[2] - rapier[2]);
+        assert!(gap < 50.0, "{engine:?} {rapier:?}");
+    }
+}
+
 /// The drydock (shooter#55, #153): up the gantry's ramp and over a gangway onto the foredeck, up
 /// the stern ramp, the outer lane's pads and a grapple on the bow mast onto the freighter's decks,
 /// and onto the cutter across its prow step, up its bridge's ramps and by its pad. As on the
@@ -584,9 +635,10 @@ mod mechanics {
         self, BARREL, HINGE_PART, ROTOR_PART, binary, floor, walled, wheels,
     };
     use shooter_sim::mechanics::{Command, Controls, Mechanics};
-    use shooter_sim::physics::articulated::{Motion, Pose};
+    use shooter_sim::physics::articulated::{EARTH_GRAVITY, Motion, Pose};
     use shooter_sim::physics::{Backend, RigidBody, using_backend};
     use shooter_sim::robot::{Assembly, PartId};
+    use shooter_sim::session::match_gravity;
 
     struct Outcome {
         root: Pose,
@@ -598,13 +650,14 @@ mod mechanics {
 
     fn run(
         backend: Backend,
+        gravity: [f32; 3],
         statics: &[RigidBody],
         build: Assembly,
         ticks: u32,
         controls: impl Fn(&Mechanics) -> Controls,
     ) -> Outcome {
         using_backend(backend, || {
-            let mut mechanics = Mechanics::new(statics).unwrap();
+            let mut mechanics = Mechanics::with_gravity(statics, gravity).unwrap();
             assert_eq!(mechanics.world().backend(), backend);
             mechanics.spawn(build, [0.0; 3], 0).unwrap();
             for _ in 0..ticks {
@@ -630,9 +683,21 @@ mod mechanics {
         ticks: u32,
         controls: impl Fn(&Mechanics) -> Controls + Copy,
     ) -> (Outcome, Outcome) {
+        both_under(EARTH_GRAVITY, statics, build, ticks, controls)
+    }
+
+    /// [`both`] under `gravity`: the match's for a wheeled drive at full torque, which the
+    /// wheels' motors are tuned for (shooter#174; under Earth's the car's front wheels lift).
+    fn both_under(
+        gravity: [f32; 3],
+        statics: &[RigidBody],
+        build: Assembly,
+        ticks: u32,
+        controls: impl Fn(&Mechanics) -> Controls + Copy,
+    ) -> (Outcome, Outcome) {
         (
-            run(Backend::Engine, statics, build, ticks, controls),
-            run(Backend::Rapier, statics, build, ticks, controls),
+            run(Backend::Engine, gravity, statics, build, ticks, controls),
+            run(Backend::Rapier, gravity, statics, build, ticks, controls),
         )
     }
 
@@ -679,7 +744,10 @@ mod mechanics {
 
     #[test]
     fn the_stall_matches_the_rapier_oracle() {
-        let (engine, rapier) = both(&walled(80), fixtures::car(), 180, |_| wheels(6_000, -6_000));
+        let (engine, rapier) =
+            both_under(match_gravity(), &walled(80), fixtures::car(), 180, |_| {
+                wheels(6_000, -6_000)
+            });
         for outcome in [&engine, &rapier] {
             let speed = gap(outcome.motion.velocity, [0.0; 3]);
             assert!(speed < 5.0, "{speed}");

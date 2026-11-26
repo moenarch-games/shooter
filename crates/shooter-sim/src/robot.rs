@@ -660,9 +660,11 @@ pub mod parts {
     /// One self-contained leg, 80 cm long: a hip and a knee servo, each with this drive.
     #[rustfmt::skip]
     pub const LEG: PartType = tough(driven(part(40, "robot.leg", Kind::Locomotion(Locomotion::Leg), [1, 1, 4], Faces::NONE, [25, 0, 0, 7]), [300, 80, 4]), 70);
-    /// A 40 cm wheel, at most 20 rad/s (about 3.6 m/s; shooter#58, provisional).
+    /// A 40 cm wheel, at most 20 rad/s (about 3.6 m/s; shooter#58) and 60 N·m, a track's
+    /// (shooter#174: enough for the armed car's 254 kg up the arena kit's 1:4 ramps under the
+    /// match's 18 m/s², where 30 N·m stalled half a metre up). Provisional (Q2.i70.1).
     #[rustfmt::skip]
-    pub const WHEEL: PartType = tough(driven(part(41, "robot.wheel", Kind::Locomotion(Locomotion::Wheel), [2, 2, 1], Faces::NONE, [20, 0, 0, 6]), [30, 200, 2]), 50);
+    pub const WHEEL: PartType = tough(driven(part(41, "robot.wheel", Kind::Locomotion(Locomotion::Wheel), [2, 2, 1], Faces::NONE, [20, 0, 0, 6]), [60, 200, 2]), 50);
     /// An 80 cm track: two road wheels, each with this drive (at most 25 rad/s, about 3.5 m/s;
     /// shooter#58, provisional).
     #[rustfmt::skip]

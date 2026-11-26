@@ -52,7 +52,7 @@ fn zone([x, y, z]: [f32; 3]) -> &'static str {
 /// close-quarters map), no one position (the open floor aside) makes most of the kills and
 /// every fighter gets well away from where it started; six on wheels or tracks fight and most
 /// of them roam. (Two on wheels or tracks may not find each other: a skid-steered chassis turns
-/// in place only slowly, shooter#170, and wheels do not climb the kit's ramps.)
+/// in place only slowly, shooter#170.)
 #[test]
 fn duels_and_skirmishes_find_fights_without_spawn_traps() {
     let seed = 3;
@@ -110,46 +110,39 @@ fn playtest_report() {
     }
 }
 
-/// Tracks climb the cell's ramps on their own actuators: up the stage's north ramp onto the
-/// stage (the rail capacitor's) and up the north gallery's ramp onto its deck (the thrusters');
-/// no contested place needs legs, a jump or the grapple. Wheels do not yet: the car (armed or
-/// bare) gets about half a metre up the kit's 1:4 ramps and rolls back, on every kit-built map
-/// (a locomotion matter, shooter#174, not this layout's); the cell's floor keeps its fights within reach of
-/// it.
+/// Tracks and wheels climb the cell's ramps on their own actuators: up the stage's north ramp
+/// onto the stage (the rail capacitor's) and up the north gallery's ramp onto its deck (the
+/// thrusters'); no contested place needs legs, a jump or the grapple. Wheels since shooter#174
+/// (before it the car, armed or bare, got about half a metre up the kit's 1:4 ramps and rolled
+/// back): the armed tank, the armed car and the bare car all drive up both.
 #[test]
-fn tracks_drive_onto_the_stage_and_the_gallery() {
+fn wheels_and_tracks_drive_onto_the_stage_and_the_gallery() {
     use shooter_sim::proving_cell::{DECK_TOP, STAGE_TOP};
     let stage = [Vec3i::new(0, 0, -1_000), Vec3i::new(0, STAGE_TOP, -100)];
     let gallery = [
         Vec3i::new(-1_400, 0, 0),
         Vec3i::new(-1_400, DECK_TOP, -1_400),
     ];
-    let (at, _) = drive_route(
-        Arena::proving_cell(),
+    for build in [
         fixtures::armed_tank(),
-        Vec3i::new(0, 0, -1_300),
-        &stage,
-        20,
-    );
-    assert!(at[1] > (STAGE_TOP - 30) as f32, "onto the stage: {at:?}");
-    let (at, _) = drive_route(
-        Arena::proving_cell(),
-        fixtures::armed_tank(),
-        Vec3i::new(-1_400, 0, 150),
-        &gallery,
-        30,
-    );
-    assert!(at[1] > (DECK_TOP - 30) as f32, "onto the gallery: {at:?}");
-    let (at, highest) = drive_route(
-        Arena::proving_cell(),
         fixtures::armed_car(),
-        Vec3i::new(0, 0, -1_300),
-        &stage,
-        20,
-    );
-    println!("the car up the stage's ramp: at {at:?}, highest {highest}");
-    assert!(
-        highest < 100.0,
-        "wheels climb the ramp now: drive them onto the stage here"
-    );
+        fixtures::car(),
+    ] {
+        let (at, _) = drive_route(
+            Arena::proving_cell(),
+            build,
+            Vec3i::new(0, 0, -1_300),
+            &stage,
+            20,
+        );
+        assert!(at[1] > (STAGE_TOP - 30) as f32, "onto the stage: {at:?}");
+        let (at, _) = drive_route(
+            Arena::proving_cell(),
+            build,
+            Vec3i::new(-1_400, 0, 150),
+            &gallery,
+            30,
+        );
+        assert!(at[1] > (DECK_TOP - 30) as f32, "onto the gallery: {at:?}");
+    }
 }
