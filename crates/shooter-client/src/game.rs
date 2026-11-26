@@ -456,9 +456,14 @@ pub mod online {
                         if let Delivery::Hitscan { range_units, .. } =
                             me.tuning(Instance { part, weapon }).delivery(weapon)
                         {
+                            // Its barrel as the predicted robot carries it: it converges only
+                            // within its cone (shooter#132).
                             let muzzle = aim::Muzzle {
                                 mount: from,
                                 at: from,
+                                axis: me
+                                    .muzzle(Instance { part, weapon })
+                                    .and_then(|muzzle| muzzle.axis),
                             };
                             let shot = aim::aimed(
                                 &predictor.world,

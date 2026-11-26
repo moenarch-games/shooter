@@ -41,6 +41,8 @@ use crate::session::{Event, Fighter, Phase, Pilot, Session};
 use crate::weapons::{Instance, Select, Triggers, Weapon};
 use std::fmt;
 
+/// 25: an input's actuator command may tell a joint to track the camera's target, for the host
+/// to resolve (shooter#132, [`MechCommand::Track`]), and a layout's binding may track;
 /// 24: inputs carry per-copy fire requests (shooter#127, [`Triggers`]: the guns the person's
 /// direct weapon bindings and groups ask to fire) and a layout's binding may fire guns; 23:
 /// weapons are addressed by mounted copy (shooter#125): an input's switch names a weapon or
@@ -50,7 +52,7 @@ use std::fmt;
 /// (shooter#104); 20: snapshots carry the physical debris (shooter#75); 19: inputs carry a
 /// repair order, snapshots each fighter's repair and repairable parts (shooter#61); 18 added
 /// the dropped modules (shooter#62), 17 the placeables (shooter#60).
-pub const WIRE_VERSION: u8 = 24;
+pub const WIRE_VERSION: u8 = 25;
 const NONE: u8 = u8::MAX;
 /// An input's repair byte for [`Order::Stop`] (any other but [`NONE`] is a part ID to start on).
 const REPAIR_STOP: u8 = u8::MAX - 1;
@@ -421,6 +423,7 @@ impl Out {
             MechCommand::Rate(rate) => (COMMAND_RATE, rate),
             MechCommand::Angle(angle) => (COMMAND_ANGLE, angle),
             MechCommand::Stride(stride) => (COMMAND_STRIDE, i16::from(stride)),
+            MechCommand::Track => (COMMAND_TRACK, 0),
         };
         self.u8(kind);
         self.0.extend_from_slice(&value.to_le_bytes());
@@ -586,6 +589,7 @@ impl In<'_> {
         let value = i16::from_le_bytes(self.take()?);
         Ok(match kind {
             COMMAND_IDLE if value == 0 => MechCommand::Idle,
+            COMMAND_TRACK if value == 0 => MechCommand::Track,
             COMMAND_RATE => MechCommand::Rate(value),
             COMMAND_ANGLE => MechCommand::Angle(value),
             COMMAND_STRIDE => MechCommand::Stride(
@@ -1325,6 +1329,7 @@ const COMMAND_IDLE: u8 = 0;
 const COMMAND_RATE: u8 = 1;
 const COMMAND_ANGLE: u8 = 2;
 const COMMAND_STRIDE: u8 = 3;
+const COMMAND_TRACK: u8 = 4;
 
 /// A robot's mechanical controls for one tick ([`crate::mechanics::Controls`]): the gait
 /// choice, then the count of commanded parts (a `u16`) and, for each in part-ID order, its ID, the
@@ -1381,7 +1386,13 @@ const SOURCE_BUTTON: u8 = 1;
 const SOURCE_MOUSE_X: u8 = 2;
 const SOURCE_MOUSE_Y: u8 = 3;
 const MODES: [Mode; 4] = [Mode::Hold, Mode::Toggle, Mode::Relative, Mode::Offset];
-const OUTPUTS: [Output; 4] = [Output::Stride, Output::Rate, Output::Angle, Output::Fire];
+const OUTPUTS: [Output; 5] = [
+    Output::Stride,
+    Output::Rate,
+    Output::Angle,
+    Output::Fire,
+    Output::Track,
+];
 /// A binding's flag: inverted.
 const INVERTED: u8 = 1;
 

@@ -15,15 +15,11 @@ use crate::repair_menu::RepairMenu;
 use crate::robots::{self, RobotState, RobotView, Robots, track::Tracker};
 use crate::scene::{self, Actors, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT, SWING_SECONDS};
 use render_engine::glam::{Mat4, Vec3};
-use shooter_sim::aim::{self, RETICLE_RANGE_UNITS};
 use shooter_sim::damage::{Hitboxes, PartDamage};
 use shooter_sim::physics::Vec3i;
 use shooter_sim::player::{EYE_HEIGHT_UNITS, PLAYER_HALF_EXTENTS, SLIDE_EYE_HEIGHT_UNITS};
 use shooter_sim::robot::PartId;
 use shooter_sim::scenarios::scripted_intent;
-
-use shooter_sim::session::{body_of, slot_of};
-use shooter_sim::weapons::Delivery;
 use shooter_sim::{ArenaModule, Event, FighterState, Intent, MapId, Select, TICK_HZ, Weapon};
 use std::sync::Arc;
 use web_time::Instant;
@@ -154,6 +150,8 @@ pub struct App {
     eye: f32,
     /// The third-person camera following the local fighter.
     follow: Follow,
+    /// Precision aim's zoom (shooter#132): held, the view narrows and the mouse slows.
+    precision: camera::Precision,
     /// The robot builder while it is open: before the match (nothing plays) or between lives
     /// (the robot dead, its respawn held until Ready).
     builder: Option<Builder>,
@@ -289,6 +287,7 @@ impl App {
             previous_eye: EYE,
             eye: EYE,
             follow: Follow::default(),
+            precision: camera::Precision::default(),
             builder: None,
             #[cfg(target_arch = "wasm32")]
             builder_shown: false,
@@ -404,7 +403,16 @@ impl App {
             return false;
         };
         if profile.end(started) {
-            profile.finish();
+            // The cover broken by then (shooter#60), for captures to say what they show.
+            let broken: Vec<u16> = self.game.snapshot().map_or_else(Vec::new, |snapshot| {
+                snapshot
+                    .scenery
+                    .iter()
+                    .filter(|placeable| placeable.health == 0)
+                    .map(|placeable| placeable.id)
+                    .collect()
+            });
+            profile.finish(&broken);
             return false;
         }
         true
@@ -453,6 +461,7 @@ impl App {
             previous_eye: EYE,
             eye: EYE,
             follow: Follow::default(),
+            precision: camera::Precision::default(),
             builder: None,
             #[cfg(target_arch = "wasm32")]
             builder_shown: false,
@@ -970,6 +979,9 @@ impl App {
         self.sounds.listen(eye.to_array(), right.to_array());
         self.sounds.pump();
         let camera = self.follow.place(self.game.world(), eye, forward, seconds);
+        // Precision aim (shooter#132): only with the pointer captured, like every other action.
+        self.precision
+            .update(self.captured && self.controls.aim_held(), seconds);
 
         let local = self.game.local_slot();
         let snapshot = self.game.snapshot();
@@ -1158,50 +1170,21 @@ impl App {
                 highlight: None,
             });
         }
-        // The reticle covers what the camera targets, and a blocked marker where a shot fired
-        // now from the held weapon's muzzle would stop short of it ([`aim::aimed`]), against the
-        // arena and the others as drawn: the simulation's rule for the aim it gets.
+        // The reticle covers what the camera targets, a blocked marker where a shot fired now
+        // from the held weapon's muzzle would stop short of it, and every gun's mark where its
+        // own shot would land ([`camera::Reticle::aimed`]).
         let reticle = match (alive, self.game.world()) {
-            (Some(me), Some(world)) => {
-                let eye_units = (eye / METRES_PER_UNIT).to_array();
-                // The predicted robot's muzzle, moved with the drawn eye.
-                let muzzle = self.game.local_fighter().and_then(|(fighter, _)| {
-                    let muzzle = fighter.muzzle(me.held)?;
-                    let at = fighter.eye();
-                    let shift = |point: [f32; 3]| {
-                        [0, 1, 2].map(|axis| point[axis] - at[axis] + eye_units[axis])
-                    };
-                    Some(aim::Muzzle {
-                        mount: shift(muzzle.mount),
-                        at: shift(muzzle.at),
-                    })
-                });
-                let muzzle = match me.held.weapon.delivery() {
-                    Delivery::Grapple | Delivery::Melee => None,
-                    _ => muzzle,
-                };
-                let others = || seen.iter().map(|(slot, parts)| (*slot, parts));
-                let shot = aim::aimed(
-                    world,
-                    eye_units,
-                    muzzle,
-                    self.look.sim_yaw(),
-                    self.look.sim_pitch(),
-                    body_of(me.slot),
-                    |body| slot_of(body).is_none(),
-                    others(),
-                );
-                let actual = aim::sight(
-                    world,
-                    shot.from,
-                    shot.direction(),
-                    RETICLE_RANGE_UNITS,
-                    body_of(me.slot),
-                    |body| slot_of(body).is_none(),
-                    others(),
-                );
-                Some(camera::Reticle::of(camera, forward, &shot, &actual))
-            }
+            (Some(me), Some(world)) => Some(camera::Reticle::aimed(&camera::Aiming {
+                world,
+                fighter: self.game.local_fighter().map(|(fighter, _)| fighter),
+                eye: (eye / METRES_PER_UNIT).to_array(),
+                held: me.held,
+                yaw: self.look.sim_yaw(),
+                pitch: self.look.sim_pitch(),
+                others: &seen,
+                camera,
+                forward,
+            })),
             _ => None,
         };
 
@@ -1307,6 +1290,7 @@ impl App {
             .map(|effects| effects.lights(seconds, &rockets))
             .unwrap_or_default();
         let mut scene = scene::frame(camera, forward, point_lights);
+        scene.camera.fov_y = self.precision.fov_y();
         // The drawn HUD: the held weapon (as predicted), the carried ones, chassis and energy.
         let vitals = self
             .game
@@ -1321,7 +1305,8 @@ impl App {
             return true;
         };
         let (width, height) = gpu.size();
-        let mut ui = self.overlay.draw(vitals.as_ref(), width, height, seconds);
+        let mut ui = crate::overlay::scope(width, height, self.precision.zoom());
+        ui.extend(self.overlay.draw(vitals.as_ref(), width, height, seconds));
         if let Some(repair) = &repair {
             ui.extend(repair_panel(repair, height));
         }
@@ -1575,7 +1560,7 @@ impl ApplicationHandler<GpuReady> for App {
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
             && self.captured
         {
-            self.look.mouse(dx, dy);
+            self.look.mouse_scaled(dx, dy, self.precision.sensitivity());
             self.driver.mouse(dx, dy);
         }
     }
