@@ -59,7 +59,12 @@ fn shoot(
     let mut overlay = Overlay::default();
     for _ in 0..2 {
         robots.update(&mut gpu.world, std::slice::from_ref(&view), 0.0)?;
-        let mut frame = scene::frame(eye, (center - eye).normalize(), Vec::new());
+        let mut frame = scene::frame(
+            eye,
+            (center - eye).normalize(),
+            Vec::new(),
+            &scene::Lighting::GREYBOX,
+        );
         let mut ui = overlay.draw(
             Some(&Vitals::of(me, session.ticks())),
             SIZE.0,

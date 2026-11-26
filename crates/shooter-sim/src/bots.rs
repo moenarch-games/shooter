@@ -3,7 +3,8 @@
 //! at a limited rate, waits a reaction delay, then fires with an aim error it re-rolls every few
 //! hundred milliseconds, strafing as it does. A bot on wheels or tracks alone (shooter#58) cannot
 //! strafe or jump: it steers its chassis toward where it goes and at its target with its own
-//! locomotion ([`steer`]) and fires its chassis' guns once they face it.
+//! locomotion ([`steer`]) and fires its chassis' guns once they face it; stuck against
+//! something, it backs out where a walking bot hops (shooter#151).
 //! It burns anyone within a few metres with the flamethrower, picks the rifle (even slots) or the
 //! shotgun (odd slots) up close, rockets (even) or the laser (odd) at mid range and the rail gun
 //! far off, and rushes in to swing the energy blade when someone comes within a few metres. It
@@ -55,6 +56,9 @@ pub const WAYPOINT_REACH_UNITS: i64 = 150;
 pub const STUCK_TICKS: u32 = 30;
 /// Barely moving: within 20 cm (on both axes together) of where it was when it last moved on.
 pub const STUCK_UNITS: i32 = 20;
+/// Stuck on wheels or tracks alone, where a hop does nothing, it backs straight off for 0.75 s
+/// before it heads elsewhere (shooter#151: a chassis pinned on a corner gets clear of it).
+pub const BACK_OUT_TICKS: u32 = 45;
 
 /// What a bot knows of one slot: where its fighter stands (units), if it is alive, where its
 /// root chassis is (what a bot aims at: destroying it is the kill, [`crate::damage`]) and which
@@ -86,6 +90,8 @@ pub struct Bot {
     waypoint: Option<usize>,
     stuck: u32,
     last: Option<Vec3i>,
+    /// Ticks it still backs out ([`BACK_OUT_TICKS`]).
+    backing: u32,
 }
 
 const fn mix(mut value: u64) -> u64 {
@@ -120,6 +126,7 @@ impl Bot {
             waypoint: None,
             stuck: 0,
             last: None,
+            backing: 0,
         }
     }
 
@@ -131,6 +138,7 @@ impl Bot {
         self.waypoint = None;
         self.stuck = 0;
         self.last = None;
+        self.backing = 0;
     }
 
     fn signed(&mut self, bound: u32) -> i32 {
@@ -199,8 +207,16 @@ impl Bot {
             Some(target) => self.fight(me, (eye, target), world, copies, sights[me], tick),
             None => self.wander(center, sights[me].heading, arena),
         };
+        // Backing out on its wheels or tracks: straight back, no turn.
+        let wheeled = sights[me].heading.is_some();
+        if self.backing > 0 && wheeled {
+            self.backing -= 1;
+            intent.forward = -1;
+            intent.strafe = 0;
+        }
         // Stuck against something while walking (within a few centimetres of where it last got
-        // stuck: a robot jostles against a wall): hop and head elsewhere.
+        // stuck: a robot jostles against a wall): hop (or, on wheels or tracks, back out) and
+        // head elsewhere.
         let moved = self
             .last
             .is_none_or(|last| (last.x - center.x).abs() + (last.z - center.z).abs() > STUCK_UNITS);
@@ -213,6 +229,9 @@ impl Bot {
                 self.stuck = 0;
                 self.waypoint = None;
                 intent.jump = true;
+                if wheeled {
+                    self.backing = BACK_OUT_TICKS;
+                }
             }
         } else {
             self.stuck = 0;

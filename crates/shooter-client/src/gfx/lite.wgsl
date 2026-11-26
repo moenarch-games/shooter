@@ -22,6 +22,10 @@ struct Frame {
     // The camera's right and up axes (particles).
     right: vec4<f32>,
     up: vec4<f32>,
+    // Linear fog (render-engine's `FogFalloff::Linear`): rgb its exposed colour, a how much it
+    // hides at most (0: none); then x its start and y its end in metres.
+    fog: vec4<f32>,
+    fog_range: vec4<f32>,
     // Per light: position and 1 / range², then colour in candela and unused.
     lights: array<vec4<f32>, 16>,
 }
@@ -71,6 +75,18 @@ fn encode(color: vec3<f32>) -> vec3<f32> {
 
 fn display(color: vec3<f32>) -> vec3<f32> {
     return encode(tonemap(color));
+}
+
+// render-engine's `apply_fog` for the linear falloff, on the exposed colour.
+fn fogged(color: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    if (frame.fog.a <= 0.0) {
+        return color;
+    }
+    let distance = length(world - frame.eye.xyz);
+    let start = frame.fog_range.x;
+    let end = frame.fog_range.y;
+    let amount = frame.fog.a * (1.0 - clamp((end - distance) / (end - start), 0.0, 1.0));
+    return mix(color, frame.fog.rgb, amount);
 }
 
 // ---------------------------------------------------------------- meshes
@@ -194,7 +210,7 @@ fn shade(in: MeshOut, front: bool) -> vec4<f32> {
     }
     let exposure = frame.params.x;
     if (material.mode.y > 0.5) {
-        return vec4(display(base.rgb), base.a);
+        return vec4(display(fogged(base.rgb, in.world)), base.a);
     }
     var N = normalize(in.normal);
     if (!front) {
@@ -240,7 +256,7 @@ fn shade(in: MeshOut, front: bool) -> vec4<f32> {
     let indirect = (diffuse_ambient + specular_ambient * specular_occlusion) * frame.ambient.rgb;
     let emissive = material.emissive.rgb * emissive_sample.rgb * base.a;
     let radiance = (direct + indirect + emissive) * exposure;
-    return vec4(display(radiance), base.a);
+    return vec4(display(fogged(radiance, in.world)), base.a);
 }
 
 @fragment

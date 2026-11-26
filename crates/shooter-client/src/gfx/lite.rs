@@ -3,7 +3,8 @@
 //! (and on any native adapter). It is the browser's fallback where WebGPU is missing
 //! ([`super`]): one pass into the target with the sun, the ambient light and up to
 //! [`MAX_LIGHTS`] point lights, textures, meshes skinned from a uniform joint palette, CPU-simulated particles and the
-//! overlay; no shadows, sky, fog, normal maps or MSAA.
+//! overlay, and linear distance fog as render-engine's (its other falloffs and sun glow are left out);
+//! no shadows, sky, normal maps or MSAA.
 //!
 //! Draws are batched: opaque instances of one mesh and material are one instanced draw, and
 //! instances outside the view frustum are skipped on the CPU.
@@ -16,7 +17,7 @@ use render_engine::mesh::MeshData;
 use render_engine::particles::{
     ColorBlend, Emitter, InitModifier, Orient, ParticleBlend, ShapeDimension, Value,
 };
-use render_engine::scene::Scene;
+use render_engine::scene::{FogFalloff, Scene};
 use render_engine::wgpu;
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
@@ -46,6 +47,9 @@ struct FrameUniform {
     params: [f32; 4],
     right: [f32; 4],
     up: [f32; 4],
+    /// Linear fog: colour (exposed) and how much it hides at most; then start and end metres.
+    fog: [f32; 4],
+    fog_range: [f32; 4],
     lights: [[f32; 4]; 2 * MAX_LIGHTS],
 }
 
@@ -1394,8 +1398,16 @@ impl LiteRenderer {
             ],
             right: world_from_view.x_axis.to_array(),
             up: world_from_view.y_axis.to_array(),
+            fog: [0.0; 4],
+            fog_range: [0.0, 1.0, 0.0, 0.0],
             lights: [[0.0; 4]; 2 * MAX_LIGHTS],
         };
+        if let Some(fog) = &scene.fog
+            && let FogFalloff::Linear { start, end } = fog.falloff
+        {
+            frame.fog = fog.color.to_array();
+            frame.fog_range = [start, end.max(start + 1e-3), 0.0, 0.0];
+        }
         if let Some(sun) = &scene.sun {
             frame.sun_direction = (-sun.direction.normalize_or(Vec3::NEG_Y))
                 .extend(1.0)

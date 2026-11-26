@@ -44,6 +44,11 @@ pub const JUMP_VELOCITY_UNITS_PER_SECOND: i32 = 600;
 pub const JUMP_VELOCITY_SUBUNITS_PER_TICK: i32 = subunits_per_tick(JUMP_VELOCITY_UNITS_PER_SECOND);
 /// Jumps a player may make in the air before touching ground again.
 pub const AIR_JUMPS: u8 = 1;
+/// Below this rise (0.6 m/s) a body on a jump pad still stands on it and is thrown: a walking
+/// robot's gait bobs its centre of mass up and down by centimetres a second, and a pad must not
+/// wait for it to stop (nor its throw hang on which way the bob went that tick); a body a pad
+/// or a jump threw rises at metres a second.
+pub const PAD_RISE_SUBUNITS_PER_TICK: i32 = subunits_per_tick(60);
 /// Arena gravity, 18 m/s²: heavier than Earth's for short, snappy jumps.
 pub const GRAVITY: Vec3i = Vec3i::new(0, subunits_per_tick_squared(-1_800), 0);
 /// Step-up: a grounded player running into a ledge up to 35 cm high, with at least 20 cm of
@@ -327,7 +332,7 @@ impl Motion {
         let mut vertical = current.y;
         let pad = arena
             .pad_under(footing.feet)
-            .filter(|_| grounded && current.y <= 0);
+            .filter(|_| grounded && current.y <= PAD_RISE_SUBUNITS_PER_TICK);
         if let Some(pad) = pad {
             let launch = pad.launch_velocity();
             horizontal = [launch.x, launch.z];
@@ -428,7 +433,7 @@ impl Motion {
         let mut launch = Launch::default();
         if let Some(pad) = arena
             .pad_under(footing.feet)
-            .filter(|_| grounded && current.y <= 0)
+            .filter(|_| grounded && current.y <= PAD_RISE_SUBUNITS_PER_TICK)
         {
             launch.velocity = Some(pad.launch_velocity());
             launch.moves.launched = true;

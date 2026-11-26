@@ -30,6 +30,15 @@ fn world(statics: &[RigidBody], builds: &[Assembly]) -> Mechanics {
     mechanics
 }
 
+/// [`world`] with `build` alone under the match's gravity, which the wheels' motors are tuned
+/// for (shooter#174): under Earth's the car's 60 N·m launch unloads its front wheels.
+fn wheeled(statics: &[RigidBody], build: Assembly) -> Mechanics {
+    let mut mechanics =
+        Mechanics::with_gravity(statics, shooter_sim::session::match_gravity()).unwrap();
+    mechanics.spawn(build, [0.0; 3], 0).unwrap();
+    mechanics
+}
+
 fn run(mechanics: &mut Mechanics, ticks: u32, controls: impl Fn(u32, &Layout) -> Controls) {
     for tick in 0..ticks {
         let all: Vec<Controls> = mechanics
@@ -68,7 +77,7 @@ fn root(mechanics: &Mechanics) -> Pose {
 
 #[test]
 fn normal_rolling_drives_along_the_wheels_and_a_mismatched_drive_spins() {
-    let mut car = world(&floor(), &[fixtures::car()]);
+    let mut car = wheeled(&floor(), fixtures::car());
     let start = root(&car).position;
     run(&mut car, 120, |_, _| wheels(RATE, -RATE));
     let motion = car.root_motion(0).unwrap();
@@ -87,7 +96,7 @@ fn normal_rolling_drives_along_the_wheels_and_a_mismatched_drive_spins() {
     }
 
     // The same rate on every wheel turns the two sides opposite ways: it spins in place.
-    let mut spinner = world(&floor(), &[fixtures::car()]);
+    let mut spinner = wheeled(&floor(), fixtures::car());
     run(&mut spinner, 120, |_, _| wheels(RATE, RATE));
     let pose = root(&spinner);
     let moved = (pose.position[0] - start[0]).hypot(pose.position[2] - start[2]);
@@ -112,9 +121,11 @@ fn side_mounted_wheels_strafe() {
     assert!(heading(pose).abs() < 0.05, "{pose:?}");
 }
 
+/// Under the match's gravity ([`wheeled`]): under Earth's the car's front wheels climb the wall
+/// at full torque.
 #[test]
 fn a_torque_limited_drive_stalls_against_a_wall() {
-    let mut car = world(&walled(80), &[fixtures::car()]);
+    let mut car = wheeled(&walled(80), fixtures::car());
     run(&mut car, 180, |_, _| wheels(RATE, -RATE));
     let motion = car.root_motion(0).unwrap();
     let speed = motion.velocity.iter().map(|v| v * v).sum::<f32>().sqrt();
@@ -122,8 +133,9 @@ fn a_torque_limited_drive_stalls_against_a_wall() {
     for actuator in &car.robots()[0].actuators {
         assert!(actuator.saturated && actuator.stalled, "{actuator:?}");
         assert!(actuator.rate.abs() < 1.0, "{actuator:?}");
-        // At its 30 N·m.
-        assert!((actuator.torque.abs() - 30.0).abs() < 1.0, "{actuator:?}");
+        // At its most torque (its drive: 60 N·m since shooter#174).
+        let most = f32::from(shooter_sim::robot::parts::WHEEL.drive.torque);
+        assert!((actuator.torque.abs() - most).abs() < 1.0, "{actuator:?}");
         assert!(actuator.powered, "a stalled motor still draws");
     }
 }

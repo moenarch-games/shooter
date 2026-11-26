@@ -28,6 +28,12 @@ use super::{
 const SERVO_STIFFNESS: f32 = 1.0e5;
 const SERVO_DAMPING: f32 = 630.0;
 const VELOCITY_FACTOR: f32 = 1000.0;
+/// How far apart (metres) a contact's points may be at the poses after the step for it to still
+/// support a body: Rapier finds its contacts before it moves the bodies, so a body thrown off the
+/// ground that tick still has them (physics-engine's own read their state after the step). 5 cm,
+/// the kinematic world's ground prediction ([`super::super::World`]): a thrown robot leaves it in
+/// its first tick, a robot's legs giving on Rapier's servo spring do not.
+const SUPPORT_GAP_METRES: f32 = 0.05;
 
 fn rotation(value: [f32; 4]) -> Rotation {
     Rotation::from_xyzw(value[0], value[1], value[2], value[3]).normalize()
@@ -358,9 +364,22 @@ impl World {
                     } else {
                         -1.0
                     };
-                    pair.manifolds()
-                        .iter()
-                        .any(|manifold| sign * manifold.data.normal.y < -0.5)
+                    let (Some(one), Some(two)) = (
+                        self.world.colliders.get(pair.collider1),
+                        self.world.colliders.get(pair.collider2),
+                    ) else {
+                        return false;
+                    };
+                    let (one, two) = (one.position(), two.position());
+                    pair.manifolds().iter().any(|manifold| {
+                        let normal = one.transform_vector(manifold.local_n1);
+                        sign * normal.y < -0.5
+                            && manifold.points.iter().any(|point| {
+                                let gap = two.transform_point(point.local_p2)
+                                    - one.transform_point(point.local_p1);
+                                gap.dot(normal) <= SUPPORT_GAP_METRES
+                            })
+                    })
                 })
         })
     }

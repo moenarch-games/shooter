@@ -1,34 +1,41 @@
-//! The proving cell (`proving-cell`, shooter#53): the beta's small close-quarters arena, a
-//! purpose-built combat test facility (owner decisions on shooter#53), built from asset-tooling's
-//! arena kit ([`crate::arena_kit`]) like the assembly works.
+//! The proving cell (`proving-cell`, shooter#53, polished in shooter#151): the beta's small
+//! close-quarters arena, a purpose-built combat test facility (owner decisions on shooter#53),
+//! built from asset-tooling's arena kit ([`crate::arena_kit`]) like the assembly works.
 //!
 //! A 32 m square cell inside 10 m walls, point-symmetric (every placement in the north half has a
 //! twin turned half a turn round the centre in the south), on three levels:
 //!
 //! - **Ground:** the test floor round the stage, with a 2 m barrier, a 2 m container (its top
 //!   meets the stage's corner) and crates; a control booth in the north-east (and the south-west)
-//!   corner, a 7 m room with a doorway on each inner side and a blast screen behind each; a test
-//!   bay, a 2 m wide and 4 m deep alcove, in the east (and the west) wall; and under each gallery
-//!   a 2.6 m high passage from behind the gallery's ramp to the booth's west doorway.
+//!   corner, a 7 m room with a doorway on each inner side, a blast screen across each doorway's
+//!   line into the back corner and the test rig's generator (its console) there; a test bay, a
+//!   2 m wide and 4 m deep alcove, in the east (and the west) wall behind a blast screen of its
+//!   own, open north and south along it; and under each gallery a 2.6 m high passage from behind
+//!   the gallery's ramp to the booth's west doorway.
 //! - **2 m:** the test stage in the middle, a 6 m dais with the rail capacitor at its centre and
-//!   staggered low cover on it: an 8 m ramp climbs it from the north and from the south, and a
-//!   double jump reaches it (or the container) from the floor.
+//!   staggered low cover on it, under the test rig: a 4 m pillar at each corner carrying a lit
+//!   canopy at 6 m, the cell's landmark. An 8 m ramp climbs the stage from the north and from the
+//!   south, and a double jump reaches it (or the container) from the floor.
 //! - **3 m:** an observation gallery along the north (and the south) wall, 4 m deep, with low
-//!   cover at its edge and thrusters on it: a 12 m ramp climbs it along the side wall, a jump pad
-//!   in front of it throws a fighter onto it, and the grapple reaches it by the wall above it.
+//!   cover at its edge, instrument pipes on the wall behind it and thrusters on it: a 12 m ramp
+//!   climbs it along the side wall, a jump pad in front of it throws a fighter onto it, and the
+//!   grapple reaches it by the wall above it.
 //!
 //! The cell is small and its lines are short: the stage, the container, the booths and the ramps
 //! cut the sightlines over the floor, and nothing is more than a few seconds' sprint away. The
 //! booths have two doorways, the passages under the galleries open along their whole length and
 //! the stage has two ramps, so no fight is forced down a one-way corridor; the high ground is
-//! reached by a ramp, a jump pad and the grapple each.
+//! reached by a ramp, a jump pad and the grapple each, and tracks climb both ramps. The booths',
+//! the test bays' and the passages' ways out are at least 2.4 m wide, so a wheeled or tracked
+//! robot spawned there drives out (shooter#151).
 //!
 //! Twelve spawn points (one per default slot), none in sight of another: in the booths behind
-//! their screens, at the passages' closed ends, in the test bays, under the galleries, between a
-//! gallery and a booth and in the container's lee. Bot waypoints at the ramps, the stage, the
+//! their screens, at the passages' screened ends, in the test bays, under the galleries, between
+//! a gallery and a booth and in the container's lee. Bot waypoints at the ramps, the stage, the
 //! galleries, the passages, the bays and the booths. Repair anchors (shooter#61) lie in the
-//! booths; the floor and gallery low cover, the open-floor barrier and the crates are destruction
-//! candidates (shooter#60). The blast screens stay intact: the booths' spawn points rely on them.
+//! booths' open corners between their doorways; the floor, stage and gallery low cover, the
+//! open-floor barrier and the crates are destruction candidates (shooter#60). The blast screens
+//! stay intact: the spawn points behind them rely on them.
 
 use crate::arena::{Arena, JumpPad, Spawn};
 use crate::arena_kit::{self, Module, Placement, Turn};
@@ -90,12 +97,23 @@ fn perimeter() -> Vec<Placement> {
     out
 }
 
-/// The test stage: a 6 m square of 2 m platform blocks round the centre (its own twin).
+/// The test rig's canopy over the stage: its underside (6 m).
+pub const CANOPY: i32 = STAGE_TOP + 400;
+
+/// The test stage: a 6 m square of 2 m platform blocks round the centre, and the test rig over
+/// it (shooter#151), a 4 m pillar at each corner carrying a lit canopy of ceiling panels at 6 m,
+/// the cell's landmark (its own twin).
 fn stage() -> Vec<Placement> {
     let mut out = Vec::new();
     for x in [-200, 0, 200] {
         for z in [-200, 0, 200] {
             out.push(place(Module::Platform, x, 0, z, Turn::None));
+            out.push(place(Module::Ceiling, x, CANOPY, z, Turn::None));
+        }
+    }
+    for x in [-260, 260] {
+        for z in [-260, 260] {
+            out.push(place(Module::Pillar, x, STAGE_TOP, z, Turn::None));
         }
     }
     out
@@ -121,16 +139,18 @@ fn north() -> Vec<Placement> {
     for x in [-1_500, -1_300] {
         out.push(place(Module::RampTall, x, 0, -600, Turn::None));
     }
-    // Low cover at the gallery's edge.
+    // Low cover at the gallery's edge (its observation windows), and the cell's instrument pipes
+    // on the north wall at the back of the deck.
     out.push(place(Module::CoverLow, -500, DECK_TOP, -1_230, Turn::None).destructible());
     out.push(place(Module::CoverLow, 200, DECK_TOP, -1_230, Turn::None).destructible());
+    out.push(place(Module::Pipes, -300, DECK_TOP, -1_575, Turn::None));
 
     // The stage's north ramp, 4 m wide, rising south onto the stage from under the gallery's
-    // edge, and low cover on the stage's east edge.
+    // edge, and low cover on the stage's east edge between the rig's pillars.
     for x in [-100, 100] {
         out.push(place(Module::Ramp, x, 0, -700, Turn::Half));
     }
-    out.push(place(Module::CoverLow, 250, STAGE_TOP, -150, Turn::Quarter).destructible());
+    out.push(place(Module::CoverLow, 250, STAGE_TOP, -50, Turn::Quarter).destructible());
 
     // The north-east control booth: 4 m walls from a corner post, a doorway south onto the floor
     // and one west into the passage under the gallery.
@@ -141,28 +161,31 @@ fn north() -> Vec<Placement> {
     out.push(place(Module::WallHalf, BOOTH, 0, -950, Turn::Quarter));
     out.push(place(Module::Wall, BOOTH, 0, -1_100, Turn::Quarter));
     out.push(place(Module::Doorway, BOOTH, 0, -1_400, Turn::Quarter));
-    // Inside: a blast screen 2 m behind each doorway (no robot sees over it), and the test rig's
-    // generator in the corner.
-    out.push(place(Module::Barrier, 1_300, 0, -1_100, Turn::None));
-    out.push(place(Module::Barrier, 1_100, 0, -1_400, Turn::Quarter));
-    out.push(place(Module::Generator, 1_450, 0, -1_500, Turn::None));
+    // Inside (shooter#151): a blast screen across the line from each doorway into the booth's
+    // back corner (no robot sees over it), each leaving a lane at least 2.4 m wide to both
+    // doorways for a wheeled or tracked robot, and the test rig's generator, its control
+    // console, in the back corner.
+    out.push(place(Module::Barrier, 1_400, 0, -1_150, Turn::None));
+    out.push(place(Module::Barrier, 1_150, 0, -1_500, Turn::Quarter));
+    out.push(place(Module::Generator, 1_500, 0, -1_540, Turn::None));
 
     // The test floor's north half: a barrier east of the stage, a test bay in the east wall (a
-    // 2 m wide, 4 m deep alcove), a container west of the stage (its top meets the stage's
-    // corner) and crates by the stage's ramp.
+    // 2 m wide, 4 m deep alcove) behind a blast screen of its own (shooter#151: the open floor
+    // no longer looks into it; it opens north and south along the screen), a container west of
+    // the stage (its top meets the stage's corner) and crates by the stage's ramp.
     out.push(place(Module::Barrier, 600, 0, -500, Turn::Quarter).destructible());
     for z in [-270, -530] {
         for x in [1_300, 1_500] {
             out.push(place(Module::Wall, x, 0, z, Turn::None));
         }
     }
+    out.push(place(Module::Barrier, 950, 0, -400, Turn::Quarter));
     out.push(place(Module::Container, -700, 0, -450, Turn::None));
     out.push(place(Module::Crate, -450, 0, -1_000, Turn::None).destructible());
     out.push(place(Module::Crate, -450, 80, -1_000, Turn::None).destructible());
-    // The passage's west end, under the gallery behind its ramp: a barrier closes it to a 2 m
-    // way in along the wall; pipes on the wall.
-    out.push(place(Module::Barrier, -1_150, 0, -1_300, Turn::Quarter));
-    out.push(place(Module::Pipes, -1_500, 0, -1_575, Turn::None));
+    // The passage's west end, under the gallery behind its ramp: a barrier screens it, leaving a
+    // 2.5 m way in along the north wall (shooter#151: wide enough for tracks and wheels).
+    out.push(place(Module::Barrier, -1_150, 0, -1_250, Turn::Quarter));
     out
 }
 
@@ -206,8 +229,8 @@ impl Arena {
             }))
             .collect();
         let north_spawns = [
-            // In the booth, behind both blast screens.
-            spawn_at([1_400, 0, -1_300], 0),
+            // In the booth, behind both blast screens, facing the way out between them.
+            spawn_at([1_350, 0, -1_350], 57_344),
             // At the passage's closed west end, behind the gallery's ramp.
             spawn_at([-1_450, 0, -1_450], 16_384),
             // In the test bay.
@@ -215,7 +238,7 @@ impl Arena {
             // Under the gallery, west of the stage's ramp.
             spawn_at([-150, 0, -1_450], 0),
             // Between the gallery's end and the booth.
-            spawn_at([650, 0, -1_050], 0),
+            spawn_at([750, 0, -1_250], 0),
             // In the lee of the container, by the stage.
             spawn_at([-450, 0, -150], 49_152),
         ];
@@ -233,27 +256,33 @@ impl Arena {
             Vec3i::new(-1_400, DECK_TOP, -1_400),
             Vec3i::new(-600, DECK_TOP, -1_400),
             Vec3i::new(200, DECK_TOP, -1_400),
-            // The stage's north ramp foot and the stage.
+            // The stage's north ramp foot and the stage, inside the rig's pillars.
             Vec3i::new(0, 0, -1_200),
             Vec3i::new(0, STAGE_TOP, -150),
-            // The passage under the gallery.
-            Vec3i::new(-900, 0, -1_500),
+            Vec3i::new(-150, STAGE_TOP, -150),
+            // The passage under the gallery, along the middle of its lane behind the support.
+            Vec3i::new(-1_050, 0, -1_525),
+            Vec3i::new(-750, 0, -1_525),
             Vec3i::new(-450, 0, -1_550),
             Vec3i::new(500, 0, -1_400),
-            // The booth: inside its west doorway, its inner corner, its south-east corner,
+            // The booth: inside its west doorway, its inner corner, between its screens,
             // inside and outside its south doorway.
             Vec3i::new(1_000, 0, -1_400),
-            Vec3i::new(1_000, 0, -1_200),
-            Vec3i::new(1_550, 0, -1_000),
-            Vec3i::new(1_300, 0, -985),
+            Vec3i::new(1_050, 0, -1_050),
+            Vec3i::new(1_250, 0, -1_300),
+            Vec3i::new(1_300, 0, -1_000),
             Vec3i::new(1_300, 0, -650),
             // The floor.
             Vec3i::new(-1_000, 0, -1_000),
             Vec3i::new(-300, 0, -800),
             Vec3i::new(300, 0, -700),
-            Vec3i::new(900, 0, -150),
-            // Out of the test bay.
-            Vec3i::new(1_000, 0, -400),
+            Vec3i::new(800, 0, -150),
+            // Out of the test bay: its mouth toward either way out, and on north and south
+            // along its screen.
+            Vec3i::new(1_100, 0, -440),
+            Vec3i::new(1_100, 0, -360),
+            Vec3i::new(1_100, 0, -650),
+            Vec3i::new(1_100, 0, -150),
             Vec3i::new(600, 0, -300),
         ];
         let waypoints = north_waypoints
@@ -275,7 +304,8 @@ impl Arena {
                 module: ArenaModule::Thrusters,
             },
         ];
-        let north_repairs = [Vec3i::new(1_250, 0, -1_150)];
+        // In the booth's open corner, between its two doorways.
+        let north_repairs = [Vec3i::new(1_100, 0, -1_100)];
         let repair_anchors = north_repairs
             .iter()
             .copied()

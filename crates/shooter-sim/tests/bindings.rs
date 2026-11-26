@@ -14,7 +14,9 @@ use shooter_sim::mechanics::fixtures::{self, HINGE_PART, ROTOR_PART, WHEELS, flo
 use shooter_sim::mechanics::{Command, GaitChoice, Layout, Mechanics};
 use shooter_sim::physics::RigidBody;
 use shooter_sim::physics::Vec3i;
+use shooter_sim::physics::articulated::EARTH_GRAVITY;
 use shooter_sim::robot::{Assembly, PartId, STANDARD};
+use shooter_sim::session::match_gravity;
 use shooter_sim::wire::{
     decode_bindings, decode_input, decode_snapshot, encode_bindings, encode_input, encode_snapshot,
 };
@@ -325,7 +327,29 @@ fn drive(
     pressed: Pressed,
     ticks: u32,
 ) -> ([f32; 3], [f32; 3], f32) {
-    let mut world = Mechanics::new(statics).unwrap();
+    drive_under(EARTH_GRAVITY, statics, build, pressed, ticks)
+}
+
+/// [`drive`] under the match's gravity, which the wheels' motors are tuned for (shooter#174:
+/// enough to climb the arena kit's 1:4 ramps there; under Earth's the wheeled fixtures' 80 cm
+/// tall chassis on a 40 cm wheelbase lifts its front wheels on a launch at full torque).
+fn roll(
+    statics: &[RigidBody],
+    build: Assembly,
+    pressed: Pressed,
+    ticks: u32,
+) -> ([f32; 3], [f32; 3], f32) {
+    drive_under(match_gravity(), statics, build, pressed, ticks)
+}
+
+fn drive_under(
+    gravity: [f32; 3],
+    statics: &[RigidBody],
+    build: Assembly,
+    pressed: Pressed,
+    ticks: u32,
+) -> ([f32; 3], [f32; 3], f32) {
+    let mut world = Mechanics::with_gravity(statics, gravity).unwrap();
     world.spawn(build, [0.0, 0.0, 0.0], 0).unwrap();
     let robot = world.robots()[0].layout.clone();
     let preset = Bindings::preset(&robot);
@@ -350,22 +374,31 @@ fn drive(
 #[test]
 fn the_presets_drive_wheels_and_legs_as_mounted_on_flat_ground_and_a_slope() {
     let w = held("KeyW");
-    // Wheels: about 3.6 m/s ahead (shooter#58), upright; D turns it on the spot.
-    let (start, end, up) = drive(&floor(), fixtures::car(), w, 300);
+    // Wheels (under the match's gravity): about 3.6 m/s ahead (shooter#58), upright; D turns it
+    // on the spot.
+    let (start, end, up) = roll(&floor(), fixtures::car(), w, 300);
     assert!(
         end[0] - start[0] > 900.0 && (end[2] - start[2]).abs() < 10.0,
         "{end:?}"
     );
     assert!(up > 0.99);
-    let (start, end, _) = drive(&floor(), fixtures::car(), held("KeyD"), 300);
+    let (start, end, _) = roll(&floor(), fixtures::car(), held("KeyD"), 300);
     assert!(
         libm::hypotf(end[0] - start[0], end[2] - start[2]) < 5.0,
         "{end:?}"
     );
     // Up a 1:10 slope that starts 40 cm ahead (4 s: it is 16 m long).
-    let (start, end, up) = drive(&slope(40, 1_600, 160), fixtures::car(), w, 240);
+    let (start, end, up) = roll(&slope(40, 1_600, 160), fixtures::car(), w, 240);
     assert!(end[1] - start[1] > 80.0, "{end:?}");
     assert!(up > 0.95, "{up}");
+    // Up a 1:4 slope, the arena kit's ramps' grade (shooter#174; 4 s: it is 16 m long), both
+    // the bare car and the armed one (the rifle, the tank and the generator: 254 kg). Before
+    // shooter#174 (30 N·m wheels) they got about half a metre up and rolled back.
+    for car in [fixtures::car(), fixtures::armed_car()] {
+        let (start, end, up) = roll(&slope(40, 1_600, 400), car, w, 240);
+        assert!(end[1] - start[1] > 150.0, "{end:?}");
+        assert!(up > 0.9, "{up}");
+    }
 
     // A quadruped (the robo-dog, its suggested crawl) walks ahead on W and stays up, and climbs
     // a 1:20 slope; a 1:10 one it reaches and slides back down (physics-engine 302416a).
@@ -389,7 +422,7 @@ fn the_presets_drive_wheels_and_legs_as_mounted_on_flat_ground_and_a_slope() {
 fn badly_mounted_locomotion_is_not_corrected() {
     let w = held("KeyW");
     // Wheels on the front and back roll the robot sideways for W: their mounting says so.
-    let (start, end, _) = drive(&floor(), fixtures::strafer(), w, 300);
+    let (start, end, _) = roll(&floor(), fixtures::strafer(), w, 300);
     assert!(
         end[2] - start[2] > 900.0 && (end[0] - start[0]).abs() < 10.0,
         "{end:?}"

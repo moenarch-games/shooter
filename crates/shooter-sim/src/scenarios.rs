@@ -754,8 +754,11 @@ pub const DOCK_PAD: Scenario = Scenario {
 /// foredeck, (-2200, 670, -2200): atan(505 / 1100) ≈ 24.7°, raised about 1.6° so the line from
 /// the grapple module's muzzle (below the eye) still meets the mast's top, and about 0.5° more
 /// since the rope is tied at the module (shooter#104), so the robot's swing toward the mast
-/// leaves it over the foredeck when it lets go (on both physics backends).
-const BOW_MAST_PITCH: i16 = 4_897;
+/// leaves it over the foredeck when it lets go (on both physics backends). Since shooter#153 it is
+/// about 0.1° lower (4 897 → 4 880): the freighter's bow is unchanged, but with the cutter's new
+/// pieces in the world the Rapier oracle's swing came down 55 cm further west, tipped on the
+/// foredeck's edge, while physics-engine landed as before; at 4 880 both land level on it.
+const BOW_MAST_PITCH: i16 = 4_880;
 
 /// The drydock's west outer lane: hook the bow mast over the hull, get reeled up over the
 /// shoulder and flung toward the mast, let go and step back to land on the foredeck short of
@@ -792,6 +795,77 @@ pub const DOCK_GRAPPLE: Scenario = Scenario {
     ],
 };
 
+/// The drydock's west outer lane (shooter#153): along the wall onto the pad north of its south
+/// container, thrown east and south over the hull's shoulder onto the freighter's 6 m stern deck.
+pub const DOCK_STERN_PAD: Scenario = Scenario {
+    name: "the dock's pad onto the stern deck",
+    arena: || Arena {
+        spawn: Vec3i::new(-3_750, 0, 1_300),
+        spawn_yaw: NORTH,
+        ..Arena::drydock()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("onto the pad", NORTH, 25),
+        stand("thrown", 120),
+        stand("on the stern deck", 20),
+    ],
+};
+
+/// The cutter in the drydock's east berth (shooter#153): north up its gantry's bow ramp to 2 m,
+/// east off it onto the prow step before the prow's ramp, and north up that onto the foredeck.
+pub const DOCK_PROW: Scenario = Scenario {
+    name: "the dock's prow onto the cutter",
+    arena: || Arena {
+        spawn: Vec3i::new(-GANTRY_X, 0, 3_200),
+        spawn_yaw: NORTH,
+        ..Arena::drydock()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the gantry's ramp", NORTH, 80),
+        walk("onto the prow", EAST, 65),
+        stand("on the prow", 10),
+        walk("up the prow's ramp", NORTH, 120),
+        stand("on the foredeck", 20),
+    ],
+};
+
+/// The cutter's foredeck behind its prow: north up the fore ramp onto the 6 m bridge, along it
+/// and down its after ramp onto the after deck.
+pub const DOCK_BRIDGE: Scenario = Scenario {
+    name: "the dock's bridge on the cutter",
+    arena: || Arena {
+        spawn: Vec3i::new(-SHIP_X, FOREDECK_TOP, 1_000),
+        spawn_yaw: NORTH,
+        ..Arena::drydock()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("up the fore ramp", NORTH, 140),
+        stand("on the bridge", 20),
+        walk("down the after ramp", NORTH, 110),
+        stand("on the after deck", 20),
+    ],
+};
+
+/// The drydock's east outer lane: onto the cutter's pad, thrown west over the hull's shoulder
+/// onto its foredeck before the bridge.
+pub const DOCK_CUTTER_PAD: Scenario = Scenario {
+    name: "the dock's pad onto the cutter",
+    arena: || Arena {
+        spawn: Vec3i::new(3_750, 0, 800),
+        spawn_yaw: WEST,
+        ..Arena::drydock()
+    },
+    legs: &[
+        stand("settle", 10),
+        walk("onto the pad", WEST, 25),
+        stand("thrown", 100),
+        stand("on the foredeck", 20),
+    ],
+};
+
 pub const ALL: &[Scenario] = &[
     SPRINT_AND_SLIDE,
     DOUBLE_JUMP,
@@ -819,6 +893,10 @@ pub const ALL: &[Scenario] = &[
     DOCK_STERN,
     DOCK_PAD,
     DOCK_GRAPPLE,
+    DOCK_STERN_PAD,
+    DOCK_PROW,
+    DOCK_BRIDGE,
+    DOCK_CUTTER_PAD,
 ];
 
 /// This tick's controls for scripted person `index`: run and strafe in turns, sweep the view

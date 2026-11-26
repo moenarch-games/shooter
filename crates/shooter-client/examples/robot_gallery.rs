@@ -135,7 +135,12 @@ fn shoot(
     for robot in drawn {
         println!("slot {}: {}", robot.slot, robot.label);
     }
-    let mut scene = shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new());
+    let mut scene = shooter_client::scene::frame(
+        eye,
+        (target - eye).normalize(),
+        Vec::new(),
+        &shooter_client::scene::Lighting::GREYBOX,
+    );
     gpu.render(&mut scene, &[], 0)?;
     let (width, height, pixels) = gpu.read_frame()?;
     shooter_client::write_ppm(path, width, height, &pixels)
