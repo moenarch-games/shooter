@@ -1016,6 +1016,56 @@ whether resupply locks movement or firing (Q2.i123.3).
   with the rail capacitor at its foot. Its name, size, hull heights, layout, spawn count, pickup
   and repair anchors (under the gantries and in the outer lanes) and destruction candidates (its
   low cover, floor barriers and crates) are provisional choices, to be tuned in playtests.
+  Since shooter#153 the drydock follows D2.i55.2's hybrid symmetry and is tuned the same way as
+  the other two (`crates/shooter-sim/tests/drydock.rs` on the shared harness: 8 and 12 fighters
+  on the named legged loadouts, the armed car, the armed tank and a mix of the three; its
+  ignored report sums five seeds of two minutes). Map ID, size, kit, footprint, lanes and
+  capacity (8 to 12, 14 spawn points) are unchanged; the dock floor, spawn points, pickups and
+  repair anchors stay point-symmetric, the ships do not. The west ship (the freighter) keeps the
+  shipped hull (every existing route fixture is on it): a long flat foredeck and a high blunt
+  6 m stern castle, now also thrown onto by a second jump pad in its outer lane (18 m/s up;
+  by the wall, off the line bots walk down the lane, which first threw them up by chance), its
+  stern deck's non-grapple way besides its ramp. The east ship (the cutter) is new on the
+  same 12 m by 56 m footprint: a 2 m prow step, 16 m long, across its bow, an 8 m ramp up from
+  it onto the foredeck, and the step meets its gantry's bow ramp at 2 m (a way onto the hull
+  from the corridor besides the gantry's top, which tracks drive); a narrow 6 m bridge
+  midships, 8 m long and 4 m wide, an 8 m ramp up onto it at either end, with the thrusters, a
+  mast and a 2 m bulkhead along its outer side; a rib, a generator and a mast on its after deck;
+  its gangways land before and beside the bridge, and its gantry's cover is stacked crates and
+  two barriers (the freighter's: two low covers); its outer lane's pad throws onto the foredeck
+  before the bridge. Without the bulkhead the bridge saw 29% of the dock floor within 40 m
+  against the stern deck's 18% (it looked down the whole outer lane, the covered flank past
+  the corridor's long lines); with it both 6 m decks see 18%, the foredecks 19% and 24%, the
+  gantries 23% and 19%, the prow step 21% (the test holds each between a tenth and a half and
+  each ship's place within 10 points of its twin's). The crane pylon no longer cuts the line
+  between the two 6 m decks: the cutter's bridge lies midships, past its line, and the two
+  answer each other across the corridor, about 45 m, the dock's long precision duel (the test
+  holds that instead). Spawn points: the corridor one north of its container faces the open
+  corridor (it faced the container 2 m off), the one behind the barrier faces south along it,
+  the one in the pylon's lee faces north-west past the pylon, the outer lane ones face north-east
+  and south-east past their containers, and the stern lane one stands 1.7 m clear of its
+  container (a chassis turning in place caught on it; a skid-steered chassis turns in place
+  slowly, shooter#170). Measured before → after (five seeds, 8 / 12 fighters): robots stranded
+  at a spawn point 0 → 0 on legs, tracks and mixed builds, 4 / 4 → 1 / 1 on wheels (the stern
+  lane's spawn pair, #170); respawns killed within 3 s 0 → 0 everywhere; respawns first hit
+  within 2 s on legs 9 of 191 → 6 of 194 and 23 of 336 → 14 of 328; wheeled robots fight more
+  (eight 78 → 100 kills, twelve 118 → 194); first contact median on legs 3.7 →
+  3.2 s and 1.8 → 2.5 s; kills are close and mid range (0–10 m 60–70%, 10–20 m 30–40%, beyond
+  20 m 1–3%, before and after); the corridor and the end lanes make about a third of the kills
+  each, the outer lanes 5–13%, fights on cover, crates and containers or in the air 12–29%.
+  Bots seldom climb (hull
+  tops and gantries 0–2% of their time before and after, as on the other maps), so the high
+  ground is judged by sightlines and the route fixtures (`tests/moves.rs`, the physics A/B
+  routes): the freighter's stern pad, the cutter's prow, bridge and pad. Tracks drive up the
+  cutter's prow onto its foredeck and up its bridge; wheels do not climb the kit's 1:4 ramps on
+  any map (shooter#174). Performance is unchanged: the simulation 0.53 → 0.55 ms a tick with 12
+  bots on legs (different matches), the native client 2.45 → 2.38 ms a frame on an RTX 3060 Ti
+  (the profile run, a median of repeated runs: within their noise). Open: the kit has
+  no spacecraft props (engine nozzles, a bridge canopy, a docking clamp, hull markings) to tell
+  the ships apart beyond their silhouettes and to read as spacecraft (asset-tooling#839);
+  resupply stations wait on shooter#129; the proposed expansive shipyard lighting waits
+  on per-map lighting (the client has one sun and ambient for every map); the owner's own
+  playtest and visual review. Captures in `docs/captures/153/`.
 - **Q2.i70.1**: The numeric budgets of the beta contract: the build-point cap, the technical
   part-count ceiling, each part's points, mass and health, motor torque and speed, the core's
   capacity and regeneration, battery capacity, action energy costs and cooldowns, and penetration

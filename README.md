@@ -171,26 +171,42 @@ in, built from asset-tooling's arena kit; two interim greybox maps stay:
   spawn points behind them rely on them) and a repair anchor in each booth is data for
   shooter#61. Views and frames: [docs/captures/53](docs/captures/53), polished layout
   [docs/captures/151](docs/captures/151).
-- `drydock`, the large long-sightline arena (shooter#55; 8 to 12 players, 14 spawn points): a
-  repurposed spaceship shipyard (the owner's choice, Atlas D2.i55.1), an 80 m square inside 10 m
-  walls, point-symmetric, from the same kit. Two docked spacecraft lie head to tail either side
-  of a 32 m central industrial corridor; there are no ship interiors. Each hull, 12 m wide and
-  56 m long, is built from the kit's hull modules: 2 m sides, a 45° shoulder up to a walkable
-  4 m foredeck, 8 m wide, with staggered 80 cm hull ribs as low cover and a sensor mast at the
-  bow, and a raised 6 m stern deck, 16 m long, with a rib, a mast and the thrusters, climbed from
-  the foredeck by an 8 m ramp. Along each hull's corridor side runs a 4 m dock gantry with a
-  16 m ramp down from either end and two gangways over the shoulder onto the foredeck; behind
-  each hull a 12 m outer lane along the perimeter has containers, a barrier and a jump pad that
-  throws a fighter over the shoulder onto the foredeck (15 m/s up, 9 m/s toward it), and a lane
+- `drydock`, the large long-sightline arena (shooter#55, #153; 8 to 12 players, 14 spawn
+  points): a repurposed spaceship shipyard (the owner's choice, Atlas D2.i55.1), an 80 m square
+  inside 10 m walls, from the same kit, with hybrid symmetry (D2.i55.2): the dock floor, its
+  lanes, spawn points, pickups and repair anchors are point-symmetric, while the two docked
+  spacecraft, head to tail either side of a 32 m central industrial corridor on the same 12 m by
+  56 m footprint, differ in silhouette, details, gantry cover and the routes onto them. There
+  are no ship interiors. Both hulls are built from the kit's hull modules (2 m sides, a 45°
+  shoulder up to a walkable 4 m foredeck, 8 m wide). The west ship, the freighter, is long and
+  low with staggered 80 cm hull ribs as low cover, a sensor mast at the bow and a high blunt
+  stern castle: a 6 m stern deck, 16 m long, with a rib, a mast and the thrusters, climbed from
+  the foredeck by an 8 m ramp or thrown onto from its outer lane by a jump pad (18 m/s up). The
+  east ship, the cutter, is stepped: a 2 m prow step, 16 m long, across its bow with an 8 m ramp
+  up onto the foredeck, which meets its gantry's bow ramp at 2 m (a way onto the hull from the
+  corridor besides the gantry's top); a narrow 6 m bridge midships, 8 m long, with an 8 m ramp
+  up from the foredeck at either end, the thrusters and a mast, and a 2 m bulkhead along its
+  outer side (it looks over the corridor, not into the outer lane); a rib, a generator and a
+  mast on its after deck. Along each hull's corridor side runs a 4 m dock gantry with a 16 m
+  ramp down from either end and two gangways over the shoulder onto the foredeck (the
+  freighter's by its ribs with low cover along its edge, the cutter's before and beside the
+  bridge with stacked crates and two barriers); behind each hull a 12 m outer lane along the
+  perimeter, screened from the corridor by the hull (the covered flank past the corridor's long
+  lines), has containers, a barrier and a jump pad onto the foredeck (15 m/s up), and a lane
   round each bow and stern joins it to the corridor. The corridor's floor has containers,
   barriers, low cover, crates and an 8 m crane pylon in the middle, with the rail capacitor at
-  its foot. Every hull top has several routes up (the gantry's two ramps for wheels and tracks,
-  the gangways, the pad, the grapple on a mast); each stern deck is in sight of the other ship's
-  hull and of the gantries, and the pylon cuts the line between the two stern decks, so no hull
-  top is an unanswered perch. All spawn points are on the ground and none is in sight of another.
-  Its low cover, floor barriers and crates are destruction candidates for shooter#60 and four
+  its foot. Every hull top has several routes up besides the grapple on its masts (the gantry's
+  two ramps and gangways for wheels and tracks, the pads, and the cutter's prow); each 6 m deck
+  is in sight of the other ship's hull and of the gantries, the two answer each other across
+  the corridor, and each sees about as much of the floor as the other (18% within 40 m), so no
+  hull top is an unanswered perch. All spawn points are on the ground, none is in sight of
+  another, and those in the corridor face their ways out (shooter#153's playtests,
+  `crates/shooter-sim/tests/drydock.rs`). Tracks climb onto both ships and the cutter's bridge;
+  wheels do not yet climb the kit's 1:4 ramps on any map (shooter#174). Its low cover, floor
+  barriers, the gantries' cover and crates are destruction candidates for shooter#60 and four
   repair anchors (under the gantries and in the outer lanes) are data for shooter#61. Views and
-  frames: [docs/captures/55](docs/captures/55).
+  frames: [docs/captures/55](docs/captures/55), polished layout
+  [docs/captures/153](docs/captures/153).
 - `greybox-yard`, the default for hosted matches and practice (6 to 12 players, 14 spawn points):
   a 76 m square with 5 m walls, point-symmetric (the north half turned half a turn is the south
   half). A raised walkway crosses the middle, a 3 m deck on two pillars that you can walk under,

@@ -1,4 +1,4 @@
-//! Deterministic bot playtests of a kit-built map (shooter#151, #152), shared by the maps'
+//! Deterministic bot playtests of a kit-built map (shooter#151, #152, #153), shared by the maps'
 //! playtest files: bot matches of some fighters on legged (the named loadouts), wheeled, tracked
 //! or mixed builds, read for what a playtest looks for: how soon a fresh spawn meets a fight (and
 //! whether it is shot before it can), whether any spawn strands a robot, where kills happen and

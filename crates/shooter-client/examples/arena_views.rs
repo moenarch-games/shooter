@@ -119,8 +119,8 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
             // The corridor from its north end: the gantries along both hulls and the crane
             // pylon in the middle.
             (Vec3::new(2.0, 3.0, -36.0), Vec3::new(0.0, 2.5, 0.0)),
-            // From the west gantry across the corridor to the east ship's raised stern deck.
-            (Vec3::new(-14.0, 6.0, 8.0), Vec3::new(20.0, 6.0, -20.0)),
+            // From the freighter's (west) gantry across the corridor to the cutter's bridge.
+            (Vec3::new(-14.0, 6.0, 8.0), Vec3::new(20.0, 6.5, -8.0)),
             // A gangway from the west gantry over the shoulder onto the foredeck.
             (Vec3::new(-11.0, 6.0, -4.0), Vec3::new(-22.0, 4.0, -10.0)),
             // On the west foredeck, south up its ramp to the stern deck and its mast.
@@ -131,6 +131,17 @@ fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
             (Vec3::new(-34.0, 2.2, -30.0), Vec3::new(-30.0, 2.0, 0.0)),
             // The bow lane, east past the bow's container toward the corridor.
             (Vec3::new(-37.0, 2.2, -36.0), Vec3::new(0.0, 2.0, -31.0)),
+            // (shooter#153) The cutter's prow step from the foot of its gantry's bow ramp: the
+            // step, its ramp up onto the foredeck and the bridge beyond.
+            (Vec3::new(8.0, 2.5, 34.0), Vec3::new(22.0, 2.5, 14.0)),
+            // On the cutter's bridge, west across the corridor to the freighter's stern deck.
+            (Vec3::new(22.5, 8.0, -4.0), Vec3::new(-22.0, 6.0, 20.0)),
+            // The cutter's profile from the east outer lane: prow step, foredeck, bridge and its
+            // bulkhead, after deck.
+            (Vec3::new(37.0, 3.0, 36.0), Vec3::new(22.0, 4.0, -10.0)),
+            // The freighter's profile from the west outer lane: its foredeck and the high stern
+            // castle, the pad onto it by the container.
+            (Vec3::new(-37.0, 3.0, -36.0), Vec3::new(-22.0, 4.0, 10.0)),
         ],
         _ => vec![(Vec3::new(0.0, 2.0, 10.0), Vec3::new(0.0, 2.0, 0.0))],
     }

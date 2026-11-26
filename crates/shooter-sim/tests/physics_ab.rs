@@ -467,8 +467,9 @@ fn the_proving_cell_routes_land_alike_on_the_rapier_oracle() {
     }
 }
 
-/// The drydock (shooter#55): up the gantry's ramp and over a gangway onto the foredeck, up the
-/// stern ramp, the outer lane's pad and a grapple on the bow mast onto the foredeck. As on the
+/// The drydock (shooter#55, #153): up the gantry's ramp and over a gangway onto the foredeck, up
+/// the stern ramp, the outer lane's pads and a grapple on the bow mast onto the freighter's decks,
+/// and onto the cutter across its prow step, up its bridge's ramps and by its pad. As on the
 /// proving cell, the standard robot's frame stands on the same level on both backends after
 /// every route's resting legs, and the pad and the hook act alike. The frame is the standard
 /// build without its roof's tank and generator (shooter#128): on the stern ramp's landing the
@@ -486,6 +487,10 @@ fn the_drydock_routes_land_alike_on_the_rapier_oracle() {
         scenarios::DOCK_STERN,
         scenarios::DOCK_PAD,
         scenarios::DOCK_GRAPPLE,
+        scenarios::DOCK_STERN_PAD,
+        scenarios::DOCK_PROW,
+        scenarios::DOCK_BRIDGE,
+        scenarios::DOCK_CUTTER_PAD,
     ] {
         let engine = run_as(Backend::Engine, scenario.arena, scenario.legs, frame);
         let rapier = run_as(Backend::Rapier, scenario.arena, scenario.legs, frame);

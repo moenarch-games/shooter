@@ -1,34 +1,47 @@
-//! The drydock (`drydock`, shooter#55): the beta's large long-sightline arena, a repurposed
-//! spaceship shipyard where two docked spacecraft flank a central industrial corridor (owner
-//! decision D2.i55.1), built from asset-tooling's arena kit ([`crate::arena_kit`]) like the
+//! The drydock (`drydock`, shooter#55, #153): the beta's large long-sightline arena, a
+//! repurposed spaceship shipyard where two docked spacecraft flank a central industrial corridor
+//! (owner decision D2.i55.1), built from asset-tooling's arena kit ([`crate::arena_kit`]) like the
 //! assembly works: the ships' exterior hulls are the kit's hull modules, the dock machinery its
 //! walkways, ramps, platforms, containers and cover. No ship has an interior.
 //!
-//! An 80 m square dock inside 10 m walls, point-symmetric (every placement west of the centre
-//! line has a twin turned half a turn round the centre in the east): the two ships lie head to
-//! tail, so each one's raised stern faces the other's foredeck across the corridor.
+//! An 80 m square dock inside 10 m walls with hybrid symmetry (D2.i55.2): the dock floor, its
+//! lanes, spawn points, pickups and repair anchors are point-symmetric (every placement west of
+//! the centre line has a twin turned half a turn round the centre in the east), while the two
+//! ships lie head to tail on the same 12 m by 56 m footprint with distinct silhouettes, details,
+//! gantry cover and local routes onto their hulls. Every place below is the west half's; the
+//! east ship is described as it would lie in the west berth (bow north) and turned.
 //!
-//! - **The ships:** a 12 m wide, 56 m long hull in a berth either side of the corridor (its
-//!   centre line 22 m off the dock's): 2 m hull sides and a 45° shoulder up to a 4 m foredeck,
-//!   8 m wide, with hull ribs (80 cm low cover) staggered across it and a sensor mast at the
-//!   bow; and a raised 6 m stern deck, 16 m long, climbed from the foredeck by an 8 m ramp, with
-//!   a rib, a mast and the thrusters on it.
+//! - **The freighter (west):** 2 m hull sides and a 45° shoulder up to a 4 m foredeck, 8 m wide,
+//!   with hull ribs (80 cm low cover) staggered across it and a sensor mast at the bow; and a
+//!   raised 6 m stern deck, 16 m long, climbed from the foredeck by an 8 m ramp, with a rib, a
+//!   mast and the thrusters on it: a long low hull with a high blunt stern castle.
+//! - **The cutter (east):** a 2 m prow step across the whole hull's bow, 16 m long, with an 8 m
+//!   ramp up onto the 4 m foredeck and a mast at its tip; a narrow 6 m bridge midships, 8 m long
+//!   and 4 m wide, an 8 m ramp up onto it from the foredeck at either end, the thrusters and a
+//!   mast on it; a rib, a generator and a mast on the after deck: a stepped hull with a hump
+//!   in the middle. The prow step meets its gantry's bow ramp at 2 m: a way from the corridor
+//!   onto the hull that is not the gantry's top.
 //! - **The corridor:** 32 m wide between the hulls, its floor broken by containers, barriers,
 //!   low cover and an 8 m crane pylon in the middle (the rail capacitor lies by its foot). Along
 //!   each hull a 4 m dock gantry on its supports runs 28 m, a 16 m ramp down from either end
-//!   (two kit ramps, the upper one on platform blocks), and two gangways cross from it over the
-//!   hull's shoulder onto the foredeck.
+//!   (two kit ramps, the upper one on platform blocks); two gangways cross from it over the
+//!   hull's shoulder onto the foredeck (the freighter's by its ribs, the cutter's in front of
+//!   its bridge and beside it), the freighter's gantry with low cover along its corridor edge,
+//!   the cutter's with stacked crates and two barriers.
 //! - **The outer lanes:** a 12 m lane behind each hull along the perimeter, with containers,
-//!   a barrier and a jump pad that throws a fighter over the shoulder onto the foredeck; and a
-//!   12 m lane round each ship's bow and stern joining the outer lanes to the corridor.
+//!   a barrier and jump pads over the shoulder (the freighter's onto its foredeck and onto its
+//!   stern deck, the cutter's onto its foredeck before the bridge); and a 12 m lane round each
+//!   ship's bow and stern joining the outer lanes to the corridor. The hulls screen the outer
+//!   lanes from the corridor: the protected flank routes past its long sightlines.
 //!
-//! Every hull top is reached by more than one route: the foredeck by either of the gantry's
-//! ramps and two gangways, by the outer lane's pad and by the grapple (the bow mast); the stern
-//! deck by its ramp from the foredeck and the grapple (its mast, or the wall above it). Each
-//! stern deck is seen from the other ship's foredeck across the corridor and from the gantries,
-//! and the pylon cuts the diagonal between the two stern decks: no hull top is a perch nobody
-//! can reach or answer. Wheeled and tracked builds climb by the ramps; the pads and the grapple
-//! are the agile builds' shortcuts.
+//! Every hull top is reached by more than one route, without the grapple too: the foredecks by
+//! either gantry ramp and two gangways, by an outer lane's pad, and the cutter's also up its
+//! prow; the freighter's stern deck by its ramp from the foredeck and its outer lane's pad, the
+//! cutter's bridge by its two ramps; and every one by the grapple (the masts). Each 6 m deck is
+//! seen from the other ship's hull across the corridor and from the gantries, and sees about as
+//! much of the dock floor as the other: no hull top is a perch nobody can reach or answer.
+//! Wheeled and tracked builds climb by the ramps (wheels not yet: shooter#174); the pads and the
+//! grapple are the agile builds' shortcuts.
 //!
 //! Fourteen spawn points, none in sight of another, all on the ground: in the outer lanes and
 //! the bow and stern lanes behind containers, under the gantries and in the corridor's lee.
@@ -69,6 +82,13 @@ pub const GANTRY_TOP: i32 = 400;
 pub const GANTRY_X: i32 = -1_400;
 /// The gantry's deck runs between these.
 pub const GANTRY_Z: i32 = 1_400;
+/// The cutter's prow step (its top 2 m up) runs from its bow to here (in the west berth).
+pub const PROW_Z: i32 = -1_200;
+pub const PROW_TOP: i32 = SIDE_TOP;
+/// The cutter's bridge (its top at [`STERN_TOP`]) runs between these on its foredeck (in the
+/// west berth), 4 m wide.
+pub const BRIDGE_Z: [i32; 2] = [400, 1_200];
+const BRIDGE_HALF: i32 = 200;
 
 const fn place(module: Module, x: i32, y: i32, z: i32, turn: Turn) -> Placement {
     Placement::new(module, [x, y, z], turn)
@@ -111,9 +131,9 @@ fn perimeter() -> Vec<Placement> {
     out
 }
 
-/// The west ship's hull: sides, shoulders, the foredeck, the raised stern deck and their ends,
-/// closed all round (no interior).
-fn hull(out: &mut Vec<Placement>) {
+/// The freighter's hull in the west berth: sides, shoulders, the foredeck, the raised stern
+/// deck and their ends, closed all round (no interior).
+fn freighter(out: &mut Vec<Placement>) {
     let (west, east) = (SHIP_X - HULL_HALF, SHIP_X + HULL_HALF);
     let (deck_west, deck_east) = (SHIP_X - DECK_HALF, SHIP_X + DECK_HALF);
     // Along the hull in 4 m sections.
@@ -235,9 +255,124 @@ fn hull(out: &mut Vec<Placement>) {
     ));
 }
 
-/// The west dock gantry: a 4 m walkway along the hull, a 16 m ramp down from each end and two
-/// gangways over the shoulder onto the foredeck.
-fn gantry(out: &mut Vec<Placement>) {
+/// The cutter's hull as it would lie in the west berth (bow north): its prow step, the
+/// foredeck behind it with the bridge on it, and their ends, closed all round (no interior).
+fn cutter(out: &mut Vec<Placement>) {
+    let (west, east) = (SHIP_X - HULL_HALF, SHIP_X + HULL_HALF);
+    for z in (BOW_Z + 200..STERN_Z).step_by(400) {
+        out.push(place(Module::HullSide, west + 25, 0, z, Turn::Quarter));
+        out.push(place(Module::HullSide, east - 25, 0, z, Turn::Quarter));
+        if z < PROW_Z {
+            // The prow step: a deck across the whole hull on the 2 m sides.
+            for x in [SHIP_X - 400, SHIP_X, SHIP_X + 400] {
+                out.push(place(Module::HullDeck, x, PROW_TOP - 50, z, Turn::None));
+            }
+            continue;
+        }
+        out.push(place(
+            Module::HullShoulder,
+            west + 100,
+            SIDE_TOP,
+            z,
+            Turn::ThreeQuarter,
+        ));
+        out.push(place(
+            Module::HullShoulder,
+            east - 100,
+            SIDE_TOP,
+            z,
+            Turn::Quarter,
+        ));
+        for x in [SHIP_X - 200, SHIP_X + 200] {
+            out.push(place(Module::HullDeck, x, FOREDECK_TOP - 50, z, Turn::None));
+        }
+    }
+    // The bow end one course up to the prow step, the stern end two up to the foredeck, and the
+    // foredeck's front either side of the prow's ramp.
+    for x in [SHIP_X - 400, SHIP_X, SHIP_X + 400] {
+        out.push(place(Module::HullSide, x, 0, BOW_Z + 25, Turn::None));
+        for y in [0, SIDE_TOP] {
+            out.push(place(Module::HullSide, x, y, STERN_Z - 25, Turn::None));
+        }
+    }
+    for x in [SHIP_X - 400, SHIP_X + 400] {
+        out.push(place(
+            Module::HullSide,
+            x,
+            SIDE_TOP,
+            PROW_Z + 25,
+            Turn::None,
+        ));
+    }
+    // The prow's 8 m ramp, 4 m wide, rising south onto the foredeck (8 m of the step before it).
+    for x in [SHIP_X - 100, SHIP_X + 100] {
+        out.push(place(Module::Ramp, x, PROW_TOP, PROW_Z - 400, Turn::Half));
+    }
+    // The bridge: a 2 m course of plates along its sides on the foredeck, a deck on top and a
+    // second course along its outer side (a bulkhead: the bridge looks over the corridor, not
+    // down into the outer lane, which stays a covered flank), an 8 m ramp up onto it at either
+    // end (as wide as it).
+    for z in (BRIDGE_Z[0] + 200..BRIDGE_Z[1]).step_by(400) {
+        let (outer, inner) = (SHIP_X - BRIDGE_HALF + 25, SHIP_X + BRIDGE_HALF - 25);
+        for (x, y) in [
+            (outer, FOREDECK_TOP),
+            (inner, FOREDECK_TOP),
+            (outer, STERN_TOP),
+        ] {
+            out.push(place(Module::HullSide, x, y, z, Turn::Quarter));
+        }
+        out.push(place(
+            Module::HullDeck,
+            SHIP_X,
+            STERN_TOP - 50,
+            z,
+            Turn::None,
+        ));
+    }
+    for x in [SHIP_X - 100, SHIP_X + 100] {
+        out.push(place(
+            Module::Ramp,
+            x,
+            FOREDECK_TOP,
+            BRIDGE_Z[0] - 400,
+            Turn::Half,
+        ));
+        out.push(place(
+            Module::Ramp,
+            x,
+            FOREDECK_TOP,
+            BRIDGE_Z[1] + 400,
+            Turn::None,
+        ));
+    }
+    // Masts at the prow's tip and midway along the bridge against its bulkhead; on the after deck a rib, a
+    // generator and the stern mast.
+    for (x, y, z) in [
+        (SHIP_X - 400, PROW_TOP, BOW_Z + 200),
+        (SHIP_X - 100, STERN_TOP, 800),
+        (SHIP_X - 300, FOREDECK_TOP, 2_650),
+    ] {
+        out.push(place(Module::HullMast, x, y, z, Turn::None));
+    }
+    out.push(place(
+        Module::HullRib,
+        SHIP_X - 200,
+        FOREDECK_TOP,
+        2_300,
+        Turn::None,
+    ));
+    out.push(place(
+        Module::Generator,
+        SHIP_X + 200,
+        FOREDECK_TOP,
+        2_550,
+        Turn::None,
+    ));
+}
+
+/// A dock gantry in the west berth: a 4 m walkway along the hull, a 16 m ramp down from each
+/// end and gangways over the shoulder onto the foredeck at `gangways`.
+fn gantry(out: &mut Vec<Placement>, gangways: [i32; 2]) {
     for z in (-GANTRY_Z + 100..GANTRY_Z).step_by(200) {
         out.push(place(
             Module::Walkway,
@@ -269,8 +404,7 @@ fn gantry(out: &mut Vec<Placement>) {
             }
         }
     }
-    // The gangways over the shoulder.
-    for z in [-1_000, 600] {
+    for z in gangways {
         out.push(place(
             Module::Walkway,
             SHIP_X + HULL_HALF - 100,
@@ -279,27 +413,46 @@ fn gantry(out: &mut Vec<Placement>) {
             Turn::None,
         ));
     }
-    // Low cover along its corridor edge.
-    out.push(
-        place(
-            Module::CoverLow,
-            GANTRY_X + 130,
-            GANTRY_TOP,
-            -500,
-            Turn::Quarter,
-        )
-        .destructible(),
-    );
-    out.push(
-        place(
-            Module::CoverLow,
-            GANTRY_X + 130,
-            GANTRY_TOP,
-            500,
-            Turn::Quarter,
-        )
-        .destructible(),
-    );
+}
+
+/// The freighter's gantry: gangways by its foredeck's ribs, low cover along its corridor edge.
+fn freighter_gantry(out: &mut Vec<Placement>) {
+    gantry(out, [-1_000, 600]);
+    for z in [-500, 500] {
+        out.push(
+            place(
+                Module::CoverLow,
+                GANTRY_X + 130,
+                GANTRY_TOP,
+                z,
+                Turn::Quarter,
+            )
+            .destructible(),
+        );
+    }
+}
+
+/// The cutter's gantry (in the west berth): gangways onto the foredeck before the bridge and
+/// beside it, stacked crates and a barrier along its corridor edge.
+fn cutter_gantry(out: &mut Vec<Placement>) {
+    gantry(out, [-800, 800]);
+    for (z, y) in [(-340, 0), (-260, 0), (-300, 80)] {
+        out.push(
+            place(Module::Crate, GANTRY_X + 140, GANTRY_TOP + y, z, Turn::None).destructible(),
+        );
+    }
+    for z in [300, 900] {
+        out.push(
+            place(
+                Module::Barrier,
+                GANTRY_X + 130,
+                GANTRY_TOP,
+                z,
+                Turn::Quarter,
+            )
+            .destructible(),
+        );
+    }
 }
 
 /// The west half's dock floor: the corridor's west half, the outer lane and the west ends of
@@ -337,36 +490,61 @@ fn floor(out: &mut Vec<Placement>) {
     out.push(place(Module::Crate, -3_600, 0, 3_500, Turn::None).destructible());
 }
 
-/// The west half's placements (the east half is the same turned half a turn).
+/// The west half's placements: the freighter, its gantry and the dock floor.
 fn west() -> Vec<Placement> {
     let mut out = Vec::new();
-    hull(&mut out);
-    gantry(&mut out);
+    freighter(&mut out);
+    freighter_gantry(&mut out);
     floor(&mut out);
     out
 }
+
+/// The east half's placements as they would lie in the west (they are turned half a turn into
+/// the east): the cutter, its gantry and the dock floor.
+fn east() -> Vec<Placement> {
+    let mut out = Vec::new();
+    cutter(&mut out);
+    cutter_gantry(&mut out);
+    floor(&mut out);
+    out
+}
+
+/// The outer lane's pads, thrown over the hull's shoulder: the freighter's onto its foredeck, 12 m
+/// from its centre line, and (shooter#153) onto its stern deck, 15.5 m from it by the wall, off the
+/// lane bots walk (they would be thrown up by chance); the cutter's (in the west berth) onto its
+/// foredeck before the bridge, 12.5 m from it.
+const FREIGHTER_PADS: [JumpPad; 2] = [
+    JumpPad {
+        center: Vec3i::new(-3_400, 0, -600),
+        half: [80, 80],
+        launch: Vec3i::new(900, 1_500, 0),
+    },
+    JumpPad {
+        center: Vec3i::new(-3_750, 0, 1_000),
+        half: [80, 80],
+        launch: Vec3i::new(975, 1_800, 510),
+    },
+];
+const CUTTER_PADS: [JumpPad; 1] = [JumpPad {
+    center: Vec3i::new(-3_450, 0, -800),
+    half: [80, 80],
+    launch: Vec3i::new(900, 1_500, 0),
+}];
 
 impl Arena {
     /// The drydock ([`crate::drydock`]): the large arena, built from the arena kit.
     #[must_use]
     pub fn drydock() -> Self {
-        let west = west();
         let placements: Vec<Placement> = perimeter()
             .into_iter()
-            .chain(west.iter().copied())
-            .chain(west.iter().map(|placement| placement.turned_half()))
+            .chain(west())
+            .chain(east().into_iter().map(Placement::turned_half))
             .collect();
         let pieces = arena_kit::pieces(&placements);
-        // In the outer lane, 7 m from the hull: over the shoulder onto the foredeck.
-        let west_pads = [JumpPad {
-            center: Vec3i::new(-3_400, 0, -600),
-            half: [80, 80],
-            launch: Vec3i::new(900, 1_500, 0),
-        }];
-        let pads = west_pads
+        let pads = FREIGHTER_PADS
             .iter()
             .copied()
-            .chain(west_pads.iter().map(|pad| JumpPad {
+            .chain(CUTTER_PADS.iter().map(|pad| JumpPad {
                 center: turned(pad.center),
                 launch: Vec3i::new(-pad.launch.x, pad.launch.y, -pad.launch.z),
                 ..*pad
@@ -386,19 +564,22 @@ impl Arena {
             .collect();
         let west_spawns = [
             // The outer lane, north of its north container.
-            spawn_at([-3_550, 0, -2_350], 0),
+            spawn_at([-3_550, 0, -2_350], 24_576),
             // The outer lane, south of its south container.
-            spawn_at([-3_550, 0, 2_300], 32_768),
+            spawn_at([-3_550, 0, 2_300], 8_192),
             // The bow lane, behind the container across the bow.
             spawn_at([SHIP_X, 0, -3_850], 16_384),
-            // The stern lane, behind the container across the stern.
-            spawn_at([-2_050, 0, 3_650], 16_384),
-            // The corridor, north of its container.
-            spawn_at([-700, 0, -2_500], 0),
-            // The corridor, behind its barrier.
-            spawn_at([-1_000, 0, 1_100], 16_384),
-            // The corridor, in the pylon's lee.
-            spawn_at([-250, 0, 500], 0),
+            // The stern lane, behind the container across the stern, midway to the wall (shooter#153:
+            // 1 m from the container, a chassis turning in place caught on it).
+            spawn_at([-2_300, 0, 3_720], 16_384),
+            // The corridor, north of its container, facing the open corridor (shooter#153: it faced
+            // the container 2 m off, where a wheeled robot turned in place for 20 s, shooter#170).
+            spawn_at([-700, 0, -2_500], 16_384),
+            // The corridor, behind its barrier, facing south along it (its way out; it faced east).
+            spawn_at([-1_000, 0, 1_100], 0),
+            // The corridor, in the pylon's lee, facing north-west past it (a car facing south backed
+            // into it).
+            spawn_at([-300, 0, 500], 40_960),
         ];
         let spawns = west_spawns[1..]
             .iter()
@@ -408,12 +589,10 @@ impl Arena {
                 yaw: spawn.yaw.wrapping_add(32_768),
             }))
             .collect();
-        let west_waypoints = [
-            // The gantry: its north ramp's foot, its deck and its south ramp's foot.
-            Vec3i::new(GANTRY_X, 0, -3_200),
+        let freighter_waypoints = [
+            // The gantry's deck by the gangways.
             Vec3i::new(GANTRY_X, GANTRY_TOP, -1_000),
             Vec3i::new(GANTRY_X, GANTRY_TOP, 600),
-            Vec3i::new(GANTRY_X, 0, 3_200),
             // The foredeck, across the gangways, and the stern deck up its ramp.
             Vec3i::new(SHIP_X, FOREDECK_TOP, -2_600),
             Vec3i::new(SHIP_X, FOREDECK_TOP, -1_000),
@@ -421,6 +600,29 @@ impl Arena {
             Vec3i::new(SHIP_X, FOREDECK_TOP, 200),
             Vec3i::new(SHIP_X, STERN_TOP, 1_400),
             Vec3i::new(SHIP_X, STERN_TOP, 2_400),
+        ];
+        // The cutter's in the west berth.
+        let cutter_waypoints = [
+            // The gantry's deck by the gangways, and its bow ramp where the prow step meets it.
+            Vec3i::new(GANTRY_X, GANTRY_TOP, -800),
+            Vec3i::new(GANTRY_X, GANTRY_TOP, 800),
+            Vec3i::new(GANTRY_X, PROW_TOP, -2_200),
+            // The prow step by the gantry and before its ramp, the foredeck at the ramp's top,
+            // across the gangways and behind the bridge, and the bridge up its ramps.
+            Vec3i::new(SHIP_X + 400, PROW_TOP, -2_200),
+            Vec3i::new(SHIP_X, PROW_TOP, -2_400),
+            Vec3i::new(SHIP_X, FOREDECK_TOP, -1_100),
+            Vec3i::new(SHIP_X + 300, FOREDECK_TOP, -800),
+            Vec3i::new(SHIP_X, FOREDECK_TOP, -800),
+            Vec3i::new(SHIP_X + 300, FOREDECK_TOP, 800),
+            Vec3i::new(SHIP_X, FOREDECK_TOP, 2_100),
+            Vec3i::new(SHIP_X + 50, STERN_TOP, 500),
+            Vec3i::new(SHIP_X + 50, STERN_TOP, 1_100),
+        ];
+        let floor_waypoints = [
+            // The gantry's ramps' feet.
+            Vec3i::new(GANTRY_X, 0, -3_200),
+            Vec3i::new(GANTRY_X, 0, 3_200),
             // The corridor floor.
             Vec3i::new(-600, 0, -2_750),
             Vec3i::new(-1_000, 0, -1_000),
@@ -438,11 +640,19 @@ impl Arena {
             Vec3i::new(-3_000, 0, 3_750),
             Vec3i::new(-1_300, 0, 3_750),
         ];
-        let waypoints = west_waypoints
+        let waypoints = floor_waypoints
             .iter()
+            .chain(&freighter_waypoints)
             .copied()
-            .chain(west_waypoints.iter().copied().map(turned))
+            .chain(
+                floor_waypoints
+                    .iter()
+                    .chain(&cutter_waypoints)
+                    .copied()
+                    .map(turned),
+            )
             .collect();
+        // The rail capacitor by the pylon's foot, the thrusters on each ship's 6 m deck.
         let module_pads = vec![
             ModulePad {
                 center: Vec3i::new(-500, 0, -300),
@@ -453,7 +663,7 @@ impl Arena {
                 module: ArenaModule::Thrusters,
             },
             ModulePad {
-                center: turned(Vec3i::new(SHIP_X + 200, STERN_TOP, 2_200)),
+                center: turned(Vec3i::new(SHIP_X + 50, STERN_TOP, 700)),
                 module: ArenaModule::Thrusters,
             },
         ];

@@ -33,10 +33,10 @@ pub enum MapId {
     /// (shooter#53): a 32 m purpose-built combat test cell built from the arena kit, with a 2 m
     /// test stage, 3 m observation galleries and corner control booths.
     ProvingCell,
-    /// The drydock ([`Arena::drydock`]), the beta's large long-sightline arena (shooter#55): an
-    /// 80 m repurposed shipyard built from the arena kit, two docked spacecraft with walkable
-    /// hulls (a 4 m foredeck, a 6 m stern deck) flanking a central industrial corridor with 4 m
-    /// dock gantries.
+    /// The drydock ([`Arena::drydock`]), the beta's large long-sightline arena (shooter#55, #153):
+    /// an 80 m repurposed shipyard built from the arena kit, two distinct docked spacecraft with
+    /// walkable hulls (the freighter's 4 m foredeck and 6 m stern deck, the cutter's 2 m prow,
+    /// 4 m foredeck and 6 m bridge) flanking a central industrial corridor with 4 m dock gantries.
     Drydock,
 }
 
