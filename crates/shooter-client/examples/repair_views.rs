@@ -59,7 +59,7 @@ fn shoot(
     let mut overlay = Overlay::default();
     for _ in 0..2 {
         robots.update(&mut gpu.world, std::slice::from_ref(&view), 0.0)?;
-        let frame = scene::frame(eye, (center - eye).normalize(), Vec::new());
+        let mut frame = scene::frame(eye, (center - eye).normalize(), Vec::new());
         let mut ui = overlay.draw(
             Some(&Vitals::of(me, session.ticks())),
             SIZE.0,
@@ -67,7 +67,7 @@ fn shoot(
             0.016,
         );
         ui.extend(repair_panel(&menu.view(me), SIZE.1));
-        gpu.render(&frame, &ui, 0)?;
+        gpu.render(&mut frame, &ui, 0)?;
     }
     let (width, height, pixels) = gpu.read_frame()?;
     shooter_client::write_ppm(path, width, height, &pixels)?;

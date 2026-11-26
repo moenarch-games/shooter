@@ -9,7 +9,7 @@ use shooter_sim::damage::PartDamage;
 use shooter_sim::melee;
 use shooter_sim::physics::Vec3i;
 use shooter_sim::robot::parts::{CHASSIS_L, CHASSIS_S};
-use shooter_sim::robot::{ARMORY, HEAVY, MARKSMAN, PYRO, SKIRMISHER, STANDARD};
+use shooter_sim::robot::{ARMORY, HEAVY, MARKSMAN, PYRO, ROCKET_JUMPER, SKIRMISHER, STANDARD};
 use shooter_sim::scenarios;
 use shooter_sim::session::{SELF_SPLASH_PERCENT, body_of, slot_of};
 use shooter_sim::tour::run_legs;
@@ -359,20 +359,27 @@ fn the_reticle_shot_is_where_the_hosted_beam_goes() {
     for _ in 0..20 {
         step(&mut session, Intent::IDLE);
     }
-    // B's chassis, the pillar, the floor, nothing in range (the camera's aim at each).
+    // B's chassis, the pillar, the floor, nothing in range (the camera's aim at each), and
+    // whether the bolt meets B: aimed at the sky, past the rifle's convergence cone, it flies
+    // along its mount and meets B straight ahead (shooter#132).
     let chassis = at_chassis(&session, 0, 1);
     let eye = session.fighters[0].eye();
-    let aims: [((u16, i16), bool); 4] = [
-        (chassis, true),
+    let aims: [((u16, i16), bool, bool); 4] = [
+        (chassis, true, true),
         (
             aim::at(Some(&session.world), eye, [-100.0, 150.0, 0.0]),
             false,
+            false,
         ),
-        (aim::at(Some(&session.world), eye, [0.0, 0.0, 300.0]), false),
-        ((0, 4_000), false),
+        (
+            aim::at(Some(&session.world), eye, [0.0, 0.0, 300.0]),
+            false,
+            false,
+        ),
+        ((0, 4_000), false, true),
     ];
     let mut met = Vec::new();
-    for ((yaw, pitch), on_b) in aims {
+    for ((yaw, pitch), on_b, bolt_on_b) in aims {
         let aiming = Intent {
             yaw,
             pitch,
@@ -383,8 +390,17 @@ fn the_reticle_shot_is_where_the_hosted_beam_goes() {
         }
         let (shot, actual) = reticle_of(&session, yaw, pitch);
         assert_eq!(shot.target.fighter.is_some(), on_b, "{yaw} {pitch}");
-        assert_eq!(actual.fighter.is_some(), on_b, "{yaw} {pitch}");
-        assert_eq!(shot.blocked(&actual), None, "{yaw} {pitch}");
+        assert_eq!(actual.fighter.is_some(), bolt_on_b, "{yaw} {pitch}");
+        assert!(
+            !matches!(shot.lands(&actual), aim::Lands::Blocked(_)),
+            "{yaw} {pitch}"
+        );
+        if on_b != bolt_on_b {
+            assert!(
+                matches!(shot.lands(&actual), aim::Lands::Unreachable(_)),
+                "{yaw} {pitch}"
+            );
+        }
         let muzzle = session.fighters[0].muzzle(Weapon::EnergyRifle).unwrap();
         assert_eq!(shot.from, muzzle.at);
         step(
@@ -398,12 +414,12 @@ fn the_reticle_shot_is_where_the_hosted_beam_goes() {
         assert_eq!(from, shot.from, "{yaw} {pitch}");
         assert_eq!(end, actual.end, "{yaw} {pitch}");
         assert_eq!(struck, actual.met(), "{yaw} {pitch}");
-        assert_eq!(hit_b(&session), on_b, "{yaw} {pitch}");
-        if !on_b {
+        assert_eq!(hit_b(&session), bolt_on_b, "{yaw} {pitch}");
+        if !bolt_on_b {
             met.push(actual.scenery.hit.is_some());
         }
     }
-    assert_eq!(met, [true, true, false], "the pillar, the floor, the sky");
+    assert_eq!(met, [true, true], "the pillar, the floor");
 }
 
 /// Shots leave the mounted weapon's muzzle, not the eye: the rifle's beam, a rocket and a
@@ -572,9 +588,12 @@ fn cover_beside_the_muzzle_blocks_what_the_camera_sees() {
     );
 }
 
-/// Very close, the camera's target is still met from the muzzle: B a metre and a half off.
+/// Very close, the reticle still tells where the muzzle's bolt goes: B a metre and a half off,
+/// the camera over the right shoulder and the rifle low on the chassis' left, the target lies
+/// outside the rifle's convergence cone (shooter#132), so the bolt flies along its mount and the
+/// reticle marks where it lands; the host's beam goes there.
 #[test]
-fn a_very_close_target_is_hit_from_the_muzzle() {
+fn a_very_close_target_is_shot_where_the_reticle_says() {
     let arena = Arena {
         spawn: Vec3i::new(0, 0, -75),
         spawns: vec![Spawn {
@@ -597,7 +616,14 @@ fn a_very_close_target_is_hit_from_the_muzzle() {
         step(&mut session, aiming);
     }
     let (shot, actual) = reticle_of(&session, yaw, pitch);
-    assert!(shot.target.fighter.is_some() && actual.fighter.is_some());
+    assert!(shot.target.fighter.is_some());
+    assert_eq!(shot.reach, aim::Reach::Mount);
+    let lands = shot.lands(&actual);
+    assert_eq!(
+        matches!(lands, aim::Lands::Unreachable(_)),
+        actual.fighter.is_none(),
+        "{lands:?}"
+    );
     step(
         &mut session,
         Intent {
@@ -605,7 +631,9 @@ fn a_very_close_target_is_hit_from_the_muzzle() {
             ..aiming
         },
     );
-    assert!(hit_b(&session));
+    assert_eq!(hit_b(&session), actual.fighter.is_some());
+    let (_, end, _) = beam_of(&session);
+    assert_eq!(end, actual.end);
 }
 
 /// A (slot 0) and B (slot 1) face each other 2 m apart; B strafes for 24 ticks (out of the
@@ -843,7 +871,7 @@ fn rail_kills_score_and_the_round_ends_and_restarts() {
 fn a_rocket_jump_costs_health() {
     let scenario = scenarios::ROCKET_JUMP;
     let mut session = Session::new((scenario.arena)()).unwrap();
-    equip(&mut session, 0, HEAVY);
+    equip(&mut session, 0, ROCKET_JUMPER);
     run_legs(&mut session, scenario.legs).unwrap();
     let local = session.local();
     assert!(local.alive());
@@ -1164,10 +1192,11 @@ fn the_flame_ignites_before_it_burns_a_fighter() {
 /// with it, then takes up the flamethrower and burns B with that.
 #[test]
 fn the_pyro_fires_its_laser_and_its_flamethrower() {
-    // B stands 3 m in front of A: in the laser's reach and the flame's.
+    // B stands 5 m in front of A: in the laser's reach and the flame's, and far enough out that
+    // the fixed laser and flamethrower converge on the reticle within their cone (shooter#132).
     let arena = Arena {
         spawns: vec![Spawn {
-            feet: Vec3i::new(0, 0, -300),
+            feet: Vec3i::new(0, 0, -100),
             yaw: 32_768,
         }],
         ..duel_arena()

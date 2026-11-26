@@ -11,13 +11,14 @@
 //! what each one does and the Rapier A/B test runs each on both backends.
 
 use crate::arena::{Arena, Piece, Post};
+use crate::bindings::Motors;
 use crate::drydock::{FOREDECK_TOP, GANTRY_X, SHIP_X};
 use crate::physics::RampRise;
 use crate::physics::Vec3i;
 use crate::pickups::{ArenaModule, ModulePad};
 use crate::player::Intent;
 use crate::proving_cell::STAGE_TOP;
-use crate::robot::{Assembly, HEAVY, RAIL_RACK, ROCKET_POD, SKIRMISHER, TWIN_RAIL};
+use crate::robot::{Assembly, HEAVY, PartId, RAIL_RACK, ROCKET_POD, SKIRMISHER, TWIN_RAIL};
 use crate::tour::{EAST, Leg, NORTH, SOUTH, WEST, hold, stand, walk};
 use crate::weapons::{MAX_PITCH, Select, Weapon};
 
@@ -214,10 +215,15 @@ pub const STEP: Scenario = Scenario {
 /// Straight down.
 const DOWN: i16 = -MAX_PITCH;
 
+/// The rocket jump's launcher hinge ([`crate::robot::ROCKET_JUMPER`]) tracking the aim: its
+/// tracking binding held (shooter#132).
+const TRACK_LAUNCHER: Motors = Motors::track(PartId(7));
+
 /// A 2.5 m ledge 3.3 m south, 12 m wide: out of reach of a double jump (about 2 m), in reach of
-/// a rocket jump. Jump, fire a rocket down at the reticle (the camera looks down from over the
-/// right shoulder, so the blast lands beside the feet and shoves the robot sideways too), then
-/// steer onto the ledge.
+/// a rocket jump. A fixed launcher keeps its mount's direction (shooter#132), so the scenario is
+/// the [`crate::robot::ROCKET_JUMPER`]'s: look down with its hinge tracking the aim until the
+/// launcher points at the floor, jump and fire (past the hinge's quarter turn the rocket flies
+/// along the launcher, straight down beside the feet), then steer onto the ledge.
 pub const ROCKET_JUMP: Scenario = Scenario {
     name: "rocket jump onto a ledge",
     arena: || open([0, 0, -330], vec![block([0, 125, 600], [600, 125, 600])]),
@@ -226,10 +232,12 @@ pub const ROCKET_JUMP: Scenario = Scenario {
             "take the launcher",
             Intent {
                 yaw: SOUTH,
+                pitch: DOWN,
                 select: Some(Select::Weapon(Weapon::RocketLauncher)),
+                motors: TRACK_LAUNCHER,
                 ..Intent::IDLE
             },
-            20,
+            40,
         ),
         hold(
             "jump and fire down",
@@ -238,6 +246,7 @@ pub const ROCKET_JUMP: Scenario = Scenario {
                 pitch: DOWN,
                 jump: true,
                 fire: true,
+                motors: TRACK_LAUNCHER,
                 ..Intent::IDLE
             },
             1,
@@ -247,6 +256,7 @@ pub const ROCKET_JUMP: Scenario = Scenario {
             Intent {
                 yaw: SOUTH,
                 pitch: DOWN,
+                motors: TRACK_LAUNCHER,
                 ..Intent::IDLE
             },
             8,
@@ -357,7 +367,14 @@ pub const SHOOTING_RANGE: Scenario = Scenario {
         arena
     },
     legs: &[
-        stand("settle", 10),
+        hold(
+            "settle",
+            Intent {
+                yaw: SOUTH,
+                ..Intent::IDLE
+            },
+            30,
+        ),
         shoot("rifle the middle", SOUTH, Weapon::EnergyRifle, 60),
         aim_with("take the rail gun", SOUTH, Weapon::RailGun, 12),
         shoot("rail the middle", SOUTH, Weapon::RailGun, 1),
@@ -391,9 +408,24 @@ pub const CLOSE_RANGE: Scenario = Scenario {
         arena
     },
     legs: &[
-        stand("settle", 10),
+        hold(
+            "settle",
+            Intent {
+                yaw: SOUTH,
+                ..Intent::IDLE
+            },
+            30,
+        ),
         aim_with("take the flamethrower", SOUTH, Weapon::Flamethrower, 12),
         shoot("flame the south", SOUTH, Weapon::Flamethrower, 45),
+        // Its flamethrower is fixed on its front: the robot turns to the pillar before it
+        // burns there (shooter#132).
+        aim_with(
+            "turn to the pillar",
+            yaw_to(-300, -200),
+            Weapon::Flamethrower,
+            15,
+        ),
         shoot(
             "flame the pillar",
             yaw_to(-300, -200),
