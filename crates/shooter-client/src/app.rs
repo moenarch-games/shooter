@@ -1,7 +1,7 @@
 //! The window, the fixed-tick loop and the frame: input in, the match ticks (in-process practice
 //! or a hosted match), render out.
 
-use crate::arena_art::{ArenaArt, Placed};
+use crate::arena_art::ArenaArt;
 use crate::audio::Sounds;
 use crate::builder::view::{Action, Builder, Stage, death_prompt};
 use crate::camera::{self, Follow};
@@ -10,10 +10,13 @@ use crate::effects::Effects;
 use crate::game::Game;
 use crate::gpu::Gpu;
 use crate::hud::{Hud, HudText};
+use crate::menu::{Choice, Menu, Previews};
 use crate::overlay::{Overlay, Vitals, repair_panel};
 use crate::repair_menu::RepairMenu;
 use crate::robots::{self, RobotState, RobotView, Robots, track::Tracker};
-use crate::scene::{self, Actors, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT, SWING_SECONDS};
+use crate::scene::{
+    self, Actors, DrawnArena, EYE_ABOVE_CENTER, FighterView, METRES_PER_UNIT, SWING_SECONDS,
+};
 use render_engine::glam::{Mat4, Vec3};
 use shooter_sim::damage::{Hitboxes, PartDamage};
 use shooter_sim::physics::Vec3i;
@@ -63,6 +66,24 @@ fn fetch_kit(bundles: &'static [robots::kit::Bundle]) -> KitInbox {
 /// Never simulate more than this many ticks in one frame (after a stall, time is dropped).
 const MAX_TICKS_PER_FRAME: u32 = 8;
 
+/// How long a match started from the menu says what it is (and always while the pointer is
+/// free).
+const MATCH_LABEL_SECONDS: f32 = 6.0;
+
+/// `build` if the beta catalog takes it, else the standard build: a match from the menu always
+/// starts on a valid robot.
+fn valid_or_standard(build: shooter_sim::Assembly) -> shooter_sim::Assembly {
+    match shooter_sim::robot::BETA.validate(&build.candidate()) {
+        Ok(build) => build,
+        Err(error) => {
+            crate::log(&format!(
+                "the build is refused ({error}): the standard build plays"
+            ));
+            shooter_sim::Assembly::default()
+        }
+    }
+}
+
 /// Standing eye height (units) as `f32`.
 #[allow(clippy::cast_precision_loss)]
 const EYE: f32 = EYE_HEIGHT_UNITS as f32;
@@ -97,11 +118,36 @@ pub struct App {
     stage: Option<Staged>,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
-    game: Game,
-    /// The map drawn in the GPU's world, once the game knows it and the GPU is up.
+    /// The match, while one plays; none in the main menu and the Workshop (shooter#154).
+    game: Option<Game>,
+    /// The main menu: shown while there is neither a match nor the builder.
+    menu: Menu,
+    /// The maps' previews in the GPU's world, once it is up.
+    previews: Option<Previews>,
+    /// The robot the next match from the menu plays (the Workshop's Done, the last Ready), and
+    /// its control layout is the driver's.
+    active: shooter_sim::Assembly,
+    /// Seconds the menu's live view has run (its camera's slow turn).
+    menu_seconds: f32,
+    /// What the match started from the menu is (Play Online's bot match says it is offline),
+    /// and seconds since it started.
+    match_label: Option<String>,
+    match_seconds: f32,
+    /// The pointer in the window's pixels (the Leave button while the pointer is free).
+    cursor: render_engine::glam::Vec2,
+    /// The map drawn in the GPU's world (the match's, or the menu's live view's), once the GPU
+    /// is up, and where its robot stands in the menu's view.
     drawn: Option<MapId>,
-    /// Its kit-built modules, drawn as the match's snapshots say they stand (broken or whole).
-    placed: Option<Placed>,
+    backdrop: Backdrop,
+    /// Its instances; its kit-built modules drawn as the match's snapshots say they stand
+    /// (broken or whole).
+    arena: Option<DrawnArena>,
+    /// What the page last published of the menu or match (`window.shooterMenu`).
+    #[cfg(target_arch = "wasm32")]
+    menu_readout: String,
+    /// What the page shows (`data-menu` on its body while the menu or Workshop is open).
+    #[cfg(target_arch = "wasm32")]
+    page_menu: bool,
     controls: Controls,
     look: Look,
     pads: Option<gilrs::Gilrs>,
@@ -246,21 +292,83 @@ impl Driver {
     }
 }
 
+/// Where the menu's live view stands the person's robot in the drawn arena (metres): its centre
+/// on open floor (on the assembly works the floor west of the bridge, looking in along it as
+/// `--example arena_views` does; elsewhere by the spawn point nearest the middle), the flat way
+/// from it to the camera, and the arena's half size.
+#[derive(Clone, Copy, Debug, Default)]
+struct Backdrop {
+    robot: Vec3,
+    view: Vec3,
+    half: f32,
+}
+
+impl Backdrop {
+    fn of(map: MapId, arena: &shooter_sim::Arena) -> Self {
+        #[allow(clippy::cast_precision_loss)]
+        let half = arena.half_size as f32 * METRES_PER_UNIT;
+        let (feet, view) = if map == MapId::AssemblyWorks {
+            (Vec3::new(-9.5, 0.0, 1.0), Vec3::new(-1.0, 0.0, 0.35))
+        } else {
+            let spawn = arena
+                .spawn_points()
+                .into_iter()
+                .min_by_key(|spawn| i64::from(spawn.feet.x).pow(2) + i64::from(spawn.feet.z).pow(2))
+                .unwrap_or(shooter_sim::arena::Spawn {
+                    feet: arena.spawn,
+                    yaw: arena.spawn_yaw,
+                });
+            #[allow(clippy::cast_precision_loss)]
+            let feet = Vec3::new(
+                spawn.feet.x as f32,
+                spawn.feet.y as f32,
+                spawn.feet.z as f32,
+            ) * METRES_PER_UNIT;
+            (feet, -Vec3::new(feet.x, 0.0, feet.z))
+        };
+        Self {
+            robot: feet + Vec3::Y * robots::pose::HALF_HEIGHT,
+            view: view.try_normalize().unwrap_or(Vec3::Z),
+            half,
+        }
+    }
+}
+
 impl App {
+    /// The app on `game`, or (none) on the main menu.
     #[must_use]
-    pub fn new(proxy: EventLoopProxy<GpuReady>, game: Game) -> Self {
+    pub fn new(proxy: EventLoopProxy<GpuReady>, game: Option<Game>) -> Self {
         let now = Instant::now();
-        let center = game.local_center().unwrap_or_default();
+        let center = game
+            .as_ref()
+            .and_then(Game::local_center)
+            .unwrap_or_default();
+        let yaw = game
+            .as_ref()
+            .and_then(Game::map)
+            .map_or(0, |map| map.arena().spawn_yaw);
         Self {
             proxy: Some(proxy),
             scripted: None,
             stage: None,
             window: None,
             gpu: None,
-            look: Look::new(radians(game.map().map_or(0, |map| map.arena().spawn_yaw))),
+            look: Look::new(radians(yaw)),
             game,
+            menu: Menu::with_robot(crate::prefs::platform(), &shooter_sim::Assembly::default()),
+            previews: None,
+            active: shooter_sim::Assembly::default(),
+            menu_seconds: 0.0,
+            match_label: None,
+            match_seconds: 0.0,
+            cursor: render_engine::glam::Vec2::ZERO,
             drawn: None,
-            placed: None,
+            backdrop: Backdrop::default(),
+            arena: None,
+            #[cfg(target_arch = "wasm32")]
+            menu_readout: String::new(),
+            #[cfg(target_arch = "wasm32")]
+            page_menu: false,
             controls: Controls::new(),
             pads: gilrs::Gilrs::new()
                 .inspect_err(|error| crate::log(&format!("gamepads unavailable: {error}")))
@@ -318,13 +426,26 @@ impl App {
         self
     }
 
+    /// The main menu's matches play `build` (`--loadout` / `?loadout`), until the Workshop or a
+    /// Ready changes it; a build the beta catalog refuses falls back to the standard one.
+    #[must_use]
+    pub fn with_active(mut self, build: shooter_sim::Assembly) -> Self {
+        self.active = valid_or_standard(build);
+        self.menu.set_robot(crate::menu::robot_line(&self.active));
+        self
+    }
+
     /// Opens the builder between lives on the build the robot comes back as: its respawn waits
     /// until Ready.
     fn edit_robot(&mut self) {
         if self.builder.is_some() {
             return;
         }
-        let build = self.game.configured().unwrap_or_default();
+        let build = self
+            .game
+            .as_ref()
+            .and_then(Game::configured)
+            .unwrap_or_default();
         self.builder = Some(
             Builder::new(build, Stage::BetweenLives).with_controls(self.driver.layout.as_ref()),
         );
@@ -334,27 +455,51 @@ impl App {
 
     /// Whether the local robot is dead in the match (its respawn counting down).
     fn local_dead(&self) -> bool {
-        let Some(slot) = self.game.local_slot() else {
+        let Some(game) = &self.game else {
             return false;
         };
-        self.game
-            .snapshot()
+        let Some(slot) = game.local_slot() else {
+            return false;
+        };
+        game.snapshot()
             .and_then(|snapshot| snapshot.slot(slot))
             .is_some_and(|me| !me.alive)
     }
 
     /// What the builder asked: Ready sends the build and takes the control layout (none: the
     /// build's preset). Before the match the match starts; between lives the builder waits
-    /// until the match shows the build configured.
+    /// until the match shows the build configured. In the Workshop, Done keeps the build for the
+    /// menu's next match and Back drops the edit; either returns to the menu.
     fn builder_action(&mut self, action: Option<Action>) {
-        let Some(Action::Ready(build, layout)) = action else {
+        let Some(action) = action else {
             return;
+        };
+        let workshop = self
+            .builder
+            .as_ref()
+            .is_some_and(|builder| builder.stage == Stage::Workshop);
+        let (build, layout) = match action {
+            Action::Back => {
+                if workshop {
+                    self.back_to_menu(None);
+                }
+                return;
+            }
+            Action::Ready(build, layout) => (build, layout),
         };
         match layout {
             Some(layout) => self.driver.adopt(layout),
             None => self.driver = Driver::default(),
         }
-        self.game.configure(build);
+        self.active = build;
+        self.menu.set_robot(crate::menu::robot_line(&build));
+        if workshop {
+            self.back_to_menu(None);
+            return;
+        }
+        if let Some(game) = &mut self.game {
+            game.configure(build);
+        }
         if self
             .builder
             .as_ref()
@@ -369,16 +514,174 @@ impl App {
     /// next tick lets go of Edit Robot and the robot comes back), or if the robot is alive
     /// again anyway (a new session after a reconnect).
     fn follow_builder(&mut self) {
-        let Some(builder) = &self.builder else {
+        let (Some(builder), Some(game)) = (&self.builder, &self.game) else {
             return;
         };
         if builder.stage != Stage::BetweenLives {
             return;
         }
-        let accepted = builder.ready.is_some() && builder.ready == self.game.configured();
-        if accepted || self.game.local_fighter().is_some() {
+        let accepted = builder.ready.is_some() && builder.ready == game.configured();
+        if accepted || game.local_fighter().is_some() {
             self.builder = None;
         }
+    }
+
+    /// What the menu asked for: a match against bots, the Workshop or a hosted match.
+    fn menu_choice(&mut self, choice: Option<Choice>) {
+        match choice {
+            None => {}
+            Some(Choice::Play {
+                map,
+                fighters,
+                online,
+            }) => {
+                let label = if online {
+                    format!(
+                        "Play Online: bot match, offline for now · {} · {fighters} fighters",
+                        crate::menu::map_name(map)
+                    )
+                } else {
+                    format!(
+                        "Practice · {} · {fighters} fighters",
+                        crate::menu::map_name(map)
+                    )
+                };
+                self.start_match(Game::bot_match(map, fighters), label);
+            }
+            Some(Choice::Workshop) => {
+                self.builder = Some(
+                    Builder::new(self.active, Stage::Workshop)
+                        .with_controls(self.driver.layout.as_ref()),
+                );
+            }
+            Some(Choice::Connect { url, certificate }) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                let trust =
+                    (!certificate.is_empty()).then(|| std::path::PathBuf::from(certificate));
+                #[cfg(target_arch = "wasm32")]
+                let trust = crate::parse_hash(&certificate);
+                let name = self.menu.prefs.name.clone();
+                let label = format!("Hosted match at {url}");
+                let game = Game::Online(Box::new(crate::game::online::Online::connect(
+                    url,
+                    trust,
+                    name.as_deref(),
+                )));
+                self.start_match(game, label);
+            }
+        }
+    }
+
+    /// Starts `game` from the menu with the active build and control layout, nothing of the
+    /// last match left over; `label` says what it is.
+    fn start_match(&mut self, game: Game, label: String) {
+        let game = game.with_loadout(self.active);
+        self.reset_match();
+        let yaw = game.map().map_or(0, |map| map.arena().spawn_yaw);
+        self.look = Look::new(radians(yaw));
+        let center = game.local_center().unwrap_or_default();
+        (self.previous_center, self.center) = (center, center);
+        self.game = Some(game);
+        self.builder = None;
+        #[cfg(target_arch = "wasm32")]
+        crate::web::set_mode(&format!("Click to play: {label}"));
+        self.match_label = Some(label);
+        self.last_frame = Instant::now();
+    }
+
+    /// Back to the main menu: the match (and its connection) ends, nothing of it is left drawn,
+    /// and the build, control layout, saved builds and preferences stay. `notice` says why, if
+    /// it was not the person's choice.
+    fn back_to_menu(&mut self, notice: Option<String>) {
+        self.game = None;
+        self.builder = None;
+        self.match_label = None;
+        self.reset_match();
+        self.capture(false);
+        self.menu.reopen();
+        self.menu.notice = notice;
+        self.menu.set_robot(crate::menu::robot_line(&self.active));
+        if let Some(gpu) = &mut self.gpu {
+            if let Some(actors) = &mut self.actors {
+                actors.update(&mut gpu.world, &[], &[], &[], None);
+            }
+            // The arena as authored again, nothing broken.
+            if let (Some(Ok(art)), Some(placed)) = (
+                &self.arena_art,
+                self.arena.as_ref().and_then(|arena| arena.placed.as_ref()),
+            ) {
+                art.show(&mut gpu.world, placed, &[]);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        crate::hud::show(&HudText::default(), &mut self.shown);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(window) = &self.window {
+            window.set_title("shooter");
+        }
+        self.last_frame = Instant::now();
+    }
+
+    /// Forgets everything a match left in the frame's state (the build, layout and drawn arena
+    /// stay).
+    fn reset_match(&mut self) {
+        self.hud = Hud::default();
+        self.selection = Selection::default();
+        self.repair_menu = RepairMenu::default();
+        self.shown = HudText::default();
+        self.board = false;
+        self.tracker = Tracker::default();
+        self.pending.clear();
+        self.glows.fill(0.0);
+        self.swings.fill(f32::INFINITY);
+        self.local_swing = f32::INFINITY;
+        self.accumulator = 0.0;
+        self.previous_eye = EYE;
+        self.eye = EYE;
+        self.follow = Follow::default();
+        self.precision = camera::Precision::default();
+        self.controls.release_all();
+        self.driver = Driver {
+            layout: self.driver.layout.take(),
+            ..Driver::default()
+        };
+        self.match_seconds = 0.0;
+    }
+
+    /// Whether the menu shows: no match and no builder.
+    fn in_menu(&self) -> bool {
+        self.game.is_none() && self.builder.is_none()
+    }
+
+    /// The match's Leave button (to the main menu) while the pointer is free, in the frame's
+    /// pixels.
+    fn leave_button(&self) -> Option<crate::menu::Rect> {
+        if self.game.is_none() || self.builder.is_some() || self.captured {
+            return None;
+        }
+        let (width, height) = self.gpu.as_ref()?.size();
+        Some(crate::menu::leave_button(width, height))
+    }
+
+    /// The pointer in the frame's pixels.
+    #[allow(clippy::cast_precision_loss)]
+    fn pointer_pixels(&self) -> render_engine::glam::Vec2 {
+        let (Some(window), Some(gpu)) = (&self.window, &self.gpu) else {
+            return self.cursor;
+        };
+        let size = window.inner_size();
+        let (width, height) = gpu.size();
+        self.cursor
+            * render_engine::glam::Vec2::new(
+                width as f32 / size.width.max(1) as f32,
+                height as f32 / size.height.max(1) as f32,
+            )
+    }
+
+    /// Whether the pointer is on the Leave button.
+    fn on_leave(&self) -> bool {
+        self.leave_button()
+            .is_some_and(|rect| rect.contains_pixels(self.pointer_pixels()))
     }
 
     /// The browser profile run ([`crate::web::Profile`]): `frames` animation frames of one
@@ -389,7 +692,10 @@ impl App {
         self.scripted = Some(0);
         self.profile = Some(crate::web::Profile::new(
             frames,
-            self.game.map().unwrap_or(MapId::DEFAULT),
+            self.game
+                .as_ref()
+                .and_then(Game::map)
+                .unwrap_or(MapId::DEFAULT),
         ));
         self
     }
@@ -413,14 +719,18 @@ impl App {
         };
         if profile.end(started) {
             // The cover broken by then (shooter#60), for captures to say what they show.
-            let broken: Vec<u16> = self.game.snapshot().map_or_else(Vec::new, |snapshot| {
-                snapshot
-                    .scenery
-                    .iter()
-                    .filter(|placeable| placeable.health == 0)
-                    .map(|placeable| placeable.id)
-                    .collect()
-            });
+            let broken: Vec<u16> =
+                self.game
+                    .as_ref()
+                    .and_then(Game::snapshot)
+                    .map_or_else(Vec::new, |snapshot| {
+                        snapshot
+                            .scenery
+                            .iter()
+                            .filter(|placeable| placeable.health == 0)
+                            .map(|placeable| placeable.id)
+                            .collect()
+                    });
             profile.finish(&broken);
             return false;
         }
@@ -432,18 +742,47 @@ impl App {
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn scripted(game: Game, gpu: Gpu) -> Self {
+        let mut app = Self::offscreen(Some(game), gpu);
+        app.scripted = Some(0);
+        app
+    }
+
+    /// The app drawing to the offscreen `gpu` with no window, event loop or gamepads: `game`,
+    /// or (none) the main menu, which [`Self::offscreen_frame`] and [`Self::click`] drive (the
+    /// `menu_views` example's captures).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn offscreen(game: Option<Game>, gpu: Gpu) -> Self {
         let now = Instant::now();
-        let center = game.local_center().unwrap_or_default();
+        let center = game
+            .as_ref()
+            .and_then(Game::local_center)
+            .unwrap_or_default();
+        let yaw = game
+            .as_ref()
+            .and_then(Game::map)
+            .map_or(0, |map| map.arena().spawn_yaw);
         let mut app = Self {
             proxy: None,
-            scripted: Some(0),
+            scripted: None,
             stage: None,
             window: None,
             gpu: None,
-            look: Look::new(radians(game.map().map_or(0, |map| map.arena().spawn_yaw))),
+            look: Look::new(radians(yaw)),
             game,
+            menu: Menu::with_robot(
+                std::rc::Rc::new(crate::prefs::MemoryPrefs::default()),
+                &shooter_sim::Assembly::default(),
+            ),
+            previews: None,
+            active: shooter_sim::Assembly::default(),
+            menu_seconds: 0.0,
+            match_label: None,
+            match_seconds: 0.0,
+            cursor: render_engine::glam::Vec2::ZERO,
             drawn: None,
-            placed: None,
+            backdrop: Backdrop::default(),
+            arena: None,
             controls: Controls::new(),
             pads: None,
             sounds: Sounds::new(),
@@ -513,10 +852,102 @@ impl App {
         self.gpu.as_ref()
     }
 
+    /// One frame of `seconds` of an offscreen app ([`Self::offscreen`]).
+    ///
+    /// # Errors
+    ///
+    /// If the match fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn offscreen_frame(&mut self, seconds: f32) -> Result<(), String> {
+        if self.advance(Instant::now(), seconds) {
+            Ok(())
+        } else {
+            Err("the match failed".into())
+        }
+    }
+
+    /// A click (the primary button down and up) at `x`, `y` in an offscreen app's frame
+    /// pixels, as a person's on the menu, the Workshop or a match's Leave button.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn click(&mut self, x: f32, y: f32) {
+        self.cursor = render_engine::glam::Vec2::new(x, y);
+        self.menu.cursor_moved(x, y);
+        if self.in_menu() {
+            self.menu.mouse(true);
+            let choice = self.menu.mouse(false);
+            self.menu_choice(choice);
+        } else if let Some(builder) = &mut self.builder {
+            builder.cursor_moved(x, y);
+            let pressed = builder.mouse(false, true);
+            let released = builder.mouse(false, false);
+            self.builder_action(pressed.or(released));
+        } else if self.on_leave() {
+            self.back_to_menu(None);
+        }
+    }
+
+    /// A key pressed (and typed) in an offscreen app, as a person's on the menu or the Workshop.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn press(&mut self, code: KeyCode) {
+        if self.in_menu() {
+            let choice = self.menu.key(code, None);
+            self.menu_choice(choice);
+        } else if let Some(builder) = &mut self.builder {
+            let action = builder.key(code);
+            self.builder_action(action);
+        }
+    }
+
+    /// `text` typed in an offscreen app's menu (into the field being edited).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn type_text(&mut self, text: &str) {
+        for character in text.chars() {
+            self.menu.key(KeyCode::KeyA, Some(&character.to_string()));
+        }
+    }
+
+    /// Whether an offscreen app's match is on a host and has been admitted (its snapshots name
+    /// the map), and its status line.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn hosted(&self) -> Option<(bool, Option<String>)> {
+        match &self.game {
+            Some(game @ Game::Online(_)) => Some((
+                game.local_slot().is_some(),
+                game.status().map(str::to_owned),
+            )),
+            _ => None,
+        }
+    }
+
+    /// The menu's readout ([`Menu::readout`]): where its items are, in an offscreen app's frame
+    /// pixels; none outside the menu.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn menu_readout(&self) -> Option<String> {
+        self.in_menu().then(|| self.menu.readout())
+    }
+
+    /// The Leave button of an offscreen app's match while the pointer is free (frame pixels).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn leave_at(&self) -> Option<render_engine::glam::Vec2> {
+        self.leave_button().map(crate::menu::Rect::centre)
+    }
+
+    /// The match's map and fighters, while one plays.
+    #[must_use]
+    pub fn playing(&self) -> Option<(Option<MapId>, Option<usize>)> {
+        self.game.as_ref().map(|game| (game.map(), game.slots()))
+    }
+
     /// The GPU is up: the effects and actors go into its world (and the arena, once known).
     fn attach(&mut self, mut gpu: Gpu) {
         self.effects = Some(Effects::new(&mut gpu.world));
         self.actors = Some(Actors::new(&mut gpu.world));
+        self.previews = Previews::new(&mut gpu.world)
+            .inspect_err(|error| crate::log(error))
+            .ok();
         #[cfg(not(target_arch = "wasm32"))]
         self.robots_ready(&mut gpu, robots::load::read());
         #[cfg(not(target_arch = "wasm32"))]
@@ -598,19 +1029,37 @@ impl App {
             .then(|| format!("{error}: the arena is drawn as boxes"))
     }
 
-    /// Puts the match's arena into the GPU's world the first time both are there (and, for a
-    /// kit-built map, once the arena kit is read or has failed). A host keeps a match on one
-    /// map, so it is drawn once.
+    /// Puts the match's arena into the GPU's world once both are there (a host keeps a match
+    /// on one map), or in the menu its live view's.
     fn draw_map(&mut self) {
-        let (Some(gpu), Some(map), None) = (&mut self.gpu, self.game.map(), self.drawn) else {
+        let map = match &self.game {
+            Some(game) => game.map(),
+            None => Some(self.menu.backdrop()),
+        };
+        if let Some(map) = map {
+            self.show_arena(map);
+        }
+    }
+
+    /// Draws `map`'s arena in the GPU's world in place of the one there (for a kit-built map,
+    /// once the arena kit is read or has failed).
+    fn show_arena(&mut self, map: MapId) {
+        if self.drawn == Some(map) {
+            return;
+        }
+        let Some(gpu) = &mut self.gpu else {
             return;
         };
         let arena = map.arena();
         if !arena.placements.is_empty() && self.arena_art.is_none() {
             return;
         }
+        if let Some(old) = self.arena.take() {
+            old.remove(&mut gpu.world);
+        }
         let art = self.arena_art.as_ref().and_then(|art| art.as_ref().ok());
-        self.placed = scene::build(&mut gpu.world, &arena, art);
+        self.arena = Some(scene::build(&mut gpu.world, &arena, art));
+        self.backdrop = Backdrop::of(map, &arena);
         self.drawn = Some(map);
     }
 
@@ -619,13 +1068,155 @@ impl App {
     fn show_scenery(&mut self) {
         let (Some(gpu), Some(placed), Some(Ok(art)), Some(snapshot)) = (
             &mut self.gpu,
-            &self.placed,
+            self.arena.as_ref().and_then(|arena| arena.placed.as_ref()),
             &self.arena_art,
-            self.game.snapshot(),
+            self.game.as_ref().and_then(Game::snapshot),
         ) else {
             return;
         };
         art.show(&mut gpu.world, placed, &snapshot.scenery);
+    }
+
+    /// One frame of the main menu: its live view (the arena it shows and the robot the next
+    /// match plays, the camera turning slowly round it; in Practice the chosen arena from above)
+    /// under the menu's items.
+    fn menu_frame(&mut self, seconds: f32) {
+        self.menu_seconds += seconds;
+        self.draw_map();
+        self.pending.clear();
+        let Some(gpu) = &mut self.gpu else {
+            return;
+        };
+        if let Some(window) = &self.window {
+            let size = window.inner_size();
+            self.menu.resize(size.width, size.height);
+        }
+        let spot = self.backdrop;
+        let drawn = self.drawn == Some(self.menu.backdrop());
+        let time = self.menu_seconds;
+        let (eye, target) = if self.menu.screen == crate::menu::Screen::Practice {
+            // The arena from high over it, turning.
+            let angle = 0.7 + time * 0.05;
+            (
+                Vec3::new(angle.cos(), 0.0, angle.sin()) * 0.8 * spot.half
+                    + Vec3::Y * 0.75 * spot.half,
+                Vec3::ZERO,
+            )
+        } else {
+            // The robot from in front, the arena behind it, the camera swaying slowly round it;
+            // the robot right of the menu's column.
+            let sway = 0.35 * (time * 0.12).sin();
+            let (sin, cos) = sway.sin_cos();
+            let back = Vec3::new(
+                spot.view.x * cos - spot.view.z * sin,
+                0.0,
+                spot.view.x * sin + spot.view.z * cos,
+            );
+            let eye = spot.robot + back * 4.0 + Vec3::Y * 0.7;
+            let right = Vec3::Y.cross(back).normalize_or_zero();
+            (eye, spot.robot + Vec3::Y * 0.1 - right * 1.5)
+        };
+        let robot = drawn.then(|| RobotView {
+            slot: crate::builder::view::BENCH_SLOT,
+            build: self.active,
+            state: RobotState {
+                center: spot.robot,
+                forward: spot.view,
+                velocity: Vec3::ZERO,
+                sliding: false,
+                hook: None,
+                since_fired: f32::INFINITY,
+                fired: shooter_sim::Instance::default(),
+                tube: 0,
+                recent: robots::pose::Recent::NONE,
+                held: shooter_sim::robot::BETA
+                    .weapons(&self.active)
+                    .next()
+                    .unwrap_or_default(),
+                energy: 1.0,
+                swing: None,
+                dead_for: None,
+            },
+            glow: 0.0,
+            parts: robots::PartStates::default(),
+            highlight: None,
+        });
+        if let Some(robots) = &mut self.robots {
+            let views: Vec<RobotView> = robot.into_iter().collect();
+            if let Err(error) = robots.update(&mut gpu.world, &views, seconds) {
+                crate::log(&error);
+            }
+        }
+        let (width, height) = gpu.size();
+        let loading = if !drawn {
+            Some("Loading the arena")
+        } else if self.kit_status.is_some() {
+            Some("Loading the robot kit")
+        } else {
+            None
+        };
+        let ui = self
+            .menu
+            .frame(width, height, self.previews.as_ref(), loading);
+        let mut scene = scene::frame(eye, (target - eye).normalize_or(Vec3::NEG_Z), Vec::new());
+        if !drawn {
+            scene.clear_color = Vec3::new(0.05, 0.07, 0.1);
+        }
+        if let Err(error) = gpu.render(&mut scene, &ui, 0) {
+            crate::log(&error);
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.publish(self.menu.readout());
+    }
+
+    /// `window.shooterMenu = <json>`, when it changed: what the menu (or the match, or the
+    /// Workshop) shows, for scripted checks of the page.
+    #[cfg(target_arch = "wasm32")]
+    fn publish(&mut self, readout: String) {
+        if readout != self.menu_readout {
+            crate::web::publish_menu(&readout);
+            self.menu_readout = readout;
+        }
+    }
+
+    /// What a match shows for scripted checks: its map, fighters, label and the Leave button.
+    #[cfg(target_arch = "wasm32")]
+    fn match_readout(&self) -> String {
+        let game = self.game.as_ref();
+        let leave = self.leave_button().map(|rect| {
+            let at = rect.centre();
+            let (Some(window), Some(gpu)) = (&self.window, &self.gpu) else {
+                return serde_json::json!({ "name": "Leave", "at": [at.x, at.y] });
+            };
+            let size = window.inner_size();
+            let (width, height) = gpu.size();
+            #[allow(clippy::cast_precision_loss)]
+            let scale = (
+                size.width as f32 / width.max(1) as f32,
+                size.height as f32 / height.max(1) as f32,
+            );
+            serde_json::json!({
+                "name": "Leave",
+                "at": [(at.x * scale.0).round(), (at.y * scale.1).round()],
+            })
+        });
+        serde_json::json!({
+            "screen": if self.builder.as_ref().is_some_and(|b| b.stage == Stage::Workshop) {
+                "Workshop"
+            } else {
+                "Match"
+            },
+            "map": game.and_then(Game::map).map(MapId::as_str),
+            "fighters": game.and_then(Game::slots),
+            "inProcess": game.is_some_and(Game::in_process),
+            "label": self.match_label,
+            "build": shooter_sim::wire::encode_build(&self.active)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            "targets": leave.into_iter().collect::<Vec<_>>(),
+        })
+        .to_string()
     }
 
     fn capture(&mut self, captured: bool) {
@@ -655,7 +1246,7 @@ impl App {
     fn poll_touch(&mut self) {
         let mut frame = crate::web::touch();
         // The builder has the screen while it is open: the touch controls let go until it closes.
-        frame.on &= self.builder.is_none();
+        frame.on &= self.builder.is_none() && self.game.is_some();
         if frame.on != self.touch.on() {
             // Tapping to play is the touch controls' capture: no pointer to lock.
             self.captured = frame.on;
@@ -684,7 +1275,7 @@ impl App {
                 .look
                 .map(|pixels| pixels * crate::touch::LOOK_COUNTS_PER_PIXEL);
             if dx != 0.0 || dy != 0.0 {
-                self.look.mouse(dx, dy);
+                self.look.mouse_scaled(dx, dy, self.menu.prefs.look_share());
                 self.driver.mouse(dx, dy);
             }
         }
@@ -750,7 +1341,10 @@ impl App {
                 // Staged once the local fighter is in the match, then held there.
                 Some(stage) => {
                     if tick == 1
-                        && let Err(error) = self.game.stage(stage.feet(), stage.yaw())
+                        && let Err(error) = self
+                            .game
+                            .as_mut()
+                            .map_or(Ok(()), |game| game.stage(stage.feet(), stage.yaw()))
                     {
                         crate::log(&format!("the staged scene: {error}"));
                     }
@@ -776,11 +1370,14 @@ impl App {
             // through it instead, and R there repairs the part chosen (the host decides too).
             let mut steps = self.controls.take_steps();
             let repair = self.repair_menu.tick(
-                self.game.local_fighter().map(|(me, _)| me),
+                self.game
+                    .as_ref()
+                    .and_then(Game::local_fighter)
+                    .map(|(me, _)| me),
                 repairs,
                 &mut steps,
             );
-            let select = match self.game.local_fighter() {
+            let select = match self.game.as_ref().and_then(Game::local_fighter) {
                 Some((me, _)) => self.selection.intent(
                     self.controls.selected(),
                     steps,
@@ -797,7 +1394,7 @@ impl App {
             // direct weapon buttons and groups fire (shooter#127; only with the mouse captured,
             // like the primary trigger).
             let mouse = self.driver.take_mouse();
-            let actions = match self.game.local_fighter() {
+            let actions = match self.game.as_ref().and_then(Game::local_fighter) {
                 Some((me, _)) => {
                     let pressed = self
                         .controls
@@ -845,7 +1442,10 @@ impl App {
                 destruct,
             }
         };
-        let tick = match self.game.tick(intent) {
+        let Some(game) = self.game.as_mut() else {
+            return true;
+        };
+        let tick = match game.tick(intent) {
             Ok(tick) => tick,
             Err(error) => {
                 crate::log(&format!("the match failed: {error}"));
@@ -853,9 +1453,9 @@ impl App {
             }
         };
         self.follow_builder();
-        let local = self.game.local_slot();
+        let local = self.game.as_ref().and_then(Game::local_slot);
         self.previous_eye = self.eye;
-        let target = if self.game.local_sliding() {
+        let target = if self.game.as_ref().is_some_and(Game::local_sliding) {
             SLIDE_EYE_HEIGHT_UNITS
         } else {
             EYE_HEIGHT_UNITS
@@ -869,7 +1469,7 @@ impl App {
             .events
             .iter()
             .any(|event| matches!(event, Event::Spawned { slot, .. } if Some(*slot) == local));
-        if let Some(center) = self.game.local_center() {
+        if let Some(center) = self.game.as_ref().and_then(Game::local_center) {
             if respawned {
                 self.previous_center = center;
                 self.follow.reset();
@@ -914,7 +1514,7 @@ impl App {
                 _ => {}
             }
         }
-        if let Some(snapshot) = self.game.snapshot() {
+        if let Some(snapshot) = self.game.as_ref().and_then(Game::snapshot) {
             self.hud.events(snapshot, &tick.events, local);
             if self.gpu.is_some() && self.effects.is_some() {
                 self.pending.push(Pending {
@@ -952,12 +1552,23 @@ impl App {
         self.controls.poll_pads(&pads);
         self.look.stick(&pads, seconds);
 
+        #[cfg(target_arch = "wasm32")]
+        if self.page_menu != (self.game.is_none()) {
+            self.page_menu = self.game.is_none();
+            crate::web::show_menu(self.page_menu);
+        }
+        if self.in_menu() {
+            self.menu_frame(seconds);
+            return true;
+        }
         let tick = 1.0 / f32::from(TICK_HZ);
-        // Before the match nothing plays: the match starts at Ready.
-        let setup = self
-            .builder
-            .as_ref()
-            .is_some_and(|builder| builder.stage == Stage::Setup);
+        // Before the match nothing plays: the match starts at Ready (and there is none in the
+        // Workshop).
+        let setup = self.game.is_none()
+            || self
+                .builder
+                .as_ref()
+                .is_some_and(|builder| builder.stage == Stage::Setup);
         self.accumulator = if setup {
             0.0
         } else {
@@ -1007,9 +1618,20 @@ impl App {
                     crate::web::publish_builder(&readout);
                     self.builder_readout = readout;
                 }
+                let readout = self.match_readout();
+                self.publish(readout);
             }
             return true;
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let readout = self.match_readout();
+            self.publish(readout);
+        }
+        let Some(game) = &self.game else {
+            return true;
+        };
+        self.match_seconds += seconds;
 
         let blend = self.accumulator / tick;
         let center = Vec3::from(self.previous_center).lerp(Vec3::from(self.center), blend);
@@ -1021,13 +1643,13 @@ impl App {
         let (_, right, _) = camera::basis(forward);
         self.sounds.listen(eye.to_array(), right.to_array());
         self.sounds.pump();
-        let camera = self.follow.place(self.game.world(), eye, forward, seconds);
+        let camera = self.follow.place(game.world(), eye, forward, seconds);
         // Precision aim (shooter#132): only with the pointer captured, like every other action.
         self.precision
             .update(self.captured && self.controls.aim_held(), seconds);
 
-        let local = self.game.local_slot();
-        let snapshot = self.game.snapshot();
+        let local = game.local_slot();
+        let snapshot = game.snapshot();
         // The physical debris where the host has it (shooter#75): its parts are drawn there, not
         // falling on their own.
         if let Some(snapshot) = snapshot {
@@ -1075,7 +1697,7 @@ impl App {
         // Every robot whose self-destruct counts down, and the ticks left: a warning light
         // pulses on it for everyone.
         let mut warnings: Vec<(Vec3, u32)> = Vec::new();
-        let alive = me.filter(|me| me.alive && self.game.local_center().is_some());
+        let alive = me.filter(|me| me.alive && game.local_center().is_some());
         // The robots' poses: each fighter shown alive, and the dead where they fell.
         let mut robot_views: Vec<RobotView> = Vec::new();
         #[allow(clippy::cast_precision_loss)]
@@ -1089,8 +1711,7 @@ impl App {
                 health: crate::hud::chassis_share(me),
                 glow: self.glows[usize::from(me.slot)],
                 held: me.held.weapon,
-                hook: self
-                    .game
+                hook: game
                     .local_hook()
                     .map(|hook| Vec3::from(hook) * METRES_PER_UNIT),
                 swing: swing_progress(self.local_swing),
@@ -1118,7 +1739,7 @@ impl App {
                         center: at,
                         forward,
                         velocity: moved * f32::from(TICK_HZ) * METRES_PER_UNIT,
-                        sliding: self.game.local_sliding(),
+                        sliding: game.local_sliding(),
                         hook: view.hook,
                         since_fired: self.tracker.since_fired(me.slot),
                         fired,
@@ -1132,8 +1753,7 @@ impl App {
                     glow: view.glow,
                     parts: robots::PartStates::default(),
                     // The part the repair menu points at, or the one under repair.
-                    highlight: self
-                        .game
+                    highlight: game
                         .local_fighter()
                         .and_then(|(fighter, _)| self.repair_menu.highlight(fighter)),
                 });
@@ -1147,7 +1767,7 @@ impl App {
                 continue;
             }
             let slot = usize::from(fighter.slot);
-            let drawn = self.game.other_center(fighter.slot, blend);
+            let drawn = game.other_center(fighter.slot, blend);
             let view = FighterView {
                 center: drawn.map(|center| Vec3::from(center) * METRES_PER_UNIT),
                 eye_above_center: EYE_ABOVE_CENTER,
@@ -1232,10 +1852,10 @@ impl App {
         // The reticle covers what the camera targets, a blocked marker where a shot fired now
         // from the held weapon's muzzle would stop short of it, and every gun's mark where its
         // own shot would land ([`camera::Reticle::aimed`]).
-        let reticle = match (alive, self.game.world()) {
+        let reticle = match (alive, game.world()) {
             (Some(me), Some(world)) => Some(camera::Reticle::aimed(&camera::Aiming {
                 world,
-                fighter: self.game.local_fighter().map(|(fighter, _)| fighter),
+                fighter: game.local_fighter().map(|(fighter, _)| fighter),
                 eye: (eye / METRES_PER_UNIT).to_array(),
                 held: me.held,
                 yaw: self.look.sim_yaw(),
@@ -1269,9 +1889,9 @@ impl App {
                     return None;
                 }
                 let exact = if Some(view.slot) == local {
-                    self.game.local_frames()
+                    game.local_frames()
                 } else {
-                    self.game.other_frames(view.slot, blend)
+                    game.other_frames(view.slot, blend)
                 };
                 exact.map(|frames| frames.at(view.state.center))
             })
@@ -1324,7 +1944,7 @@ impl App {
         }
         let mut text = self
             .hud
-            .text(snapshot, local, self.game.status(), self.board, seconds);
+            .text(snapshot, local, game.status(), self.board, seconds);
         text.robot = self
             .kit_status
             .clone()
@@ -1351,15 +1971,18 @@ impl App {
         let mut scene = scene::frame(camera, forward, point_lights);
         scene.camera.fov_y = self.precision.fov_y();
         // The drawn HUD: the held weapon (as predicted), the carried ones, chassis and energy.
-        let vitals = self
-            .game
-            .local_fighter()
-            .map(|(me, tick)| Vitals::of(me, tick));
+        let vitals = game.local_fighter().map(|(me, tick)| Vitals::of(me, tick));
         // And field repair: the quick menu, the repair under way or what there is to repair.
-        let repair = self
-            .game
+        let repair = game
             .local_fighter()
             .map(|(me, _)| self.repair_menu.view(me));
+        // While the pointer is free the way back to the menu, and for a while after the start
+        // (and while the pointer is free) what the match is.
+        let leave = self.leave_button().map(|rect| (rect, self.on_leave()));
+        let label = self
+            .match_label
+            .as_deref()
+            .filter(|_| leave.is_some() || self.match_seconds < MATCH_LABEL_SECONDS);
         let Some(gpu) = &mut self.gpu else {
             return true;
         };
@@ -1381,6 +2004,7 @@ impl App {
                 ticks, damage, width, height,
             ));
         }
+        ui.extend(crate::menu::match_items(width, height, leave, label));
         if let Some(actors) = &mut self.actors {
             actors.update(&mut gpu.world, &fighters, &rockets, &modules, reticle);
         }
@@ -1437,8 +2061,13 @@ impl ApplicationHandler<GpuReady> for App {
         if self.window.is_some() {
             return;
         }
+        let title = if self.game.is_some() {
+            "shooter — click to play"
+        } else {
+            "shooter"
+        };
         #[allow(unused_mut)]
-        let mut attributes = Window::default_attributes().with_title("shooter — click to play");
+        let mut attributes = Window::default_attributes().with_title(title);
         #[cfg(target_arch = "wasm32")]
         {
             use winit::platform::web::WindowAttributesExtWebSys;
@@ -1491,11 +2120,60 @@ impl ApplicationHandler<GpuReady> for App {
                 self.controls.release_all();
                 self.board = false;
             }
-            // The builder has the pointer and the keys while it is open.
+            // The builder has the pointer and the keys while it is open, the menu while it is.
             WindowEvent::CursorMoved { position, .. } => {
+                #[allow(clippy::cast_possible_truncation)]
+                let (x, y) = (position.x as f32, position.y as f32);
+                self.cursor = render_engine::glam::Vec2::new(x, y);
+                self.menu.cursor_moved(x, y);
                 if let Some(builder) = &mut self.builder {
-                    #[allow(clippy::cast_possible_truncation)]
-                    builder.cursor_moved(position.x as f32, position.y as f32);
+                    builder.cursor_moved(x, y);
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } if self.in_menu() => {
+                if button == MouseButton::Left {
+                    let choice = self.menu.mouse(state == ElementState::Pressed);
+                    self.menu_choice(choice);
+                }
+            }
+            // A finger is the left button: a tap acts.
+            WindowEvent::Touch(touch) if self.in_menu() => {
+                #[allow(clippy::cast_possible_truncation)]
+                self.menu
+                    .cursor_moved(touch.location.x as f32, touch.location.y as f32);
+                let choice = match touch.phase {
+                    TouchPhase::Started => self.menu.mouse(true),
+                    TouchPhase::Ended => self.menu.mouse(false),
+                    TouchPhase::Moved | TouchPhase::Cancelled => None,
+                };
+                self.menu_choice(choice);
+            }
+            WindowEvent::KeyboardInput { event, .. } if self.in_menu() => {
+                if let (PhysicalKey::Code(code), ElementState::Pressed) =
+                    (event.physical_key, event.state)
+                {
+                    let choice = self.menu.key(code, event.text.as_deref());
+                    self.menu_choice(choice);
+                }
+            }
+            // In a match with the pointer free: the Leave button goes back to the menu.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.on_leave() => self.back_to_menu(None),
+            WindowEvent::Touch(touch)
+                if touch.phase == TouchPhase::Started && self.leave_button().is_some() =>
+            {
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    self.cursor = render_engine::glam::Vec2::new(
+                        touch.location.x as f32,
+                        touch.location.y as f32,
+                    );
+                }
+                if self.on_leave() {
+                    self.back_to_menu(None);
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -1624,8 +2302,29 @@ impl ApplicationHandler<GpuReady> for App {
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
             && self.captured
         {
-            self.look.mouse_scaled(dx, dy, self.precision.sensitivity());
+            self.look.mouse_scaled(
+                dx,
+                dy,
+                self.precision.sensitivity() * self.menu.prefs.look_share(),
+            );
             self.driver.mouse(dx, dy);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use shooter_sim::robot::{ARMORY, HEAVY, STANDARD};
+
+    #[test]
+    fn the_menu_plays_a_valid_build_or_the_standard_one() {
+        assert_eq!(super::valid_or_standard(HEAVY), HEAVY);
+        // Over the beta's budget: refused, the standard build plays.
+        assert!(
+            shooter_sim::robot::BETA
+                .validate(&ARMORY.candidate())
+                .is_err()
+        );
+        assert_eq!(super::valid_or_standard(ARMORY), STANDARD);
     }
 }

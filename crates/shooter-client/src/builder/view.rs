@@ -75,14 +75,21 @@ pub enum Stage {
     Setup,
     /// The robot is dead and its respawn suspended until Ready (Atlas D2.i70.11).
     BetweenLives,
+    /// The main menu's Robot Workshop (shooter#154): no match. Ready (Done) keeps the build for
+    /// the next match, Back returns to the menu without it.
+    Workshop,
 }
 
 /// What the person asked of the match.
+// Returned once per press and matched at once: boxing the build would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
     /// Ready with this valid build and the control layout the person edited for it (none:
     /// they kept the build's preset, [`super::controls`]).
     Ready(Assembly, Option<Bindings>),
+    /// Back to the main menu, the bench's build left as it was before (the Workshop).
+    Back,
 }
 
 /// A clickable panel item.
@@ -103,6 +110,8 @@ pub enum Target {
     Undo,
     Redo,
     Ready,
+    /// Back to the main menu (the Workshop's).
+    Back,
     /// Opens or closes the controls panel in the inspector's place.
     Controls,
     /// A binding's row in the controls panel.
@@ -199,6 +208,7 @@ const SMALL: f32 = 2.0;
 /// A line of text.
 const LINE: f32 = 18.0;
 const READY_WIDTH: f32 = 196.0;
+const BACK_WIDTH: f32 = 120.0;
 /// The inspector's key help at its foot.
 const HELP: [&str; 7] = [
     "SHIFT+KEY: TURN BACK",
@@ -222,6 +232,8 @@ struct Layout {
     catalogue: Rect,
     inspector: Rect,
     bar: Rect,
+    /// The Workshop's Back button, left of Ready.
+    back: bool,
 }
 
 impl Layout {
@@ -243,7 +255,19 @@ impl Layout {
                 height,
             ),
             bar,
+            back: false,
         }
+    }
+
+    /// The Workshop's Back button: left of Ready, as tall.
+    fn back(&self) -> Rect {
+        let ready = self.ready();
+        Rect::new(
+            ready.x - BACK_WIDTH - 10.0,
+            ready.y,
+            BACK_WIDTH,
+            ready.height,
+        )
     }
 
     /// The power switch's row, each catalogue part's (a chassis once a size: the switch picks
@@ -425,6 +449,9 @@ impl Layout {
             Side::Parts => targets.extend(self.buttons()),
         }
         targets.push((self.ready(), Target::Ready));
+        if self.back {
+            targets.push((self.back(), Target::Back));
+        }
         targets
     }
 
@@ -706,7 +733,10 @@ impl Builder {
     fn layout(&self) -> Layout {
         #[allow(clippy::cast_precision_loss)]
         let width = self.size.0 as f32 / self.scale();
-        Layout::of(width)
+        Layout {
+            back: self.stage == Stage::Workshop,
+            ..Layout::of(width)
+        }
     }
 
     /// The pointer in the frame's pixels: the window's pixels scaled onto the drawn surface.
@@ -1111,6 +1141,7 @@ impl Builder {
                 let removed = self.bench.remove();
                 self.refused(removed);
             }
+            Target::Back => return Some(Action::Back),
             Target::Ready => {
                 if !self.can_ready() {
                     return None;
@@ -1284,12 +1315,15 @@ impl Builder {
             // Cancels a drag (nothing is placed when the button comes up), else drops what is in
             // hand, else deselects.
             KeyCode::Escape => {
+                let idle =
+                    !self.dragging && self.bench.hand.is_none() && self.bench.selected.is_none();
                 self.dragging = false;
                 if self.bench.hand.take().is_none() {
                     self.bench.selected = None;
                 }
                 self.notice = None;
-                None
+                // With nothing to let go of, the Workshop's Escape is Back.
+                (idle && self.stage == Stage::Workshop).then_some(Action::Back)
             }
             KeyCode::ArrowLeft | KeyCode::KeyA => {
                 self.azimuth += 0.15;
@@ -2043,6 +2077,7 @@ impl Builder {
         let stage = match self.stage {
             Stage::Setup => "BEFORE THE MATCH",
             Stage::BetweenLives => "DESTROYED: RESPAWN WAITS FOR READY",
+            Stage::Workshop => "ROBOT WORKSHOP: DONE PLAYS THIS BUILD NEXT",
         };
         painter.text(text_x, bar.y + 10.0, SMALL, stage, srgb(MUTED, 1.0));
         let (verdict, colour) = match self.bench.check() {
@@ -2091,10 +2126,10 @@ impl Builder {
                 painter.text(x + 8.0, at, SMALL, line, srgb(tone, 1.0));
             }
         }
-        let label = if self.ready.is_some() {
-            "WAITING FOR HOST"
-        } else {
-            "READY"
+        let label = match (self.ready.is_some(), self.stage) {
+            (true, _) => "WAITING FOR HOST",
+            (false, Stage::Workshop) => "DONE",
+            (false, _) => "READY",
         };
         button(
             painter,
@@ -2103,6 +2138,15 @@ impl Builder {
             self.target() == Some(Target::Ready),
             self.can_ready(),
         );
+        if layout.back {
+            button(
+                painter,
+                layout.back(),
+                "BACK",
+                self.target() == Some(Target::Back),
+                false,
+            );
+        }
     }
 }
 
@@ -2400,6 +2444,27 @@ mod tests {
             builder.bench.draft().parts().len(),
             STANDARD.parts().len() + 1
         );
+    }
+
+    #[test]
+    fn the_workshop_goes_back_to_the_menu_or_keeps_its_build_with_done() {
+        let mut builder = drawn(Stage::Workshop);
+        let back = builder.layout().back();
+        builder.cursor_moved(back.x + 5.0, back.y + 5.0);
+        assert_eq!(builder.target(), Some(Target::Back));
+        assert_eq!(builder.mouse(false, true), Some(Action::Back));
+        // Escape lets go of what is in hand first, then goes back.
+        builder.bench.hand = Some(BATTERY.id);
+        assert_eq!(builder.key(KeyCode::Escape), None);
+        assert_eq!(builder.key(KeyCode::Escape), Some(Action::Back));
+        assert_eq!(
+            builder.key(KeyCode::Enter),
+            Some(Action::Ready(STANDARD, None))
+        );
+        // Neither before the match nor between lives has Back.
+        let mut setup = drawn(Stage::Setup);
+        assert!(!setup.layout().back);
+        assert_eq!(setup.key(KeyCode::Escape), None);
     }
 
     #[test]

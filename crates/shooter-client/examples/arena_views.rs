@@ -10,7 +10,14 @@
 //!
 //! writes `overview.ppm` and `view-1.ppm`, `view-2.ppm`, … (the map's [`views`]) into the
 //! directory (default `target/arena-views`); the map defaults to `assembly-works` (or
-//! `proving-cell`, `drydock`).
+//! `proving-cell`, `drydock`). With `thumbnail` it writes only the main menu's preview of the
+//! map, `<map>.png` (shooter#154), as checked in under `crates/shooter-client/assets/maps`:
+//!
+//! ```text
+//! for map in proving-cell assembly-works drydock; do
+//!   cargo run -p shooter-client --release --example arena_views -- $map crates/shooter-client/assets/maps thumbnail
+//! done
+//! ```
 
 use render_engine::glam::Vec3;
 use shooter_client::arena_art::ArenaArt;
@@ -21,6 +28,53 @@ use shooter_sim::scenery::{PlaceableState, Scenery};
 use shooter_sim::{Instance, MapId, Weapon};
 
 const SIZE: (u32, u32) = (1600, 900);
+
+/// The main menu's map preview (`shooter_client::menu`): this size, drawn at twice it and
+/// averaged down.
+const THUMBNAIL: (u32, u32) = (400, 225);
+
+/// The main menu's preview of `map` (`crates/shooter-client/assets/maps/<map>.png`, shooter#154):
+/// the arena from high over its south-east corner, `half` metres from its middle to a wall.
+fn write_thumbnail(
+    gpu: &mut Gpu,
+    map: MapId,
+    half: f32,
+    out: &std::path::Path,
+) -> Result<(), String> {
+    let eye = Vec3::new(0.62 * half, 0.78 * half, 0.92 * half);
+    let target = Vec3::new(-0.08 * half, 0.0, -0.22 * half);
+    let mut scene = shooter_client::scene::frame(eye, (target - eye).normalize(), Vec::new());
+    gpu.render(&mut scene, &[], 0)?;
+    let (width, height, pixels) = gpu.read_frame()?;
+    let (out_width, out_height) = (width / 2, height / 2);
+    let mut rgb = Vec::with_capacity((out_width * out_height * 3) as usize);
+    for y in 0..out_height {
+        for x in 0..out_width {
+            for channel in 0..3 {
+                let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                    .iter()
+                    .map(|(dx, dy)| {
+                        let index = (((2 * y + dy) * width + 2 * x + dx) * 4 + channel) as usize;
+                        u32::from(pixels[index])
+                    })
+                    .sum();
+                rgb.push(u8::try_from(sum.div_ceil(4)).unwrap_or(u8::MAX));
+            }
+        }
+    }
+    let path = out.join(format!("{map}.png"));
+    let file = std::fs::File::create(&path).map_err(|error| error.to_string())?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), out_width, out_height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::High);
+    encoder
+        .write_header()
+        .and_then(|mut writer| writer.write_image_data(&rgb))
+        .map_err(|error| error.to_string())?;
+    println!("{}", path.display());
+    Ok(())
+}
 
 /// Where each view looks from and at (metres), for `map`.
 fn views(map: MapId) -> Vec<(Vec3, Vec3)> {
@@ -88,12 +142,19 @@ fn main() -> Result<(), String> {
         .map_or(Ok(MapId::AssemblyWorks), |id| id.parse())
         .map_err(|error| error.to_string())?;
     let out = std::path::PathBuf::from(args.next().unwrap_or_else(|| "target/arena-views".into()));
-    let broken = args.next().as_deref() == Some("broken");
+    let mode = args.next();
+    let broken = mode.as_deref() == Some("broken");
+    let thumbnail = mode.as_deref() == Some("thumbnail");
     std::fs::create_dir_all(&out).map_err(|error| error.to_string())?;
-    let mut gpu = Gpu::offscreen(SIZE.0, SIZE.1)?;
+    let mut gpu = if thumbnail {
+        Gpu::offscreen(2 * THUMBNAIL.0, 2 * THUMBNAIL.1)?
+    } else {
+        Gpu::offscreen(SIZE.0, SIZE.1)?
+    };
     let arena = map.arena();
     let art = ArenaArt::new(&mut gpu.world, robots::load::read_arena()?)?;
     let placed = shooter_client::scene::build(&mut gpu.world, &arena, Some(&art))
+        .placed
         .ok_or("the map is not kit-built")?;
     // `broken`: every damageable placeable drawn as the host draws it once it breaks.
     let scenery = Scenery::of(&arena);
@@ -150,6 +211,9 @@ fn main() -> Result<(), String> {
     robots.update(&mut gpu.world, &views_of, 0.0)?;
     #[allow(clippy::cast_precision_loss)]
     let half = arena.half_size as f32 * 0.01;
+    if thumbnail {
+        return write_thumbnail(&mut gpu, map, half, &out);
+    }
     let overview = (
         Vec3::new(0.0, 1.9 * half, 0.75 * half),
         Vec3::new(0.0, 0.0, 0.0),

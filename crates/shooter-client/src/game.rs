@@ -39,8 +39,29 @@ impl Game {
     /// If the map's arena does not build.
     #[must_use]
     pub fn practice(map: MapId) -> Self {
-        let session =
-            Session::on_map(map, Rules::practice(PRACTICE_SEED)).expect("a catalogued map builds");
+        Self::with_rules(map, Rules::practice(PRACTICE_SEED))
+    }
+
+    /// An in-process deathmatch on `map` with `fighters` slots, the local player in slot 0 and
+    /// bots in the rest (the main menu's Play Online and Practice, [`crate::menu`]): the
+    /// practice rules with that slot count, bounded by the map's spawn points.
+    ///
+    /// # Panics
+    ///
+    /// If the map's arena does not build.
+    #[must_use]
+    pub fn bot_match(map: MapId, fighters: u8) -> Self {
+        Self::with_rules(
+            map,
+            Rules {
+                slots: fighters.clamp(1, map.max_slots()),
+                ..Rules::practice(PRACTICE_SEED)
+            },
+        )
+    }
+
+    fn with_rules(map: MapId, rules: Rules) -> Self {
+        let session = Session::on_map(map, rules).expect("a catalogued map builds");
         let snapshot = session.snapshot();
         Self::Practice {
             session: Box::new(session),
@@ -58,17 +79,26 @@ impl Game {
     /// If the map's arena does not build.
     #[must_use]
     pub fn staged(map: MapId) -> Self {
-        let rules = Rules {
-            bots: false,
-            ..Rules::practice(PRACTICE_SEED)
-        };
-        let session = Session::on_map(map, rules).expect("a catalogued map builds");
-        let snapshot = session.snapshot();
-        Self::Practice {
-            session: Box::new(session),
-            snapshot: Box::new(snapshot),
-            others: Interpolation::new(1.0),
-        }
+        Self::with_rules(
+            map,
+            Rules {
+                bots: false,
+                ..Rules::practice(PRACTICE_SEED)
+            },
+        )
+    }
+
+    /// How many slots the match has, once known (online: the host's snapshots).
+    #[must_use]
+    pub fn slots(&self) -> Option<usize> {
+        Some(self.snapshot()?.fighters.len())
+    }
+
+    /// Whether the match runs in this process (practice and the menu's bot matches), not on a
+    /// host.
+    #[must_use]
+    pub const fn in_process(&self) -> bool {
+        matches!(self, Self::Practice { .. })
     }
 
     /// Plays as `build` (a named loadout, `shooter_sim::robot::LOADOUTS`) from the start, called

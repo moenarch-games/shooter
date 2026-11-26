@@ -137,21 +137,40 @@ const PAD_THICKNESS: f32 = 0.02;
 /// (the kit unavailable) and on the greybox maps as boxes; the module pads on every map.
 /// Returns the kit's placed modules, whose looks follow the match's destruction
 /// ([`ArenaArt::show`]); the boxes stand as the map authored them.
-pub fn build(world: &mut World, arena: &Arena, art: Option<&ArenaArt>) -> Option<Placed> {
+pub fn build(world: &mut World, arena: &Arena, art: Option<&ArenaArt>) -> DrawnArena {
+    let mut instances = Vec::new();
     let placed = match art.filter(|_| !arena.placements.is_empty()) {
         Some(art) => Some(art.draw(world, arena)),
         None => {
-            greybox(world, arena);
+            greybox(world, arena, &mut instances);
             None
         }
     };
-    module_pads(world, arena);
-    placed
+    module_pads(world, arena, &mut instances);
+    DrawnArena { placed, instances }
+}
+
+/// An arena in the GPU's world ([`build`]): its kit-built modules, if it has them, and every
+/// other instance it added, so that it can be taken out again (the main menu's live view
+/// changes arenas, and a match after it is on another, shooter#154).
+pub struct DrawnArena {
+    pub placed: Option<Placed>,
+    instances: Vec<InstanceId>,
+}
+
+impl DrawnArena {
+    /// Takes the arena's instances out of `world` (its meshes and materials stay uploaded).
+    pub fn remove(self, world: &mut World) {
+        let placed = self.placed.iter().flat_map(Placed::instances);
+        for instance in self.instances.into_iter().chain(placed) {
+            world.remove_instance(instance);
+        }
+    }
 }
 
 /// The arena's pieces as boxes and wedges on a checkered floor, and its jump pads as glowing
 /// plates.
-fn greybox(world: &mut World, arena: &Arena) {
+fn greybox(world: &mut World, arena: &Arena, instances: &mut Vec<InstanceId>) {
     let floor_material = material(world, [0.20, 0.22, 0.26], 0.8);
     let wall = material(world, [0.55, 0.57, 0.62], 0.7);
     let accent = material(world, [0.85, 0.42, 0.12], 0.5);
@@ -160,12 +179,12 @@ fn greybox(world: &mut World, arena: &Arena) {
     #[allow(clippy::cast_precision_loss)]
     let half_size = arena.half_size as f32 * METRES_PER_UNIT;
     let floor_mesh = world.add_mesh(&floor(half_size));
-    world.add_instance(Instance {
+    instances.push(world.add_instance(Instance {
         mesh: floor_mesh,
         material: floor_material,
         world_from_local: Mat4::IDENTITY,
         skin: None,
-    });
+    }));
 
     for piece in &arena.pieces {
         let center = metres(piece.center());
@@ -200,12 +219,12 @@ fn greybox(world: &mut World, arena: &Arena) {
                 )
             }
         };
-        world.add_instance(Instance {
+        instances.push(world.add_instance(Instance {
             mesh,
             material,
             world_from_local: Mat4::from_rotation_translation(rotation, center),
             skin: None,
-        });
+        }));
     }
 
     // Jump pads: glowing 2 cm plates (no collider; the simulation throws from the footprint).
@@ -221,17 +240,17 @@ fn greybox(world: &mut World, arena: &Arena) {
         let size = Vec3::new(half.x * 2.0, PAD_THICKNESS, half.z * 2.0);
         let center = metres(pad.center) + Vec3::Y * (PAD_THICKNESS / 2.0);
         let mesh = world.add_mesh(&MeshData::shape(Shape::Cuboid(size)));
-        world.add_instance(Instance {
+        instances.push(world.add_instance(Instance {
             mesh,
             material: pad_material,
             world_from_local: Mat4::from_translation(center),
             skin: None,
-        });
+        }));
     }
 }
 
 /// Module pickup pads, on every map.
-fn module_pads(world: &mut World, arena: &Arena) {
+fn module_pads(world: &mut World, arena: &Arena, instances: &mut Vec<InstanceId>) {
     // Module pickup pads: dark plates as wide as their reach, tinted by the module they hold;
     // the module itself floats over the plate while it is there ([`Actors`]).
     #[allow(clippy::cast_precision_loss)]
@@ -244,14 +263,14 @@ fn module_pads(world: &mut World, arena: &Arena) {
     for pad in &arena.module_pads {
         let rgb = module_tint(pad.module);
         let material = material(world, (rgb * 0.3).to_array(), 0.4);
-        world.add_instance(Instance {
+        instances.push(world.add_instance(Instance {
             mesh: plate,
             material,
             world_from_local: Mat4::from_translation(
                 metres(pad.center) + Vec3::Y * (PAD_THICKNESS / 2.0),
             ),
             skin: None,
-        });
+        }));
     }
 }
 

@@ -1,5 +1,6 @@
 // The robot builder clicked through in a real browser (shooter#124): serves web/dist on loopback,
-// opens the page (practice, the builder before the match) in headless Chromium at 1280x720 on
+// opens the page (practice on the greybox yard, `?map=greybox-yard`: a direct start, so the builder
+// before the match rather than the main menu) in headless Chromium at 1280x720 on
 // WebGPU and drives it with the mouse and keys as a person would: a part taken from the
 // catalogue, a socket picked under the pointer, the part turned about each axis in hand (R, T,
 // F; G steps to an eighth and a degree), placed, turned again on its socket, undone and redone
@@ -140,8 +141,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 try {
   const { port } = server.address();
-  const renderer = process.env.SHOOTER_BUILDER_RENDERER ? `?renderer=${process.env.SHOOTER_BUILDER_RENDERER}` : "";
-  await page.goto(`http://127.0.0.1:${port}/${renderer}`, { waitUntil: "load" });
+  const renderer = process.env.SHOOTER_BUILDER_RENDERER ? `&renderer=${process.env.SHOOTER_BUILDER_RENDERER}` : "";
+  await page.goto(`http://127.0.0.1:${port}/?map=greybox-yard${renderer}`, { waitUntil: "load" });
   const adapter = await page.evaluate(async () => {
     const info = (await navigator.gpu?.requestAdapter())?.info;
     return info ? `${info.vendor} ${info.architecture} ${info.description}`.trim() : "no WebGPU";

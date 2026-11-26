@@ -1444,7 +1444,7 @@ mod tests {
         let (full, half) = (scope(1280, 720, 1.0), scope(1280, 720, 0.5));
         let alpha = |item: &Item| match *item {
             Item::Rect { color, .. } => color.w,
-            Item::Glyph { .. } => panic!("the scope is rectangles only"),
+            Item::Glyph { .. } | Item::Image { .. } => panic!("the scope is rectangles only"),
         };
         assert!((alpha(&half[0]) * 2.0 - alpha(&full[0])).abs() < 1e-6);
     }

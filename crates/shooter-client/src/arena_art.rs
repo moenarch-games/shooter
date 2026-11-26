@@ -91,6 +91,7 @@ impl ArenaArt {
         let half = arena.half_size as f32 * METRES_PER_UNIT;
         #[allow(clippy::cast_possible_truncation)]
         let tiles = (2.0 * half / FLOOR_TILE).round() as i32;
+        let mut plates = Vec::new();
         for row in 0..tiles {
             for column in 0..tiles {
                 #[allow(clippy::cast_precision_loss)]
@@ -99,12 +100,12 @@ impl ArenaArt {
                     0.0,
                     -half + (row as f32 + 0.5) * FLOOR_TILE,
                 );
-                world.add_instance(Instance {
+                plates.push(world.add_instance(Instance {
                     mesh: plate,
                     material: plate_material,
                     world_from_local: Mat4::from_translation(center),
                     skin: None,
-                });
+                }));
             }
         }
         let placements = arena
@@ -122,6 +123,7 @@ impl ArenaArt {
             })
             .collect();
         Placed {
+            plates,
             authored: placements,
         }
     }
@@ -157,5 +159,17 @@ impl ArenaArt {
 /// instance and the placement as its map authored it, in placement order (a placeable's stable
 /// ID is its index).
 pub struct Placed {
+    /// The floor plates' instances.
+    plates: Vec<InstanceId>,
     authored: Vec<(InstanceId, Placement)>,
+}
+
+impl Placed {
+    /// Every instance the arena's modules and floor plates have in the world.
+    pub fn instances(&self) -> impl Iterator<Item = InstanceId> + '_ {
+        self.plates
+            .iter()
+            .copied()
+            .chain(self.authored.iter().map(|(id, _)| *id))
+    }
 }
