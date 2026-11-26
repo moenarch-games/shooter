@@ -23,8 +23,10 @@
 //! loudly ([`complete`]). Some catalog parts have no model of their own yet: the repair module
 //! (`robot.repair-module`, shooter#61) is drawn as the robot kit's sensor until the robot kit
 //! ships one (moritzbrantner/asset-tooling#742), and the mount rails and the adapter
-//! (shooter#126) as its beams fitted to their cuboids (moritzbrantner/asset-tooling#743):
-//! [`drawn_key`], [`stand_in`].
+//! (shooter#126) as its beams fitted to their cuboids (moritzbrantner/asset-tooling#743), the
+//! fuel tank, the generator and the engine as its battery and sensor (moritzbrantner/asset-tooling#837),
+//! and the combustion chassis as the chassis of their size (shooter#130): [`drawn_key`],
+//! [`stand_in`].
 
 use render_engine::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use render_engine::material::{Sampler, TextureData};
@@ -141,16 +143,22 @@ impl Bundle {
 /// moritzbrantner/asset-tooling#742), the mount rails as the beams of their length and the
 /// adapter as the short beam (the nearest structural parts, moritzbrantner/asset-tooling#743),
 /// fitted to their cuboids by [`stand_in`]; until the kit models them (shooter#128) the fuel
-/// tank draws as the battery at half its length and the generator as the sensor (the same cube).
+/// tank draws as the battery at half its length and the generator as the sensor (the same cube),
+/// and (shooter#130) the engine as the battery (the same cuboid) and each combustion chassis as
+/// the electric chassis of its size.
 #[must_use]
 pub fn drawn_key(key: &str) -> &str {
     use shooter_sim::robot::parts::{
-        ADAPTER, BATTERY, BEAM_LONG, BEAM_SHORT, FUEL_TANK, GENERATOR, MOUNT_RAIL_LONG,
+        ADAPTER, BATTERY, BEAM_LONG, BEAM_SHORT, CHASSIS_L, CHASSIS_M, CHASSIS_S, COMBUSTION_L,
+        COMBUSTION_M, COMBUSTION_S, ENGINE, FUEL_TANK, GENERATOR, MOUNT_RAIL_LONG,
         MOUNT_RAIL_SHORT, REPAIR_MODULE, SENSOR,
     };
     match key {
         _ if key == REPAIR_MODULE.key || key == GENERATOR.key => SENSOR.key,
-        _ if key == FUEL_TANK.key => BATTERY.key,
+        _ if key == FUEL_TANK.key || key == ENGINE.key => BATTERY.key,
+        _ if key == COMBUSTION_S.key => CHASSIS_S.key,
+        _ if key == COMBUSTION_M.key => CHASSIS_M.key,
+        _ if key == COMBUSTION_L.key => CHASSIS_L.key,
         _ if key == MOUNT_RAIL_SHORT.key || key == ADAPTER.key => BEAM_SHORT.key,
         _ if key == MOUNT_RAIL_LONG.key => BEAM_LONG.key,
         _ => key,

@@ -37,9 +37,10 @@
 //! push it over and never place it.
 //!
 //! **Energy** (D2.i70.3 as D2.i123.2 amends it, shooter#128): every commanded actuator asks the
-//! robot's electricity for its work each tick ([`draw`]): its part's rated draw scaled by how
-//! hard the command drives it (a stride's length, a rate against the top rate, a servo angle away
-//! from centre) and, for locomotion, by the mass the robot carries ([`load`]). A motor at rest (a
+//! robot for its work each tick ([`draw`]), a joint its electricity and locomotion its chassis'
+//! drive (electricity, or fuel through an engine, [`crate::energy::Pool::drive`], shooter#130):
+//! its part's rated draw scaled by how hard the command drives it (a stride's length, a rate
+//! against the top rate, a servo angle away from centre) and, for locomotion, by the mass the robot carries ([`load`]). A motor at rest (a
 //! zero stride, rate or angle) or idle costs nothing. Actuators ask in part-ID order; one that is
 //! refused is off that tick, and only it. The generators run after the requests
 //! ([`crate::energy::Pool::generate`]).
@@ -80,7 +81,7 @@ pub mod fixtures;
 use std::f32::consts::{FRAC_PI_2, PI};
 
 use crate::TICK_HZ;
-use crate::energy::{MILLI, Pool, spend};
+use crate::energy::{MILLI, Pool, Resource, pay};
 use crate::physics::articulated::{
     Articulated, BodySpec, Child, Drive as MotorDrive, Hinge, HingeId, HingeState, Motion, Pose,
     Shape,
@@ -2065,9 +2066,20 @@ impl Mechanics {
                     Command::Stride(_) => is_leg,
                     Command::Rate(_) | Command::Angle(_) => true,
                 };
+                // Locomotion runs on the chassis' drive (electricity, or fuel through an engine),
+                // joints on electricity (shooter#130).
+                let resource = match actuator.kind {
+                    Actuator::Locomotion(_) => robot.pool.drive(),
+                    Actuator::Joint(_) => Some(Resource::Electricity),
+                };
                 let powered = active
                     && (!self.metered
-                        || spend(&mut robot.charge, draw(actuator, command, carried)));
+                        || pay(
+                            resource,
+                            &mut robot.charge,
+                            &mut robot.fuel,
+                            draw(actuator, command, carried),
+                        ));
                 let max_torque = f32::from(actuator.drive.torque);
                 let max_rate = f32::from(actuator.drive.rate) / 10.0;
                 let servo = |angle: f32| MotorDrive::Angle {

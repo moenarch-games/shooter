@@ -513,6 +513,20 @@ whether resupply locks movement or firing (Q2.i123.3).
   a fuel pool (the one resource model, migrated in place), fuel tanks and fuel-burning
   generators; every consumer still runs on electricity and fuel feeds only the generators.
   Combustion chassis, fuel propulsion and fuel weapons remain shooter#130.
+  Shipped (shooter#130, `shooter_sim::energy`, `shooter_sim::robot::Power`): each chassis size
+  comes electric or combustion (part codes 1 to 3 and 4 to 6, the same cuboids, mass, points and
+  health); the root chassis' power is the robot's. An electric root stores the 100 electricity
+  and its locomotion draws electricity. A combustion root stores nothing; its locomotion burns
+  fuel through a connected engine (a new part, `robot.engine`: as much fuel as an electric drive
+  would draw electricity) and cannot walk without one or without fuel. The flamethrower burns
+  fuel on either chassis; every other weapon, the joints, repairs and the thruster jump draw
+  electricity. The existing generator is the converter: on a combustion chassis it makes 1
+  electricity a fuel, on an electric one 2 (the electric strength: faster recharge; the
+  combustion one: its drive runs on the tanks' larger store). Hybrids use the same parts and
+  budgets and always validate; the catalog's advisory notices (`Catalog::notices`, the builder's
+  supply line) say what a build's powertrain cannot supply. A lost engine, tank, generator or
+  battery stops only its dependents (D2.i123.4). The `stoker` loadout is a combustion hybrid;
+  the other named loadouts and the bots' stay electric. Values provisional (Q2.i123.2).
 - **D2.i123.4** (owner, 2026-11-17; shooter#123, decision 4, A): Depletion stops only the
   components deprived of the resource they need; independent components keep working. No global
   zero-energy death or limp mode. A stranded robot can self-destruct (D2.i123.10). Owner:
@@ -899,6 +913,11 @@ whether resupply locks movement or firing (Q2.i123.3).
   (shooter#132): a gun's convergence cone is 10° about its mount (`aim::CONVERGENCE_COS`),
   precision aim zooms 2× (the field of view's half-angle tangent halved, eased over 0.12 s) and
   slows the mouse to half; the scope is a shaded square sight with cross hairs; no optics module
-  changes the zoom yet.
+  changes the zoom yet. Provisional (shooter#130): an electric root chassis stores 100
+  electricity and a combustion one nothing; a generator makes 2 electricity a fuel on an electric
+  chassis and 1 on a combustion one; a combustion drive burns as much fuel a tick as an electric
+  one draws electricity; the flamethrower burns 0.5 fuel a tick (its former electricity cost);
+  the engine is 20 × 40 × 20 cm, 1 kg, 5 points and 60 health; the combustion chassis copy the
+  electric ones' sizes, mass, points and health.
 - **Q2.i123.3**: Whether holding a resupply interaction locks the robot's ordinary movement or
   firing (D2.i123.6). Not prescribed until assessed in shooter#129.

@@ -60,13 +60,16 @@
 //! part; its destruction is the only kill. There is no separate control core: the part code it had
 //! (30, `robot.core`) is retired, so an old build naming it is an unknown part.
 //!
-//! **Resources** (D2.i70.3 as D2.i89.1 and D2.i123.1–4 amend it, D2.i70.4): the root chassis
-//! holds the baseline electricity storage ([`ROOT_CAPACITY`]; other chassis sections hold none)
-//! and recovers nothing by itself (shooter#128); each optional battery ([`Kind::Battery`]) adds
-//! electricity storage, each fuel tank ([`Kind::FuelTank`]) fuel storage, and each generator
-//! ([`Kind::Generator`]) turns fuel into electricity at a bounded rate. Every part draws from
-//! the robot's one set of pools ([`crate::energy`]): no wiring, no circuits, and no heat or
-//! cooling. A build's storage and generation are in its [`Catalog::budget`].
+//! **Resources** (D2.i70.3 as D2.i89.1 and D2.i123.1–4 amend it, D2.i70.4): every chassis has a
+//! native [`Power`] (shooter#130), and the root's is the robot's powertrain. An electric root
+//! chassis holds the baseline electricity storage ([`ROOT_CAPACITY`]; other chassis sections and
+//! a combustion root hold none) and recovers nothing by itself (shooter#128); each optional
+//! battery ([`Kind::Battery`]) adds electricity storage, each fuel tank ([`Kind::FuelTank`]) fuel
+//! storage, each generator ([`Kind::Generator`]) turns fuel into electricity at a bounded rate,
+//! and an engine ([`Kind::Engine`]) lets a combustion chassis' locomotion burn fuel. Every part
+//! draws from the robot's one set of pools ([`crate::energy`]): no wiring, no circuits, and no
+//! heat or cooling. A build's storage and generation are in its [`Catalog::budget`]; what its
+//! powertrain cannot supply, as advice and never a rule, in its [`Catalog::notices`].
 //!
 //! **Provisional data.** The cell size, chassis sizes, part values, build points and part ceiling
 //! are tunable placeholders (Atlas Q2.i70.1, Q2.i70.2), not owner-approved balance. The part keys
@@ -90,11 +93,12 @@
 //! builds any valid build as a mechanical robot, but the match's fighters do not use it yet (shooter#73's
 //! second half); locomotion (shooter#58) and the builder (shooter#57) apply the rest.
 
+use crate::energy::Resource;
 use crate::weapons::{Delivery, Instance, Weapon};
 use parts::{
-    ADAPTER, BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, ENERGY_BLADE, ENERGY_RIFLE, FLAMETHROWER,
-    FUEL_TANK, GENERATOR, GRAPPLE, HINGE, LASER, LEG, MOUNT_RAIL_LONG, MOUNT_RAIL_SHORT, RAIL_GUN,
-    REPAIR_MODULE, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
+    ADAPTER, BATTERY, CHASSIS_L, CHASSIS_M, CHASSIS_S, COMBUSTION_M, ENERGY_BLADE, ENERGY_RIFLE,
+    ENGINE, FLAMETHROWER, FUEL_TANK, GENERATOR, GRAPPLE, HINGE, LASER, LEG, MOUNT_RAIL_LONG,
+    MOUNT_RAIL_SHORT, RAIL_GUN, REPAIR_MODULE, ROCKET_LAUNCHER, SENSOR, SHOTGUN,
 };
 use std::fmt;
 
@@ -168,12 +172,37 @@ impl Faces {
     }
 }
 
+/// A chassis' native power (D2.i123.3, shooter#130): what its locomotion runs on and what its
+/// root stores by itself. The root chassis' is the robot's ([`crate::energy::Pool::power`]).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub enum Power {
+    /// Batteries and electric motors: the root stores [`ROOT_CAPACITY`] electricity, the
+    /// locomotion draws electricity, and its generators convert fuel at the electric rate.
+    #[default]
+    Electric,
+    /// Fuel tanks and an engine: the root stores nothing by itself, the locomotion burns fuel
+    /// through a connected engine ([`Kind::Engine`]), and its generators convert fuel at the
+    /// slower combustion rate ([`crate::energy::COMBUSTION_ELECTRICITY_PER_FUEL`]).
+    Combustion,
+}
+
+impl Power {
+    /// Its name in feedback.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Electric => "electric",
+            Self::Combustion => "combustion",
+        }
+    }
+}
+
 /// What a part type is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Kind {
-    /// A cuboid chassis section; a build's root is one, and the root is the robot's vital part
-    /// and its baseline energy (D2.i89.1).
-    Chassis,
+    /// A cuboid chassis section of a native power; a build's root is one, and the root is the
+    /// robot's vital part, its baseline storage and its powertrain (D2.i89.1, D2.i123.3).
+    Chassis(Power),
     /// A structural beam extending the tree: sockets on every face.
     Beam,
     /// A mounting rail (shooter#126, D2.i123.11): a flat strip lying on its parent's face whose
@@ -194,6 +223,10 @@ pub enum Kind {
     /// A generator (D2.i123.1, shooter#128): burns fuel from the tanks and makes electricity,
     /// at most its [`PartType::burn`] a second and only while there is room to store it.
     Generator,
+    /// A combustion engine (D2.i123.3, shooter#130): while one is connected, a combustion
+    /// chassis' locomotion burns fuel from the tanks for its work. It drives nothing on an
+    /// electric chassis.
+    Engine,
     Sensor,
     /// A repair module (D2.i70.9): when the player activates it, it restores a damaged part
     /// still connected within its radius of where it is mounted ([`crate::repair`]).
@@ -457,7 +490,7 @@ pub struct Catalog {
 /// The beta's part types (every one available from the start, D2.i46.5), as constants so builds
 /// can name sockets on them ([`PartType::socket`]). Provisional values (Q2.i70.1, Q2.i70.2).
 pub mod parts {
-    use super::{Drive, Faces, Joint, Kind, Locomotion, PartType, PartTypeId};
+    use super::{Drive, Faces, Joint, Kind, Locomotion, PartType, PartTypeId, Power};
     use crate::weapons::Weapon;
 
     const fn part(
@@ -538,13 +571,24 @@ pub mod parts {
     // front, as the chassis and then the control core took before (shooter#89). Provisional.
     /// 20 × 40 × 80 cm: 28 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_S: PartType = tough(part(1, "robot.chassis.20x40x80", Kind::Chassis, [1, 2, 4], Faces::ALL, [60, 0, 0, 10]), 270);
+    pub const CHASSIS_S: PartType = tough(part(1, "robot.chassis.20x40x80", Kind::Chassis(Power::Electric), [1, 2, 4], Faces::ALL, [60, 0, 0, 10]), 270);
     /// 40 × 40 × 80 cm: 40 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_M: PartType = tough(part(2, "robot.chassis.40x40x80", Kind::Chassis, [2, 2, 4], Faces::ALL, [110, 0, 0, 20]), 290);
+    pub const CHASSIS_M: PartType = tough(part(2, "robot.chassis.40x40x80", Kind::Chassis(Power::Electric), [2, 2, 4], Faces::ALL, [110, 0, 0, 20]), 290);
     /// 40 × 60 × 80 cm: 52 sockets.
     #[rustfmt::skip]
-    pub const CHASSIS_L: PartType = tough(part(3, "robot.chassis.40x60x80", Kind::Chassis, [2, 3, 4], Faces::ALL, [150, 0, 0, 30]), 310);
+    pub const CHASSIS_L: PartType = tough(part(3, "robot.chassis.40x60x80", Kind::Chassis(Power::Electric), [2, 3, 4], Faces::ALL, [150, 0, 0, 30]), 310);
+    /// The combustion chassis (D2.i123.3, shooter#130): the electric ones' cuboids, sockets,
+    /// mass, build points and health on a combustion powertrain ([`Power::Combustion`]): 20 × 40
+    /// × 80 cm.
+    #[rustfmt::skip]
+    pub const COMBUSTION_S: PartType = tough(part(4, "robot.chassis.combustion.20x40x80", Kind::Chassis(Power::Combustion), [1, 2, 4], Faces::ALL, [60, 0, 0, 10]), 270);
+    /// A combustion chassis, 40 × 40 × 80 cm.
+    #[rustfmt::skip]
+    pub const COMBUSTION_M: PartType = tough(part(5, "robot.chassis.combustion.40x40x80", Kind::Chassis(Power::Combustion), [2, 2, 4], Faces::ALL, [110, 0, 0, 20]), 290);
+    /// A combustion chassis, 40 × 60 × 80 cm.
+    #[rustfmt::skip]
+    pub const COMBUSTION_L: PartType = tough(part(6, "robot.chassis.combustion.40x60x80", Kind::Chassis(Power::Combustion), [2, 3, 4], Faces::ALL, [150, 0, 0, 30]), 310);
     /// 20 × 20 × 40 cm.
     #[rustfmt::skip]
     pub const BEAM_SHORT: PartType = tough(part(10, "robot.beam.20x20x40", Kind::Beam, [1, 1, 2], Faces::ALL, [5, 0, 0, 2]), 50);
@@ -589,6 +633,13 @@ pub mod parts {
     /// room for it, with 50 component health. Light (1 kg) like the tank. Provisional (Q2.i70.1).
     #[rustfmt::skip]
     pub const GENERATOR: PartType = tough(generating(part(35, "robot.generator", Kind::Generator, [1, 1, 1], Faces::NONE, [1, 0, 0, 5]), 12), 50);
+    /// A 20 × 40 × 20 cm combustion engine (shooter#130): while it is connected, a combustion
+    /// chassis' locomotion burns fuel from the tanks for its work (as much fuel as an electric
+    /// drive would draw electricity), with 60 component health like a battery. Light (1 kg) like
+    /// the tank and the generator until mass and load are tuned (Q2.i123.2). Provisional
+    /// (Q2.i70.1).
+    #[rustfmt::skip]
+    pub const ENGINE: PartType = tough(part(36, "robot.engine", Kind::Engine, [1, 2, 1], Faces::NONE, [1, 0, 0, 5]), 60);
     /// A 20 × 20 × 20 cm field repair module (D2.i70.9, shooter#61): it restores a chosen
     /// damaged part within its radius ([`crate::repair`]), with 40 component health like a
     /// light weapon.
@@ -681,17 +732,20 @@ pub const LONG_BARREL: ModId = ModId(3);
 // old build naming it is an unknown mod.
 pub const EFFICIENCY_COIL: ModId = ModId(5);
 
-/// The beta's catalog: three chassis sizes, two beams, two mount rails and an adapter, two joints, a battery, a fuel
-/// tank, a generator, a sensor, a repair module, legs, wheels, tracks, an armor plate, the eight shipped weapons and the four weapon mods.
-/// Provisional values (Q2.i70.1, Q2.i70.2).
+/// The beta's catalog: three chassis sizes, each electric or combustion, two beams, two mount
+/// rails and an adapter, two joints, a battery, a fuel tank, a generator, an engine, a sensor, a
+/// repair module, legs, wheels, tracks, an armor plate, the eight shipped weapons and the four
+/// weapon mods. Provisional values (Q2.i70.1, Q2.i70.2).
 #[rustfmt::skip]
 pub const BETA: Catalog = Catalog {
     parts: &[
         parts::CHASSIS_S, parts::CHASSIS_M, parts::CHASSIS_L,
+        parts::COMBUSTION_S, parts::COMBUSTION_M, parts::COMBUSTION_L,
         parts::BEAM_SHORT, parts::BEAM_LONG,
         parts::MOUNT_RAIL_SHORT, parts::MOUNT_RAIL_LONG, parts::ADAPTER,
         parts::HINGE, parts::ROTOR,
-        parts::BATTERY, parts::FUEL_TANK, parts::GENERATOR, parts::SENSOR, parts::REPAIR_MODULE,
+        parts::BATTERY, parts::FUEL_TANK, parts::GENERATOR, parts::ENGINE, parts::SENSOR,
+        parts::REPAIR_MODULE,
         parts::LEG, parts::WHEEL, parts::TRACK,
         parts::ARMOR_PLATE,
         parts::ENERGY_RIFLE, parts::RAIL_GUN, parts::ROCKET_LAUNCHER, parts::GRAPPLE,
@@ -1073,6 +1127,28 @@ pub const MECHANIC: Assembly = with_weapons(
     )),
 );
 
+/// A combustion hybrid (shooter#130): the medium combustion chassis on the shared frame, its legs
+/// driven by the engine (ID 22) on its roof from the roof's fuel tank, with, on its front facing
+/// the aim, the flamethrower high on the left (fuel, from the same tank), the energy rifle high on
+/// the right, the grapple below the flamethrower and the blade below the rifle. Its electrical
+/// side is the hybrid's add-on: a battery (ID 11) on its back stores the electricity (a
+/// combustion root stores none) and the plant's generator recharges it at the combustion rate.
+/// Valid in [`BETA`].
+pub const STOKER: Assembly = authored(&[
+    Part::root(0, &COMBUSTION_M),
+    Part::on(2, &SENSOR, 0, &COMBUSTION_M, Face::PosZ, 0, 0),
+    Part::on(5, &LEG, 0, &COMBUSTION_M, Face::NegZ, 0, 0),
+    Part::on(6, &LEG, 0, &COMBUSTION_M, Face::NegZ, 1, 0),
+    forward(7, &FLAMETHROWER, &COMBUSTION_M, 1, 2),
+    forward(8, &ENERGY_BLADE, &COMBUSTION_M, 0, 1),
+    forward(9, &ENERGY_RIFLE, &COMBUSTION_M, 0, 2),
+    forward(10, &GRAPPLE, &COMBUSTION_M, 1, 1),
+    Part::on(11, &BATTERY, 0, &COMBUSTION_M, Face::NegX, 3, 0),
+    plant(&COMBUSTION_M)[0],
+    plant(&COMBUSTION_M)[1],
+    Part::on(22, &ENGINE, 0, &COMBUSTION_M, Face::PosZ, 1, 0),
+]);
+
 /// A fixture with two rail guns (shooter#125): the heavy frame with a rail gun high on either
 /// side of the medium chassis' front (IDs 7 and 9), the blade below the left one, the grapple
 /// below the right one and a battery on its back for the shots. Each copy is its own weapon: its
@@ -1194,16 +1270,18 @@ pub const ADAPTER_MAST: Assembly = authored(&[
 
 /// The named loadouts a person picks from until the builder (shooter#57): the unmodified
 /// standard and heavy builds, the two contrasting modded ones and the pyro (the laser and the
-/// flamethrower, shooter#96) and the mechanic (a field repair module, shooter#61), all
-/// component trees. The builds with several copies of one weapon ([`TWIN_RAIL`], [`ROCKET_POD`])
-/// are fixtures, not among them; the builder makes any such build.
-pub const LOADOUTS: [(&str, Assembly); 6] = [
+/// flamethrower, shooter#96), the mechanic (a field repair module, shooter#61), all electric,
+/// and the stoker (a combustion hybrid, shooter#130), all component trees. The builds with
+/// several copies of one weapon ([`TWIN_RAIL`], [`ROCKET_POD`]) are fixtures, not among them;
+/// the builder makes any such build.
+pub const LOADOUTS: [(&str, Assembly); 7] = [
     ("standard", STANDARD),
     ("heavy", HEAVY),
     ("skirmisher", SKIRMISHER),
     ("marksman", MARKSMAN),
     ("pyro", PYRO),
     ("mechanic", MECHANIC),
+    ("stoker", STOKER),
 ];
 
 /// The loadout called `name` in [`LOADOUTS`] (any case).
@@ -1279,8 +1357,51 @@ pub struct Budget {
     pub fuel: u32,
     /// The fuel the generators burn a second at most (whole units).
     pub burn: u32,
+    /// The root chassis' native power (electric when there is no chassis root).
+    pub power: Power,
+    /// How many engines it mounts.
+    pub engines: u32,
     pub points: u32,
     pub build_points: u32,
+}
+
+/// What a build's powertrain can supply, part by part (D2.i123.3, shooter#130): advisory
+/// feedback for the builder, never a validation rule. A build that lacks a supply is still valid
+/// (hybrids, stationary and odd builds are allowed); the consumers that need it simply cannot
+/// work until it has one ([`crate::energy`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Notice {
+    /// The locomotion needs electricity and nothing stores any.
+    DriveNoElectricity,
+    /// A combustion chassis' locomotion needs an engine.
+    DriveNoEngine,
+    /// A combustion chassis' locomotion needs a fuel tank.
+    DriveNoFuel,
+    /// An electrical consumer (a gun but the flamethrower, the blade, the grapple, a joint, a
+    /// repair module) and no electricity storage: a combustion chassis needs a battery.
+    NoElectricity(PartId),
+    /// It has electrical consumers and nothing recharges the electricity: no generator, or no
+    /// fuel for one.
+    NoRecharge,
+    /// A fuel consumer (the flamethrower) and no fuel tank.
+    NoFuel(PartId),
+}
+
+impl fmt::Display for Notice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DriveNoElectricity => formatter.write_str("drive: needs a battery"),
+            Self::DriveNoEngine => formatter.write_str("drive: combustion needs an engine"),
+            Self::DriveNoFuel => formatter.write_str("drive: engine needs a fuel tank"),
+            Self::NoElectricity(id) => {
+                write!(formatter, "part {} needs a battery", id.0)
+            }
+            Self::NoRecharge => {
+                formatter.write_str("electricity: no recharge without a generator and fuel")
+            }
+            Self::NoFuel(id) => write!(formatter, "part {} needs a fuel tank", id.0),
+        }
+    }
 }
 
 /// Why a candidate is not a valid build.
@@ -1365,10 +1486,11 @@ impl fmt::Display for AssemblyError {
 impl std::error::Error for AssemblyError {}
 
 /// The electricity storage (whole units) `part`, of type `kind`, gives its robot's pool: its
-/// type's, and the baseline too if it is the root chassis (D2.i89.1).
+/// type's, and the baseline too if it is an electric root chassis (D2.i89.1; a combustion root
+/// stores nothing by itself, D2.i123.3).
 #[must_use]
 pub fn capacity(part: &Part, kind: &PartType) -> u16 {
-    if part.mount.is_none() && kind.kind == Kind::Chassis {
+    if part.mount.is_none() && kind.kind == Kind::Chassis(Power::Electric) {
         kind.capacity + ROOT_CAPACITY
     } else {
         kind.capacity
@@ -1628,7 +1750,7 @@ impl Catalog {
         if let Some(second) = roots.next() {
             return Err(AssemblyError::MultipleRoots(root.id, second.id));
         }
-        if type_of(root).kind != Kind::Chassis {
+        if !matches!(type_of(root).kind, Kind::Chassis(_)) {
             return Err(AssemblyError::RootNotChassis(root.id));
         }
 
@@ -1723,6 +1845,11 @@ impl Catalog {
                 budget.fuel += u32::from(kind.fuel);
                 budget.burn += u32::from(kind.burn);
                 budget.points += u32::from(kind.points);
+                match kind.kind {
+                    Kind::Chassis(power) if part.mount.is_none() => budget.power = power,
+                    Kind::Engine => budget.engines += 1,
+                    _ => {}
+                }
             }
             if let Some(modification) = part.modification.and_then(|id| self.modification(id)) {
                 budget.mass += u32::from(modification.mass);
@@ -1730,5 +1857,69 @@ impl Catalog {
             }
         }
         budget
+    }
+
+    /// What `assembly`'s powertrain cannot supply (D2.i123.3, shooter#130), in part-ID order,
+    /// the drive first: advisory feedback, never a rule ([`Notice`]). Empty when every consumer
+    /// has its resource and the electricity a recharge.
+    #[must_use]
+    pub fn notices(&self, assembly: &Assembly) -> Vec<Notice> {
+        let budget = self.budget(assembly);
+        let kinds = || {
+            assembly
+                .parts()
+                .iter()
+                .filter_map(|part| Some((part.id, self.part_type(part.kind)?.kind)))
+        };
+        let mut notices = Vec::new();
+        if kinds().any(|(_, kind)| matches!(kind, Kind::Locomotion(_))) {
+            match budget.power {
+                Power::Electric if budget.capacity == 0 => {
+                    notices.push(Notice::DriveNoElectricity);
+                }
+                Power::Combustion if budget.engines == 0 => notices.push(Notice::DriveNoEngine),
+                Power::Combustion if budget.fuel == 0 => notices.push(Notice::DriveNoFuel),
+                Power::Electric | Power::Combustion => {}
+            }
+        }
+        let mut electrical = false;
+        for (id, kind) in kinds() {
+            match kind.consumes() {
+                Some(Resource::Electricity) if budget.capacity == 0 => {
+                    notices.push(Notice::NoElectricity(id));
+                }
+                Some(Resource::Electricity) => electrical = true,
+                Some(Resource::Fuel) if budget.fuel == 0 => notices.push(Notice::NoFuel(id)),
+                Some(Resource::Fuel) | None => {}
+            }
+        }
+        if electrical && (budget.burn == 0 || budget.fuel == 0) {
+            notices.push(Notice::NoRecharge);
+        }
+        notices
+    }
+}
+
+impl Kind {
+    /// The resource a part of this kind runs on, if it consumes one by itself (D2.i123.3): its
+    /// weapon's ([`Weapon::resource`]), electricity for joints and repair modules. Locomotion
+    /// runs on its root chassis' power ([`crate::energy::Pool::drive`]), so it is not here.
+    #[must_use]
+    pub const fn consumes(self) -> Option<Resource> {
+        match self {
+            Self::Weapon(weapon) => Some(weapon.resource()),
+            Self::Joint(_) | Self::Repair => Some(Resource::Electricity),
+            Self::Chassis(_)
+            | Self::Beam
+            | Self::Rail
+            | Self::Adapter
+            | Self::Battery
+            | Self::FuelTank
+            | Self::Generator
+            | Self::Engine
+            | Self::Sensor
+            | Self::Locomotion(_)
+            | Self::Armor => None,
+        }
     }
 }

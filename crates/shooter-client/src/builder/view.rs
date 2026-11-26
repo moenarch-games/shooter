@@ -42,6 +42,7 @@ use super::controls::{ControlsBench, gait_name, mode_name, output_name, source_n
 use super::saved::{self, Confirm, SavedBuilds, Shelf};
 use super::{
     Axis, BENCH, FINE, Proposal, Refusal, Step, Workbench, degrees, describe, part_name, weapon_of,
+    with_power,
 };
 use crate::camera::FOV_Y;
 use crate::gfx::World;
@@ -54,9 +55,11 @@ use crate::ui::Item;
 use render_engine::glam::{Quat, Vec2, Vec3, Vec4};
 use render_engine::scene::Scene;
 use shooter_sim::bindings::Bindings;
+use shooter_sim::energy::{Pool, Resource};
 use shooter_sim::mechanics::{Placement, placement_of, placements, sockets};
 use shooter_sim::robot::{
-    Assembly, BETA, CELL_MM, Kind, LOADOUTS, MAX_PARTS, Orientation, PartId, PartTypeId, SocketId,
+    Assembly, BETA, CELL_MM, Kind, LOADOUTS, MAX_PARTS, Orientation, PartId, PartType, PartTypeId,
+    Power, SocketId,
 };
 use winit::keyboard::KeyCode;
 
@@ -86,6 +89,9 @@ pub enum Action {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Target {
     Catalogue(PartTypeId),
+    /// Switches the robot's power, electric or combustion (shooter#130): its root chassis and
+    /// the chassis the catalogue gives.
+    Power,
     Loadout(usize),
     /// A new robot from the chassis in hand.
     NewFrame,
@@ -240,13 +246,16 @@ impl Layout {
         }
     }
 
-    /// Each catalogue part's row, then each loadout's.
+    /// The power switch's row, each catalogue part's (a chassis once a size: the switch picks
+    /// its power, shooter#130), then the loadouts', two to a row.
     fn catalogue_rows(&self) -> Vec<(Rect, Target)> {
         let x = self.catalogue.x + 6.0;
         let width = self.catalogue.width - 12.0;
         let mut rows = Vec::new();
         let mut y = self.catalogue.y + 28.0;
-        for kind in BETA.parts {
+        rows.push((Rect::new(x, y, width, CATALOGUE_ROW), Target::Power));
+        y += CATALOGUE_ROW;
+        for kind in catalogue_parts() {
             rows.push((
                 Rect::new(x, y, width, CATALOGUE_ROW),
                 Target::Catalogue(kind.id),
@@ -254,19 +263,24 @@ impl Layout {
             y += CATALOGUE_ROW;
         }
         y += 30.0;
+        let half = width / 2.0;
         for index in 0..LOADOUTS.len() {
+            #[allow(clippy::cast_precision_loss)]
+            let column = (index % 2) as f32;
             rows.push((
-                Rect::new(x, y, width, CATALOGUE_ROW),
+                Rect::new(x + column * half, y, half, CATALOGUE_ROW),
                 Target::Loadout(index),
             ));
-            y += CATALOGUE_ROW;
+            if index % 2 == 1 {
+                y += CATALOGUE_ROW;
+            }
         }
         rows
     }
 
     /// Where the loadouts' heading is.
     fn loadouts_heading(&self) -> f32 {
-        self.catalogue.y + 28.0 + CATALOGUE_ROW * BETA.parts.len() as f32 + 12.0
+        self.catalogue.y + 28.0 + CATALOGUE_ROW * (catalogue_parts().count() + 1) as f32 + 12.0
     }
 
     /// The inspector's buttons.
@@ -950,8 +964,17 @@ impl Builder {
     /// Does what a panel item says.
     pub fn act(&mut self, target: Target) -> Option<Action> {
         match target {
+            Target::Power => {
+                let next = match self.bench.power() {
+                    Power::Electric => Power::Combustion,
+                    Power::Combustion => Power::Electric,
+                };
+                let switched = self.bench.set_power(next);
+                self.refused(switched);
+            }
             Target::Catalogue(kind) => {
-                self.bench.hand = Some(kind);
+                // A chassis row gives the chassis of the robot's power (shooter#130).
+                self.bench.hand = Some(with_power(kind, self.bench.power()));
                 self.bench.turn = Orientation::IDENTITY;
                 self.bench.selected = None;
                 self.dragging = true;
@@ -967,7 +990,7 @@ impl Builder {
                     .hand
                     .filter(|kind| {
                         BETA.part_type(*kind)
-                            .is_some_and(|kind| kind.kind == Kind::Chassis)
+                            .is_some_and(|kind| matches!(kind.kind, Kind::Chassis(_)))
                     })
                     .ok_or(Refusal::Nothing);
                 let made = chassis.and_then(|chassis| self.bench.new_frame(chassis));
@@ -1458,13 +1481,20 @@ impl Builder {
         let hovered = self.target();
         for (rect, target) in layout.catalogue_rows() {
             let (label, points, kind_colour, active) = match target {
+                Target::Power => (
+                    format!("Power: {}", self.bench.power().name()),
+                    "SWAP".to_owned(),
+                    OLIVE,
+                    false,
+                ),
                 Target::Catalogue(id) => {
+                    let id = with_power(id, self.bench.power());
                     let Some(kind) = BETA.part_type(id) else {
                         continue;
                     };
                     let colour = match kind.kind {
                         Kind::Weapon(_) => ORANGE,
-                        Kind::Chassis => OLIVE,
+                        Kind::Chassis(_) => OLIVE,
                         _ => STEEL,
                     };
                     (
@@ -1550,7 +1580,7 @@ impl Builder {
                 ("HEALTH", kind.health.to_string()),
                 ("POINTS", kind.points.to_string()),
             ];
-            if kind.capacity > 0 || kind.kind == Kind::Chassis {
+            if kind.capacity > 0 || matches!(kind.kind, Kind::Chassis(_)) {
                 let root = selected.is_some_and(|part| part.mount.is_none());
                 let capacity = selected.map_or(kind.capacity, |part| {
                     shooter_sim::robot::capacity(part, kind)
@@ -1561,12 +1591,20 @@ impl Builder {
             if kind.fuel > 0 {
                 rows.push(("FUEL", format!("{} STORED", kind.fuel)));
             }
+            if let Kind::Chassis(power) = kind.kind {
+                rows.push(("DRIVE", drive_text(power).to_owned()));
+            }
+            if kind.kind == Kind::Engine {
+                rows.push(("DRIVES", "COMBUSTION LEGS/WHEELS".to_owned()));
+            }
             if kind.burn > 0 {
+                // At the rate of the chassis on the bench (shooter#130).
+                let rate = Pool::of(draft).electricity_per_fuel();
                 rows.push((
                     "GENERATES",
                     format!(
                         "{} POWER/S FROM {} FUEL/S",
-                        u32::from(kind.burn) * shooter_sim::energy::ELECTRICITY_PER_FUEL,
+                        u32::from(kind.burn) * rate,
                         kind.burn
                     ),
                 ));
@@ -1578,9 +1616,11 @@ impl Builder {
                 ));
             }
             if let Some(weapon) = weapon_of(kind) {
+                #[allow(clippy::cast_precision_loss)]
+                let cost = weapon.energy() as f32 / shooter_sim::energy::MILLI as f32;
                 rows.push((
                     "SHOT",
-                    format!("{} ENERGY", weapon.energy() / shooter_sim::energy::MILLI),
+                    format!("{cost:.1} {}", resource_text(weapon.resource())),
                 ));
             }
             let turn = selected
@@ -1903,11 +1943,12 @@ impl Builder {
             bar.y + 66.0,
             SMALL,
             &format!(
-                "MASS {} KG   POWER {}   FUEL {}   +{}/S",
+                "{}   MASS {} KG   POWER {}   FUEL {}   +{}/S",
+                budget.power.name().to_uppercase(),
                 budget.mass,
                 budget.capacity,
                 budget.fuel,
-                budget.burn * shooter_sim::energy::ELECTRICITY_PER_FUEL
+                budget.burn * Pool::of(self.bench.draft()).electricity_per_fuel()
             ),
             srgb(PALE, 1.0),
         );
@@ -1922,6 +1963,10 @@ impl Builder {
             Err(error) => (format!("INVALID: {error}"), RED),
         };
         painter.text(text_x, bar.y + 30.0, CELL, &verdict, srgb(colour, 1.0));
+        // What the powertrain cannot supply (shooter#130): advice, the build stays valid.
+        if let Some(supply) = supply_line(self.bench.draft()) {
+            painter.text(text_x, bar.y + 54.0, SMALL, &supply, srgb(ORANGE, 1.0));
+        }
         // Why the placement under the pointer is refused, else the last refused edit.
         let refused = self.proposal.as_ref().and_then(|proposal| {
             let error = proposal.verdict.err()?;
@@ -1972,6 +2017,43 @@ impl Builder {
             self.can_ready(),
         );
     }
+}
+
+/// The part types the catalogue lists: every one but the combustion chassis, which the
+/// electric chassis' rows give while the power switch says combustion ([`Target::Power`]).
+fn catalogue_parts() -> impl Iterator<Item = &'static PartType> {
+    BETA.parts
+        .iter()
+        .filter(|kind| kind.kind != Kind::Chassis(Power::Combustion))
+}
+
+/// What a chassis of `power` drives on, in the inspector.
+const fn drive_text(power: Power) -> &'static str {
+    match power {
+        Power::Electric => "ELECTRIC: BATTERIES",
+        Power::Combustion => "COMBUSTION: ENGINE + FUEL",
+    }
+}
+
+/// A resource's name in the inspector.
+const fn resource_text(resource: Resource) -> &'static str {
+    match resource {
+        Resource::Electricity => "ENERGY",
+        Resource::Fuel => "FUEL",
+    }
+}
+
+/// The builder's supply line: the first thing `build`'s powertrain cannot supply
+/// ([`shooter_sim::robot::Catalog::notices`]) and how many more there are, if any.
+#[must_use]
+pub fn supply_line(build: &Assembly) -> Option<String> {
+    let notices = BETA.notices(build);
+    let first = notices.first()?;
+    let more = match notices.len() - 1 {
+        0 => String::new(),
+        more => format!(" (+{more} MORE)"),
+    };
+    Some(format!("SUPPLY: {first}{more}").to_uppercase())
 }
 
 /// `text` broken at spaces into lines at most `width` layout units wide in a font of `cell`.
@@ -2118,6 +2200,63 @@ mod tests {
             let frame = rest_frame(&build, bench_center(&build), Vec3::X);
             assert!(frame.w_axis.truncate().distance(BENCH_AT) < 1e-3);
         }
+    }
+
+    /// The builder names each chassis' powertrain and says what a build's powertrain cannot
+    /// supply, while the build stays valid (shooter#130).
+    #[test]
+    fn the_builder_shows_the_powertrain_and_what_it_cannot_supply() {
+        use shooter_sim::robot::STOKER;
+        use shooter_sim::robot::parts::{COMBUSTION_M, ENGINE};
+        assert_eq!(
+            super::super::part_name(&COMBUSTION_M),
+            "Fuel chassis 40x40x80"
+        );
+        assert_eq!(super::super::part_name(&CHASSIS_S), "Chassis 20x40x80");
+        assert_eq!(super::super::part_name(&ENGINE), "Engine");
+        assert_eq!(supply_line(&STANDARD), None);
+        assert_eq!(supply_line(&STOKER), None);
+        let mut candidate = STOKER.candidate();
+        candidate
+            .parts
+            .retain(|part| part.id != 22 && part.id != 11);
+        let hybrid = BETA.validate(&candidate).unwrap();
+        assert_eq!(
+            supply_line(&hybrid).as_deref(),
+            Some("SUPPLY: DRIVE: COMBUSTION NEEDS AN ENGINE (+3 MORE)")
+        );
+        // The catalogue lists a chassis once a size and the engine; the power switch makes the
+        // robot combustion (the root swapped in place, one undoable edit) and the chassis rows
+        // give combustion chassis.
+        let mut builder = drawn(Stage::Setup);
+        let rows = builder.layout().catalogue_rows();
+        let listed = |id| {
+            rows.iter()
+                .any(|(_, target)| *target == Target::Catalogue(id))
+        };
+        assert!(listed(ENGINE.id) && listed(CHASSIS_S.id) && !listed(COMBUSTION_M.id));
+        assert!(rows.iter().any(|(_, target)| *target == Target::Power));
+        assert_eq!(builder.bench.power(), Power::Electric);
+        builder.act(Target::Power);
+        assert_eq!(builder.bench.power(), Power::Combustion);
+        let root = builder.bench.draft().parts()[0];
+        assert_eq!(BETA.part_type(root.kind).unwrap().cells, CHASSIS_S.cells);
+        assert_eq!(builder.bench.draft().parts().len(), STANDARD.parts().len());
+        assert_eq!(
+            supply_line(builder.bench.draft()).as_deref(),
+            Some("SUPPLY: DRIVE: COMBUSTION NEEDS AN ENGINE (+4 MORE)")
+        );
+        builder.act(Target::Catalogue(CHASSIS_S.id));
+        assert_ne!(
+            builder.bench.hand,
+            Some(CHASSIS_S.id),
+            "a combustion chassis"
+        );
+        builder.bench.undo().unwrap();
+        assert_eq!(*builder.bench.draft(), STANDARD);
+        // The loadouts, two a row, end above the bar.
+        let last = rows.last().unwrap().0;
+        assert!(last.y + last.height <= builder.layout().bar.y - 8.0);
     }
 
     #[test]

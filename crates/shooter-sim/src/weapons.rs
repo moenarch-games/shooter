@@ -15,6 +15,7 @@
 //! part hitboxes ([`crate::damage`]), and the flame through its `overlap_box`, so physics-engine
 //! and the Rapier oracle answer them alike.
 
+use crate::energy::Resource;
 use crate::fixed::subunits_per_tick;
 use crate::physics::{BodyId, PhysicsError, RayHit, SUBUNITS_PER_UNIT, World};
 use crate::robot::{MAX_PARTS, PartId};
@@ -136,11 +137,28 @@ impl Weapon {
         }
     }
 
-    /// The energy one activation costs from the robot's shared pool, in milli-units
-    /// ([`crate::energy`]): a shot, a swing, a hook, or one tick of a continuous weapon.
-    /// Provisional (Atlas Q2.i70.1). With a generator making 24 a second the rifle (20
+    /// The resource it runs on (D2.i123.3, shooter#130): the flamethrower burns fuel, every
+    /// other weapon (the guns, the blade, the grapple) draws electricity.
+    #[must_use]
+    pub const fn resource(self) -> Resource {
+        match self {
+            Self::Flamethrower => Resource::Fuel,
+            Self::EnergyRifle
+            | Self::RailGun
+            | Self::RocketLauncher
+            | Self::Grapple
+            | Self::EnergyBlade
+            | Self::Shotgun
+            | Self::Laser => Resource::Electricity,
+        }
+    }
+
+    /// What one activation costs from the robot's pool of its [`Weapon::resource`], in
+    /// milli-units ([`crate::energy`]): a shot, a swing, a hook, or one tick of a continuous
+    /// weapon. Provisional (Atlas Q2.i70.1). With a generator making 24 a second the rifle (20
     /// a second), rockets (25), rail gun (25) and shotgun (13) can almost or fully keep firing;
-    /// the laser (36) and flamethrower (30) drain the pool.
+    /// the laser (36) drains the electricity, the flamethrower (30) burns a tank's 1000 fuel in
+    /// about half a minute.
     #[must_use]
     pub const fn energy(self) -> u32 {
         match self {

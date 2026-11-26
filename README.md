@@ -254,9 +254,11 @@ refire filling while it recharges, and a line with its mod and, when it cannot f
 low energy). Bottom left, the root chassis' health as a large reading over its bar (red under a
 third) and under it the robot's resources (#128): its electricity ("power", a thin blue bar, with
 the share one shot of the held weapon takes marked in orange) with what it used and made a
-second, and its fuel (amber) with what the generator burns a second; in red instead, what cannot
-work ("drive: no power" when a walk was refused, "generator: no fuel"), or, muted, "no
-generator" when nothing recharges it. Above them, in teal, the field repair panel (the quick repair
+second, and its fuel (amber) with what the generator, an engine and a flamethrower burn a second;
+in red instead, what cannot work ("drive: no power" when an electric walk was refused, "drive: no
+fuel" or "drive: no engine" for a combustion one, #130, "generator: no fuel"), or, muted, "no
+generator" when nothing recharges it. A chip's readiness reads the flamethrower's fuel and the
+other weapons' electricity. Above them, in teal, the field repair panel (the quick repair
 menu while it is open, else the repair under way, else how many parts may be repaired).
 The client's UI (the HUD, the builder and the death prompt) is drawn as the renderer's screen
 overlay (`ui`): rounded rectangles, and text as quads showing glyphs of an atlas texture in the
@@ -376,7 +378,7 @@ is drawn and heard as soon as you press; the host decides what it strikes.
 sockets, one per 20 cm surface cell (a 20 × 40 × 80 cm chassis has 28). Each part has a stable ID,
 one parent socket and an exact orientation (binary angles, stored in one canonical form); a larger
 part reserves its footprint of neighbouring cells on its parent's face, and no two parts may
-claim one cell. The catalog has three chassis sizes, beams, mount rails, an adapter, hinge and rotor joints, a battery, a fuel tank, a generator, a sensor, a repair module, legs, wheels, tracks, an armor plate and the eight
+claim one cell. The catalog has three chassis sizes, each electric or combustion (#130, below), beams, mount rails, an adapter, hinge and rotor joints, a battery, a fuel tank, a generator, an engine, a sensor, a repair module, legs, wheels, tracks, an armor plate and the eight
 shipped weapons. Beams, mount rails and the adapter extend the attachment space (Atlas D2.i123.11,
 #126): they are ordinary parts on the same tree, with mass, health and build points, whose
 sockets are further hardpoints. A mount rail (20 × 40 or 20 × 80 cm, 1 or 2 points) lies flat
@@ -411,13 +413,16 @@ weapon. You build your robot in the builder (below, **Robot builder**).
 **Robot builder** (`shooter_client::builder`, Atlas D2.i70.11, #57). Both clients open on a
 blueprint workbench before the match: nothing plays (and online nothing connects) until you press
 Ready. The robot stands in the middle, drawn from the kits as in the match, with its sockets
-marked; the part catalogue (every part and weapon with its build points) and the five named
-loadouts to start from are on the left, the component inspector on the right (the selected part,
-or the part in hand: cells, mass, health, points, electricity or fuel stored, what a generator
-makes, motor, the energy a shot costs, its turn in degrees and its mod), and the budget along
-the bottom: build points and parts against their limits, mass, electricity, fuel and the
-generators' output, and whether the build is valid (or the rule it
-breaks). Drag a part from the catalogue onto a socket, or click it and click sockets to place
+marked; the part catalogue (every part and weapon with its build points, each chassis size once
+under a power switch that makes the robot electric or combustion, its root swapped in place, #130)
+and the named loadouts to start from (two to a row) are on the left, the component inspector on
+the right (the selected part, or the part in hand: cells, mass, health, points, electricity or fuel
+stored, a chassis' drive, what a generator makes at the robot's rate, motor, the electricity or fuel
+a shot costs, its turn in degrees and its mod), and the budget along the bottom: build points and
+parts against their limits, the robot's power, mass, electricity, fuel and the generators' output,
+whether the build is valid (or the rule it breaks), and, in orange, what its powertrain cannot
+supply ("drive: combustion needs an engine", "part 9 needs a fuel tank"): advice only, the build
+stays valid. Drag a part from the catalogue onto a socket, or click it and click sockets to place
 copies; the sockets it fits light up (sockets hidden behind other parts are not shown). The
 socket under the pointer is the cell of the face the pointer is over, found by a ray from the
 camera through the pointer into the parts' boxes (#124), so crowded faces, cells beside a taken
@@ -486,10 +491,10 @@ electricity comes from nothing. Every named loadout carries a tank on its chassi
 the sensor with a generator on it (the fixtures too). A
 robot spawns with both pools full; nothing refills them but its generators (arena stations are
 #129). Every consumer pays electricity: a rifle bolt 2, a rail shot 30, a rocket 20, a grapple
-hook 10, a blade swing 5, a shotgun blast 12, the laser and the flamethrower 0.6 and 0.5 every
-tick they burn (36 and 30 a second, more than a generator makes), a repair 15 a second, and the
-motors by their work (below): walking costs by speed and load, standing nothing. Fuel only feeds
-the generators today (fuel-driven chassis and weapons are #130). A request is granted whole or
+hook 10, a blade swing 5, a shotgun blast 12, the laser 0.6 every tick it burns (36 a second,
+more than a generator makes), a repair 15 a second, and the motors by their work (below):
+walking costs by speed and load, standing nothing. The flamethrower burns fuel instead: 0.5 every
+tick (30 a second, a tank's 1000 in about half a minute). A request is granted whole or
 not at all: with too little electricity the shot, swing or hook simply does not happen (no
 cooldown is spent), a walk does not start (the robot stands, its legs at rest), and each works
 again once the generator has paid for it; nothing goes below zero and nothing is paid twice.
@@ -505,6 +510,23 @@ battery or tank (destroyed, or carried off with a part it hung from) takes its s
 share of what it held with it, once, and a lost generator stops the recharge; a destroyed
 battery also blasts its neighbours (below, **Part damage**). A robot whose tank or generator is
 shot off keeps fighting on what it holds, then stands until it dies.
+
+**Powertrains** (#130, Atlas D2.i123.3). The root chassis sets the robot's power: each chassis size
+comes electric (codes 1 to 3) or combustion (4 to 6, the same cuboids, mass, points and health).
+An electric robot is the above: its root stores the 100 electricity and its locomotion draws
+electricity. A combustion robot's root stores nothing; its locomotion burns fuel through an
+engine (`robot.engine`, 20 × 40 × 20 cm, 5 points, 1 kg, 60 health), as much fuel as an electric
+drive would draw electricity, and cannot walk without a connected engine or with empty tanks. The
+two mix through the same parts and budgets, with no free conversion: an electric robot's
+flamethrower needs a fuel tank, and a combustion robot's electrical weapons, blade, grapple,
+joints and repairs need a battery to store electricity and a generator to refill it, which on a
+combustion chassis makes 1 electricity a fuel instead of 2 (an electric robot recharges twice as
+fast; a combustion robot drives on its tanks' large store, 1000 fuel for 3 points against a
+battery's 60 for 5). Losing an engine, tank, generator or battery stops only what runs on it; the
+root chassis stays the only vital part. The `stoker` loadout is a combustion hybrid (below); the
+others are electric. Values are provisional (Atlas Q2.i123.2). The engine is drawn as the
+battery and the combustion chassis as the electric ones until the robot kit models them
+(moritzbrantner/asset-tooling#837).
 
 **Part damage** (`shooter_sim::damage`, Atlas D2.i89.1, D2.i70.8, #56, #89). Every part of a
 build has its own health (provisional, Atlas Q2.i70.1: chassis 270, 290 and 310 by size, so a front
@@ -754,7 +776,10 @@ efficiency-coiled shotgun), `marksman` (long-barrel rifle, overcharged rail gun:
 front kill instead of four, on the root chassis) or `pyro` (long-barrel laser reaching 45 m,
 flamethrower, blade and grapple on the small chassis: 182 kg, 87 of 118 points, the root
 chassis' 100 electricity; it spawns holding the laser) or `mechanic` (the standard build with a
-repair module on the chassis' back, **Field repair**),
+repair module on the chassis' back, **Field repair**) or `stoker` (a combustion hybrid on the
+medium combustion chassis: an engine on its roof drives its legs on fuel, the flamethrower burns
+the same tank, and a battery on its back stores the electricity its energy rifle, blade and grapple
+use, **Powertrains**),
 each a two-legged component tree with a sensor, a fuel tank and a generator
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads

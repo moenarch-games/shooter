@@ -588,7 +588,8 @@ fn losing_the_generator_or_the_tank_stops_the_recharge() {
         Pool {
             capacity: 100_000,
             fuel: 1_000_000,
-            burn: 0
+            burn: 0,
+            ..Pool::default()
         }
     );
     assert_eq!(b.fuel, 1_000_000, "the fuel stays");
@@ -609,7 +610,8 @@ fn losing_the_generator_or_the_tank_stops_the_recharge() {
         Pool {
             capacity: 100_000,
             fuel: 0,
-            burn: 0
+            burn: 0,
+            ..Pool::default()
         }
     );
     assert_eq!(b.fuel, 0, "its fuel went with it");

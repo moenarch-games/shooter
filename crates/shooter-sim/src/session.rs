@@ -63,9 +63,12 @@
 //!
 //! Every fighter has its build's electricity and fuel ([`crate::energy`], shooter#128); its
 //! motors, jumps, swings, shots and repairs ask for electricity first come, first served, and
-//! after them each tick its generators burn fuel to refill it; nothing refills by itself. A lost
-//! battery or tank takes its storage and its share of what it held with it; a lost generator
-//! stops the recharge. Depletion stops only what needed the resource.
+//! after them each tick its generators burn fuel to refill it; nothing refills by itself. Its
+//! root chassis sets its powertrain (shooter#130): an electric chassis' locomotion draws
+//! electricity, a combustion chassis' burns fuel through a connected engine, and the flamethrower
+//! burns fuel on either. A lost battery or tank takes its storage and its share of what it held
+//! with it; a lost generator stops the recharge, a lost engine a combustion drive. Depletion
+//! stops only what needed the resource.
 //!
 //! A person whose build mounts a repair module may repair a damaged part in its reach while the
 //! match goes on ([`crate::repair`]): the host checks the order, the repair draws electricity
@@ -573,15 +576,18 @@ pub fn walk_draw(layout: &mechanics::Layout, activity: u32, load_kg: u32) -> u32
         .sum()
 }
 
-/// A robot's motors ask its electricity (`charge`) for this tick's work, its first requests
+/// A robot's motors ask its stores (`charge`, `fuel`) for this tick's work, its first requests
 /// (shooter#128): first its locomotion for the walk `intent` asks of the movement drive
-/// ([`walk_draw`], one request for all of it, `walking` on its feet), then each joint for what
+/// ([`walk_draw`], one request for all of it, `walking` on its feet) from what `pool`'s drive
+/// runs on (electricity on an electric chassis, fuel through an engine on a combustion one, and
+/// nothing on a combustion chassis without a connected engine, [`Pool::drive`], shooter#130),
+/// then each joint for the electricity what
 /// `controls` command it ([`mechanics::draw`]), in part-ID order. A refused walk does not happen:
 /// the intent keeps only its aim, and its locomotion stands (free); a refused joint is idle
 /// this tick. Everything else works on. The intent and controls to act on, and whether the walk
 /// was refused.
 fn power(
-    charge: &mut u32,
+    (pool, charge, fuel): (Pool, &mut u32, &mut u32),
     load_kg: u32,
     layout: &mechanics::Layout,
     controls: Controls,
@@ -589,7 +595,7 @@ fn power(
     walking: bool,
 ) -> (Intent, Controls, bool) {
     let walk = walk_draw(layout, walk_activity(intent, walking), load_kg);
-    let stalled = !energy::spend(charge, walk);
+    let stalled = !energy::pay(pool.drive(), charge, fuel, walk);
     let intent = if stalled {
         Intent {
             yaw: intent.yaw,
@@ -1572,7 +1578,11 @@ impl Session {
             .collect();
         let mut moves = crate::player::Moves::default();
         // Each robot's electricity before its first request: what the tick used of it.
-        let starts: Vec<u32> = self.fighters.iter().map(|fighter| fighter.energy).collect();
+        let starts: Vec<(u32, u32)> = self
+            .fighters
+            .iter()
+            .map(|fighter| (fighter.energy, fighter.fuel))
+            .collect();
         // Where each person whose joints track the aim this tick (shooter#132) has the camera's
         // target, among the others as they saw them: what those joints turn toward.
         let aim_points: Vec<Option<[f32; 3]>> = (0..self.fighters.len())
@@ -1646,8 +1656,9 @@ impl Session {
                     let parts = &fighter.parts;
                     let carried =
                         crate::mechanics::load(&fighter.build, |index| parts.attached(index));
+                    let pool = fighter.pool();
                     let (powered, controls, stalled) = power(
-                        &mut fighter.energy,
+                        (pool, &mut fighter.energy, &mut fighter.fuel),
                         carried,
                         &robot.layout,
                         commanded.controls(&robot.layout),
@@ -1764,7 +1775,10 @@ impl Session {
             // may not hold is refused ([`weapons::resolve`]): the host decides, the prediction
             // and replays alike. Every copy of a weapon is its own instance (shooter#125): its
             // own mod, refire and muzzle; the melee key swings the first blade still connected.
+            // Each asks its own resource ([`Weapon::resource`], shooter#130): the flamethrower
+            // the fuel, the rest the electricity.
             let charge = &mut fighter.energy;
+            let fuel = &mut fighter.fuel;
             let held = fighter.arsenal.held;
             let select = intent
                 .select
@@ -1793,8 +1807,10 @@ impl Session {
                 |instance| tuning_of(&build, carried, instance).refire_ticks(instance.weapon),
                 |instance| {
                     armed.contains(&instance)
-                        && energy::spend(
+                        && energy::pay(
+                            Some(instance.weapon.resource()),
                             charge,
+                            fuel,
                             tuning_of(&build, carried, instance).energy(instance.weapon),
                         )
                 },
@@ -1864,14 +1880,16 @@ impl Session {
         self.run_repairs(playing);
 
         // Every request of the tick is in: the generators run ([`crate::energy`]).
-        for (fighter, start) in self.fighters.iter_mut().zip(starts) {
+        for (fighter, (start, start_fuel)) in self.fighters.iter_mut().zip(starts) {
             if fighter.alive() {
                 let used = start.saturating_sub(fighter.energy);
+                let fueled = start_fuel.saturating_sub(fighter.fuel);
                 let (burned, made) = fighter
                     .pool()
                     .generate(&mut fighter.energy, &mut fighter.fuel);
                 fighter.flow = Flow {
                     used,
+                    fueled,
                     made,
                     burned,
                     ..fighter.flow
