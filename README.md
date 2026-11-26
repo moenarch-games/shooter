@@ -478,7 +478,10 @@ directly started match (`--connect` / `--map`, `?connect=` / `?map=`) opens on i
 (and online nothing connects) until you press Ready. The robot stands in the middle, drawn from the kits as in the match, with its sockets
 marked; the part catalogue (every part and weapon with its build points, each chassis size once
 under a power switch that makes the robot electric or combustion, its root swapped in place, #130)
-and the named loadouts to start from (two to a row) are on the left, the component inspector on
+and the named loadouts to start from (two to a row) are on the left, including `robo-dog`
+(four legs, shotgun), `rover` (four wheels, rifle) and `mini-tank` (two tracks, rail gun).
+The dog uses the interim leg drive; the rover and mini-tank steer differentially on their own
+actuators. The component inspector is on
 the right (the selected part, or the part in hand: cells, mass, health, points, electricity or fuel
 stored, a chassis' drive, what a generator makes at the robot's rate, motor, the electricity or fuel
 a shot costs, its turn in degrees and its mod), and the budget along the bottom: build points and
@@ -881,7 +884,7 @@ repair module on the chassis' back, **Field repair**) or `stoker` (a combustion 
 medium combustion chassis: an engine on its roof drives its legs on fuel, the flamethrower burns
 the same tank, and a battery on its back stores the electricity its energy rifle, blade and grapple
 use, **Powertrains**),
-each a two-legged component tree with a sensor, a fuel tank and a generator
+each of these seven a two-legged component tree with a sensor, a fuel tank and a generator
 on top and its four weapons on the chassis' front, facing the aim (no arms since #91), so a front
 shot at the upper half of the chassis meets a weapon first. The builder's "start from" list loads
 them too. The HUD shows the held

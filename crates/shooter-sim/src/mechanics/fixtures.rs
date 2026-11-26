@@ -10,11 +10,12 @@
 use super::{Command, Controls};
 use crate::physics::{BodyId, RigidBody, Vec3i};
 use crate::robot::parts::{
-    BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_S, ENERGY_RIFLE, FUEL_TANK, GENERATOR, HINGE, LEG,
-    ROTOR, SENSOR, TRACK, WHEEL,
+    BATTERY, BEAM_LONG, CHASSIS_L, CHASSIS_S, ENERGY_RIFLE, HINGE, LEG, ROTOR, SENSOR, TRACK,
+    WHEEL,
 };
 use crate::robot::{
-    Assembly, BETA, Candidate, Face, Orientation, PartId, PartType, RawMount, RawPart,
+    Assembly, BETA, Candidate, Face, MINI_TANK, Orientation, PartId, PartType, ROBO_DOG, ROVER,
+    RawMount, RawPart,
 };
 
 const QUARTER: u16 = Orientation::QUARTER;
@@ -65,23 +66,21 @@ fn valid(parts: Vec<RawPart>) -> Assembly {
 }
 
 fn wheeled(sideways: bool) -> Vec<RawPart> {
+    if !sideways {
+        let mut parts = ROVER.candidate().parts;
+        parts.retain(|part| part.id < 6);
+        return parts;
+    }
     // A sensor on the roof where the retired control core sat (shooter#89).
     let mut parts = vec![
         root(0, &CHASSIS_L),
         on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
     ];
-    let (left, right) = if sideways {
-        (Face::PosX, Face::NegX)
-    } else {
-        (Face::PosY, Face::NegY)
-    };
+    let (left, right) = (Face::PosX, Face::NegX);
     // Each pair: one wheel turned half a turn from the face's first cell, one turned a quarter
     // (either way) from its last, so both hang over the face's corners.
-    let (second_left, second_right, quarter_left, quarter_right) = if sideways {
-        ((2, 0), (0, 2), 3 * QUARTER, QUARTER)
-    } else {
-        ((0, 1), (1, 0), QUARTER, 3 * QUARTER)
-    };
+    let (second_left, second_right, quarter_left, quarter_right) =
+        ((2, 0), (0, 2), 3 * QUARTER, QUARTER);
     parts.extend([
         yawed(on(2, &WHEEL, 0, &CHASSIS_L, left, 0, 0), 2 * QUARTER),
         yawed(
@@ -115,13 +114,7 @@ pub fn car() -> Assembly {
 /// generator on it on its roof beside the sensor, so it recharges as the named loadouts do.
 #[must_use]
 pub fn armed_car() -> Assembly {
-    let mut parts = wheeled(false);
-    parts.extend([
-        on(6, &ENERGY_RIFLE, 0, &CHASSIS_L, Face::PosX, 1, 2),
-        on(7, &FUEL_TANK, 0, &CHASSIS_L, Face::PosZ, 1, 0),
-        on(8, &GENERATOR, 7, &FUEL_TANK, Face::PosZ, 0, 0),
-    ]);
-    valid(parts)
+    ROVER
 }
 
 /// The same four wheels on the chassis' front and back: the same commands drive it sideways.
@@ -194,16 +187,18 @@ pub fn biped() -> Assembly {
 /// round, so its hip swings it sideways: badly configured.
 #[must_use]
 pub fn dog(turned: bool) -> Assembly {
-    let leg = |part: RawPart| if turned { yawed(part, QUARTER) } else { part };
-    valid(vec![
-        root(0, &CHASSIS_L),
-        on(2, &BEAM_LONG, 0, &CHASSIS_L, Face::PosX, 0, 0),
-        on(3, &BEAM_LONG, 0, &CHASSIS_L, Face::PosX, 2, 0),
-        leg(on(4, &LEG, 0, &CHASSIS_L, Face::NegZ, 0, 0)),
-        leg(on(5, &LEG, 0, &CHASSIS_L, Face::NegZ, 2, 0)),
-        leg(on(6, &LEG, 2, &BEAM_LONG, Face::NegY, 0, 3)),
-        leg(on(7, &LEG, 3, &BEAM_LONG, Face::NegY, 0, 3)),
-    ])
+    let mut parts = ROBO_DOG.candidate().parts;
+    parts.retain(|part| part.id < 8);
+    if turned {
+        for part in &mut parts {
+            if part.kind == LEG.id.0
+                && let Some(mount) = part.mount.as_mut()
+            {
+                mount.yaw = QUARTER;
+            }
+        }
+    }
+    valid(parts)
 }
 
 /// Two legs on the large chassis' roof, pointing up: they step in the air.
@@ -271,12 +266,9 @@ pub fn tank() -> Assembly {
 /// sensor on its roof. ([`tank`] stands its tracks on end.)
 #[must_use]
 pub fn flat_tank() -> Assembly {
-    valid(vec![
-        root(0, &CHASSIS_L),
-        on(1, &SENSOR, 0, &CHASSIS_L, Face::PosZ, 0, 0),
-        on(2, &TRACK, 0, &CHASSIS_L, Face::PosY, 0, 0),
-        yawed(on(3, &TRACK, 0, &CHASSIS_L, Face::NegY, 0, 0), 3 * QUARTER),
-    ])
+    let mut parts = MINI_TANK.candidate().parts;
+    parts.retain(|part| part.id < 4);
+    valid(parts)
 }
 
 /// The floor and a ramp rising toward +X from `start` units ahead of the origin, `length`
